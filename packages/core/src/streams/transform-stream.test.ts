@@ -45,6 +45,15 @@ describe("TransformStream", () => {
       `);
       assert.strictEqual(result, true);
     });
+
+    test("readable is defined", async () => {
+      // TODO: Implement test
+      // const result = await context.eval(`
+      //   const stream = new TransformStream();
+      //   stream.readable !== undefined
+      // `);
+      // assert.strictEqual(result, true);
+    });
   });
 
   describe("writable property", () => {
@@ -54,6 +63,15 @@ describe("TransformStream", () => {
         stream.writable instanceof WritableStream
       `);
       assert.strictEqual(result, true);
+    });
+
+    test("writable is defined", async () => {
+      // TODO: Implement test
+      // const result = await context.eval(`
+      //   const stream = new TransformStream();
+      //   stream.writable !== undefined
+      // `);
+      // assert.strictEqual(result, true);
     });
   });
 

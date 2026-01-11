@@ -225,6 +225,23 @@ npm run typecheck
 npm run build
 ```
 
+## Pattern Documentation
+
+As you implement WHATWG APIs, document recurring patterns in [PATTERNS.md](./PATTERNS.md). This ensures consistency across all packages and helps future contributors understand established conventions.
+
+**When to update PATTERNS.md:**
+- When you discover a reusable pattern for bridging host/isolate APIs
+- When you establish a convention for handling specific data types (e.g., streams, callbacks)
+- When you find a consistent way to handle edge cases across multiple APIs
+- When you create helper utilities that could be used across packages
+
+**What to document:**
+- Marshalling patterns for specific types (Blob, ReadableStream, etc.)
+- Error handling conventions
+- Async operation patterns
+- Class builder configurations for WHATWG classes
+- Testing patterns for isolate code
+
 ## Progress Tracking
 
 Use the checkboxes in each plan file to track implementation progress. Example from 01-core.md:

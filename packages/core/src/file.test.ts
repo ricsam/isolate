@@ -204,4 +204,81 @@ describe("File", () => {
       assert.strictEqual(parsed.size2, 5);
     });
   });
+
+  describe("Native File → isolate", () => {
+    test("native File should pass instanceof File check in isolate", async () => {
+      // TODO: Implement test
+      // const runtime = runTestCode(
+      //   context,
+      //   `
+      //   const file = testingInput.file;
+      //   log("instanceofFile", file instanceof File);
+      //   log("constructorName", file.constructor.name);
+      // `
+      // ).input({
+      //   file: new File(["test"], "test.txt", { type: "text/plain" }),
+      // });
+      //
+      // assert.deepStrictEqual(runtime.logs, {
+      //   instanceofFile: true,
+      //   constructorName: "File",
+      // });
+    });
+
+    test("native File should pass instanceof Blob check in isolate", async () => {
+      // TODO: Implement test
+    });
+
+    test("native File name property is preserved", async () => {
+      // TODO: Implement test
+    });
+
+    test("native File type property is preserved", async () => {
+      // TODO: Implement test
+    });
+
+    test("native File lastModified property is preserved", async () => {
+      // TODO: Implement test
+    });
+
+    test("native File size property (content not transferred)", async () => {
+      // TODO: Implement test
+    });
+
+    test("native File has webkitRelativePath property", async () => {
+      // TODO: Implement test
+    });
+
+    test("native File methods exist", async () => {
+      // TODO: Implement test
+    });
+  });
+
+  describe("Bidirectional Conversion (Native→isolate→Native)", () => {
+    test("File created in isolate should return as native File", async () => {
+      // TODO: Implement test
+      // const runtime = runTestCode(
+      //   context,
+      //   `
+      //   const file = new File(["test content"], "created.txt", { type: "text/plain" });
+      //   log("file", file);
+      // `
+      // ).input({});
+      //
+      // assert.ok(runtime.logs.file instanceof File);
+      // assert.strictEqual((runtime.logs.file as File).name, "created.txt");
+    });
+
+    test("native File passed through isolate returns as native File", async () => {
+      // TODO: Implement test
+    });
+
+    test("File should also be instance of Blob after round-trip", async () => {
+      // TODO: Implement test
+    });
+
+    test("nested object with File converts properly", async () => {
+      // TODO: Implement test
+    });
+  });
 });

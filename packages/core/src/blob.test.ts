@@ -233,4 +233,72 @@ describe("Blob", () => {
       assert.strictEqual(data.size2, 5);
     });
   });
+
+  describe("Native Blob → isolate", () => {
+    test("native Blob should pass instanceof check in isolate", async () => {
+      // TODO: Implement test
+      // const runtime = runTestCode(
+      //   context,
+      //   `
+      //   const blob = testingInput.blob;
+      //   log("instanceof", blob instanceof Blob);
+      //   log("constructorName", blob.constructor.name);
+      // `
+      // ).input({
+      //   blob: new Blob(["test"], { type: "text/plain" }),
+      // });
+      //
+      // assert.deepStrictEqual(runtime.logs, {
+      //   instanceof: true,
+      //   constructorName: "Blob",
+      // });
+    });
+
+    test("native Blob type property is preserved", async () => {
+      // TODO: Implement test
+    });
+
+    test("native Blob size property is preserved", async () => {
+      // TODO: Implement test
+    });
+
+    test("native Blob slice method exists", async () => {
+      // TODO: Implement test
+    });
+
+    test("native Blob text method exists", async () => {
+      // TODO: Implement test
+    });
+
+    test("native Blob arrayBuffer method exists", async () => {
+      // TODO: Implement test
+    });
+
+    test("native Blob stream method exists", async () => {
+      // TODO: Implement test
+    });
+  });
+
+  describe("Bidirectional Conversion (Native→isolate→Native)", () => {
+    test("Blob created in isolate should return as native Blob", async () => {
+      // TODO: Implement test
+      // const runtime = runTestCode(
+      //   context,
+      //   `
+      //   const blob = new Blob(["test content"], { type: "text/plain" });
+      //   log("blob", blob);
+      // `
+      // ).input({});
+      //
+      // assert.ok(runtime.logs.blob instanceof Blob);
+    });
+
+    test("native Blob passed through isolate returns as native Blob", async () => {
+      // TODO: Implement test
+    });
+
+    test("nested object with Blob converts properly", async () => {
+      // TODO: Implement test
+    });
+  });
 });

@@ -78,18 +78,14 @@ describe("function-builder", () => {
   });
 
   describe("defineAsyncFunction", () => {
-    test("returns a promise type", async () => {
+    test("returns the resolved value directly (blocking via applySyncPromise)", async () => {
       defineAsyncFunction(context, "asyncFn", async () => {
         return "async result";
       });
 
-      const result = await context.eval(`
-        (async () => {
-          const result = asyncFn();
-          return result instanceof Promise;
-        })()
-      `, { promise: true });
-      assert.strictEqual(result, true);
+      // With applySyncPromise, the function blocks and returns the value directly
+      const result = await context.eval(`asyncFn()`);
+      assert.strictEqual(result, "async result");
     });
 
     test("receives unmarshalled arguments", async () => {

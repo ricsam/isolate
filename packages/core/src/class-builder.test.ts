@@ -18,6 +18,38 @@ describe("class-builder", () => {
     isolate.dispose();
   });
 
+  describe("createStateMap", () => {
+    test("returns a WeakMap", () => {
+      // TODO: Implement test
+      // const map = createStateMap();
+      // assert.ok(map instanceof WeakMap);
+    });
+  });
+
+  describe("getState and setState", () => {
+    test("stores and retrieves state by handle", async () => {
+      // TODO: Implement test
+      // const handle = context.newObject();
+      // const state = { value: 42 };
+      //
+      // setState(stateMap, handle, state);
+      // const retrieved = getState(stateMap, handle);
+      //
+      // assert.strictEqual(retrieved, state);
+      // assert.strictEqual(retrieved?.value, 42);
+      // handle.dispose();
+    });
+
+    test("returns undefined for unknown handle", async () => {
+      // TODO: Implement test
+      // const handle = context.newObject();
+      // const state = getState(stateMap, handle);
+      //
+      // assert.strictEqual(state, undefined);
+      // handle.dispose();
+    });
+  });
+
   describe("defineClass", () => {
     describe("basic class creation", () => {
       test("creates a class that can be instantiated", async () => {
@@ -360,6 +392,122 @@ describe("class-builder", () => {
         }
       `);
       assert.strictEqual(result, "specific error message");
+    });
+  });
+
+  describe("getInstanceState", () => {
+    test("retrieves state from an instance handle", async () => {
+      // TODO: Implement test
+      // interface TestState {
+      //   data: string;
+      // }
+      //
+      // const TestClass = defineClass<TestState>(context, stateMap, {
+      //   name: "TestClass",
+      //   construct: () => ({ data: "hello" }),
+      // });
+      // context.setProp(context.global, "TestClass", TestClass);
+      // TestClass.dispose();
+      //
+      // const result = context.evalCode(`new TestClass()`);
+      // if (result.error) {
+      //   result.error.dispose();
+      //   throw new Error("Failed to create instance");
+      // }
+      //
+      // const instanceHandle = result.value;
+      // const state = getInstanceState<TestState>(context, instanceHandle);
+      //
+      // assert.ok(state);
+      // assert.strictEqual(state?.data, "hello");
+      // instanceHandle.dispose();
+    });
+
+    test("returns undefined for non-instance handles", async () => {
+      // TODO: Implement test
+      // const handle = context.newObject();
+      // const state = getInstanceState(context, handle);
+      //
+      // assert.strictEqual(state, undefined);
+      // handle.dispose();
+    });
+  });
+
+  describe("cleanupInstanceState", () => {
+    test("removes instance state by ID", async () => {
+      // TODO: Implement test
+      // const TestClass = defineClass(context, stateMap, {
+      //   name: "CleanupTest",
+      //   construct: () => ({ value: 123 }),
+      // });
+      // context.setProp(context.global, "CleanupTest", TestClass);
+      // TestClass.dispose();
+      //
+      // const result = context.evalCode(`new CleanupTest()`);
+      // if (result.error) {
+      //   result.error.dispose();
+      //   throw new Error("Failed to create instance");
+      // }
+      //
+      // const instanceHandle = result.value;
+      //
+      // // Get the instance ID
+      // const idHandle = context.getProp(instanceHandle, "__instanceId__");
+      // const instanceId = context.getNumber(idHandle);
+      // idHandle.dispose();
+      //
+      // // Verify state exists before cleanup
+      // assert.ok(getInstanceState(context, instanceHandle));
+      //
+      // // Clean up
+      // cleanupInstanceState(instanceId);
+      //
+      // // Verify state is gone
+      // assert.strictEqual(getInstanceState(context, instanceHandle), undefined);
+      //
+      // instanceHandle.dispose();
+    });
+  });
+
+  describe("clearAllInstanceState", () => {
+    test("clears all instance states", async () => {
+      // TODO: Implement test
+      // const TestClass = defineClass(context, stateMap, {
+      //   name: "ClearAllTest",
+      //   construct: () => ({ value: 1 }),
+      // });
+      // context.setProp(context.global, "ClearAllTest", TestClass);
+      // TestClass.dispose();
+      //
+      // // Create multiple instances
+      // const result1 = context.evalCode(`new ClearAllTest()`);
+      // const result2 = context.evalCode(`new ClearAllTest()`);
+      //
+      // if (result1.error) {
+      //   result1.error.dispose();
+      //   throw new Error("Failed to create instance 1");
+      // }
+      // if (result2.error) {
+      //   result2.error.dispose();
+      //   throw new Error("Failed to create instance 2");
+      // }
+      //
+      // const handle1 = result1.value;
+      // const handle2 = result2.value;
+      //
+      // // Verify states exist
+      // assert.ok(getInstanceState(context, handle1));
+      // assert.ok(getInstanceState(context, handle2));
+      //
+      // // Clear all
+      // clearAllInstanceState();
+      //
+      // // Verify all states are gone
+      // assert.strictEqual(getInstanceState(context, handle1), undefined);
+      // assert.strictEqual(getInstanceState(context, handle2), undefined);
+      //
+      // handle1.dispose();
+      // handle2.dispose();
     });
   });
 });

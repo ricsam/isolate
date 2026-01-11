@@ -4,6 +4,51 @@ import ivm from "isolated-vm";
 export type { Isolate, Context, Reference } from "isolated-vm";
 
 // ============================================================================
+// Error Encoding Helpers (for cross-boundary error transfer)
+// ============================================================================
+
+const KNOWN_ERROR_TYPES = [
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "URIError",
+  "EvalError",
+] as const;
+
+/**
+ * Get the error constructor name, falling back to "Error" for unknown types.
+ */
+function getErrorConstructorName(errorType: string): string {
+  return (KNOWN_ERROR_TYPES as readonly string[]).includes(errorType)
+    ? errorType
+    : "Error";
+}
+
+/**
+ * Encode an error with its type prefix for transfer across isolate boundary.
+ */
+function encodeErrorForTransfer(err: Error): Error {
+  const errorType = getErrorConstructorName(err.name);
+  return new Error(`[${errorType}]${err.message}`);
+}
+
+/**
+ * JavaScript code for the __decodeError helper (used in isolate).
+ */
+const DECODE_ERROR_JS = `
+function __decodeError(err) {
+  if (!(err instanceof Error)) return err;
+  const match = err.message.match(/^\\[(TypeError|RangeError|SyntaxError|ReferenceError|URIError|EvalError|Error)\\](.*)$/);
+  if (match) {
+    const ErrorType = globalThis[match[1]] || Error;
+    return new ErrorType(match[2]);
+  }
+  return err;
+}
+`.trim();
+
+// ============================================================================
 // Instance State Management
 // ============================================================================
 
@@ -432,31 +477,57 @@ export function defineFunction(
 
 /**
  * Define an async function that can be called from the isolate.
- * Returns a Promise that resolves/rejects with marshalled values.
+ * Uses ivm.Reference with applySyncPromise to properly bridge async operations.
+ *
+ * The function is exposed in the isolate as a regular function that internally
+ * calls applySyncPromise on the host Reference, blocking until the async
+ * operation completes.
  */
 export function defineAsyncFunction(
   context: ivm.Context,
   name: string,
   fn: (...args: unknown[]) => Promise<unknown>
 ): ivm.Reference {
-  const callback = new ivm.Callback(
-    async (...args: unknown[]) => {
-      try {
-        const result = await fn(...args);
-        return result;
-      } catch (err) {
-        if (err instanceof Error) {
-          throw new Error(err.message);
-        }
-        throw err;
-      }
-    },
-    { async: true }
-  );
-
-  // Set it on the global object in the context
   const global = context.global;
-  global.setSync(name, callback);
+
+  // Internal reference name to avoid conflicts with user code
+  const refName = `__async_ref_${name}`;
+
+  // Create a Reference to the async function (not a Callback)
+  // applySyncPromise can only be called on References to host functions
+  const asyncRef = new ivm.Reference(async (...args: unknown[]) => {
+    try {
+      const result = await fn(...args);
+      return result;
+    } catch (err) {
+      if (err instanceof Error) {
+        throw encodeErrorForTransfer(err);
+      }
+      throw err;
+    }
+  });
+
+  // Set the reference on global
+  global.setSync(refName, asyncRef);
+
+  // Inject wrapper function that calls applySyncPromise
+  // This creates a synchronous-looking function in the isolate that
+  // internally blocks until the async operation completes
+  const wrapperCode = `
+(function() {
+  ${DECODE_ERROR_JS}
+
+  globalThis.${name} = function(...args) {
+    try {
+      return ${refName}.applySyncPromise(undefined, args);
+    } catch (err) {
+      throw __decodeError(err);
+    }
+  };
+})();
+`;
+
+  context.evalSync(wrapperCode);
 
   return global.getSync(name) as ivm.Reference;
 }
@@ -508,45 +579,49 @@ export function defineClass<TState extends object = object>(
   } = definition;
   const stateMap = getInstanceStateMapForContext(context);
 
-  // Helper to get the Error constructor code for a specific error type
-  const getErrorConstructor = (errorType: string) => {
-    const knownErrors = [
-      "TypeError",
-      "RangeError",
-      "SyntaxError",
-      "ReferenceError",
-      "URIError",
-      "EvalError",
-    ];
-    return knownErrors.includes(errorType) ? errorType : "Error";
-  };
-
-  // Helper to encode error type in message (survives isolate boundary)
-  const encodeError = (err: Error): Error => {
-    const errorType = getErrorConstructor(err.name);
-    return new Error(`[${errorType}]${err.message}`);
-  };
-
-  // Build method callback registrations
+  // Build method callback/reference registrations
+  // Sync methods use Callback, async methods use Reference (for applySyncPromise)
   const methodCallbacks: Record<string, ivm.Callback> = {};
+  const methodReferences: Record<string, ivm.Reference<(...args: unknown[]) => Promise<unknown>>> = {};
+
   for (const [methodName, methodDef] of Object.entries(methods)) {
-    methodCallbacks[`__${name}_${methodName}`] = new ivm.Callback(
-      (instanceId: number, ...args: unknown[]) => {
-        const state = stateMap.get(instanceId) as TState | undefined;
-        if (!state) {
-          throw new Error(`Instance ${instanceId} not found`);
-        }
-        try {
-          return methodDef.fn(state, ...args);
-        } catch (err) {
-          if (err instanceof Error) {
-            throw encodeError(err);
+    if (methodDef.async) {
+      // Async methods use Reference + applySyncPromise pattern
+      methodReferences[`__${name}_${methodName}_ref`] = new ivm.Reference(
+        async (instanceId: number, ...args: unknown[]) => {
+          const state = stateMap.get(instanceId) as TState | undefined;
+          if (!state) {
+            throw new Error(`Instance ${instanceId} not found`);
           }
-          throw err;
+          try {
+            return await methodDef.fn(state, ...args);
+          } catch (err) {
+            if (err instanceof Error) {
+              throw encodeErrorForTransfer(err);
+            }
+            throw err;
+          }
         }
-      },
-      { async: methodDef.async ?? false }
-    );
+      );
+    } else {
+      // Sync methods use regular Callback
+      methodCallbacks[`__${name}_${methodName}`] = new ivm.Callback(
+        (instanceId: number, ...args: unknown[]) => {
+          const state = stateMap.get(instanceId) as TState | undefined;
+          if (!state) {
+            throw new Error(`Instance ${instanceId} not found`);
+          }
+          try {
+            return methodDef.fn(state, ...args);
+          } catch (err) {
+            if (err instanceof Error) {
+              throw encodeErrorForTransfer(err);
+            }
+            throw err;
+          }
+        }
+      );
+    }
   }
 
   // Build property getter/setter callbacks
@@ -564,7 +639,7 @@ export function defineClass<TState extends object = object>(
             return getter(state);
           } catch (err) {
             if (err instanceof Error) {
-              throw encodeError(err);
+              throw encodeErrorForTransfer(err);
             }
             throw err;
           }
@@ -583,7 +658,7 @@ export function defineClass<TState extends object = object>(
             setter(state, value);
           } catch (err) {
             if (err instanceof Error) {
-              throw encodeError(err);
+              throw encodeErrorForTransfer(err);
             }
             throw err;
           }
@@ -592,22 +667,41 @@ export function defineClass<TState extends object = object>(
     }
   }
 
-  // Build static method callbacks
+  // Build static method callbacks/references
+  // Sync methods use Callback, async methods use Reference (for applySyncPromise)
   const staticMethodCallbacks: Record<string, ivm.Callback> = {};
+  const staticMethodReferences: Record<string, ivm.Reference<(...args: unknown[]) => Promise<unknown>>> = {};
+
   for (const [methodName, methodDef] of Object.entries(staticMethods)) {
-    staticMethodCallbacks[`__${name}_static_${methodName}`] = new ivm.Callback(
-      (...args: unknown[]) => {
-        try {
-          return methodDef.fn(...args);
-        } catch (err) {
-          if (err instanceof Error) {
-            throw encodeError(err);
+    if (methodDef.async) {
+      // Async static methods use Reference + applySyncPromise pattern
+      staticMethodReferences[`__${name}_static_${methodName}_ref`] = new ivm.Reference(
+        async (...args: unknown[]) => {
+          try {
+            return await methodDef.fn(...args);
+          } catch (err) {
+            if (err instanceof Error) {
+              throw encodeErrorForTransfer(err);
+            }
+            throw err;
           }
-          throw err;
         }
-      },
-      { async: methodDef.async ?? false }
-    );
+      );
+    } else {
+      // Sync static methods use regular Callback
+      staticMethodCallbacks[`__${name}_static_${methodName}`] = new ivm.Callback(
+        (...args: unknown[]) => {
+          try {
+            return methodDef.fn(...args);
+          } catch (err) {
+            if (err instanceof Error) {
+              throw encodeErrorForTransfer(err);
+            }
+            throw err;
+          }
+        }
+      );
+    }
   }
 
   // Constructor callback
@@ -619,7 +713,7 @@ export function defineClass<TState extends object = object>(
         stateMap.set(instanceId, state);
       } catch (err) {
         if (err instanceof Error) {
-          throw encodeError(err);
+          throw encodeErrorForTransfer(err);
         }
         throw err;
       }
@@ -629,12 +723,15 @@ export function defineClass<TState extends object = object>(
     return instanceId;
   });
 
-  // Register all callbacks on global
+  // Register all callbacks and references on global
   const global = context.global;
   global.setSync(`__${name}_construct`, constructorCallback);
 
   for (const [callbackName, callback] of Object.entries(methodCallbacks)) {
     global.setSync(callbackName, callback);
+  }
+  for (const [refName, ref] of Object.entries(methodReferences)) {
+    global.setSync(refName, ref);
   }
   for (const [callbackName, callback] of Object.entries(propertyCallbacks)) {
     global.setSync(callbackName, callback);
@@ -643,6 +740,9 @@ export function defineClass<TState extends object = object>(
     staticMethodCallbacks
   )) {
     global.setSync(callbackName, callback);
+  }
+  for (const [refName, ref] of Object.entries(staticMethodReferences)) {
+    global.setSync(refName, ref);
   }
 
   // Build the class definition JavaScript code
@@ -673,10 +773,13 @@ export function defineClass<TState extends object = object>(
   // Add methods
   for (const [methodName, methodDef] of Object.entries(methods)) {
     if (methodDef.async) {
+      // Async methods use applySyncPromise on the Reference
+      // Note: The method is NOT marked async because applySyncPromise blocks
+      // and returns the resolved value directly
       classCode += `
-    async ${methodName}(...args) {
+    ${methodName}(...args) {
       try {
-        return await __${name}_${methodName}(this.#instanceId, ...args);
+        return __${name}_${methodName}_ref.applySyncPromise(undefined, [this.#instanceId, ...args]);
       } catch (err) {
         throw __decodeError(err);
       }
@@ -730,10 +833,11 @@ export function defineClass<TState extends object = object>(
   // Add static methods
   for (const [methodName, methodDef] of Object.entries(staticMethods)) {
     if (methodDef.async) {
+      // Async static methods use applySyncPromise on the Reference
       classCode += `
-  ${name}.${methodName} = async function(...args) {
+  ${name}.${methodName} = function(...args) {
     try {
-      return await __${name}_static_${methodName}(...args);
+      return __${name}_static_${methodName}_ref.applySyncPromise(undefined, args);
     } catch (err) {
       throw __decodeError(err);
     }

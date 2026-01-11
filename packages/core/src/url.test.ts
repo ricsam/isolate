@@ -481,4 +481,126 @@ describe("URL", () => {
       assert.strictEqual(result, true);
     });
   });
+
+  describe("spec examples", () => {
+    test("parse request URL for pathname", async () => {
+      // TODO: Implement test
+      // const result = await context.eval(`
+      //   // Simulate request.url
+      //   const requestUrl = "https://example.com/api/hello?name=world";
+      //   const url = new URL(requestUrl);
+      //   url.pathname
+      // `);
+      // assert.strictEqual(result, "/api/hello");
+    });
+
+    test("get query parameter from request URL", async () => {
+      // TODO: Implement test
+      // const result = await context.eval(`
+      //   const requestUrl = "https://example.com/api/search?q=test&limit=10";
+      //   const url = new URL(requestUrl);
+      //   url.searchParams.get("q") + "," + url.searchParams.get("limit")
+      // `);
+      // assert.strictEqual(result, "test,10");
+    });
+  });
+});
+
+/**
+ * Native URL → isolate tests
+ *
+ * These tests verify that native URL objects passed into isolate
+ * behave identically to URL instances created with `new URL()` in isolate.
+ */
+describe("Native URL → isolate", () => {
+  let isolate: ivm.Isolate;
+  let context: ivm.Context;
+
+  beforeEach(async () => {
+    isolate = new ivm.Isolate();
+    context = await isolate.createContext();
+    await setupCore(context);
+    clearAllInstanceState();
+  });
+
+  afterEach(() => {
+    cleanupUnmarshaledHandles(context);
+    context.release();
+    isolate.dispose();
+  });
+
+  test("native URL should pass instanceof check in isolate", async () => {
+    // TODO: Implement test
+    // const runtime = runTestCode(
+    //   context,
+    //   `
+    //   const url = testingInput.url;
+    //   log("instanceof", url instanceof URL);
+    //   log("constructorName", url.constructor.name);
+    // `
+    // ).input({
+    //   url: new URL("https://example.com/path"),
+    // });
+    //
+    // assert.deepStrictEqual(runtime.logs, {
+    //   instanceof: true,
+    //   constructorName: "URL",
+    // });
+  });
+
+  test("href property is preserved", async () => {
+    // TODO: Implement test
+  });
+
+  test("all URL properties are preserved", async () => {
+    // TODO: Implement test
+  });
+
+  test("searchParams is accessible", async () => {
+    // TODO: Implement test
+  });
+
+  test("toString() returns href", async () => {
+    // TODO: Implement test
+  });
+
+  test("URL with username and password", async () => {
+    // TODO: Implement test
+  });
+
+  describe("Bidirectional Conversion (Native→isolate→Native)", () => {
+    test("URL created in isolate should return as native URL", async () => {
+      // TODO: Implement test
+      // const runtime = runTestCode(
+      //   context,
+      //   `
+      //   const url = new URL("https://example.com/path?query=value#hash");
+      //   log("url", url);
+      // `
+      // ).input({});
+      //
+      // assert.ok(runtime.logs.url instanceof URL);
+      // assert.strictEqual((runtime.logs.url as URL).href, "https://example.com/path?query=value#hash");
+    });
+
+    test("native URL passed through isolate returns as native URL", async () => {
+      // TODO: Implement test
+    });
+
+    test("URL properties are preserved after round-trip", async () => {
+      // TODO: Implement test
+    });
+
+    test("modified URL preserves changes after round-trip", async () => {
+      // TODO: Implement test
+    });
+
+    test("nested object with URL converts properly", async () => {
+      // TODO: Implement test
+    });
+
+    test("array of URLs converts properly", async () => {
+      // TODO: Implement test
+    });
+  });
 });
