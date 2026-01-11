@@ -1,0 +1,22 @@
+{
+  "name": "@ricsam/isolate-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --experimental-strip-types src/server.ts",
+    "build": "tsc",
+    "test": "node --test --experimental-strip-types 'tests/**/*.test.ts'",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ricsam/isolate-runtime": "*",
+    "isolated-vm": "^6"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1",
+    "@types/node": "^24",
+    "typescript": "^5"
+  }
+}

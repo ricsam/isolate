@@ -1,0 +1,36 @@
+{
+  "name": "@ricsam/isolate-runtime",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ricsam/isolate-core": "*",
+    "@ricsam/isolate-console": "*",
+    "@ricsam/isolate-crypto": "*",
+    "@ricsam/isolate-encoding": "*",
+    "@ricsam/isolate-fetch": "*",
+    "@ricsam/isolate-fs": "*",
+    "@ricsam/isolate-timers": "*",
+    "isolated-vm": "^6"
+  },
+  "devDependencies": {
+    "@ricsam/isolate-test-utils": "*",
+    "@types/node": "^24",
+    "typescript": "^5"
+  },
+  "peerDependencies": {
+    "isolated-vm": "^6"
+  }
+}

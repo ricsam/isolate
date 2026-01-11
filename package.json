@@ -1,0 +1,41 @@
+{
+  "name": "@ricsam/isolate-monorepo-root",
+  "private": true,
+  "type": "module",
+  "description": "Utilities for isolated-vm - run JavaScript in a sandboxed V8 environment with web-standard APIs",
+  "author": "Richard Samuelsson",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ricsam/isolate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ricsam/isolate/issues"
+  },
+  "homepage": "https://github.com/ricsam/isolate#readme",
+  "keywords": [
+    "isolated-vm",
+    "sandbox",
+    "javascript",
+    "runtime",
+    "fetch",
+    "filesystem",
+    "streams",
+    "v8",
+    "isolate"
+  ],
+  "workspaces": [
+    "packages/*",
+    "demo"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "npm test --workspaces",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "@changesets/cli": "latest",
+    "@types/node": "^24",
+    "typescript": "^5"
+  }
+}
