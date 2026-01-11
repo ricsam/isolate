@@ -20,36 +20,92 @@ describe("function-builder", () => {
 
   describe("defineFunction", () => {
     test("calls host function with unmarshalled arguments", async () => {
-      // TODO: Implement test
-      // const receivedArgs: unknown[] = [];
-      // const fn = defineFunction(context, "testFn", (...args) => {
-      //   receivedArgs.push(...args);
-      //   return "result";
-      // });
-      // Set on global and call from isolate
-      // assert.deepStrictEqual(receivedArgs, ["hello", 42, true]);
+      const receivedArgs: unknown[] = [];
+      defineFunction(context, "testFn", (...args) => {
+        receivedArgs.push(...args);
+        return "result";
+      });
+
+      const result = await context.eval(`testFn("hello", 42, true)`);
+      assert.strictEqual(result, "result");
+      assert.deepStrictEqual(receivedArgs, ["hello", 42, true]);
     });
 
     test("marshals Error thrown by host function", async () => {
-      // TODO: Implement test
+      defineFunction(context, "throwError", () => {
+        throw new Error("host error message");
+      });
+
+      const result = await context.eval(`
+        try {
+          throwError();
+          "no error";
+        } catch (e) {
+          e.message;
+        }
+      `);
+      assert.strictEqual(result, "host error message");
     });
 
     test("marshals non-Error thrown by host function", async () => {
-      // TODO: Implement test
+      defineFunction(context, "throwString", () => {
+        throw "string error";
+      });
+
+      const result = await context.eval(`
+        try {
+          throwString();
+          "no error";
+        } catch (e) {
+          typeof e === "string" ? e : "not a string";
+        }
+      `);
+      assert.strictEqual(result, "string error");
     });
 
     test("returns marshalled object result", async () => {
-      // TODO: Implement test
+      defineFunction(context, "getObject", () => {
+        return { name: "test", value: 123 };
+      });
+
+      const result = await context.eval(`
+        const obj = getObject();
+        JSON.stringify(obj)
+      `);
+      const parsed = JSON.parse(result as string);
+      assert.deepStrictEqual(parsed, { name: "test", value: 123 });
     });
   });
 
   describe("defineAsyncFunction", () => {
     test("returns a promise type", async () => {
-      // TODO: Implement test
+      defineAsyncFunction(context, "asyncFn", async () => {
+        return "async result";
+      });
+
+      const result = await context.eval(`
+        (async () => {
+          const result = asyncFn();
+          return result instanceof Promise;
+        })()
+      `, { promise: true });
+      assert.strictEqual(result, true);
     });
 
     test("receives unmarshalled arguments", async () => {
-      // TODO: Implement test
+      const receivedArgs: unknown[] = [];
+      defineAsyncFunction(context, "asyncWithArgs", async (...args) => {
+        receivedArgs.push(...args);
+        return "done";
+      });
+
+      const result = await context.eval(`
+        (async () => {
+          return await asyncWithArgs("async", 99, false);
+        })()
+      `, { promise: true });
+      assert.strictEqual(result, "done");
+      assert.deepStrictEqual(receivedArgs, ["async", 99, false]);
     });
   });
 });
