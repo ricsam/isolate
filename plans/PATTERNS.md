@@ -15,6 +15,7 @@ This document captures recurring patterns used when implementing WHATWG APIs in 
 9. [Test Structure Pattern](#9-test-structure-pattern)
 10. [Async Method Pattern](#10-async-method-pattern)
 11. [Simple Callback-Based API Pattern](#11-simple-callback-based-api-pattern)
+12. [DOMException Polyfill Pattern](#12-domexception-polyfill-pattern)
 
 ---
 
@@ -529,6 +530,40 @@ export async function setupConsole(
 - Simpler than `defineClass` pattern
 - Direct callback registration without instance ID mapping
 - State lives in closure, accessible from handle
+
+---
+
+## 12. DOMException Polyfill Pattern
+
+The isolated-vm context doesn't have `DOMException` available. For APIs that need to throw DOM-style errors (like `InvalidCharacterError`, `NotFoundError`, etc.), inject a polyfill:
+
+```javascript
+// At the start of injected code
+if (typeof DOMException === 'undefined') {
+  globalThis.DOMException = class DOMException extends Error {
+    constructor(message, name) {
+      super(message);
+      this.name = name || 'DOMException';
+    }
+  };
+}
+
+// Usage
+throw new DOMException(
+  "The string to be encoded contains characters outside of the Latin1 range.",
+  "InvalidCharacterError"
+);
+```
+
+**Common DOMException names:**
+- `InvalidCharacterError` - Invalid characters in input (btoa/atob)
+- `NotFoundError` - Resource not found (fs operations)
+- `AbortError` - Operation was aborted
+- `NetworkError` - Network request failed
+- `SecurityError` - Security violation
+- `NotAllowedError` - Operation not allowed
+
+**Note:** The polyfill sets `error.name` to the specific error type (e.g., `InvalidCharacterError`), not `DOMException`. This matches browser behavior where `error.name` reflects the specific error type.
 
 ---
 
