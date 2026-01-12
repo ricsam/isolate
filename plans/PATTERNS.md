@@ -14,6 +14,7 @@ This document captures recurring patterns used when implementing WHATWG APIs in 
 8. [Error Encoding Across Boundary](#8-error-encoding-across-boundary)
 9. [Test Structure Pattern](#9-test-structure-pattern)
 10. [Async Method Pattern](#10-async-method-pattern)
+11. [Simple Callback-Based API Pattern](#11-simple-callback-based-api-pattern)
 
 ---
 
@@ -93,6 +94,25 @@ export interface CoreHandle {
   dispose(): void;
 }
 ```
+
+### Extended Handle with State Access
+
+For APIs that track state (like console), expose state accessors on the handle:
+
+```typescript
+export interface ConsoleHandle {
+  dispose(): void;
+  reset(): void;                        // Clear all state
+  getTimers(): Map<string, number>;     // Copy of timer state
+  getCounters(): Map<string, number>;   // Copy of counter state
+  getGroupDepth(): number;              // Current group nesting
+}
+```
+
+**Key points:**
+- `getTimers()` and `getCounters()` return **copies** to prevent external mutation
+- `reset()` clears state without disposing the handle
+- `dispose()` should also clear state
 
 ---
 
@@ -446,6 +466,69 @@ class Blob {
   }
 }
 ```
+
+---
+
+## 11. Simple Callback-Based API Pattern
+
+For APIs that don't need classes or complex state (like console), use a simpler pattern with direct `ivm.Callback` registration:
+
+```typescript
+export async function setupConsole(
+  context: ivm.Context,
+  options?: ConsoleOptions
+): Promise<ConsoleHandle> {
+  const opts = options ?? {};
+
+  // Local state (not instance-based)
+  const timers = new Map<string, number>();
+  const counters = new Map<string, number>();
+  let groupDepth = 0;
+
+  const global = context.global;
+
+  // Register callbacks directly for each method
+  const logLevels = ["log", "warn", "error", "debug", "info", "trace", "dir", "table"];
+
+  for (const level of logLevels) {
+    global.setSync(
+      `__console_${level}`,
+      new ivm.Callback((...args: unknown[]) => {
+        opts.onLog?.(level, ...args);
+      })
+    );
+  }
+
+  // Inject the API object
+  context.evalSync(`
+    globalThis.console = {
+      log: __console_log,
+      warn: __console_warn,
+      error: __console_error,
+      // ... etc
+    };
+  `);
+
+  return {
+    dispose() { timers.clear(); counters.clear(); groupDepth = 0; },
+    reset() { timers.clear(); counters.clear(); groupDepth = 0; },
+    getTimers() { return new Map(timers); },
+    getCounters() { return new Map(counters); },
+    getGroupDepth() { return groupDepth; },
+  };
+}
+```
+
+**When to use this pattern:**
+- API is a single global object (like `console`, `crypto`)
+- No class instances to track
+- Methods are simple proxies to host callbacks
+- State is per-setup, not per-instance
+
+**Benefits:**
+- Simpler than `defineClass` pattern
+- Direct callback registration without instance ID mapping
+- State lives in closure, accessible from handle
 
 ---
 
