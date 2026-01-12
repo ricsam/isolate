@@ -119,7 +119,7 @@ The packages should be implemented in this order due to dependencies:
 | # | Plan File | Package | Status | Tests |
 |---|-----------|---------|--------|-------|
 | 9 | [09-runtime.md](./09-runtime.md) | `@ricsam/isolate-runtime` | ✅ Complete | 13 passing |
-| 10 | [10-test-utils.md](./10-test-utils.md) | `@ricsam/isolate-test-utils` | ⬚ Pending | - |
+| 10 | [10-test-utils.md](./10-test-utils.md) | `@ricsam/isolate-test-utils` | ✅ Complete | 33 passing |
 | 11 | [11-test-environment.md](./11-test-environment.md) | `@ricsam/isolate-test-environment` | ⬚ Pending | - |
 
 ### Phase 5: Demo & E2E

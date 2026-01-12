@@ -22,6 +22,8 @@ This document captures recurring patterns used when implementing WHATWG APIs in 
 16. [Composing Setup Functions](#16-composing-setup-functions)
 17. [Handler Interface Pattern](#17-handler-interface-pattern)
 18. [Aggregator Runtime Pattern](#18-aggregator-runtime-pattern)
+19. [Test Context Factory Pattern](#19-test-context-factory-pattern)
+20. [Integration Test Server Pattern](#20-integration-test-server-pattern)
 
 ---
 
@@ -1134,3 +1136,274 @@ export type { ConsoleHandle, ConsoleOptions } from "@ricsam/isolate-console";
 - Creating the main entry point for users
 - Providing a "batteries included" experience
 - Simplifying common use cases while allowing escape hatches
+
+---
+
+## 19. Test Context Factory Pattern
+
+For testing isolate code, create context factory functions that handle setup and teardown:
+
+**Basic Pattern:**
+```typescript
+export interface TestContext {
+  isolate: ivm.Isolate;
+  context: ivm.Context;
+  dispose(): void;
+}
+
+export async function createTestContext(): Promise<TestContext> {
+  const ivm = await import("isolated-vm");
+  const isolate = new ivm.default.Isolate();
+  const context = await isolate.createContext();
+
+  return {
+    isolate,
+    context,
+    dispose() {
+      context.release();
+      isolate.dispose();
+    },
+  };
+}
+```
+
+**Extended Context with APIs:**
+```typescript
+export interface FsTestContext extends TestContext {
+  mockFs: MockFileSystem;
+}
+
+export async function createFsTestContext(): Promise<FsTestContext> {
+  const ivm = await import("isolated-vm");
+  const { setupCore, clearAllInstanceState } = await import("@ricsam/isolate-core");
+  const { setupFs } = await import("@ricsam/isolate-fs");
+
+  const isolate = new ivm.default.Isolate();
+  const context = await isolate.createContext();
+
+  clearAllInstanceState();
+
+  const mockFs = new MockFileSystem();
+  const coreHandle = await setupCore(context);
+  const fsHandle = await setupFs(context, { handler: mockFs });
+
+  return {
+    isolate,
+    context,
+    mockFs,
+    dispose() {
+      fsHandle.dispose();
+      coreHandle.dispose();
+      context.release();
+      isolate.dispose();
+    },
+  };
+}
+```
+
+**Full Runtime Context with Mocking:**
+```typescript
+export interface RuntimeTestContext extends TestContext {
+  tick(ms?: number): Promise<void>;
+  logs: Array<{ level: string; args: unknown[] }>;
+  fetchCalls: Array<{ url: string; method: string; headers: [string, string][] }>;
+  setMockResponse(response: MockResponse): void;
+  mockFs: MockFileSystem;
+}
+
+export async function createRuntimeTestContext(
+  options?: { fs?: boolean }
+): Promise<RuntimeTestContext> {
+  const { createRuntime } = await import("@ricsam/isolate-runtime");
+  const { clearAllInstanceState } = await import("@ricsam/isolate-core");
+
+  clearAllInstanceState();
+
+  const logs: Array<{ level: string; args: unknown[] }> = [];
+  const fetchCalls: Array<{ url: string; method: string; headers: [string, string][] }> = [];
+  let mockResponse: MockResponse = { status: 200, body: "" };
+  const mockFs = new MockFileSystem();
+
+  const runtime = await createRuntime({
+    console: {
+      onLog: (level, ...args) => logs.push({ level, args }),
+    },
+    fetch: {
+      onFetch: async (request) => {
+        fetchCalls.push({
+          url: request.url,
+          method: request.method,
+          headers: [...request.headers.entries()],
+        });
+        return new Response(mockResponse.body ?? "", {
+          status: mockResponse.status ?? 200,
+          headers: mockResponse.headers,
+        });
+      },
+    },
+    fs: options?.fs ? { handler: mockFs } : undefined,
+  });
+
+  return {
+    isolate: runtime.isolate,
+    context: runtime.context,
+    tick: runtime.tick.bind(runtime),
+    dispose: runtime.dispose.bind(runtime),
+    logs,
+    fetchCalls,
+    setMockResponse(response) { mockResponse = response; },
+    mockFs,
+  };
+}
+```
+
+**Code Evaluation Helpers:**
+```typescript
+// Sync evaluation
+export function evalCode<T>(context: ivm.Context, code: string): T {
+  return context.evalSync(code) as T;
+}
+
+// Async evaluation
+export async function evalCodeAsync<T>(context: ivm.Context, code: string): Promise<T> {
+  return (await context.eval(code, { promise: true })) as T;
+}
+
+// JSON result extraction
+export function evalCodeJson<T>(context: ivm.Context, code: string): T {
+  return JSON.parse(context.evalSync(code) as string) as T;
+}
+```
+
+**Usage in tests:**
+```typescript
+describe("my feature", () => {
+  let ctx: RuntimeTestContext;
+
+  afterEach(() => {
+    ctx?.dispose();
+  });
+
+  test("captures console logs", async () => {
+    ctx = await createRuntimeTestContext();
+    ctx.context.evalSync('console.log("hello")');
+    assert.strictEqual(ctx.logs[0].args[0], "hello");
+  });
+
+  test("mocks fetch responses", async () => {
+    ctx = await createRuntimeTestContext();
+    ctx.setMockResponse({ status: 200, body: '{"data": "test"}' });
+
+    const result = await ctx.context.eval(`
+      (async () => {
+        const response = await fetch("https://example.com");
+        return await response.text();
+      })()
+    `, { promise: true });
+
+    assert.strictEqual(result, '{"data": "test"}');
+    assert.strictEqual(ctx.fetchCalls[0].url, "https://example.com");
+  });
+});
+```
+
+**Key points:**
+- Each context factory returns a `dispose()` method for cleanup
+- `clearAllInstanceState()` should be called before creating new contexts to reset instance ID counters
+- Handles are disposed in reverse order of creation
+- Mutable state (logs, fetchCalls) is captured by closures and exposed on the context
+- Mock setters allow dynamic response configuration during tests
+
+**When to use:**
+- Writing tests for isolate code
+- Creating reusable test setup utilities
+- Mocking external dependencies (fetch, fs) in tests
+
+---
+
+## 20. Integration Test Server Pattern
+
+For integration testing fetch operations against a real HTTP server:
+
+```typescript
+export interface IntegrationServer {
+  url: string;
+  port: number;
+  close(): Promise<void>;
+  setResponse(path: string, response: MockServerResponse): void;
+  setDefaultResponse(response: MockServerResponse): void;
+  getRequests(): RecordedRequest[];
+  clearRequests(): void;
+}
+
+export async function startIntegrationServer(port?: number): Promise<IntegrationServer> {
+  const responses = new Map<string, MockServerResponse>();
+  const requests: RecordedRequest[] = [];
+  let defaultResponse: MockServerResponse = { status: 404, body: "Not Found" };
+
+  const server = createServer(async (req, res) => {
+    const path = req.url ?? "/";
+
+    // Record request
+    requests.push({
+      method: req.method ?? "GET",
+      path,
+      headers: Object.fromEntries(
+        Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : v ?? ""])
+      ),
+      body: await readBody(req),
+    });
+
+    // Send response
+    const mockResponse = responses.get(path) ?? defaultResponse;
+    res.statusCode = mockResponse.status ?? 200;
+    if (mockResponse.headers) {
+      Object.entries(mockResponse.headers).forEach(([k, v]) => res.setHeader(k, v));
+    }
+    res.end(mockResponse.body ?? "");
+  });
+
+  const actualPort = await new Promise<number>((resolve) => {
+    server.listen(port ?? 0, () => {
+      const address = server.address();
+      resolve(typeof address === "object" ? address!.port : 0);
+    });
+  });
+
+  return {
+    url: `http://localhost:${actualPort}`,
+    port: actualPort,
+    close: () => new Promise((r) => server.close(r)),
+    setResponse: (path, response) => responses.set(path, response),
+    setDefaultResponse: (response) => { defaultResponse = response; },
+    getRequests: () => [...requests],
+    clearRequests: () => { requests.length = 0; },
+  };
+}
+```
+
+**Usage:**
+```typescript
+test("fetch integration", async () => {
+  const server = await startIntegrationServer();
+  server.setResponse("/api/data", {
+    status: 200,
+    body: JSON.stringify({ message: "hello" }),
+    headers: { "Content-Type": "application/json" },
+  });
+
+  const response = await fetch(`${server.url}/api/data`);
+  const data = await response.json();
+
+  assert.deepStrictEqual(data, { message: "hello" });
+  assert.strictEqual(server.getRequests()[0].path, "/api/data");
+
+  await server.close();
+});
+```
+
+**Key points:**
+- Server listens on port 0 to get an automatically assigned available port
+- Records all incoming requests for assertion
+- Supports path-specific responses and a default fallback
+- Must be closed after use to free the port
