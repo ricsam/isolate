@@ -45,6 +45,18 @@ Unlike a real event loop, the host controls when timers execute via `tick()`. Th
 
 - `setup.test.ts` - Timer setup and execution tests
 
+### Test Implementation TODO
+
+The test file `packages/timers/src/setup.test.ts` contains test stubs (marked `// TODO: Implement test`):
+
+- **setTimeout** (3 tests): executes callback after delay, returns timer ID, passes arguments
+- **clearTimeout** (2 tests): cancels pending timeout, handles invalid ID
+- **setInterval** (2 tests): executes callback repeatedly, returns timer ID
+- **clearInterval** (1 test): stops an interval
+- **nested timers** (1 test): setTimeout inside setTimeout
+- **handle.tick()** (1 test): processes pending timers
+- **handle.clearAll()** (1 test): clears all pending timers
+
 ## Dependencies
 
 - `@ricsam/isolate-core`

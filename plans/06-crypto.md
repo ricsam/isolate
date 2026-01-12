@@ -31,6 +31,13 @@ The random functions require host-side implementation since isolated-vm doesn't 
 
 - `setup.test.ts` - Crypto API tests
 
+### Test Implementation TODO
+
+The test file `packages/crypto/src/setup.test.ts` contains test stubs (marked `// TODO: Implement test`):
+
+- **crypto.randomUUID** (2 tests): returns valid UUID, returns unique values
+- **crypto.getRandomValues** (5 tests): fills Uint8Array, Uint16Array, Uint32Array, throws for non-typed arrays, throws for arrays > 65536 bytes
+
 ## Dependencies
 
 - `@ricsam/isolate-core`

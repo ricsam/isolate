@@ -61,6 +61,26 @@ console.log(`${results.passed}/${results.total} tests passed`);
 - `expect.test.ts` - Expect matcher tests
 - `hooks.test.ts` - Lifecycle hook tests
 
+### Test Implementation TODO
+
+The test file `packages/test-environment/src/expect.test.ts` contains test stubs (marked `// TODO: Implement test`):
+
+- **toBe** (2 tests): passes for equal primitives, fails for different primitives
+- **toEqual** (2 tests): passes for equal objects, passes for equal arrays
+- **toStrictEqual** (1 test): checks for strict equality
+- **not modifier** (1 test): not.toBe inverts the check
+- **toBeTruthy** (1 test): passes for truthy values
+- **toBeFalsy** (1 test): passes for falsy values
+- **toBeNull** (1 test): passes for null
+- **toBeUndefined** (1 test): passes for undefined
+- **toBeDefined** (1 test): passes for defined values
+- **toContain** (2 tests): passes when array/string contains item/substring
+- **toThrow** (2 tests): passes when function throws, can match error message
+- **toBeInstanceOf** (1 test): passes for correct instance
+- **toHaveLength** (2 tests): passes for correct array/string length
+
+The test file `packages/test-environment/src/hooks.test.ts` also contains test stubs for lifecycle hooks.
+
 ## Dependencies
 
 - `@ricsam/isolate-core`

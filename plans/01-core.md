@@ -91,6 +91,28 @@ Tests in `packages/core/src/`:
 - `streams/readable-stream.test.ts`
 - `streams/writable-stream.test.ts`
 - `streams/transform-stream.test.ts`
+- `__tests__/handle-lifetime.test.ts` - Handle lifetime experiments
+- `class-helpers.test.ts` - Class helper utilities
+- `coerce.test.ts` - Coercer utilities
+- `text-encoding.test.ts` - TextEncoder/TextDecoder
+
+### Test Implementation TODO
+
+Many tests are currently stubs with commented-out bodies (marked `// TODO: Implement test`). These need implementation as the corresponding features are built:
+
+**New test files (all tests are TODO):**
+- `__tests__/handle-lifetime.test.ts` - 9 experiment groups, ~20 tests
+- `class-helpers.test.ts` - isDefineClassInstance, isInstanceOf, getClassInstanceState, etc.
+- `coerce.test.ts` - createCoercer, coerceURL, coerceHeaders, coerceBody, etc.
+- `text-encoding.test.ts` - TextEncoder, TextDecoder, roundtrip tests
+
+**Existing files with TODO tests:**
+- `blob.test.ts` - Native Blob → isolate (7 tests), Bidirectional Conversion (3 tests)
+- `file.test.ts` - Native File → isolate (8 tests), Bidirectional Conversion (4 tests)
+- `class-builder.test.ts` - createStateMap, getState/setState, getInstanceState, cleanup tests
+- `url.test.ts` - Spec examples (2 tests), Native URL → isolate (6 tests), Bidirectional (6 tests)
+- `streams/writable-stream.test.ts` - WritableStreamDefaultWriter (6 tests), error handling (6 tests)
+- `streams/transform-stream.test.ts` - readable/writable defined tests
 
 ## Dependencies
 

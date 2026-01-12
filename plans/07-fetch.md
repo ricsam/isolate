@@ -74,6 +74,17 @@ For streaming responses, need to bridge ReadableStream between host and isolate.
 - Additional tests for Headers, Request, Response, FormData, AbortController
 - Integration tests with real HTTP server
 
+### Test Implementation TODO
+
+The test file `packages/fetch/src/index.test.ts` contains test stubs (marked `// TODO: Implement test`):
+
+- **Headers** (5 tests): creates with no arguments, creates from object, get is case-insensitive, forEach iterates, getSetCookie returns array
+- **Request** (7 tests): creates with URL string, creates with URL and init, correct method, correct headers, read body as text/JSON/formData
+- **Response** (8 tests): creates with body, correct status/statusText/headers, read body as text/JSON, Response.json(), Response.redirect()
+- **FormData** (3 tests): creates empty, append and get values, handles File objects
+- **AbortController** (3 tests): creates AbortController, signal starts not aborted, abort() sets aborted to true
+- **fetch function** (3 tests): calls onFetch handler, returns Response, supports abort signal
+
 ## Dependencies
 
 - `@ricsam/isolate-core`

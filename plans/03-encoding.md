@@ -36,6 +36,14 @@ For isolated-vm, we need to inject this code into the context.
 
 - `setup.test.ts` - btoa/atob tests
 
+### Test Implementation TODO
+
+The test file `packages/encoding/src/setup.test.ts` contains test stubs (marked `// TODO: Implement test`):
+
+- **btoa** (3 tests): encodes string to base64, handles empty string, handles unicode characters
+- **atob** (3 tests): decodes base64 to string, handles empty string, throws on invalid base64
+- **roundtrip** (1 test): btoa and atob are inverse operations
+
 ## Dependencies
 
 - `@ricsam/isolate-core`

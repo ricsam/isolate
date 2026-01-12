@@ -30,6 +30,17 @@ This can be a pure JavaScript implementation. Consider using POSIX-style paths o
 
 - `setup.test.ts` - Path utility tests
 
+### Test Implementation TODO
+
+The test file `packages/path/src/setup.test.ts` contains test stubs (marked `// TODO: Implement test`):
+
+- **path.join** (2 tests): joins path segments, normalizes result
+- **path.dirname** (1 test): returns directory name
+- **path.basename** (2 tests): returns file name, removes extension
+- **path.extname** (1 test): returns file extension
+- **path.normalize** (2 tests): normalizes separators, resolves . and ..
+- **path.isAbsolute** (2 tests): returns true/false for absolute/relative paths
+
 ## Dependencies
 
 - `@ricsam/isolate-core`

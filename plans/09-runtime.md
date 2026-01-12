@@ -59,6 +59,16 @@ runtime.dispose();
 
 - `index.test.ts` - Runtime creation and integration tests
 
+### Test Implementation TODO
+
+The test file `packages/runtime/src/index.test.ts` contains test stubs (marked `// TODO: Implement test`):
+
+- **createRuntime** (3 tests): creates with default options, has all globals defined, dispose cleans up resources
+- **console integration** (1 test): console.log is captured
+- **fetch integration** (1 test): fetch calls onFetch handler
+- **timers integration** (1 test): setTimeout works with tick()
+- **GC disposal** (1 test): resources are cleaned up on dispose
+
 ## Dependencies
 
 - All @ricsam/isolate-* packages
