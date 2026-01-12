@@ -473,7 +473,7 @@ class Blob {
 
 ## 11. Simple Callback-Based API Pattern
 
-For APIs that don't need classes or complex state (like console), use a simpler pattern with direct `ivm.Callback` registration:
+For APIs that don't need classes or complex state (like `console`, `crypto`), use a simpler pattern with direct `ivm.Callback` registration:
 
 ```typescript
 export async function setupConsole(
@@ -558,6 +558,7 @@ throw new DOMException(
 
 **Common DOMException names:**
 - `InvalidCharacterError` - Invalid characters in input (btoa/atob)
+- `QuotaExceededError` - Resource limits exceeded (crypto.getRandomValues > 65536 bytes)
 - `NotFoundError` - Resource not found (fs operations)
 - `AbortError` - Operation was aborted
 - `NetworkError` - Network request failed

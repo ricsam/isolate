@@ -105,7 +105,7 @@ The packages should be implemented in this order due to dependencies:
 | 3 | [03-encoding.md](./03-encoding.md) | `@ricsam/isolate-encoding` | ✅ Complete | 12 passing |
 | 4 | [04-timers.md](./04-timers.md) | `@ricsam/isolate-timers` | ✅ Complete | 15 passing |
 | 5 | [05-path.md](./05-path.md) | `@ricsam/isolate-path` | ✅ Complete | 51 passing |
-| 6 | [06-crypto.md](./06-crypto.md) | `@ricsam/isolate-crypto` | ⬚ Pending | - |
+| 6 | [06-crypto.md](./06-crypto.md) | `@ricsam/isolate-crypto` | ✅ Complete | 7 passing |
 
 ### Phase 3: Complex APIs
 
