@@ -20,6 +20,7 @@ This document captures recurring patterns used when implementing WHATWG APIs in 
 14. [JSON Serialization for Complex Data Transfer](#14-json-serialization-for-complex-data-transfer)
 15. [Hybrid Pure-JS + Host-State Pattern](#15-hybrid-pure-js--host-state-pattern)
 16. [Composing Setup Functions](#16-composing-setup-functions)
+17. [Handler Interface Pattern](#17-handler-interface-pattern)
 
 ---
 
@@ -563,6 +564,9 @@ throw new DOMException(
 - `InvalidCharacterError` - Invalid characters in input (btoa/atob)
 - `QuotaExceededError` - Resource limits exceeded (crypto.getRandomValues > 65536 bytes)
 - `NotFoundError` - Resource not found (fs operations)
+- `TypeMismatchError` - Wrong type (e.g., file when expecting directory)
+- `InvalidModificationError` - Invalid modification (e.g., removing non-empty directory without recursive)
+- `InvalidStateError` - Invalid state (e.g., writing to closed stream)
 - `AbortError` - Operation was aborted
 - `NetworkError` - Network request failed
 - `SecurityError` - Security violation
@@ -604,7 +608,7 @@ When implementing a new WHATWG API, verify:
 **Architecture Decision:**
 - [ ] Consider hybrid pattern: pure JS for simple classes, host state for binary data
 - [ ] Pure JS classes: Headers, FormData, URLSearchParams
-- [ ] Host state classes: Request, Response, Blob, File
+- [ ] Host state classes: Request, Response, Blob, File, FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemWritableFileStream
 
 ---
 
@@ -901,3 +905,99 @@ runtime (aggregator)
 - Package needs Blob, File, or stream support (depend on core)
 - Package builds on another package's APIs
 - Creating an aggregator package that combines multiple packages
+
+---
+
+## 17. Handler Interface Pattern
+
+For APIs that need full control over external operations (like file system access), expose a handler interface that the user implements:
+
+**Interface Definition:**
+```typescript
+export interface FileSystemHandler {
+  getFileHandle(path: string, options?: { create?: boolean }): Promise<void>;
+  getDirectoryHandle(path: string, options?: { create?: boolean }): Promise<void>;
+  removeEntry(path: string, options?: { recursive?: boolean }): Promise<void>;
+  readDirectory(path: string): Promise<Array<{ name: string; kind: 'file' | 'directory' }>>;
+  readFile(path: string): Promise<{ data: Uint8Array; size: number; lastModified: number; type: string }>;
+  writeFile(path: string, data: Uint8Array, position?: number): Promise<void>;
+  truncateFile(path: string, size: number): Promise<void>;
+  getFileMetadata(path: string): Promise<{ size: number; lastModified: number; type: string }>;
+}
+
+export interface FsOptions {
+  handler: FileSystemHandler;
+}
+```
+
+**Usage:**
+```typescript
+// User provides implementation
+const mockFs: FileSystemHandler = {
+  async getFileHandle(path, options) {
+    if (!exists(path) && !options?.create) {
+      throw new Error('[NotFoundError]File not found');
+    }
+    // ... implementation
+  },
+  // ... other methods
+};
+
+await setupFs(context, { handler: mockFs });
+```
+
+**Host-Side Integration:**
+```typescript
+function setupFileSystemDirectoryHandle(
+  context: ivm.Context,
+  stateMap: Map<number, unknown>,
+  handler: FileSystemHandler  // Handler passed to each setup function
+): void {
+  const getFileHandleRef = new ivm.Reference(
+    async (instanceId: number, name: string, optionsJson: string) => {
+      const state = stateMap.get(instanceId) as DirectoryHandleState;
+      const options = JSON.parse(optionsJson);
+      const childPath = state.path === "/" ? `/${name}` : `${state.path}/${name}`;
+
+      // Delegate to user-provided handler
+      await handler.getFileHandle(childPath, options);
+
+      // Create and return instance ID for new handle
+      const fileInstanceId = nextInstanceId++;
+      stateMap.set(fileInstanceId, { path: childPath, name });
+      return JSON.stringify({ instanceId: fileInstanceId });
+    }
+  );
+  global.setSync("__FileSystemDirectoryHandle_getFileHandle_ref", getFileHandleRef);
+}
+```
+
+**Key points:**
+- Handler methods use **full paths** (e.g., `/dir/file.txt`) to simplify implementation
+- Error messages follow the **encoded error pattern** (e.g., `[NotFoundError]message`)
+- Handler returns **data and metadata** separately from handle management
+- State management (instance IDs, paths) stays in the package
+- User only implements the actual I/O operations
+
+**Comparison with Simple Callback Pattern (fetch):**
+```typescript
+// Simple callback (fetch) - single function
+interface FetchOptions {
+  onFetch?: (request: Request) => Promise<Response>;
+}
+
+// Handler interface (fs) - multiple related methods
+interface FsOptions {
+  handler: FileSystemHandler;  // Interface with 8+ methods
+}
+```
+
+**When to use Handler Interface vs Simple Callback:**
+- **Handler Interface**: When API has multiple related operations that share context (fs operations on same storage)
+- **Simple Callback**: When API has a single primary operation (fetch request → response)
+
+**Benefits:**
+- User has full control over I/O implementation
+- Supports multiple backends (in-memory, real FS, cloud storage)
+- Clean separation between API shape and storage implementation
+- Easy to create mock implementations for testing
