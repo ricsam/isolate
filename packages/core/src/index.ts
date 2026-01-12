@@ -576,6 +576,7 @@ export function defineClass<TState extends object = object>(
     properties = {},
     staticMethods = {},
     staticProperties = {},
+    extends: parentClassName,
   } = definition;
   const stateMap = getInstanceStateMapForContext(context);
 
@@ -746,6 +747,10 @@ export function defineClass<TState extends object = object>(
   }
 
   // Build the class definition JavaScript code
+  const extendsClause = parentClassName
+    ? ` extends globalThis.${parentClassName}`
+    : "";
+
   let classCode = `
 (function() {
   // Helper to decode error type from message
@@ -758,15 +763,28 @@ export function defineClass<TState extends object = object>(
     return err;
   }
 
-  class ${name} {
-    #instanceId;
+  // Marker to indicate a class is being extended (skip parent state creation)
+  const __EXTENDING_MARKER = Symbol.for('__defineClass_extending__');
+  // WeakMap to store instance IDs (shared across inheritance chain)
+  const _${name}_instanceIds = new WeakMap();
 
+  class ${name}${extendsClause} {
     constructor(...args) {
       try {
-        this.#instanceId = __${name}_construct(...args);
+        ${parentClassName ? "super(__EXTENDING_MARKER);" : ""}
+        // Skip state creation if being extended (child will create state)
+        if (args[0] === __EXTENDING_MARKER) {
+          return;
+        }
+        const instanceId = __${name}_construct(...args);
+        _${name}_instanceIds.set(this, instanceId);
       } catch (err) {
         throw __decodeError(err);
       }
+    }
+
+    _getInstanceId() {
+      return _${name}_instanceIds.get(this);
     }
 `;
 
@@ -779,7 +797,7 @@ export function defineClass<TState extends object = object>(
       classCode += `
     ${methodName}(...args) {
       try {
-        return __${name}_${methodName}_ref.applySyncPromise(undefined, [this.#instanceId, ...args]);
+        return __${name}_${methodName}_ref.applySyncPromise(undefined, [this._getInstanceId(), ...args]);
       } catch (err) {
         throw __decodeError(err);
       }
@@ -789,7 +807,7 @@ export function defineClass<TState extends object = object>(
       classCode += `
     ${methodName}(...args) {
       try {
-        return __${name}_${methodName}(this.#instanceId, ...args);
+        return __${name}_${methodName}(this._getInstanceId(), ...args);
       } catch (err) {
         throw __decodeError(err);
       }
@@ -805,7 +823,7 @@ export function defineClass<TState extends object = object>(
         classCode += `
     get ${propName}() {
       try {
-        return __${name}_get_${propName}(this.#instanceId);
+        return __${name}_get_${propName}(this._getInstanceId());
       } catch (err) {
         throw __decodeError(err);
       }
@@ -816,7 +834,7 @@ export function defineClass<TState extends object = object>(
         classCode += `
     set ${propName}(value) {
       try {
-        __${name}_set_${propName}(this.#instanceId, value);
+        __${name}_set_${propName}(this._getInstanceId(), value);
       } catch (err) {
         throw __decodeError(err);
       }
@@ -1995,6 +2013,12 @@ async function injectStreams(
           if (controller.queue.isEmpty()) {
             this.#state = 'closed';
             if (this.#reader) {
+              // Resolve any pending read with done: true
+              if (this.#reader._pendingRead) {
+                const { resolve } = this.#reader._pendingRead;
+                this.#reader._pendingRead = null;
+                resolve({ value: undefined, done: true });
+              }
               this.#reader._resolveClose?.();
             }
           }
@@ -2180,6 +2204,10 @@ async function injectStreams(
       return this.#state;
     }
 
+    _setState(state) {
+      this.#state = state;
+    }
+
     _getStoredError() {
       return this.#storedError;
     }
@@ -2269,9 +2297,17 @@ async function injectStreams(
       if (!controller.queue.isEmpty()) {
         const chunk = controller.queue.dequeue();
         if (controller.closeRequested && controller.queue.isEmpty()) {
+          this.#stream._setState('closed');
           this._resolveClose?.();
         }
         return { value: chunk, done: false };
+      }
+
+      // Queue is empty - check if stream was requested to close
+      if (controller.closeRequested) {
+        this.#stream._setState('closed');
+        this._resolveClose?.();
+        return { value: undefined, done: true };
       }
 
       // Need to wait for data
@@ -2396,6 +2432,8 @@ async function injectStreams(
     #stream = null;
     #ready = null;
     #closed = null;
+    #closedResolve = null;
+    #closedReject = null;
 
     constructor(stream) {
       if (stream.locked) {
@@ -2405,8 +2443,9 @@ async function injectStreams(
       stream._setWriter(this);
 
       this.#ready = Promise.resolve();
-      this.#closed = new Promise((resolve) => {
-        // Will be resolved when stream closes
+      this.#closed = new Promise((resolve, reject) => {
+        this.#closedResolve = resolve;
+        this.#closedReject = reject;
       });
     }
 
@@ -2433,7 +2472,12 @@ async function injectStreams(
       if (!this.#stream) {
         return Promise.reject(new TypeError('Writer has been released'));
       }
-      return this.#stream._close();
+      return this.#stream._close().then(() => {
+        this.#closedResolve?.();
+      }).catch((e) => {
+        this.#closedReject?.(e);
+        throw e;
+      });
     }
 
     write(chunk) {
@@ -2447,6 +2491,7 @@ async function injectStreams(
       if (!this.#stream) return;
       this.#stream._setWriter(null);
       this.#stream = null;
+      this.#closedReject?.(new TypeError('Writer was released'));
     }
   }
 
@@ -2485,9 +2530,13 @@ async function injectStreams(
           return transformer.transform?.(chunk, transformerController);
         },
         close() {
-          return transformer.flush?.(transformerController);
+          const result = transformer.flush?.(transformerController);
+          return Promise.resolve(result).then(() => {
+            readableController.close();
+          });
         },
         abort(reason) {
+          readableController.error(reason);
           return Promise.resolve();
         }
       }, writableStrategy);

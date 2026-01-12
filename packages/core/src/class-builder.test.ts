@@ -510,4 +510,132 @@ describe("class-builder", () => {
       // handle2.dispose();
     });
   });
+
+  describe("inheritance (extends)", () => {
+    test("child class extends parent class", async () => {
+      // Define parent class
+      defineClass(context, {
+        name: "Animal",
+        construct: () => ({ species: "unknown" }),
+        methods: {
+          speak: { fn: (state) => `I am a ${state.species}` },
+        },
+      });
+
+      // Define child class
+      defineClass(context, {
+        name: "Dog",
+        extends: "Animal",
+        construct: () => ({ species: "dog", name: "Buddy" }),
+        methods: {
+          bark: { fn: (state) => `${state.name} says woof!` },
+        },
+      });
+
+      const result = await context.eval(`
+        const dog = new Dog();
+        JSON.stringify({
+          bark: dog.bark(),
+          speak: dog.speak(),
+          isAnimal: dog instanceof Animal,
+          isDog: dog instanceof Dog,
+        })
+      `);
+
+      const data = JSON.parse(result as string);
+      assert.strictEqual(data.bark, "Buddy says woof!");
+      assert.strictEqual(data.speak, "I am a dog");
+      assert.strictEqual(data.isAnimal, true);
+      assert.strictEqual(data.isDog, true);
+    });
+
+    test("child can override parent methods", async () => {
+      defineClass(context, {
+        name: "Base",
+        construct: () => ({}),
+        methods: {
+          greet: { fn: () => "Hello from Base" },
+        },
+      });
+
+      defineClass(context, {
+        name: "Derived",
+        extends: "Base",
+        construct: () => ({}),
+        methods: {
+          greet: { fn: () => "Hello from Derived" },
+        },
+      });
+
+      const result = await context.eval(`
+        const d = new Derived();
+        d.greet()
+      `);
+
+      assert.strictEqual(result, "Hello from Derived");
+    });
+
+    test("child inherits parent properties", async () => {
+      defineClass(context, {
+        name: "Parent",
+        construct: () => ({ value: 42 }),
+        properties: {
+          value: { get: (state) => state.value },
+        },
+      });
+
+      defineClass(context, {
+        name: "Child",
+        extends: "Parent",
+        construct: () => ({ value: 100, extra: "child" }),
+        properties: {
+          extra: { get: (state) => state.extra },
+        },
+      });
+
+      const result = await context.eval(`
+        const c = new Child();
+        JSON.stringify({ value: c.value, extra: c.extra })
+      `);
+
+      const data = JSON.parse(result as string);
+      assert.strictEqual(data.value, 100);
+      assert.strictEqual(data.extra, "child");
+    });
+
+    test("multiple instances of inherited class have independent state", async () => {
+      defineClass(context, {
+        name: "BaseCounter",
+        construct: () => ({ count: 0 }),
+        methods: {
+          increment: { fn: (state) => ++state.count },
+        },
+      });
+
+      defineClass(context, {
+        name: "NamedCounter",
+        extends: "BaseCounter",
+        construct: () => ({ count: 0, name: "counter" }),
+        properties: {
+          name: { get: (state) => state.name },
+        },
+      });
+
+      const result = await context.eval(`
+        const c1 = new NamedCounter();
+        const c2 = new NamedCounter();
+        c1.increment();
+        c1.increment();
+        c2.increment();
+        JSON.stringify({
+          c1Count: c1.increment(),
+          c2Count: c2.increment(),
+        })
+      `);
+
+      const data = JSON.parse(result as string);
+      assert.strictEqual(data.c1Count, 3);
+      assert.strictEqual(data.c2Count, 2);
+    });
+  });
 });

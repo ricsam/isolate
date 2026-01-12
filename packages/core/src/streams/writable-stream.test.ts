@@ -170,6 +170,8 @@ describe("WritableStreamDefaultWriter", () => {
         const stream = new WritableStream();
         const writer = stream.getWriter();
         const lockedBefore = stream.locked;
+        // Catch the closed rejection that happens on releaseLock
+        writer.closed.catch(() => {});
         writer.releaseLock();
         const lockedAfter = stream.locked;
         JSON.stringify({ lockedBefore, lockedAfter })
@@ -177,6 +179,66 @@ describe("WritableStreamDefaultWriter", () => {
       const data = JSON.parse(result as string);
       assert.strictEqual(data.lockedBefore, true);
       assert.strictEqual(data.lockedAfter, false);
+    });
+  });
+
+  describe("closed property", () => {
+    test("closed is a promise", async () => {
+      const result = await context.eval(`
+        const stream = new WritableStream();
+        const writer = stream.getWriter();
+        writer.closed instanceof Promise
+      `);
+      assert.strictEqual(result, true);
+    });
+
+    test("closed resolves when writer.close() is called", async () => {
+      const result = await context.eval(`
+        (async () => {
+          const stream = new WritableStream();
+          const writer = stream.getWriter();
+          const closePromise = writer.close();
+          await writer.closed;
+          return 'closed resolved';
+        })()
+      `, { promise: true });
+      assert.strictEqual(result, "closed resolved");
+    });
+
+    test("closed resolves after underlying sink close completes", async () => {
+      const result = await context.eval(`
+        (async () => {
+          let closeCalled = false;
+          const stream = new WritableStream({
+            close() {
+              closeCalled = true;
+            }
+          });
+          const writer = stream.getWriter();
+          await writer.close();
+          await writer.closed;
+          return closeCalled;
+        })()
+      `, { promise: true });
+      assert.strictEqual(result, true);
+    });
+
+    test("closed rejects when releaseLock() is called", async () => {
+      const result = await context.eval(`
+        (async () => {
+          const stream = new WritableStream();
+          const writer = stream.getWriter();
+          const closedPromise = writer.closed;
+          writer.releaseLock();
+          try {
+            await closedPromise;
+            return 'no error';
+          } catch (e) {
+            return e instanceof TypeError ? 'TypeError' : 'other error';
+          }
+        })()
+      `, { promise: true });
+      assert.strictEqual(result, "TypeError");
     });
   });
 
