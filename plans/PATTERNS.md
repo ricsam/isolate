@@ -17,6 +17,9 @@ This document captures recurring patterns used when implementing WHATWG APIs in 
 11. [Simple Callback-Based API Pattern](#11-simple-callback-based-api-pattern)
 12. [DOMException Polyfill Pattern](#12-domexception-polyfill-pattern)
 13. [Virtual Time Timer Pattern](#13-virtual-time-timer-pattern)
+14. [JSON Serialization for Complex Data Transfer](#14-json-serialization-for-complex-data-transfer)
+15. [Hybrid Pure-JS + Host-State Pattern](#15-hybrid-pure-js--host-state-pattern)
+16. [Composing Setup Functions](#16-composing-setup-functions)
 
 ---
 
@@ -573,17 +576,35 @@ throw new DOMException(
 
 When implementing a new WHATWG API, verify:
 
+**Package Structure:**
 - [ ] Package follows standard structure
 - [ ] `setup*` function takes context and optional options
 - [ ] Returns handle with `dispose()` method
+- [ ] Dependencies setup first (e.g., `await setupCore(context)`)
+
+**Host Callbacks:**
 - [ ] Host callbacks use `__ClassName_operation` naming
 - [ ] Instance state stored in context-specific Map
 - [ ] WeakMap used for private state in isolate if needed
+
+**Data Transfer:**
+- [ ] Complex data (arrays, objects) JSON-serialized for `applySyncPromise`
+- [ ] Return primitives or instance IDs from async references
 - [ ] Errors encoded/decoded across boundary
-- [ ] Tests create fresh isolate/context per test
-- [ ] Cleanup called in `afterEach`
+
+**Async Operations:**
 - [ ] Async methods use `ivm.Reference` with `applySyncPromise` (NOT `ivm.Callback` with `{ async: true }`)
 - [ ] Or use `defineAsyncFunction` / `defineClass` with `async: true` for automatic handling
+
+**Testing:**
+- [ ] Tests create fresh isolate/context per test
+- [ ] Cleanup called in `afterEach`
+- [ ] `clearAllInstanceState()` called in `beforeEach`
+
+**Architecture Decision:**
+- [ ] Consider hybrid pattern: pure JS for simple classes, host state for binary data
+- [ ] Pure JS classes: Headers, FormData, URLSearchParams
+- [ ] Host state classes: Request, Response, Blob, File
 
 ---
 
@@ -706,3 +727,177 @@ async tick(ms: number = 0) {
 - Timer APIs (setTimeout, setInterval)
 - Any API where isolate callbacks need deferred execution
 - Testing scenarios requiring time control
+
+---
+
+## 14. JSON Serialization for Complex Data Transfer
+
+When passing complex data (arrays, objects with nested structures) to `ivm.Reference` with `applySyncPromise`, use JSON serialization to avoid "non-transferable value" errors:
+
+**Problem:**
+```typescript
+// This fails with "A non-transferable value was passed"
+const ref = new ivm.Reference(async (headers: [string, string][], body: number[]) => {
+  // ...
+});
+
+// Isolate side - fails
+const result = __ref.applySyncPromise(undefined, [
+  Array.from(headers.entries()),  // ❌ Array not transferable
+  bodyBytes                        // ❌ Array not transferable
+]);
+```
+
+**Solution:**
+```typescript
+// Host side: expect JSON strings
+const ref = new ivm.Reference(async (headersJson: string, bodyJson: string | null) => {
+  const headers = JSON.parse(headersJson) as [string, string][];
+  const body = bodyJson ? JSON.parse(bodyJson) as number[] : null;
+  // ...
+  return simpleValue;  // Return primitive or simple value
+});
+```
+
+```javascript
+// Isolate side: serialize before passing
+const headersJson = JSON.stringify(Array.from(headers.entries()));
+const bodyJson = bodyBytes ? JSON.stringify(bodyBytes) : null;
+
+const result = __ref.applySyncPromise(undefined, [headersJson, bodyJson]);
+```
+
+**Key points:**
+- Only **primitives** (string, number, boolean, null) transfer reliably across the boundary
+- Arrays and objects must be JSON-serialized
+- Return values from `applySyncPromise` should also be primitives
+- For complex return data, store on host side and return an instance ID
+
+**When to use:**
+- Passing arrays or objects to `applySyncPromise`
+- Any complex data that needs to cross the isolate boundary
+- fetch API implementation (headers, body bytes)
+
+---
+
+## 15. Hybrid Pure-JS + Host-State Pattern
+
+For complex APIs like Fetch, use a hybrid approach where some classes are pure JS and others use host state:
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Fetch Package                           │
+├─────────────────────────────────────────────────────────────┤
+│  Pure JS (no host callbacks):        Host State (instance IDs): │
+│  ┌─────────────┐ ┌─────────────┐    ┌─────────────┐ ┌─────────┐ │
+│  │   Headers   │ │  FormData   │    │   Request   │ │Response │ │
+│  │  (Map-based)│ │(array-based)│    │  (body      │ │ (body   │ │
+│  │             │ │             │    │   storage)  │ │ storage)│ │
+│  └─────────────┘ └─────────────┘    └─────────────┘ └─────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**When to use Pure JS:**
+- Class has no binary data that needs host storage
+- All methods can be implemented without host callbacks
+- Examples: Headers, FormData, URLSearchParams
+
+**When to use Host State:**
+- Class stores binary data (body, file contents)
+- Methods need to call host APIs (file system, network)
+- Examples: Request, Response, Blob, File
+
+**Implementation pattern:**
+```typescript
+// Pure JS classes - inject as string
+const headersCode = `
+(function() {
+  class Headers {
+    #headers = new Map();
+    // ... pure JS implementation
+  }
+  globalThis.Headers = Headers;
+})();
+`;
+
+// Host state classes - use callbacks + injected wrapper
+function setupResponse(context: ivm.Context, stateMap: Map<number, unknown>) {
+  // Register host callbacks
+  global.setSync("__Response_construct", new ivm.Callback(...));
+  global.setSync("__Response_text", new ivm.Callback(...));
+
+  // Inject class that uses callbacks
+  const responseCode = `
+  (function() {
+    class Response {
+      #instanceId;
+      constructor(body, init) {
+        this.#instanceId = __Response_construct(...);
+      }
+      async text() {
+        return __Response_text(this.#instanceId);
+      }
+    }
+    globalThis.Response = Response;
+  })();
+  `;
+  context.evalSync(responseCode);
+}
+```
+
+**Benefits:**
+- Pure JS classes have no callback overhead
+- Host state classes can store large binary data efficiently
+- Clear separation of concerns
+
+---
+
+## 16. Composing Setup Functions
+
+When a package depends on APIs from another package, call the dependency's setup function first:
+
+```typescript
+import { setupCore } from "@ricsam/isolate-core";
+
+export async function setupFetch(
+  context: ivm.Context,
+  options?: FetchOptions
+): Promise<FetchHandle> {
+  // Setup dependencies first
+  await setupCore(context);  // Provides Blob, File, AbortController, etc.
+
+  // Now setup fetch-specific APIs
+  context.evalSync(headersCode);
+  context.evalSync(formDataCode);
+  setupResponse(context, stateMap);
+  setupRequest(context, stateMap);
+  setupFetchFunction(context, stateMap, options);
+
+  return { dispose() { /* ... */ } };
+}
+```
+
+**Key points:**
+- Call dependency setup functions at the start
+- Setup functions should be idempotent (safe to call multiple times)
+- Document dependencies in package.json and plan files
+- The core package provides: Blob, File, ReadableStream, AbortController, TextEncoder/Decoder, URL, DOMException
+
+**Dependency graph:**
+```
+runtime (aggregator)
+    │
+    ├── console
+    ├── encoding
+    ├── timers
+    ├── path
+    ├── crypto
+    ├── fetch ──────► core
+    └── fs ─────────► core
+```
+
+**When to use:**
+- Package needs Blob, File, or stream support (depend on core)
+- Package builds on another package's APIs
+- Creating an aggregator package that combines multiple packages

@@ -9,81 +9,78 @@ This is the most complex package as it needs to bridge async fetch operations be
 ## Implementation Steps
 
 ### 1. Headers Class
-- [ ] Implement Headers constructor (init from object, array, or Headers)
-- [ ] append(name, value)
-- [ ] delete(name)
-- [ ] get(name) - case-insensitive
-- [ ] getSetCookie() - returns array
-- [ ] has(name)
-- [ ] set(name, value)
-- [ ] entries(), keys(), values()
-- [ ] forEach(callback)
-- [ ] Symbol.iterator support
+- [x] Implement Headers constructor (init from object, array, or Headers)
+- [x] append(name, value)
+- [x] delete(name)
+- [x] get(name) - case-insensitive
+- [x] getSetCookie() - returns array
+- [x] has(name)
+- [x] set(name, value)
+- [x] entries(), keys(), values()
+- [x] forEach(callback)
+- [x] Symbol.iterator support
 
 ### 2. Request Class
-- [ ] Constructor with URL and RequestInit
-- [ ] Properties: method, url, headers, body, mode, credentials, cache, redirect, referrer, integrity
-- [ ] body methods: text(), json(), arrayBuffer(), formData(), blob()
-- [ ] clone() method
+- [x] Constructor with URL and RequestInit
+- [x] Properties: method, url, headers, body, mode, credentials, cache, redirect, referrer, integrity
+- [x] body methods: text(), json(), arrayBuffer(), formData(), blob()
+- [x] clone() method
 
 ### 3. Response Class
-- [ ] Constructor with body and ResponseInit
-- [ ] Properties: ok, status, statusText, headers, url, type, redirected
-- [ ] body methods: text(), json(), arrayBuffer(), formData(), blob()
-- [ ] clone() method
-- [ ] Static: Response.json(), Response.redirect(), Response.error()
+- [x] Constructor with body and ResponseInit
+- [x] Properties: ok, status, statusText, headers, url, type, redirected
+- [x] body methods: text(), json(), arrayBuffer(), formData(), blob()
+- [x] clone() method
+- [x] Static: Response.json(), Response.redirect(), Response.error()
 
 ### 4. FormData Class
-- [ ] Constructor
-- [ ] append(name, value, filename?)
-- [ ] delete(name)
-- [ ] get(name), getAll(name)
-- [ ] has(name)
-- [ ] set(name, value, filename?)
-- [ ] entries(), keys(), values()
-- [ ] Handle File objects
+- [x] Constructor
+- [x] append(name, value, filename?)
+- [x] delete(name)
+- [x] get(name), getAll(name)
+- [x] has(name)
+- [x] set(name, value, filename?)
+- [x] entries(), keys(), values()
+- [x] Handle File objects
 
 ### 5. AbortController & AbortSignal
-- [ ] AbortController with signal property
-- [ ] AbortController.abort(reason?)
-- [ ] AbortSignal.aborted, AbortSignal.reason
-- [ ] AbortSignal.throwIfAborted()
-- [ ] AbortSignal event handlers
+- [x] AbortController with signal property (provided by @ricsam/isolate-core)
+- [x] AbortController.abort(reason?)
+- [x] AbortSignal.aborted, AbortSignal.reason
+- [x] AbortSignal.throwIfAborted()
+- [x] AbortSignal event handlers
 
 ### 6. fetch Function
-- [ ] Implement fetch(input, init?)
-- [ ] Route requests to host via onFetch callback
-- [ ] Marshal Request to host
-- [ ] Execute host fetch
-- [ ] Unmarshal Response back to isolate
-- [ ] Handle abort signals
-- [ ] Handle streaming responses
+- [x] Implement fetch(input, init?)
+- [x] Route requests to host via onFetch callback
+- [x] Marshal Request to host
+- [x] Execute host fetch
+- [x] Unmarshal Response back to isolate
+- [x] Handle abort signals
+- [ ] Handle streaming responses (bodies are buffered, not streamed)
 
 ## Implementation Notes
 
-The key challenge is that fetch is async and crosses the isolate boundary. Options:
-1. Use `context.evalClosure()` with async callbacks
-2. Use `ivm.Callback` with `{ async: true }`
-3. Create pending promise in isolate, resolve from host
+The implementation uses `ivm.Reference` with `applySyncPromise` to bridge async fetch operations.
 
-For streaming responses, need to bridge ReadableStream between host and isolate.
+**Key design decisions:**
+- Bodies are stored as `Uint8Array` on the host side
+- Headers and body are JSON-serialized when passed to the host
+- Response state is stored on host, only instance ID is passed back
+- AbortController/AbortSignal is provided by @ricsam/isolate-core
 
 ## Test Coverage
 
-- `index.test.ts` - Main API tests
-- Additional tests for Headers, Request, Response, FormData, AbortController
-- Integration tests with real HTTP server
+- `index.test.ts` - 29 tests, all passing
 
-### Test Implementation TODO
+### Test Results
 
-The test file `packages/fetch/src/index.test.ts` contains test stubs (marked `// TODO: Implement test`):
-
-- **Headers** (5 tests): creates with no arguments, creates from object, get is case-insensitive, forEach iterates, getSetCookie returns array
-- **Request** (7 tests): creates with URL string, creates with URL and init, correct method, correct headers, read body as text/JSON/formData
-- **Response** (8 tests): creates with body, correct status/statusText/headers, read body as text/JSON, Response.json(), Response.redirect()
-- **FormData** (3 tests): creates empty, append and get values, handles File objects
-- **AbortController** (3 tests): creates AbortController, signal starts not aborted, abort() sets aborted to true
-- **fetch function** (3 tests): calls onFetch handler, returns Response, supports abort signal
+- **Headers** (5 tests): ✅ All passing
+- **Request** (7 tests): ✅ All passing
+- **Response** (8 tests): ✅ All passing
+- **FormData** (3 tests): ✅ All passing
+- **AbortController** (3 tests): ✅ All passing
+- **fetch function** (3 tests): ✅ All passing
 
 ## Dependencies
 

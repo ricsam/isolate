@@ -111,7 +111,7 @@ The packages should be implemented in this order due to dependencies:
 
 | # | Plan File | Package | Status | Tests |
 |---|-----------|---------|--------|-------|
-| 7 | [07-fetch.md](./07-fetch.md) | `@ricsam/isolate-fetch` | ⬚ Pending | - |
+| 7 | [07-fetch.md](./07-fetch.md) | `@ricsam/isolate-fetch` | ✅ Complete | 29 passing |
 | 8 | [08-fs.md](./08-fs.md) | `@ricsam/isolate-fs` | ⬚ Pending | - |
 
 ### Phase 4: Integration
