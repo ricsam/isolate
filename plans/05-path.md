@@ -7,41 +7,46 @@ The path package provides path manipulation utilities similar to Node.js path mo
 ## Implementation Steps
 
 ### 1. Path Functions
-- [ ] path.join(...segments)
-- [ ] path.dirname(path)
-- [ ] path.basename(path, ext?)
-- [ ] path.extname(path)
-- [ ] path.normalize(path)
-- [ ] path.isAbsolute(path)
-- [ ] path.resolve(...segments)
-- [ ] path.relative(from, to)
-- [ ] path.parse(path)
-- [ ] path.format(pathObject)
+- [x] path.join(...segments)
+- [x] path.dirname(path)
+- [x] path.basename(path, ext?)
+- [x] path.extname(path)
+- [x] path.normalize(path)
+- [x] path.isAbsolute(path)
+- [x] path.resolve(...segments)
+- [x] path.relative(from, to)
+- [x] path.parse(path)
+- [x] path.format(pathObject)
 
 ### 2. Path Constants
-- [ ] path.sep (separator: '/' or '\\')
-- [ ] path.delimiter (':' or ';')
+- [x] path.sep (separator: '/')
+- [x] path.delimiter (':')
 
 ## Implementation Notes
 
-This can be a pure JavaScript implementation. Consider using POSIX-style paths only (always use '/') for simplicity in the sandbox.
+Implemented as a pure JavaScript injection (Pattern #7 from PATTERNS.md). Uses POSIX-style paths only (always uses '/' as separator) for simplicity in the sandbox. The `path.posix` property references the same object for compatibility.
 
 ## Test Coverage
 
-- `setup.test.ts` - Path utility tests
+- `setup.test.ts` - Path utility tests (51 tests)
 
-### Test Implementation TODO
+### Implemented Tests
 
-The test file `packages/path/src/setup.test.ts` contains test stubs (marked `// TODO: Implement test`):
-
-- **path.join** (2 tests): joins path segments, normalizes result
-- **path.dirname** (1 test): returns directory name
-- **path.basename** (2 tests): returns file name, removes extension
-- **path.extname** (1 test): returns file extension
-- **path.normalize** (2 tests): normalizes separators, resolves . and ..
-- **path.isAbsolute** (2 tests): returns true/false for absolute/relative paths
+- **path.sep and path.delimiter** (2 tests): verifies constants
+- **path.join** (5 tests): joins segments, normalizes, handles empty segments, handles multiple separators
+- **path.dirname** (4 tests): returns directory name, handles root-level, relative paths, trailing slashes
+- **path.basename** (4 tests): returns file name, removes extension, handles non-matching extension, trailing slashes
+- **path.extname** (5 tests): returns extension, handles no extension, multiple dots, dotfiles
+- **path.normalize** (6 tests): normalizes separators, resolves . and .., preserves trailing slash, handles relative paths
+- **path.isAbsolute** (4 tests): returns true/false for absolute/relative paths, root, empty string
+- **path.resolve** (4 tests): resolves absolute paths, later absolute takes precedence, relative from root, normalizes
+- **path.relative** (4 tests): relative path between paths, same path, deeply nested, parent paths
+- **path.parse** (4 tests): parses absolute/relative paths, paths without extension, root-level files
+- **path.format** (4 tests): formats path object, uses name/ext, base precedence, uses root
+- **path.posix** (1 test): verifies posix equals path
+- **error handling** (4 tests): TypeErrors for invalid inputs
 
 ## Dependencies
 
-- `@ricsam/isolate-core`
+- `@ricsam/isolate-core` (peer dependency, not actually used - pure JS implementation)
 - `isolated-vm`

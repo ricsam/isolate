@@ -227,7 +227,7 @@ global.setSync("__Blob_static_fromArrayBuffer", new ivm.Callback(...));
 
 ## 7. Pure JS Injection Pattern
 
-For APIs that can be implemented in pure JavaScript without host callbacks (like TextEncoder, TextDecoder, URL, URLSearchParams), inject them as a self-executing function:
+For APIs that can be implemented in pure JavaScript without host callbacks (like TextEncoder, TextDecoder, URL, URLSearchParams, path), inject them as a self-executing function:
 
 ```typescript
 async function injectTextEncoding(context: ivm.Context): Promise<void> {
