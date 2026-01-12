@@ -21,6 +21,7 @@ This document captures recurring patterns used when implementing WHATWG APIs in 
 15. [Hybrid Pure-JS + Host-State Pattern](#15-hybrid-pure-js--host-state-pattern)
 16. [Composing Setup Functions](#16-composing-setup-functions)
 17. [Handler Interface Pattern](#17-handler-interface-pattern)
+18. [Aggregator Runtime Pattern](#18-aggregator-runtime-pattern)
 
 ---
 
@@ -1001,3 +1002,135 @@ interface FsOptions {
 - Supports multiple backends (in-memory, real FS, cloud storage)
 - Clean separation between API shape and storage implementation
 - Easy to create mock implementations for testing
+
+---
+
+## 18. Aggregator Runtime Pattern
+
+For creating a complete runtime that combines all packages into a single entry point:
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    createRuntime(options)                    │
+├─────────────────────────────────────────────────────────────┤
+│  1. Create Isolate (with optional memory limit)              │
+│  2. Create Context                                           │
+│  3. Call setup functions in dependency order:                │
+│     setupCore → setupConsole → setupEncoding → setupTimers  │
+│     → setupPath → setupCrypto → setupFetch → setupFs        │
+│  4. Store handles for cleanup                                │
+│  5. Return RuntimeHandle                                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Implementation:**
+```typescript
+import ivm from "isolated-vm";
+import { setupCore } from "@ricsam/isolate-core";
+import { setupConsole } from "@ricsam/isolate-console";
+// ... other imports
+
+export interface RuntimeOptions {
+  memoryLimit?: number;
+  console?: ConsoleOptions;
+  fetch?: FetchOptions;
+  fs?: FsOptions;
+}
+
+export interface RuntimeHandle {
+  readonly isolate: ivm.Isolate;
+  readonly context: ivm.Context;
+  tick(ms?: number): Promise<void>;
+  dispose(): void;
+}
+
+export async function createRuntime(
+  options?: RuntimeOptions
+): Promise<RuntimeHandle> {
+  const opts = options ?? {};
+
+  // Create isolate with optional memory limit
+  const isolate = new ivm.Isolate({
+    memoryLimit: opts.memoryLimit,
+  });
+  const context = await isolate.createContext();
+
+  // Store all handles for disposal
+  const handles: Record<string, { dispose(): void }> = {};
+
+  // Setup all APIs in dependency order
+  handles.core = await setupCore(context);
+  handles.console = await setupConsole(context, opts.console);
+  handles.encoding = await setupEncoding(context);
+  handles.timers = await setupTimers(context);
+  handles.path = await setupPath(context);
+  handles.crypto = await setupCrypto(context);
+  handles.fetch = await setupFetch(context, opts.fetch);
+
+  // Optional APIs
+  if (opts.fs) {
+    handles.fs = await setupFs(context, opts.fs);
+  }
+
+  return {
+    isolate,
+    context,
+    async tick(ms?: number) {
+      await (handles.timers as TimersHandle).tick(ms);
+    },
+    dispose() {
+      // Dispose in reverse order
+      Object.values(handles).reverse().forEach(h => h?.dispose());
+      context.release();
+      isolate.dispose();
+    },
+  };
+}
+```
+
+**Key points:**
+- Create isolate and context at the top level
+- Call setup functions in dependency order (core first, as other packages depend on it)
+- Store all handles to enable proper cleanup
+- Expose `tick()` method that delegates to timers handle
+- `dispose()` cleans up in reverse order: handles → context → isolate
+- Optional features (like fs) only set up when options provided
+
+**Usage:**
+```typescript
+const runtime = await createRuntime({
+  memoryLimit: 128,
+  console: { onLog: (level, ...args) => console.log(`[${level}]`, ...args) },
+  fetch: { onFetch: async (req) => fetch(req) },
+});
+
+await runtime.context.eval(`
+  console.log("Hello from sandbox!");
+  const response = await fetch("https://example.com");
+`);
+
+// Process any pending timers
+await runtime.tick(100);
+
+// Clean up everything
+runtime.dispose();
+```
+
+**Re-exports:**
+The aggregator package should re-export all setup functions and types for users who need fine-grained control:
+
+```typescript
+// Re-export all package types and functions
+export { setupCore } from "@ricsam/isolate-core";
+export type { CoreHandle, SetupCoreOptions } from "@ricsam/isolate-core";
+
+export { setupConsole } from "@ricsam/isolate-console";
+export type { ConsoleHandle, ConsoleOptions } from "@ricsam/isolate-console";
+// ... etc
+```
+
+**When to use:**
+- Creating the main entry point for users
+- Providing a "batteries included" experience
+- Simplifying common use cases while allowing escape hatches
