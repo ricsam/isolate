@@ -103,7 +103,7 @@ The packages should be implemented in this order due to dependencies:
 |---|-----------|---------|--------|-------|
 | 2 | [02-console.md](./02-console.md) | `@ricsam/isolate-console` | ✅ Complete | 40 passing |
 | 3 | [03-encoding.md](./03-encoding.md) | `@ricsam/isolate-encoding` | ✅ Complete | 12 passing |
-| 4 | [04-timers.md](./04-timers.md) | `@ricsam/isolate-timers` | ⬚ Pending | - |
+| 4 | [04-timers.md](./04-timers.md) | `@ricsam/isolate-timers` | ✅ Complete | 15 passing |
 | 5 | [05-path.md](./05-path.md) | `@ricsam/isolate-path` | ⬚ Pending | - |
 | 6 | [06-crypto.md](./06-crypto.md) | `@ricsam/isolate-crypto` | ⬚ Pending | - |
 

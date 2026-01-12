@@ -16,6 +16,7 @@ This document captures recurring patterns used when implementing WHATWG APIs in 
 10. [Async Method Pattern](#10-async-method-pattern)
 11. [Simple Callback-Based API Pattern](#11-simple-callback-based-api-pattern)
 12. [DOMException Polyfill Pattern](#12-domexception-polyfill-pattern)
+13. [Virtual Time Timer Pattern](#13-virtual-time-timer-pattern)
 
 ---
 
@@ -86,9 +87,9 @@ export interface ConsoleHandle {
 
 // Extended handles may have additional methods:
 export interface TimersHandle {
-  tick(): Promise<void>;   // Process pending timers
-  clearAll(): void;        // Clear all pending timers
-  dispose(): void;         // Cleanup resources
+  tick(ms?: number): Promise<void>;  // Advance virtual time and process due timers
+  clearAll(): void;                   // Clear all pending timers
+  dispose(): void;                    // Cleanup resources
 }
 
 export interface CoreHandle {
@@ -582,3 +583,125 @@ When implementing a new WHATWG API, verify:
 - [ ] Cleanup called in `afterEach`
 - [ ] Async methods use `ivm.Reference` with `applySyncPromise` (NOT `ivm.Callback` with `{ async: true }`)
 - [ ] Or use `defineAsyncFunction` / `defineClass` with `async: true` for automatic handling
+
+---
+
+## 13. Virtual Time Timer Pattern
+
+For APIs like `setTimeout`/`setInterval` where callbacks must stay in the isolate (since functions can't be passed to the host), use a split architecture:
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Host (Node.js)                        │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │              Timer Metadata Only                 │    │
+│  │  Map<id, {delay, scheduledTime, type}>          │    │
+│  │  currentTime: number (virtual)                   │    │
+│  └─────────────────────────────────────────────────┘    │
+│                         │                                │
+│              tick(ms) calls __timers_execute(id)         │
+│                         ▼                                │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │              V8 Isolate                          │    │
+│  │  __timers_callbacks: Map<id, {callback, args}>  │    │
+│  │  Stores actual JS function references            │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Host side:**
+```typescript
+interface TimerEntry {
+  id: number;
+  delay: number;
+  scheduledTime: number;
+  type: "timeout" | "interval";
+}
+
+let nextTimerId = 1;
+const pendingTimers = new Map<number, TimerEntry>();
+let currentTime = 0;
+
+// Register timer metadata, return ID
+global.setSync(
+  "__timers_register",
+  new ivm.Callback((type: string, delay: number) => {
+    const id = nextTimerId++;
+    pendingTimers.set(id, {
+      id,
+      delay: Math.max(0, delay || 0),
+      scheduledTime: currentTime + Math.max(0, delay || 0),
+      type: type as "timeout" | "interval",
+    });
+    return id;
+  })
+);
+```
+
+**Isolate side:**
+```javascript
+(function() {
+  const __timers_callbacks = new Map();
+
+  globalThis.setTimeout = function(callback, delay, ...args) {
+    const id = __timers_register('timeout', delay || 0);
+    __timers_callbacks.set(id, { callback, args });
+    return id;
+  };
+
+  // Called by host tick() to execute a timer
+  globalThis.__timers_execute = function(id) {
+    const entry = __timers_callbacks.get(id);
+    if (entry) {
+      entry.callback(...entry.args);
+    }
+  };
+})();
+```
+
+**tick() implementation:**
+```typescript
+async tick(ms: number = 0) {
+  currentTime += ms;
+
+  while (true) {
+    const dueTimers = [...pendingTimers.values()]
+      .filter((t) => t.scheduledTime <= currentTime)
+      .sort((a, b) => a.scheduledTime - b.scheduledTime);
+
+    const timer = dueTimers[0];
+    if (!timer) break;
+
+    // Execute callback in isolate
+    context.evalSync(`__timers_execute(${timer.id})`);
+
+    if (timer.type === "timeout") {
+      pendingTimers.delete(timer.id);
+      context.evalSync(`__timers_removeCallback(${timer.id})`);
+    } else {
+      // Reschedule interval
+      timer.scheduledTime = currentTime + timer.delay;
+    }
+  }
+}
+```
+
+**Key points:**
+- Callbacks **stay in the isolate** - functions cannot cross the boundary
+- Host only tracks **metadata** (id, delay, scheduledTime, type)
+- `tick(ms)` advances virtual time and triggers execution
+- Process timers **one at a time** to handle nested timer creation
+- Sort by `scheduledTime` for correct execution order
+- Intervals reschedule themselves after each execution
+
+**Benefits:**
+- Deterministic execution for testing
+- No real timers - full control over time
+- Supports nested timers (setTimeout inside setTimeout)
+- Clean separation between metadata and callbacks
+
+**When to use:**
+- Timer APIs (setTimeout, setInterval)
+- Any API where isolate callbacks need deferred execution
+- Testing scenarios requiring time control
