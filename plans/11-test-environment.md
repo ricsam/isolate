@@ -7,35 +7,35 @@ The test-environment package provides Jest/Vitest-compatible test primitives tha
 ## Implementation Steps
 
 ### 1. Test Registration
-- [ ] describe(name, fn) - group tests
-- [ ] test(name, fn) / it(name, fn) - define tests
-- [ ] test.skip / describe.skip
-- [ ] test.only / describe.only
+- [x] describe(name, fn) - group tests
+- [x] test(name, fn) / it(name, fn) - define tests
+- [x] test.skip / describe.skip
+- [x] test.only / describe.only
 
 ### 2. Lifecycle Hooks
-- [ ] beforeEach(fn)
-- [ ] afterEach(fn)
-- [ ] beforeAll(fn)
-- [ ] afterAll(fn)
+- [x] beforeEach(fn)
+- [x] afterEach(fn)
+- [x] beforeAll(fn)
+- [x] afterAll(fn)
 
 ### 3. Expect Matchers
-- [ ] toBe(expected) - strict equality
-- [ ] toEqual(expected) - deep equality
-- [ ] toStrictEqual(expected) - strict deep equality
-- [ ] toBeTruthy() / toBeFalsy()
-- [ ] toBeNull() / toBeUndefined() / toBeDefined()
-- [ ] toContain(item)
-- [ ] toThrow(error?)
-- [ ] toBeInstanceOf(class)
-- [ ] toHaveLength(length)
-- [ ] toMatch(regexp)
-- [ ] toHaveProperty(path, value?)
-- [ ] not modifier
+- [x] toBe(expected) - strict equality
+- [x] toEqual(expected) - deep equality
+- [x] toStrictEqual(expected) - strict deep equality
+- [x] toBeTruthy() / toBeFalsy()
+- [x] toBeNull() / toBeUndefined() / toBeDefined()
+- [x] toContain(item)
+- [x] toThrow(error?)
+- [x] toBeInstanceOf(class)
+- [x] toHaveLength(length)
+- [x] toMatch(regexp)
+- [x] toHaveProperty(path, value?)
+- [x] not modifier
 
 ### 4. Test Runner
-- [ ] runTests(context) - execute all registered tests
-- [ ] Return TestResults with pass/fail counts
-- [ ] Capture error messages and stack traces
+- [x] runTests(context) - execute all registered tests
+- [x] Return TestResults with pass/fail counts
+- [x] Capture error messages and stack traces
 
 ## Implementation Notes
 
@@ -58,28 +58,10 @@ console.log(`${results.passed}/${results.total} tests passed`);
 
 ## Test Coverage
 
-- `expect.test.ts` - Expect matcher tests
-- `hooks.test.ts` - Lifecycle hook tests
+- `expect.test.ts` - 21 tests for expect matchers (toBe, toEqual, toStrictEqual, not modifier, toBeTruthy, toBeFalsy, toBeNull, toBeUndefined, toBeDefined, toContain, toThrow, toBeInstanceOf, toHaveLength, toMatch, toHaveProperty)
+- `hooks.test.ts` - 12 tests for lifecycle hooks (beforeEach, afterEach, beforeAll, afterAll, nested describe, test.skip, test.only, describe.skip, async tests, it alias)
 
-### Test Implementation TODO
-
-The test file `packages/test-environment/src/expect.test.ts` contains test stubs (marked `// TODO: Implement test`):
-
-- **toBe** (2 tests): passes for equal primitives, fails for different primitives
-- **toEqual** (2 tests): passes for equal objects, passes for equal arrays
-- **toStrictEqual** (1 test): checks for strict equality
-- **not modifier** (1 test): not.toBe inverts the check
-- **toBeTruthy** (1 test): passes for truthy values
-- **toBeFalsy** (1 test): passes for falsy values
-- **toBeNull** (1 test): passes for null
-- **toBeUndefined** (1 test): passes for undefined
-- **toBeDefined** (1 test): passes for defined values
-- **toContain** (2 tests): passes when array/string contains item/substring
-- **toThrow** (2 tests): passes when function throws, can match error message
-- **toBeInstanceOf** (1 test): passes for correct instance
-- **toHaveLength** (2 tests): passes for correct array/string length
-
-The test file `packages/test-environment/src/hooks.test.ts` also contains test stubs for lifecycle hooks.
+**Total: 33 passing tests**
 
 ## Dependencies
 

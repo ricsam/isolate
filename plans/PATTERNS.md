@@ -24,6 +24,7 @@ This document captures recurring patterns used when implementing WHATWG APIs in 
 18. [Aggregator Runtime Pattern](#18-aggregator-runtime-pattern)
 19. [Test Context Factory Pattern](#19-test-context-factory-pattern)
 20. [Integration Test Server Pattern](#20-integration-test-server-pattern)
+21. [In-Isolate Test Framework Pattern](#21-in-isolate-test-framework-pattern)
 
 ---
 
@@ -1407,3 +1408,163 @@ test("fetch integration", async () => {
 - Records all incoming requests for assertion
 - Supports path-specific responses and a default fallback
 - Must be closed after use to free the port
+
+---
+
+## 21. In-Isolate Test Framework Pattern
+
+For providing Jest/Vitest-compatible test primitives that run entirely inside the isolate, use pure JS injection where all test state and callbacks stay in the isolate:
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Host (Node.js)                            │
+│  setupTestEnvironment(context):                              │
+│    - Injects pure JS test framework code                     │
+│                                                              │
+│  runTests(context):                                          │
+│    - Calls context.eval('__runAllTests()', {promise: true}) │
+│    - Parses JSON results                                     │
+│    - Returns TestResults                                     │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      V8 Isolate                              │
+│  Internal State:                                             │
+│    - suites: TestSuite[] (tree of describe blocks)          │
+│    - currentSuite: TestSuite (for registration context)     │
+│                                                              │
+│  Globals: describe, test, it, expect, beforeEach, etc.      │
+│  Internal: __runAllTests() → JSON string                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Implementation:**
+```typescript
+// Host side
+const testEnvironmentCode = `
+(function() {
+  // Internal state for test registration
+  const rootSuite = { name: 'root', tests: [], children: [], hooks: {} };
+  let currentSuite = rootSuite;
+
+  // Test registration
+  function describe(name, fn) {
+    const suite = { name, tests: [], children: [], hooks: {} };
+    currentSuite.children.push(suite);
+    const parent = currentSuite;
+    currentSuite = suite;
+    fn();
+    currentSuite = parent;
+  }
+
+  function test(name, fn) {
+    currentSuite.tests.push({ name, fn, skip: false, only: false });
+  }
+
+  // expect() returns matchers object
+  function expect(actual) {
+    return {
+      toBe(expected) {
+        if (actual !== expected) {
+          throw new Error(\`Expected \${actual} to be \${expected}\`);
+        }
+      },
+      // ... other matchers
+      not: { /* negated matchers */ }
+    };
+  }
+
+  // Test runner returns JSON
+  async function __runAllTests() {
+    const results = [];
+    async function runSuite(suite, parentHooks) {
+      for (const hook of suite.hooks.beforeAll || []) await hook();
+
+      for (const t of suite.tests) {
+        const start = Date.now();
+        try {
+          for (const hook of [...parentHooks.beforeEach, ...(suite.hooks.beforeEach || [])]) {
+            await hook();
+          }
+          await t.fn();
+          for (const hook of [...(suite.hooks.afterEach || []), ...parentHooks.afterEach]) {
+            await hook();
+          }
+          results.push({ name: t.name, passed: true, duration: Date.now() - start });
+        } catch (err) {
+          results.push({ name: t.name, passed: false, error: err.message, duration: Date.now() - start });
+        }
+      }
+
+      for (const child of suite.children) {
+        await runSuite(child, { beforeEach: [...parentHooks.beforeEach, ...(suite.hooks.beforeEach || [])], afterEach: [...(suite.hooks.afterEach || []), ...parentHooks.afterEach] });
+      }
+
+      for (const hook of suite.hooks.afterAll || []) await hook();
+    }
+
+    await runSuite(rootSuite, { beforeEach: [], afterEach: [] });
+    return JSON.stringify({ passed: results.filter(r => r.passed).length, failed: results.filter(r => !r.passed).length, total: results.length, results });
+  }
+
+  globalThis.describe = describe;
+  globalThis.test = test;
+  globalThis.it = test;
+  globalThis.expect = expect;
+  globalThis.beforeEach = (fn) => (currentSuite.hooks.beforeEach ||= []).push(fn);
+  globalThis.afterEach = (fn) => (currentSuite.hooks.afterEach ||= []).push(fn);
+  globalThis.beforeAll = (fn) => (currentSuite.hooks.beforeAll ||= []).push(fn);
+  globalThis.afterAll = (fn) => (currentSuite.hooks.afterAll ||= []).push(fn);
+  globalThis.__runAllTests = __runAllTests;
+})();
+`;
+
+export async function setupTestEnvironment(context: ivm.Context): Promise<TestEnvironmentHandle> {
+  context.evalSync(testEnvironmentCode);
+  return { dispose() { context.evalSync("__resetTestEnvironment()"); } };
+}
+
+export async function runTests(context: ivm.Context): Promise<TestResults> {
+  const json = await context.eval("__runAllTests()", { promise: true });
+  return JSON.parse(json as string);
+}
+```
+
+**Usage:**
+```typescript
+const handle = await setupTestEnvironment(context);
+
+context.evalSync(`
+  describe("math", () => {
+    test("addition", () => {
+      expect(1 + 1).toBe(2);
+    });
+  });
+`);
+
+const results = await runTests(context);
+console.log(\`\${results.passed}/\${results.total} passed\`);
+```
+
+**Key points:**
+- **All test state stays in isolate** - functions cannot cross the boundary
+- Uses the Pure JS Injection Pattern (#7) for the test framework
+- `runTests()` triggers execution via `context.eval()` with `{ promise: true }`
+- Results returned as JSON string, parsed on host side
+- Supports async tests (test functions can be async)
+- Supports nested describe blocks with proper hook inheritance
+- Supports `test.skip`, `test.only`, `describe.skip`, `describe.only`
+- `expect()` returns matcher object with `.not` modifier for negation
+
+**When to use:**
+- Providing test primitives for user-written tests in the sandbox
+- Running untrusted test code safely
+- Creating Jest/Vitest-compatible test environments in isolated contexts
+
+**Benefits:**
+- No host callbacks needed - simpler implementation
+- Full async support using native Promise handling
+- Familiar API for users coming from Jest/Vitest
+- Test results can be aggregated and reported by host
