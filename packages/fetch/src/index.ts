@@ -8,8 +8,48 @@ export interface FetchOptions {
   onFetch?: (request: Request) => Promise<Response>;
 }
 
+// ============================================================================
+// Serve Types
+// ============================================================================
+
+export interface UpgradeRequest {
+  requested: true;
+  connectionId: string;
+}
+
+export interface WebSocketCommand {
+  type: "message" | "close";
+  connectionId: string;
+  data?: string | ArrayBuffer;
+  code?: number;
+  reason?: string;
+}
+
+interface ServeState {
+  pendingUpgrade: UpgradeRequest | null;
+  activeConnections: Map<string, { connectionId: string }>;
+}
+
 export interface FetchHandle {
   dispose(): void;
+  /** Dispatch an HTTP request to the isolate's serve() handler */
+  dispatchRequest(request: Request): Promise<Response>;
+  /** Check if isolate requested WebSocket upgrade */
+  getUpgradeRequest(): UpgradeRequest | null;
+  /** Dispatch WebSocket open event to isolate */
+  dispatchWebSocketOpen(connectionId: string): void;
+  /** Dispatch WebSocket message event to isolate */
+  dispatchWebSocketMessage(connectionId: string, message: string | ArrayBuffer): void;
+  /** Dispatch WebSocket close event to isolate */
+  dispatchWebSocketClose(connectionId: string, code: number, reason: string): void;
+  /** Dispatch WebSocket error event to isolate */
+  dispatchWebSocketError(connectionId: string, error: Error): void;
+  /** Register callback for WebSocket commands from isolate */
+  onWebSocketCommand(callback: (cmd: WebSocketCommand) => void): () => void;
+  /** Check if serve() has been called */
+  hasServeHandler(): boolean;
+  /** Check if there are active WebSocket connections */
+  hasActiveConnections(): boolean;
 }
 
 // ============================================================================
@@ -1187,6 +1227,143 @@ function setupFetchFunction(
 }
 
 // ============================================================================
+// Server Implementation (for serve())
+// ============================================================================
+
+function setupServer(
+  context: ivm.Context,
+  serveState: ServeState
+): void {
+  const global = context.global;
+
+  // Setup upgrade registry in isolate (data stays in isolate, never marshalled to host)
+  context.evalSync(`
+    globalThis.__upgradeRegistry__ = new Map();
+    globalThis.__upgradeIdCounter__ = 0;
+  `);
+
+  // Host callback to notify about pending upgrade
+  global.setSync(
+    "__setPendingUpgrade__",
+    new ivm.Callback((connectionId: string) => {
+      serveState.pendingUpgrade = { requested: true, connectionId };
+    })
+  );
+
+  // Pure JS Server class with upgrade method
+  context.evalSync(`
+(function() {
+  class Server {
+    upgrade(request, options) {
+      const data = options?.data;
+      const connectionId = String(++globalThis.__upgradeIdCounter__);
+      globalThis.__upgradeRegistry__.set(connectionId, data);
+      __setPendingUpgrade__(connectionId);
+      return true;
+    }
+  }
+  globalThis.__Server__ = Server;
+})();
+  `);
+}
+
+// ============================================================================
+// ServerWebSocket Implementation (for serve())
+// ============================================================================
+
+function setupServerWebSocket(
+  context: ivm.Context,
+  wsCommandCallbacks: Set<(cmd: WebSocketCommand) => void>
+): void {
+  const global = context.global;
+
+  // Host callback for ws.send()
+  global.setSync(
+    "__ServerWebSocket_send",
+    new ivm.Callback((connectionId: string, data: string) => {
+      const cmd: WebSocketCommand = { type: "message", connectionId, data };
+      for (const cb of wsCommandCallbacks) cb(cmd);
+    })
+  );
+
+  // Host callback for ws.close()
+  global.setSync(
+    "__ServerWebSocket_close",
+    new ivm.Callback((connectionId: string, code?: number, reason?: string) => {
+      const cmd: WebSocketCommand = { type: "close", connectionId, code, reason };
+      for (const cb of wsCommandCallbacks) cb(cmd);
+    })
+  );
+
+  // Pure JS ServerWebSocket class
+  context.evalSync(`
+(function() {
+  const _wsInstanceData = new WeakMap();
+
+  class ServerWebSocket {
+    constructor(connectionId) {
+      _wsInstanceData.set(this, { connectionId, readyState: 1 });
+    }
+
+    get data() {
+      const state = _wsInstanceData.get(this);
+      return globalThis.__upgradeRegistry__.get(state.connectionId);
+    }
+
+    get readyState() {
+      return _wsInstanceData.get(this).readyState;
+    }
+
+    send(message) {
+      const state = _wsInstanceData.get(this);
+      if (state.readyState !== 1) throw new Error("WebSocket is not open");
+      // Convert ArrayBuffer/Uint8Array to string for transfer
+      let data = message;
+      if (message instanceof ArrayBuffer) {
+        data = new TextDecoder().decode(message);
+      } else if (message instanceof Uint8Array) {
+        data = new TextDecoder().decode(message);
+      }
+      __ServerWebSocket_send(state.connectionId, data);
+    }
+
+    close(code, reason) {
+      const state = _wsInstanceData.get(this);
+      if (state.readyState === 3) return;
+      state.readyState = 2; // CLOSING
+      __ServerWebSocket_close(state.connectionId, code, reason);
+    }
+
+    _setReadyState(readyState) {
+      _wsInstanceData.get(this).readyState = readyState;
+    }
+  }
+
+  globalThis.__ServerWebSocket__ = ServerWebSocket;
+})();
+  `);
+}
+
+// ============================================================================
+// serve() Function Implementation
+// ============================================================================
+
+function setupServe(context: ivm.Context): void {
+  // Pure JS serve() that stores options on __serveOptions__ global
+  context.evalSync(`
+(function() {
+  globalThis.__serveOptions__ = null;
+
+  function serve(options) {
+    globalThis.__serveOptions__ = options;
+  }
+
+  globalThis.serve = serve;
+})();
+  `);
+}
+
+// ============================================================================
 // Main Setup Function
 // ============================================================================
 
@@ -1233,10 +1410,249 @@ export async function setupFetch(
   // Setup fetch function
   setupFetchFunction(context, stateMap, options);
 
+  // Setup serve state
+  const serveState: ServeState = {
+    pendingUpgrade: null,
+    activeConnections: new Map(),
+  };
+
+  // Setup WebSocket command callbacks
+  const wsCommandCallbacks = new Set<(cmd: WebSocketCommand) => void>();
+
+  // Setup Server class
+  setupServer(context, serveState);
+
+  // Setup ServerWebSocket class
+  setupServerWebSocket(context, wsCommandCallbacks);
+
+  // Setup serve function
+  setupServe(context);
+
   return {
     dispose() {
       // Clear state for this context
       stateMap.clear();
+      // Clear upgrade registry
+      context.evalSync(`globalThis.__upgradeRegistry__.clear()`);
+      // Clear serve state
+      serveState.activeConnections.clear();
+      serveState.pendingUpgrade = null;
+    },
+
+    async dispatchRequest(request: Request): Promise<Response> {
+      // Clean up previous pending upgrade if not consumed
+      if (serveState.pendingUpgrade) {
+        const oldConnectionId = serveState.pendingUpgrade.connectionId;
+        context.evalSync(`globalThis.__upgradeRegistry__.delete("${oldConnectionId}")`);
+        serveState.pendingUpgrade = null;
+      }
+
+      // Check if serve handler exists
+      const hasHandler = context.evalSync(`!!globalThis.__serveOptions__?.fetch`);
+      if (!hasHandler) {
+        throw new Error("No serve() handler registered");
+      }
+
+      // Convert native Request to RequestState
+      const requestBody = await request.arrayBuffer();
+      const bodyBytes = requestBody.byteLength > 0
+        ? Array.from(new Uint8Array(requestBody))
+        : null;
+      const headersArray = Array.from(request.headers.entries());
+
+      // Create Request instance in isolate
+      const requestInstanceId = nextInstanceId++;
+      const requestState: RequestState = {
+        url: request.url,
+        method: request.method,
+        headers: headersArray,
+        body: bodyBytes ? new Uint8Array(bodyBytes) : null,
+        bodyUsed: false,
+        mode: request.mode,
+        credentials: request.credentials,
+        cache: request.cache,
+        redirect: request.redirect,
+        referrer: request.referrer,
+        integrity: request.integrity,
+      };
+      stateMap.set(requestInstanceId, requestState);
+
+      // Call the fetch handler and get response
+      // We use eval with promise: true to handle async handlers
+      const responseInstanceId = await context.eval(`
+        (async function() {
+          const request = Request._fromInstanceId(${requestInstanceId});
+          const server = new __Server__();
+          const response = await Promise.resolve(__serveOptions__.fetch(request, server));
+          return response._getInstanceId();
+        })()
+      `, { promise: true });
+
+      // Get ResponseState from the instance
+      const responseState = stateMap.get(responseInstanceId) as ResponseState | undefined;
+      if (!responseState) {
+        throw new Error("Response state not found");
+      }
+
+      // Convert to native Response
+      const responseHeaders = new Headers(responseState.headers);
+      const responseBody = responseState.body;
+
+      // Note: Status 101 (Switching Protocols) is not valid for Response constructor
+      // We use 200 as the status but preserve the actual status in a custom header
+      // The caller should check getUpgradeRequest() for WebSocket upgrades
+      const status = responseState.status === 101 ? 200 : responseState.status;
+      const response = new Response(responseBody, {
+        status,
+        statusText: responseState.statusText,
+        headers: responseHeaders,
+      });
+
+      // Expose the original status via a property for callers to check
+      // @ts-expect-error - adding custom property
+      response._originalStatus = responseState.status;
+
+      return response;
+    },
+
+    getUpgradeRequest(): UpgradeRequest | null {
+      const result = serveState.pendingUpgrade;
+      // Don't clear yet - it will be cleared on next dispatchRequest or consumed by dispatchWebSocketOpen
+      return result;
+    },
+
+    dispatchWebSocketOpen(connectionId: string): void {
+      // Check if websocket.open handler exists - required for connection tracking
+      const hasOpenHandler = context.evalSync(`!!globalThis.__serveOptions__?.websocket?.open`);
+      if (!hasOpenHandler) {
+        // Delete from registry and return - connection NOT tracked
+        context.evalSync(`globalThis.__upgradeRegistry__.delete("${connectionId}")`);
+        return;
+      }
+
+      // Store connection (data stays in isolate registry)
+      serveState.activeConnections.set(connectionId, { connectionId });
+
+      // Create ServerWebSocket and call open handler
+      context.evalSync(`
+        (function() {
+          const ws = new __ServerWebSocket__("${connectionId}");
+          globalThis.__activeWs_${connectionId}__ = ws;
+          __serveOptions__.websocket.open(ws);
+        })()
+      `);
+
+      // Clear pending upgrade after successful open
+      if (serveState.pendingUpgrade?.connectionId === connectionId) {
+        serveState.pendingUpgrade = null;
+      }
+    },
+
+    dispatchWebSocketMessage(connectionId: string, message: string | ArrayBuffer): void {
+      // Check if connection is tracked
+      if (!serveState.activeConnections.has(connectionId)) {
+        return; // Silently ignore for unknown connections
+      }
+
+      // Check if message handler exists
+      const hasMessageHandler = context.evalSync(`!!globalThis.__serveOptions__?.websocket?.message`);
+      if (!hasMessageHandler) {
+        return;
+      }
+
+      // Marshal message and call handler
+      if (typeof message === "string") {
+        context.evalSync(`
+          (function() {
+            const ws = globalThis.__activeWs_${connectionId}__;
+            if (ws) __serveOptions__.websocket.message(ws, "${message.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n")}");
+          })()
+        `);
+      } else {
+        // ArrayBuffer - convert to base64 or pass as array
+        const bytes = Array.from(new Uint8Array(message));
+        context.evalSync(`
+          (function() {
+            const ws = globalThis.__activeWs_${connectionId}__;
+            if (ws) {
+              const bytes = new Uint8Array([${bytes.join(",")}]);
+              __serveOptions__.websocket.message(ws, bytes.buffer);
+            }
+          })()
+        `);
+      }
+    },
+
+    dispatchWebSocketClose(connectionId: string, code: number, reason: string): void {
+      // Check if connection is tracked
+      if (!serveState.activeConnections.has(connectionId)) {
+        return;
+      }
+
+      // Update readyState to CLOSED
+      context.evalSync(`
+        (function() {
+          const ws = globalThis.__activeWs_${connectionId}__;
+          if (ws) ws._setReadyState(3);
+        })()
+      `);
+
+      // Check if close handler exists
+      const hasCloseHandler = context.evalSync(`!!globalThis.__serveOptions__?.websocket?.close`);
+      if (hasCloseHandler) {
+        const safeReason = reason.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+        context.evalSync(`
+          (function() {
+            const ws = globalThis.__activeWs_${connectionId}__;
+            if (ws) __serveOptions__.websocket.close(ws, ${code}, "${safeReason}");
+          })()
+        `);
+      }
+
+      // Cleanup
+      context.evalSync(`
+        delete globalThis.__activeWs_${connectionId}__;
+        globalThis.__upgradeRegistry__.delete("${connectionId}");
+      `);
+      serveState.activeConnections.delete(connectionId);
+    },
+
+    dispatchWebSocketError(connectionId: string, error: Error): void {
+      // Check if connection is tracked
+      if (!serveState.activeConnections.has(connectionId)) {
+        return;
+      }
+
+      // Check if error handler exists
+      const hasErrorHandler = context.evalSync(`!!globalThis.__serveOptions__?.websocket?.error`);
+      if (!hasErrorHandler) {
+        return;
+      }
+
+      const safeName = error.name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const safeMessage = error.message.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+      context.evalSync(`
+        (function() {
+          const ws = globalThis.__activeWs_${connectionId}__;
+          if (ws) {
+            const error = { name: "${safeName}", message: "${safeMessage}" };
+            __serveOptions__.websocket.error(ws, error);
+          }
+        })()
+      `);
+    },
+
+    onWebSocketCommand(callback: (cmd: WebSocketCommand) => void): () => void {
+      wsCommandCallbacks.add(callback);
+      return () => wsCommandCallbacks.delete(callback);
+    },
+
+    hasServeHandler(): boolean {
+      return context.evalSync(`!!globalThis.__serveOptions__?.fetch`) as boolean;
+    },
+
+    hasActiveConnections(): boolean {
+      return serveState.activeConnections.size > 0;
     },
   };
 }
