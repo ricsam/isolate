@@ -265,7 +265,7 @@ export function clearStreamRegistryForContext(context: ivm.Context): void {
 
 ### Host Callbacks Registration
 
-> **Note:** This section shows the planned integration with `setupFetch()`. This will be implemented in Plan 02 or 03.
+> **Note:** This section shows the integration with `setupFetch()`. This was implemented in Plan 02 as `setupStreamCallbacks()`.
 
 In `setupFetch()`, register callbacks for isolate access:
 
@@ -430,4 +430,4 @@ The implementation follows the spec exactly. Key exports:
 - `clearStreamRegistryForContext(context)` - Cleanup for context
 - `HIGH_WATER_MARK` (64KB) and `MAX_QUEUE_CHUNKS` (16) constants
 
-The host callbacks registration (shown in this plan) will be done as part of Plan 02 or 03 when integrating with `setupFetch()`.
+The host callbacks registration (shown in this plan) was implemented as part of Plan 02 in `setupStreamCallbacks()` function.

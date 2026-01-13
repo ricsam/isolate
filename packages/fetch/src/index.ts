@@ -1,5 +1,7 @@
 import ivm from "isolated-vm";
 import { setupCore, clearAllInstanceState } from "@ricsam/isolate-core";
+import { getStreamRegistryForContext } from "./stream-state.ts";
+import type { StreamStateRegistry } from "./stream-state.ts";
 
 export { clearAllInstanceState };
 
@@ -83,6 +85,7 @@ interface ResponseState {
   type: string;
   url: string;
   redirected: boolean;
+  streamId: number | null;
 }
 
 interface RequestState {
@@ -275,6 +278,138 @@ const formDataCode = `
 `;
 
 // ============================================================================
+// Stream Callbacks (Host State)
+// ============================================================================
+
+function setupStreamCallbacks(
+  context: ivm.Context,
+  streamRegistry: StreamStateRegistry
+): void {
+  const global = context.global;
+
+  // Create stream (returns ID)
+  global.setSync(
+    "__Stream_create",
+    new ivm.Callback(() => {
+      return streamRegistry.create();
+    })
+  );
+
+  // Push chunk (sync) - receives number[] from isolate
+  global.setSync(
+    "__Stream_push",
+    new ivm.Callback((streamId: number, chunkArray: number[]) => {
+      const chunk = new Uint8Array(chunkArray);
+      return streamRegistry.push(streamId, chunk);
+    })
+  );
+
+  // Close stream (sync)
+  global.setSync(
+    "__Stream_close",
+    new ivm.Callback((streamId: number) => {
+      streamRegistry.close(streamId);
+    })
+  );
+
+  // Error stream (sync)
+  global.setSync(
+    "__Stream_error",
+    new ivm.Callback((streamId: number, message: string) => {
+      streamRegistry.error(streamId, new Error(message));
+    })
+  );
+
+  // Check backpressure (sync)
+  global.setSync(
+    "__Stream_isQueueFull",
+    new ivm.Callback((streamId: number) => {
+      return streamRegistry.isQueueFull(streamId);
+    })
+  );
+
+  // Pull chunk (async with applySyncPromise)
+  const pullRef = new ivm.Reference(async (streamId: number) => {
+    const result = await streamRegistry.pull(streamId);
+    if (result.done) {
+      return JSON.stringify({ done: true });
+    }
+    return JSON.stringify({ done: false, value: Array.from(result.value) });
+  });
+  global.setSync("__Stream_pull_ref", pullRef);
+}
+
+// ============================================================================
+// Host-Backed ReadableStream (Isolate Code)
+// ============================================================================
+
+const hostBackedStreamCode = `
+(function() {
+  const _streamIds = new WeakMap();
+
+  class HostBackedReadableStream {
+    constructor(streamId) {
+      if (streamId === undefined) {
+        streamId = __Stream_create();
+      }
+      _streamIds.set(this, streamId);
+    }
+
+    _getStreamId() {
+      return _streamIds.get(this);
+    }
+
+    getReader() {
+      const streamId = this._getStreamId();
+      let released = false;
+
+      return {
+        read: async () => {
+          if (released) {
+            throw new TypeError("Reader has been released");
+          }
+          const resultJson = __Stream_pull_ref.applySyncPromise(undefined, [streamId]);
+          const result = JSON.parse(resultJson);
+
+          if (result.done) {
+            return { done: true, value: undefined };
+          }
+          return { done: false, value: new Uint8Array(result.value) };
+        },
+
+        releaseLock: () => {
+          released = true;
+        },
+
+        get closed() {
+          return new Promise(() => {});
+        },
+
+        cancel: async (reason) => {
+          __Stream_error(streamId, String(reason || "cancelled"));
+        }
+      };
+    }
+
+    async cancel(reason) {
+      __Stream_error(this._getStreamId(), String(reason || "cancelled"));
+    }
+
+    get locked() {
+      return false;
+    }
+
+    // Static method to create from existing stream ID
+    static _fromStreamId(streamId) {
+      return new HostBackedReadableStream(streamId);
+    }
+  }
+
+  globalThis.HostBackedReadableStream = HostBackedReadableStream;
+})();
+`;
+
+// ============================================================================
 // Response Implementation (Host State + Isolate Class)
 // ============================================================================
 
@@ -305,6 +440,7 @@ function setupResponse(
           type: "default",
           url: "",
           redirected: false,
+          streamId: null,
         };
         stateMap.set(instanceId, state);
         return instanceId;
@@ -334,6 +470,7 @@ function setupResponse(
           type: "default",
           url,
           redirected,
+          streamId: null,
         };
         stateMap.set(instanceId, state);
         return instanceId;
@@ -461,6 +598,14 @@ function setupResponse(
     })
   );
 
+  global.setSync(
+    "__Response_getStreamId",
+    new ivm.Callback((instanceId: number) => {
+      const state = stateMap.get(instanceId) as ResponseState | undefined;
+      return state?.streamId ?? null;
+    })
+  );
+
   // Inject Response class
   const responseCode = `
 (function() {
@@ -568,17 +713,22 @@ function setupResponse(
     }
 
     get body() {
-      // Return a ReadableStream that reads the body
+      const streamId = __Response_getStreamId(this.#instanceId);
+      if (streamId !== null) {
+        return HostBackedReadableStream._fromStreamId(streamId);
+      }
+
+      // Fallback: create host-backed stream from buffered body
       const instanceId = this.#instanceId;
-      return new ReadableStream({
-        start(controller) {
-          const buffer = __Response_arrayBuffer(instanceId);
-          if (buffer.byteLength > 0) {
-            controller.enqueue(new Uint8Array(buffer));
-          }
-          controller.close();
-        }
-      });
+      const newStreamId = __Stream_create();
+      const buffer = __Response_arrayBuffer(instanceId);
+
+      if (buffer.byteLength > 0) {
+        __Stream_push(newStreamId, Array.from(new Uint8Array(buffer)));
+      }
+      __Stream_close(newStreamId);
+
+      return HostBackedReadableStream._fromStreamId(newStreamId);
     }
 
     async text() {
@@ -1165,6 +1315,7 @@ function setupFetchFunction(
         type: "default",
         url: nativeResponse.url,
         redirected: nativeResponse.redirected,
+        streamId: null,
       };
       stateMap.set(instanceId, state);
 
@@ -1394,12 +1545,17 @@ export async function setupFetch(
   await setupCore(context);
 
   const stateMap = getInstanceStateMapForContext(context);
+  const streamRegistry = getStreamRegistryForContext(context);
 
   // Inject Headers (pure JS)
   context.evalSync(headersCode);
 
   // Inject FormData (pure JS)
   context.evalSync(formDataCode);
+
+  // Setup stream callbacks and inject HostBackedReadableStream
+  setupStreamCallbacks(context, streamRegistry);
+  context.evalSync(hostBackedStreamCode);
 
   // Setup Response (host state + isolate class)
   setupResponse(context, stateMap);

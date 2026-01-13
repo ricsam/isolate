@@ -127,12 +127,12 @@ describe("Response", () => {
     assert.ok(result.contentType.includes("application/json"));
   });
 
-  test("body property returns ReadableStream", () => {
+  test("body property returns HostBackedReadableStream", () => {
     const isStream = evalCode<boolean>(
       ctx.context,
       `
       const response = new Response("test body");
-      response.body instanceof ReadableStream
+      response.body instanceof HostBackedReadableStream
       `
     );
     assert.strictEqual(isStream, true);

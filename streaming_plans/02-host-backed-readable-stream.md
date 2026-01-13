@@ -367,3 +367,37 @@ A future enhancement could make `ReadableStream` automatically choose the approp
 - When created from host stream ID, use host-backed
 
 This would make the API more seamless for users.
+
+---
+
+## Implementation Status: ✅ Complete
+
+**Completed:** 2026-01-13
+
+### What Was Implemented
+
+1. **Stream Callbacks** (`setupStreamCallbacks` function):
+   - `__Stream_create` - Create new stream
+   - `__Stream_push` - Push chunk to stream
+   - `__Stream_close` - Close stream
+   - `__Stream_error` - Error stream
+   - `__Stream_isQueueFull` - Check backpressure
+   - `__Stream_pull_ref` - Async pull via `applySyncPromise`
+
+2. **HostBackedReadableStream Class**:
+   - Constructor accepting optional stream ID
+   - `getReader()` returning reader with async `read()`
+   - `cancel()` method
+   - `locked` property
+   - Static `_fromStreamId()` factory
+
+3. **Response.body Integration**:
+   - Returns `HostBackedReadableStream` instead of `ReadableStream`
+   - Creates stream from buffered body on first access
+   - Added `streamId` field to `ResponseState`
+
+### Implementation Notes
+
+- **No separate test file created**: Tests were updated in existing `response.test.ts` rather than creating `host-backed-stream.test.ts`
+- **`tee()` and `pipeTo()` not implemented**: The minimal implementation focused on `getReader()` and `read()` which covers the primary use case
+- **`instanceof ReadableStream` returns false**: `Response.body` now returns `HostBackedReadableStream`, not `ReadableStream`. This is documented as a future enhancement to unify interfaces.
