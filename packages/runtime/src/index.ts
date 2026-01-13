@@ -151,8 +151,8 @@ export type { EncodingHandle } from "@ricsam/isolate-encoding";
 export { setupFetch } from "@ricsam/isolate-fetch";
 export type { FetchHandle, FetchOptions } from "@ricsam/isolate-fetch";
 
-export { setupFs } from "@ricsam/isolate-fs";
-export type { FsHandle, FsOptions, FileSystemHandler } from "@ricsam/isolate-fs";
+export { setupFs, createNodeFileSystemHandler } from "@ricsam/isolate-fs";
+export type { FsHandle, FsOptions, FileSystemHandler, NodeFileSystemHandlerOptions } from "@ricsam/isolate-fs";
 
 export { setupPath } from "@ricsam/isolate-path";
 export type { PathHandle } from "@ricsam/isolate-path";

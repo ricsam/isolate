@@ -1027,3 +1027,7 @@ export async function setupFs(
     },
   };
 }
+
+// Export node adapter
+export { createNodeFileSystemHandler } from "./node-adapter.ts";
+export type { NodeFileSystemHandlerOptions } from "./node-adapter.ts";

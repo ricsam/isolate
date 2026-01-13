@@ -6,7 +6,7 @@ import express from 'express'
 import { createServerAdapter } from "@whatwg-node/server";
 import {
   createRuntime,
-  createNodeDirectoryHandle,
+  createNodeFileSystemHandler,
   type WebSocketCommand,
 } from "@ricsam/isolate-runtime";
 import { setupTimers } from "@ricsam/isolate-timers";
@@ -79,7 +79,7 @@ const handle = await createRuntime({
   fs: {
     getDirectory: async (path: string) => {
       // All paths map to demo-data directory (relative to cwd which is demo/)
-      return createNodeDirectoryHandle(`./demo-data${path}`);
+      return createNodeFileSystemHandler(`./demo-data${path}`);
     },
   },
 });
