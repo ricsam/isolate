@@ -21,17 +21,22 @@
     "@tanstack/router-plugin": "^1.145.7",
     "zod": "^4.3.5",
     "react": "^19",
+    "ws": "^8.19.0",
     "react-dom": "^19",
     "@richie-rpc/client": "^1.2.6",
     "@richie-rpc/core": "^1.2.4",
-    "@richie-rpc/server": "^1.2.8"
+    "@richie-rpc/server": "^1.2.8",
+    "@rollup/plugin-commonjs": "^29.0.0",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@rollup/plugin-replace": "^6.0.3"
   },
   "devDependencies": {
     "@playwright/test": "^1",
     "@types/node": "^24",
     "@types/express": "^5.0.0",
     "typescript": "^5",
-     "@types/react": "^19",
+    "@types/react": "^19",
+    "@types/ws": "^8.18.1",
     "@types/react-dom": "^19"
   }
 }

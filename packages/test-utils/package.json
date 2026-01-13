@@ -24,7 +24,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "isolated-vm": "^6"
+    "isolated-vm": "^6",
+    "ts-morph": "^24.0.0"
   },
   "devDependencies": {
     "@ricsam/isolate-fs": "*",

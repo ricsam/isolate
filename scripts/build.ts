@@ -1,0 +1,402 @@
+import path from 'node:path';
+import { $, Glob } from 'bun';
+import { TYPE_DEFINITIONS } from '../packages/test-utils/src/isolate-types.ts';
+
+// Packages to build (in dependency order: core first, then new packages, then fetch/fs, then runtime, then test-utils/test-environment)
+const PACKAGES = ['core', 'console', 'crypto', 'encoding', 'path', 'timers', 'fetch', 'fs', 'runtime', 'test-utils', 'test-environment'];
+
+// Mapping from package names to TYPE_DEFINITIONS keys for isolate.d.ts generation
+const ISOLATE_TYPE_MAPPING: Record<string, keyof typeof TYPE_DEFINITIONS | undefined> = {
+  'core': 'core',
+  'console': 'console',
+  'crypto': 'crypto',
+  'encoding': 'encoding',
+  'fetch': 'fetch',
+  'fs': 'fs',
+  'path': 'path',
+  'test-environment': 'testEnvironment',
+  'timers': 'timers',
+};
+
+// Extract package-specific README section from main README
+const extractReadmeSection = (readme: string, packageName: string): string | null => {
+  const beginMarker = `<!-- BEGIN:${packageName} -->`;
+  const endMarker = `<!-- END:${packageName} -->`;
+
+  const beginIndex = readme.indexOf(beginMarker);
+  const endIndex = readme.indexOf(endMarker);
+
+  if (beginIndex === -1 || endIndex === -1) {
+    return null;
+  }
+
+  const content = readme.slice(beginIndex + beginMarker.length, endIndex).trim();
+
+  // Convert ### to # for package README (make it the main heading)
+  const withFixedHeading = content.replace(/^### /, '# ');
+
+  return withFixedHeading;
+};
+
+interface RootMetadata {
+  author: string;
+  license: string;
+  repository: { type: string; url: string };
+  bugs?: { url: string };
+  homepage?: string;
+  keywords: string[];
+  description: string;
+}
+
+const buildPackage = async (packageName: string, rootMetadata: RootMetadata, readme: string) => {
+  const packageDir = path.join(__dirname, '..', 'packages', packageName);
+  console.log(`\n📦 Building @ricsam/isolate-${packageName}...`);
+
+  const packageJson = await Bun.file(path.join(packageDir, 'package.json')).json();
+
+  // Create build-specific tsconfig.json
+  await Bun.write(
+    path.join(packageDir, 'tsconfig.build.json'),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          allowJs: true,
+          allowSyntheticDefaultImports: true,
+          allowImportingTsExtensions: true,
+          target: 'ESNext',
+          declaration: true,
+          esModuleInterop: true,
+          inlineSourceMap: false,
+          lib: ['ESNext', "DOM"],
+          listEmittedFiles: false,
+          listFiles: false,
+          moduleResolution: 'bundler',
+          noFallthroughCasesInSwitch: true,
+          pretty: true,
+          resolveJsonModule: true,
+          rootDir: './src',
+          skipLibCheck: true,
+          strict: true,
+          traceResolution: false,
+        },
+        compileOnSave: false,
+        exclude: ['node_modules', 'dist', '**/*.test.ts'],
+        include: ['src/**/*.ts'],
+      },
+      null,
+      2,
+    ),
+  );
+
+  // Create types-specific tsconfig
+  await Bun.write(
+    path.join(packageDir, 'tsconfig.types.json'),
+    JSON.stringify(
+      {
+        extends: './tsconfig.build.json',
+        compilerOptions: {
+          declaration: true,
+          outDir: 'dist/types',
+          emitDeclarationOnly: true,
+          declarationDir: 'dist/types',
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  // TypeScript compilation for type declarations
+  const runTsc = async (tsconfig: string) => {
+    const { stdout, stderr, exitCode } = await $`bunx --bun tsc -p ${tsconfig}`
+      .cwd(packageDir)
+      .nothrow();
+
+    if (exitCode !== 0) {
+      console.error(stderr.toString());
+      console.log(stdout.toString());
+      return false;
+    }
+    const output = stdout.toString();
+    if (output.trim() !== '') {
+      console.log(output);
+    }
+    console.log(`  ✅ Type declarations generated`);
+    return true;
+  };
+
+  // Build with Bun for both formats
+  const bunBuildFile = async (src: string, relativeDir: string, type: 'cjs' | 'mjs') => {
+    const result = await Bun.build({
+      entrypoints: [src],
+      outdir: path.join(packageDir, 'dist', type, relativeDir),
+      sourcemap: 'external',
+      format: type === 'mjs' ? 'esm' : 'cjs',
+      packages: 'external',
+      external: ['*'],
+      naming: `[name].${type}`,
+      target: 'bun',
+      plugins: [
+        {
+          name: 'extension-plugin',
+          setup(build) {
+            build.onLoad({ filter: /\.tsx?$/, namespace: 'file' }, async (args) => {
+              let content = await Bun.file(args.path).text();
+              const extension = type;
+
+              // Replace relative imports with extension (handles both extensionless and .ts/.tsx imports)
+              content = content.replace(
+                /((?:im|ex)port\s[\w{}/*\s,]+from\s['"](?:\.\.?\/)+[^'"]+?)(?:\.tsx?)?(?=['"])/gm,
+                `$1.${extension}`,
+              );
+
+              // Replace dynamic imports
+              content = content.replace(
+                /(import\(['"](?:\.\.?\/)+[^'"]+?)(?:\.tsx?)?(?=['"])/gm,
+                `$1.${extension}`,
+              );
+
+              return {
+                contents: content,
+                loader: args.path.endsWith('.tsx') ? 'tsx' : 'ts',
+              };
+            });
+          },
+        },
+      ],
+    });
+
+    result.logs.forEach((log) => {
+      console.log(`  [${log.level}] ${log.message}`);
+    });
+
+    if (!result.success) {
+      return false;
+    }
+
+    return true;
+  };
+
+  // Clean dist directory
+  await $`rm -rf dist`.cwd(packageDir).nothrow();
+
+  // Recursive build function for all .ts files
+  const runBunBundleRec = async (type: 'cjs' | 'mjs') => {
+    const tsGlob = new Glob('**/*.ts');
+    for await (const file of tsGlob.scan({
+      cwd: path.join(packageDir, 'src'),
+    })) {
+      // Skip test files and declaration files
+      if (file.endsWith('.test.ts') || file.endsWith('.d.ts')) {
+        continue;
+      }
+      // Get the directory part of the relative path to preserve folder structure
+      const relativeDir = path.dirname(file);
+      await bunBuildFile(path.join(packageDir, 'src', file), relativeDir, type);
+    }
+    return true;
+  };
+
+  // Build all formats in parallel
+  const success = (
+    await Promise.all([
+      runBunBundleRec('mjs'),
+      runBunBundleRec('cjs'),
+      runTsc('tsconfig.types.json'),
+    ])
+  ).every((s) => s);
+
+  if (!success) {
+    throw new Error(`Failed to build @ricsam/isolate-${packageName}`);
+  }
+
+  // Generate isolate.d.ts if this package has type definitions
+  const typeDefKey = ISOLATE_TYPE_MAPPING[packageName];
+  if (typeDefKey) {
+    const typeContent = TYPE_DEFINITIONS[typeDefKey];
+    await Bun.write(
+      path.join(packageDir, 'dist', 'types', 'isolate.d.ts'),
+      typeContent
+    );
+    console.log(`  ✅ isolate.d.ts generated from TYPE_DEFINITIONS`);
+  }
+
+  console.log(`  ✅ CJS bundle created`);
+  console.log(`  ✅ MJS bundle created`);
+
+  // Create package.json in dist folders
+  const version = packageJson.version;
+
+  for (const [folder, type] of [
+    ['dist/cjs', 'commonjs'],
+    ['dist/mjs', 'module'],
+  ] as const) {
+    await Bun.write(
+      path.join(packageDir, folder, 'package.json'),
+      JSON.stringify(
+        {
+          name: packageJson.name,
+          version,
+          type,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+
+  // Update main package.json for publishing
+  const publishPackageJson = { ...packageJson };
+
+  // Inject metadata from root package.json
+  publishPackageJson.author = rootMetadata.author;
+  publishPackageJson.license = rootMetadata.license;
+  publishPackageJson.repository = rootMetadata.repository;
+  publishPackageJson.bugs = rootMetadata.bugs;
+  publishPackageJson.homepage = rootMetadata.homepage;
+  publishPackageJson.keywords = rootMetadata.keywords;
+
+  // Add package-specific description if not present
+  if (!publishPackageJson.description) {
+    const descriptions: Record<string, string> = {
+      core: 'Core utilities and class builder for isolated-vm V8 sandbox bindings',
+      console: 'Console API implementation for isolated-vm V8 sandbox',
+      crypto: 'Web Crypto API implementation for isolated-vm V8 sandbox',
+      encoding: 'Base64 encoding APIs (atob, btoa) for isolated-vm V8 sandbox',
+      path: 'POSIX path utilities (join, resolve, dirname, basename, etc.) for isolated-vm V8 sandbox',
+      timers: 'Timer APIs (setTimeout, setInterval, clearTimeout, clearInterval) for isolated-vm V8 sandbox',
+      fetch: 'Fetch API implementation for isolated-vm V8 sandbox',
+      fs: 'File system API implementation for isolated-vm V8 sandbox',
+      runtime: 'Complete isolated-vm V8 sandbox runtime with fetch, fs, and core bindings',
+      'test-utils': 'Testing utilities for isolated-vm V8 sandbox',
+      'test-environment': 'Test environment for running tests inside isolated-vm V8 sandbox',
+    };
+    publishPackageJson.description = descriptions[packageName] || rootMetadata.description;
+  }
+
+  // Remove dev-only fields
+  delete publishPackageJson.devDependencies;
+
+  // Convert workspace dependencies to versioned dependencies
+  if (publishPackageJson.dependencies) {
+    for (const [dep, ver] of Object.entries(publishPackageJson.dependencies)) {
+      if (typeof ver === 'string' && ver.startsWith('workspace:')) {
+        // Get the actual version from the dependency's package.json
+        const depPackageName = dep.replace('@ricsam/isolate-', '');
+        if (PACKAGES.includes(depPackageName)) {
+          const depPackageJson = await Bun.file(
+            path.join(__dirname, '..', 'packages', depPackageName, 'package.json'),
+          ).json();
+          publishPackageJson.dependencies[dep] = `^${depPackageJson.version}`;
+        }
+      }
+    }
+  }
+
+  // Update peerDependencies to remove workspace protocol
+  if (publishPackageJson.peerDependencies) {
+    for (const [dep, ver] of Object.entries(publishPackageJson.peerDependencies)) {
+      if (typeof ver === 'string' && ver.startsWith('workspace:')) {
+        // Get the actual version from the dependency's package.json
+        const depPackageName = dep.replace('@ricsam/isolate-', '');
+        if (PACKAGES.includes(depPackageName)) {
+          const depPackageJson = await Bun.file(
+            path.join(__dirname, '..', 'packages', depPackageName, 'package.json'),
+          ).json();
+          publishPackageJson.peerDependencies[dep] = `^${depPackageJson.version}`;
+        }
+      }
+    }
+  }
+
+  // Set module type and exports
+  delete publishPackageJson.type;
+  publishPackageJson.main = './dist/cjs/index.cjs';
+  publishPackageJson.module = './dist/mjs/index.mjs';
+  publishPackageJson.types = './dist/types/index.d.ts';
+  publishPackageJson.exports = {
+    '.': {
+      types: './dist/types/index.d.ts',
+      require: './dist/cjs/index.cjs',
+      import: './dist/mjs/index.mjs',
+    },
+  };
+
+  // Add isolate types export if this package has type definitions
+  if (ISOLATE_TYPE_MAPPING[packageName]) {
+    publishPackageJson.exports['./isolate'] = {
+      types: './dist/types/isolate.d.ts',
+    };
+  }
+
+  publishPackageJson.publishConfig = {
+    access: 'public',
+  };
+  publishPackageJson.files = ['dist', 'README.md'];
+
+  // Write the publish-ready package.json
+  await Bun.write(
+    path.join(packageDir, 'package.json'),
+    JSON.stringify(publishPackageJson, null, 2),
+  );
+
+  console.log(`  ✅ package.json updated for publishing`);
+
+  // Extract and write package-specific README
+  const packageReadme = extractReadmeSection(readme, packageName);
+  if (packageReadme) {
+    await Bun.write(path.join(packageDir, 'README.md'), packageReadme);
+    console.log(`  ✅ README.md generated`);
+  } else {
+    console.log(`  ⚠️ No README section found for ${packageName}`);
+  }
+
+  console.log(`✨ Finished building @ricsam/isolate-${packageName} v${version}`);
+};
+
+// Main build process
+const main = async () => {
+  console.log('🚀 Building @ricsam/isolate packages for npm publishing...');
+  console.log('============================================================\n');
+
+  // Load root package.json for metadata
+  const rootPackageJson = await Bun.file(path.join(__dirname, '..', 'package.json')).json();
+  const rootMetadata = {
+    author: rootPackageJson.author,
+    license: rootPackageJson.license,
+    repository: rootPackageJson.repository,
+    bugs: rootPackageJson.bugs,
+    homepage: rootPackageJson.homepage,
+    keywords: rootPackageJson.keywords,
+    description: rootPackageJson.description,
+  };
+
+  // Load README.md for extracting package-specific docs
+  const readme = await Bun.file(path.join(__dirname, '..', 'README.md')).text();
+
+  for (const pkg of PACKAGES) {
+    try {
+      await buildPackage(pkg, rootMetadata, readme);
+    } catch (error) {
+      console.error(`❌ Failed to build @ricsam/isolate-${pkg}:`, error);
+      process.exit(1);
+    }
+  }
+
+  console.log('\n✨ All packages built successfully!');
+  console.log('\n📝 Next steps:');
+  console.log('  1. Review the built packages in packages/*/dist');
+  console.log('  2. Test the packages locally if needed');
+  console.log('  3. Publish with: npm publish packages/core');
+  console.log('                   npm publish packages/fetch');
+  console.log('                   npm publish packages/fs');
+  console.log('                   npm publish packages/runtime');
+  console.log('                   npm publish packages/test-utils');
+  console.log('                   npm publish packages/test-environment');
+  console.log('\n   Or use: bun run publish:all\n');
+};
+
+main().catch((error) => {
+  console.error('Build failed:', error);
+  process.exit(1);
+});

@@ -1,20 +1,32 @@
-import { getQuickJS } from "quickjs-emscripten";
 import {
   formatTypecheckErrors,
-  typecheckQuickJSCode,
-} from "@ricsam/quickjs-test-utils";
+  typecheckIsolateCode,
+} from "@ricsam/isolate-test-utils";
 import express from 'express'
 import { createServerAdapter } from "@whatwg-node/server";
 import {
-  setupRuntime,
+  createRuntime,
   createNodeDirectoryHandle,
   type WebSocketCommand,
-} from "@ricsam/quickjs-runtime";
-import { setupTimers } from "@ricsam/quickjs-timers";
+} from "@ricsam/isolate-runtime";
+import { setupTimers } from "@ricsam/isolate-timers";
 import { quickjsHandlerCode } from "./quickjs-handlers.ts";
 import { richieRpcHandlerCode } from "./richie-rpc-handlers.ts";
 import { bundleAllModules } from "./bundler.ts";
 import { LIBRARY_TYPES } from "./library-types.ts";
+import { WebSocketServer } from 'ws';
+
+const wss = new WebSocketServer({ port: 6422 });
+
+wss.on('connection', function connection(ws) {
+  ws.on('error', console.error);
+
+  ws.on('message', function message(data) {
+    console.log('received: %s', data);
+  });
+
+  ws.send('something');
+});
 
 
 
@@ -24,7 +36,7 @@ interface WsData {
 }
 
 //#region typecheck the quickjs-handlers.ts code
-const typeCheckResult = typecheckQuickJSCode(quickjsHandlerCode, {
+const typeCheckResult = typecheckIsolateCode(quickjsHandlerCode, {
   include: ["core", "fetch", "fs"],
   libraryTypes: {
     zod: LIBRARY_TYPES.zod!,
@@ -45,7 +57,6 @@ console.log("Initializing QuickJS runtime...");
 console.log("Bundling modules for QuickJS...");
 const bundledModules = await bundleAllModules();
 
-const QuickJS = await getQuickJS();
 const runtime = QuickJS.newRuntime();
 
 // Set up module loader to resolve bundled packages
@@ -61,7 +72,7 @@ runtime.setModuleLoader((moduleName) => {
 const context = runtime.newContext();
 
 // Setup runtime with fetch + fs
-const handle = setupRuntime(context, {
+const handle = await createRuntime({
   fetch: {
     onFetch: async (req: Request) => fetch(req),
   },
@@ -93,6 +104,7 @@ handle.fetch!.onWebSocketCommand((cmd: WebSocketCommand) => {
 
 // Load richie-rpc handlers (includes existing functionality)
 console.log("Loading richie-rpc handlers...");
+// use rollup instead or esbuild
 const transpiler = new Bun.Transpiler({
   loader: "ts",
 });
