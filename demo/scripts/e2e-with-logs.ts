@@ -1,19 +1,22 @@
-#!/usr/bin/env bun
+#!/usr/bin/env npx tsx
 /**
  * Runs e2e tests with server logs visible.
  *
  * Usage:
- *   bun scripts/e2e-with-logs.ts           # Run all tests with logs
- *   bun scripts/e2e-with-logs.ts --headed  # Run in headed mode
- *   bun scripts/e2e-with-logs.ts api       # Run specific test file
+ *   npx tsx scripts/e2e-with-logs.ts           # Run all tests with logs
+ *   npx tsx scripts/e2e-with-logs.ts --headed  # Run in headed mode
+ *   npx tsx scripts/e2e-with-logs.ts api       # Run specific test file
  */
 
-import { $ } from "bun";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, createWriteStream } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Use demo directory as base (parent of scripts/)
-const demoDir = join(import.meta.dir, "..");
+const demoDir = join(__dirname, "..");
 const logDir = join(demoDir, ".e2e-logs");
 const logFile = join(logDir, "server.log");
 
@@ -22,41 +25,41 @@ if (!existsSync(logDir)) {
   mkdirSync(logDir, { recursive: true });
 }
 
-console.log("Starting server with logs...");
-console.log(`Server logs: ${logFile}`);
-console.log("---");
+// Create log stream early so we can write everything to it
+const logStream = createWriteStream(logFile);
+
+// Helper to write to both console and log file
+function log(message: string) {
+  console.log(message);
+  logStream.write(message + "\n");
+}
+
+function logError(message: string) {
+  console.error(message);
+  logStream.write(message + "\n");
+}
+
+log("Starting server with logs...");
+log(`Server logs: ${logFile}`);
+log("---");
 
 // Start server with output piped to both console and log file
 // Use dev:e2e (no hot reload) to avoid restart issues when killed
-const serverProc = Bun.spawn(["bun", "run", "dev:e2e"], {
+const serverProc = spawn("npm", ["run", "dev"], {
   cwd: demoDir,
-  stdout: "pipe",
-  stderr: "pipe",
+  stdio: ["ignore", "pipe", "pipe"],
   env: { ...process.env },
 });
 
-// Pipe output to console and file
-const logStream = createWriteStream(logFile);
+serverProc.stdout?.on("data", (data: Buffer) => {
+  process.stdout.write(data);
+  logStream.write(data);
+});
 
-async function pipeStream(
-  source: ReadableStream<Uint8Array>,
-  dest: typeof process.stdout
-) {
-  const reader = source.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      dest.write(value);
-      logStream.write(value);
-    }
-  } catch {
-    // Stream closed
-  }
-}
-
-pipeStream(serverProc.stdout, process.stdout);
-pipeStream(serverProc.stderr, process.stderr);
+serverProc.stderr?.on("data", (data: Buffer) => {
+  process.stderr.write(data);
+  logStream.write(data);
+});
 
 // Wait for server to be ready
 const maxWait = 30000;
@@ -75,38 +78,53 @@ while (Date.now() - startTime < maxWait) {
   } catch {
     // Server not ready yet
   }
-  await Bun.sleep(500);
+  await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
 if (!serverReady) {
-  console.error("Server failed to start within 30 seconds");
+  logError("Server failed to start within 30 seconds");
   serverProc.kill();
   logStream.end();
   process.exit(1);
 }
 
-console.log("\n--- Server ready, running Playwright tests ---\n");
+log("\n--- Server ready, running Playwright tests ---\n");
 
 // Pass through any additional arguments to playwright
 const playwrightArgs = process.argv.slice(2);
 
-try {
-  // Run playwright tests from demo directory
-  // PLAYWRIGHT_HTML_OPEN=never prevents the HTML report from auto-opening in browser
-  $.cwd(demoDir);
-  $.env({ ...process.env, PLAYWRIGHT_HTML_OPEN: "never" });
-  const result = await $`bunx playwright test ${playwrightArgs}`.nothrow();
+// Run playwright tests from demo directory
+// PLAYWRIGHT_HTML_OPEN=never prevents the HTML report from auto-opening in browser
+const playwrightProc = spawn("npx", ["playwright", "test", ...playwrightArgs], {
+  cwd: demoDir,
+  stdio: ["ignore", "pipe", "pipe"],
+  env: { ...process.env, PLAYWRIGHT_HTML_OPEN: "never" },
+});
 
-  console.log("\n--- Tests complete ---");
-  console.log(`Server logs saved to: ${logFile}`);
+playwrightProc.stdout?.on("data", (data: Buffer) => {
+  process.stdout.write(data);
+  logStream.write(data);
+});
+
+playwrightProc.stderr?.on("data", (data: Buffer) => {
+  process.stderr.write(data);
+  logStream.write(data);
+});
+
+playwrightProc.on("close", (code) => {
+  log("\n--- Tests complete ---");
+  log(`Server logs saved to: ${logFile}`);
 
   // Cleanup
   serverProc.kill();
   logStream.end();
 
-  process.exit(result.exitCode);
-} catch (error) {
+  process.exit(code ?? 1);
+});
+
+playwrightProc.on("error", (error) => {
+  logError("Failed to run playwright: " + error);
   serverProc.kill();
   logStream.end();
-  throw error;
-}
+  process.exit(1);
+});

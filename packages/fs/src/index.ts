@@ -53,8 +53,8 @@ export interface FileSystemHandler {
 }
 
 export interface FsOptions {
-  /** Handler for file system operations */
-  handler: FileSystemHandler;
+  /** Get a file system handler for the given path */
+  getDirectory(path: string): Promise<FileSystemHandler>;
 }
 
 export interface FsHandle {
@@ -85,22 +85,25 @@ function getInstanceStateMapForContext(
 
 interface DirectoryHandleState {
   instanceId: number;
-  path: string; // Full path from root, e.g., "/" or "/dir/subdir"
+  path: string; // Path within handler's root, e.g., "/" or "/subdir"
   name: string; // Directory name, e.g., "" for root or "subdir"
+  handler: FileSystemHandler; // Handler for this directory tree
 }
 
 interface FileHandleState {
   instanceId: number;
-  path: string; // Full path from root, e.g., "/dir/file.txt"
+  path: string; // Path within handler's root, e.g., "/file.txt"
   name: string; // File name, e.g., "file.txt"
+  handler: FileSystemHandler; // Handler for this file
 }
 
 interface WritableStreamState {
   instanceId: number;
-  filePath: string; // Full path to the file being written
+  filePath: string; // Path to the file being written
   position: number; // Current write position (for seek)
   buffer: Uint8Array[]; // Buffered writes before close
   closed: boolean; // Whether stream has been closed
+  handler: FileSystemHandler; // Handler for this stream
 }
 
 // ============================================================================
@@ -109,25 +112,9 @@ interface WritableStreamState {
 
 function setupFileSystemDirectoryHandle(
   context: ivm.Context,
-  stateMap: Map<number, unknown>,
-  handler: FileSystemHandler
+  stateMap: Map<number, unknown>
 ): void {
   const global = context.global;
-
-  // Constructor callback
-  global.setSync(
-    "__FileSystemDirectoryHandle_construct",
-    new ivm.Callback((path: string, name: string) => {
-      const instanceId = nextInstanceId++;
-      const state: DirectoryHandleState = {
-        instanceId,
-        path,
-        name,
-      };
-      stateMap.set(instanceId, state);
-      return instanceId;
-    })
-  );
 
   // Property getters
   global.setSync(
@@ -158,7 +145,7 @@ function setupFileSystemDirectoryHandle(
       const childPath = state.path === "/" ? `/${name}` : `${state.path}/${name}`;
 
       try {
-        await handler.getFileHandle(childPath, options);
+        await state.handler.getFileHandle(childPath, options);
       } catch (err) {
         if (err instanceof Error) {
           throw new Error(err.message);
@@ -166,12 +153,13 @@ function setupFileSystemDirectoryHandle(
         throw err;
       }
 
-      // Create file handle state
+      // Create file handle state with parent's handler
       const fileInstanceId = nextInstanceId++;
       const fileState: FileHandleState = {
         instanceId: fileInstanceId,
         path: childPath,
         name,
+        handler: state.handler,
       };
       stateMap.set(fileInstanceId, fileState);
 
@@ -192,7 +180,7 @@ function setupFileSystemDirectoryHandle(
       const childPath = state.path === "/" ? `/${name}` : `${state.path}/${name}`;
 
       try {
-        await handler.getDirectoryHandle(childPath, options);
+        await state.handler.getDirectoryHandle(childPath, options);
       } catch (err) {
         if (err instanceof Error) {
           throw new Error(err.message);
@@ -200,12 +188,13 @@ function setupFileSystemDirectoryHandle(
         throw err;
       }
 
-      // Create directory handle state
+      // Create directory handle state with parent's handler
       const dirInstanceId = nextInstanceId++;
       const dirState: DirectoryHandleState = {
         instanceId: dirInstanceId,
         path: childPath,
         name,
+        handler: state.handler,
       };
       stateMap.set(dirInstanceId, dirState);
 
@@ -226,7 +215,7 @@ function setupFileSystemDirectoryHandle(
       const childPath = state.path === "/" ? `/${name}` : `${state.path}/${name}`;
 
       try {
-        await handler.removeEntry(childPath, options);
+        await state.handler.removeEntry(childPath, options);
       } catch (err) {
         if (err instanceof Error) {
           throw new Error(err.message);
@@ -245,7 +234,7 @@ function setupFileSystemDirectoryHandle(
     }
 
     try {
-      const entries = await handler.readDirectory(state.path);
+      const entries = await state.handler.readDirectory(state.path);
 
       // Create handle states for each entry and return with instance IDs
       const result = entries.map((entry) => {
@@ -257,6 +246,7 @@ function setupFileSystemDirectoryHandle(
             instanceId: entryId,
             path: entryPath,
             name: entry.name,
+            handler: state.handler,
           };
           stateMap.set(entryId, fileState);
         } else {
@@ -264,6 +254,7 @@ function setupFileSystemDirectoryHandle(
             instanceId: entryId,
             path: entryPath,
             name: entry.name,
+            handler: state.handler,
           };
           stateMap.set(entryId, dirState);
         }
@@ -478,25 +469,9 @@ function setupFileSystemDirectoryHandle(
 
 function setupFileSystemFileHandle(
   context: ivm.Context,
-  stateMap: Map<number, unknown>,
-  handler: FileSystemHandler
+  stateMap: Map<number, unknown>
 ): void {
   const global = context.global;
-
-  // Constructor callback
-  global.setSync(
-    "__FileSystemFileHandle_construct",
-    new ivm.Callback((path: string, name: string) => {
-      const instanceId = nextInstanceId++;
-      const state: FileHandleState = {
-        instanceId,
-        path,
-        name,
-      };
-      stateMap.set(instanceId, state);
-      return instanceId;
-    })
-  );
 
   // Property getters
   global.setSync(
@@ -523,7 +498,7 @@ function setupFileSystemFileHandle(
     }
 
     try {
-      const fileData = await handler.readFile(state.path);
+      const fileData = await state.handler.readFile(state.path);
       return JSON.stringify({
         name: state.name,
         data: Array.from(fileData.data),
@@ -548,7 +523,7 @@ function setupFileSystemFileHandle(
         throw new Error("[NotFoundError]File handle not found");
       }
 
-      // Create writable stream state
+      // Create writable stream state with handler reference
       const streamInstanceId = nextInstanceId++;
       const streamState: WritableStreamState = {
         instanceId: streamInstanceId,
@@ -556,6 +531,7 @@ function setupFileSystemFileHandle(
         position: 0,
         buffer: [],
         closed: false,
+        handler: state.handler,
       };
       stateMap.set(streamInstanceId, streamState);
 
@@ -674,8 +650,7 @@ function setupFileSystemFileHandle(
 
 function setupFileSystemWritableFileStream(
   context: ivm.Context,
-  stateMap: Map<number, unknown>,
-  handler: FileSystemHandler
+  stateMap: Map<number, unknown>
 ): void {
   const global = context.global;
 
@@ -700,7 +675,7 @@ function setupFileSystemWritableFileStream(
 
       // Write to handler
       try {
-        await handler.writeFile(state.filePath, data, state.position);
+        await state.handler.writeFile(state.filePath, data, state.position);
         state.position += data.length;
       } catch (err) {
         if (err instanceof Error) {
@@ -738,7 +713,7 @@ function setupFileSystemWritableFileStream(
     }
 
     try {
-      await handler.truncateFile(state.filePath, size);
+      await state.handler.truncateFile(state.filePath, size);
       // Adjust position if it's beyond the new size
       if (state.position > size) {
         state.position = size;
@@ -969,6 +944,47 @@ function setupNavigatorStorage(
 }
 
 // ============================================================================
+// Global getDirectory(path) Implementation
+// ============================================================================
+
+function setupGetDirectoryGlobal(
+  context: ivm.Context,
+  stateMap: Map<number, unknown>,
+  options: FsOptions
+): void {
+  const global = context.global;
+
+  // getDirectory - async reference that creates directory handle at specified path
+  const getDirectoryRef = new ivm.Reference(async (path: string) => {
+    // Get handler for this path from the options factory
+    const handler = await options.getDirectory(path);
+
+    const instanceId = nextInstanceId++;
+    // Path is "/" since handler is rooted at the requested path
+    const state: DirectoryHandleState = {
+      instanceId,
+      path: "/",
+      name: path.split("/").filter(Boolean).pop() || "",
+      handler,
+    };
+    stateMap.set(instanceId, state);
+    return instanceId;
+  });
+  global.setSync("__getDirectory_ref", getDirectoryRef);
+
+  // Inject global getDirectory (async)
+  const getDirectoryCode = `
+(function() {
+  globalThis.getDirectory = async function(path) {
+    const instanceId = await __getDirectory_ref.applySyncPromise(undefined, [path]);
+    return FileSystemDirectoryHandle._fromInstanceId(instanceId);
+  };
+})();
+`;
+  context.evalSync(getDirectoryCode);
+}
+
+// ============================================================================
 // Main Setup Function
 // ============================================================================
 
@@ -979,19 +995,14 @@ function setupNavigatorStorage(
  *
  * @example
  * const handle = await setupFs(context, {
- *   handler: {
- *     async getFileHandle(path, options) {
- *       // Implementation
- *     },
- *     async getDirectoryHandle(path, options) {
- *       // Implementation
- *     },
- *     // ... other methods
+ *   getDirectory: async (path) => {
+ *     // Return a FileSystemHandler rooted at the given path
+ *     return createNodeFileSystemHandler(`./data${path}`);
  *   }
  * });
  *
  * await context.eval(`
- *   const root = await navigator.storage.getDirectory();
+ *   const root = await getDirectory("/uploads");
  *   const fileHandle = await root.getFileHandle("test.txt", { create: true });
  *   const writable = await fileHandle.createWritable();
  *   await writable.write("hello world");
@@ -1006,19 +1017,18 @@ export async function setupFs(
   await setupCore(context);
 
   const stateMap = getInstanceStateMapForContext(context);
-  const handler = options.handler;
 
   // Setup FileSystemDirectoryHandle
-  setupFileSystemDirectoryHandle(context, stateMap, handler);
+  setupFileSystemDirectoryHandle(context, stateMap);
 
   // Setup FileSystemFileHandle
-  setupFileSystemFileHandle(context, stateMap, handler);
+  setupFileSystemFileHandle(context, stateMap);
 
   // Setup FileSystemWritableFileStream
-  setupFileSystemWritableFileStream(context, stateMap, handler);
+  setupFileSystemWritableFileStream(context, stateMap);
 
-  // Setup navigator.storage.getDirectory()
-  setupNavigatorStorage(context, stateMap);
+  // Setup global getDirectory(path)
+  setupGetDirectoryGlobal(context, stateMap, options);
 
   return {
     dispose() {

@@ -384,101 +384,103 @@ describe("@ricsam/isolate-runtime", () => {
   });
 
   describe("fs integration", () => {
-    test("navigator.storage.getDirectory works when handler provided", async () => {
+    test("getDirectory works when handler provided", async () => {
       const files = new Map<
         string,
         { data: Uint8Array; lastModified: number; type: string }
       >();
       const directories = new Set<string>(["/"]); // Root directory exists
 
+      const createHandler = () => ({
+        async getFileHandle(path: string, options?: { create?: boolean }) {
+          if (!files.has(path) && !options?.create) {
+            throw new Error("[NotFoundError]File not found");
+          }
+          if (!files.has(path) && options?.create) {
+            files.set(path, {
+              data: new Uint8Array(0),
+              lastModified: Date.now(),
+              type: "",
+            });
+          }
+        },
+        async getDirectoryHandle(path: string, options?: { create?: boolean }) {
+          if (!directories.has(path) && !options?.create) {
+            throw new Error("[NotFoundError]Directory not found");
+          }
+          if (options?.create) {
+            directories.add(path);
+          }
+        },
+        async removeEntry(path: string) {
+          files.delete(path);
+          directories.delete(path);
+        },
+        async readDirectory(path: string) {
+          const entries: Array<{ name: string; kind: "file" | "directory" }> =
+            [];
+          for (const filePath of files.keys()) {
+            const dir = filePath.substring(0, filePath.lastIndexOf("/")) || "/";
+            if (dir === path) {
+              entries.push({
+                name: filePath.substring(filePath.lastIndexOf("/") + 1),
+                kind: "file",
+              });
+            }
+          }
+          for (const dirPath of directories) {
+            if (dirPath !== path && dirPath.startsWith(path)) {
+              const relativePath = dirPath.substring(path.length);
+              const parts = relativePath.split("/").filter(Boolean);
+              if (parts.length === 1) {
+                entries.push({ name: parts[0], kind: "directory" });
+              }
+            }
+          }
+          return entries;
+        },
+        async readFile(path: string) {
+          const file = files.get(path);
+          if (!file) {
+            throw new Error("[NotFoundError]File not found");
+          }
+          return {
+            data: file.data,
+            size: file.data.length,
+            lastModified: file.lastModified,
+            type: file.type,
+          };
+        },
+        async writeFile(path: string, data: Uint8Array) {
+          const existing = files.get(path);
+          files.set(path, {
+            data,
+            lastModified: Date.now(),
+            type: existing?.type ?? "",
+          });
+        },
+        async truncateFile(path: string, size: number) {
+          const file = files.get(path);
+          if (file) {
+            file.data = file.data.slice(0, size);
+          }
+        },
+        async getFileMetadata(path: string) {
+          const file = files.get(path);
+          if (!file) {
+            throw new Error("[NotFoundError]File not found");
+          }
+          return {
+            size: file.data.length,
+            lastModified: file.lastModified,
+            type: file.type,
+          };
+        },
+      });
+
       const runtime = await createRuntime({
         fs: {
-          handler: {
-            async getFileHandle(path, options) {
-              if (!files.has(path) && !options?.create) {
-                throw new Error("[NotFoundError]File not found");
-              }
-              if (!files.has(path) && options?.create) {
-                files.set(path, {
-                  data: new Uint8Array(0),
-                  lastModified: Date.now(),
-                  type: "",
-                });
-              }
-            },
-            async getDirectoryHandle(path, options) {
-              if (!directories.has(path) && !options?.create) {
-                throw new Error("[NotFoundError]Directory not found");
-              }
-              if (options?.create) {
-                directories.add(path);
-              }
-            },
-            async removeEntry(path) {
-              files.delete(path);
-              directories.delete(path);
-            },
-            async readDirectory(path) {
-              const entries: Array<{ name: string; kind: "file" | "directory" }> =
-                [];
-              for (const filePath of files.keys()) {
-                const dir = filePath.substring(0, filePath.lastIndexOf("/")) || "/";
-                if (dir === path) {
-                  entries.push({
-                    name: filePath.substring(filePath.lastIndexOf("/") + 1),
-                    kind: "file",
-                  });
-                }
-              }
-              for (const dirPath of directories) {
-                if (dirPath !== path && dirPath.startsWith(path)) {
-                  const relativePath = dirPath.substring(path.length);
-                  const parts = relativePath.split("/").filter(Boolean);
-                  if (parts.length === 1) {
-                    entries.push({ name: parts[0], kind: "directory" });
-                  }
-                }
-              }
-              return entries;
-            },
-            async readFile(path) {
-              const file = files.get(path);
-              if (!file) {
-                throw new Error("[NotFoundError]File not found");
-              }
-              return {
-                data: file.data,
-                size: file.data.length,
-                lastModified: file.lastModified,
-                type: file.type,
-              };
-            },
-            async writeFile(path, data) {
-              const existing = files.get(path);
-              files.set(path, {
-                data,
-                lastModified: Date.now(),
-                type: existing?.type ?? "",
-              });
-            },
-            async truncateFile(path, size) {
-              const file = files.get(path);
-              if (file) {
-                file.data = file.data.slice(0, size);
-              }
-            },
-            async getFileMetadata(path) {
-              const file = files.get(path);
-              if (!file) {
-                throw new Error("[NotFoundError]File not found");
-              }
-              return {
-                size: file.data.length,
-                lastModified: file.lastModified,
-                type: file.type,
-              };
-            },
-          },
+          getDirectory: async () => createHandler(),
         },
       });
 
@@ -486,7 +488,7 @@ describe("@ricsam/isolate-runtime", () => {
         const result = await runtime.context.eval(
           `
           (async () => {
-            const root = await navigator.storage.getDirectory();
+            const root = await getDirectory("/");
             return root.kind;
           })()
         `,

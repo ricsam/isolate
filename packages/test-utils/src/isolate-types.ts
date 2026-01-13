@@ -401,7 +401,7 @@ export const FS_TYPES = `/**
  *
  * @example
  * // Typecheck isolate code with file system access
- * const root = await fs.getDirectory("/data");
+ * const root = await getDirectory("/data");
  * const fileHandle = await root.getFileHandle("config.json");
  * const file = await fileHandle.getFile();
  * const content = await file.text();
@@ -411,30 +411,24 @@ export {};
 
 declare global {
   // ============================================
-  // fs namespace - Isolate-specific entry point
+  // getDirectory - Isolate-specific entry point
   // ============================================
 
   /**
-   * File System namespace providing access to the file system.
-   * This is the isolate-specific entry point (differs from browser's navigator.storage.getDirectory()).
+   * Get a directory handle for the given path.
+   *
+   * The host controls which paths are accessible. Invalid or unauthorized
+   * paths will throw an error.
+   *
+   * @param path - The path to request from the host
+   * @returns A promise resolving to a directory handle
+   * @throws If the path is not allowed or doesn't exist
+   *
+   * @example
+   * const root = await getDirectory("/");
+   * const dataDir = await getDirectory("/data");
    */
-  namespace fs {
-    /**
-     * Get a directory handle for the given path.
-     *
-     * The host controls which paths are accessible. Invalid or unauthorized
-     * paths will throw an error.
-     *
-     * @param path - The path to request from the host
-     * @returns A promise resolving to a directory handle
-     * @throws If the path is not allowed or doesn't exist
-     *
-     * @example
-     * const root = await fs.getDirectory("/");
-     * const dataDir = await fs.getDirectory("/data");
-     */
-    function getDirectory(path: string): Promise<FileSystemDirectoryHandle>;
-  }
+  function getDirectory(path: string): Promise<FileSystemDirectoryHandle>;
 
   // ============================================
   // File System Access API

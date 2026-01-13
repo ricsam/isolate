@@ -175,7 +175,7 @@ function getMessageText(messageText: unknown): string {
  * @example
  * // Check code that uses the file system API
  * const result = typecheckIsolateCode(`
- *   const root = await fs.getDirectory("/data");
+ *   const root = await getDirectory("/data");
  *   const file = await root.getFileHandle("config.json");
  * `, { include: ["core", "fs"] });
  */

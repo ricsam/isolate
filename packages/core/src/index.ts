@@ -980,6 +980,13 @@ async function injectTextEncoding(context: ivm.Context): Promise<void> {
   const code = `
 (function() {
   class TextEncoder {
+    constructor(encoding = 'utf-8') {
+      const normalizedEncoding = String(encoding).toLowerCase().trim();
+      if (normalizedEncoding !== 'utf-8' && normalizedEncoding !== 'utf8') {
+        throw new RangeError('TextEncoder only supports UTF-8 encoding');
+      }
+    }
+
     get encoding() { return 'utf-8'; }
 
     encode(input = '') {
@@ -2402,6 +2409,17 @@ async function injectStreams(
       return this.#closePromise;
     }
 
+    _abort(reason) {
+      this.#state = 'errored';
+      this.#storedError = reason;
+      // Reject any pending write promises
+      for (const pending of this.#writeQueue) {
+        pending.reject?.(reason);
+      }
+      this.#writeQueue = [];
+      return Promise.resolve(this.#underlyingSink?.abort?.(reason));
+    }
+
     getWriter() {
       if (this.#writer) {
         throw new TypeError('WritableStream is already locked');
@@ -2424,11 +2442,38 @@ async function injectStreams(
       this.#writer = writer;
     }
 
-    async _write(chunk) {
+    _write(chunk) {
       if (this.#state !== 'writable') {
-        throw this.#storedError || new TypeError('Stream is not writable');
+        return Promise.reject(this.#storedError || new TypeError('Stream is not writable'));
       }
-      return this.#underlyingSink?.write?.(chunk, this.#controller);
+
+      let resolve, reject;
+      const pendingPromise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+
+      const pending = { resolve, reject };
+      this.#writeQueue.push(pending);
+
+      const cleanup = () => {
+        const index = this.#writeQueue.indexOf(pending);
+        if (index !== -1) {
+          this.#writeQueue.splice(index, 1);
+        }
+      };
+
+      Promise.resolve(this.#underlyingSink?.write?.(chunk, this.#controller))
+        .then((result) => {
+          cleanup();
+          resolve(result);
+        })
+        .catch((e) => {
+          cleanup();
+          reject(e);
+        });
+
+      return pendingPromise;
     }
   }
 
@@ -2470,7 +2515,7 @@ async function injectStreams(
       if (!this.#stream) {
         return Promise.reject(new TypeError('Writer has been released'));
       }
-      return this.#stream.abort(reason);
+      return this.#stream._abort(reason);
     }
 
     close() {

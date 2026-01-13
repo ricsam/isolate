@@ -51,12 +51,12 @@ export function runTestCode(context: ivm.Context, code: string): TestRunner {
         };
 
         globalThis.__serializeForLog__ = function(value) {
-          if (value instanceof Headers) {
+          if (typeof Headers !== 'undefined' && value instanceof Headers) {
             const pairs = [];
             for (const [k, v] of value) pairs.push([k, v]);
             return { __type__: 'Headers', pairs };
           }
-          if (value instanceof Request) {
+          if (typeof Request !== 'undefined' && value instanceof Request) {
             const headers = [];
             for (const [k, v] of value.headers) headers.push([k, v]);
             return {
@@ -73,7 +73,7 @@ export function runTestCode(context: ivm.Context, code: string): TestRunner {
               integrity: value.integrity,
             };
           }
-          if (value instanceof Response) {
+          if (typeof Response !== 'undefined' && value instanceof Response) {
             const headers = [];
             for (const [k, v] of value.headers) headers.push([k, v]);
             return {
@@ -87,10 +87,10 @@ export function runTestCode(context: ivm.Context, code: string): TestRunner {
               url: value.url,
             };
           }
-          if (value instanceof FormData) {
+          if (typeof FormData !== 'undefined' && value instanceof FormData) {
             const entries = [];
             for (const [k, v] of value) {
-              if (v instanceof File) {
+              if (typeof File !== 'undefined' && v instanceof File) {
                 entries.push([k, { __type__: 'File', name: v.name, type: v.type, lastModified: v.lastModified }]);
               } else {
                 entries.push([k, v]);

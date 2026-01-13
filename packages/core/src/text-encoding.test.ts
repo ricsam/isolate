@@ -46,30 +46,30 @@ describe("TextEncoder", () => {
 
   describe("encode()", () => {
     test("encodes ASCII string", async () => {
-      const result = await context.eval(`
-        Array.from(new TextEncoder().encode("hello"))
-      `);
+      const result = JSON.parse(await context.eval(`
+        JSON.stringify(Array.from(new TextEncoder().encode("hello")))
+      `) as string);
       assert.deepStrictEqual(result, [104, 101, 108, 108, 111]);
     });
 
     test("encodes UTF-8 2-byte character", async () => {
-      const result = await context.eval(`
-        Array.from(new TextEncoder().encode("é"))
-      `);
+      const result = JSON.parse(await context.eval(`
+        JSON.stringify(Array.from(new TextEncoder().encode("é")))
+      `) as string);
       assert.deepStrictEqual(result, [0xC3, 0xA9]);
     });
 
     test("encodes UTF-8 3-byte character (Chinese)", async () => {
-      const result = await context.eval(`
-        Array.from(new TextEncoder().encode("中"))
-      `);
+      const result = JSON.parse(await context.eval(`
+        JSON.stringify(Array.from(new TextEncoder().encode("中")))
+      `) as string);
       assert.deepStrictEqual(result, [0xE4, 0xB8, 0xAD]);
     });
 
     test("encodes emoji (4-byte surrogate pair)", async () => {
-      const result = await context.eval(`
-        Array.from(new TextEncoder().encode("😀"))
-      `);
+      const result = JSON.parse(await context.eval(`
+        JSON.stringify(Array.from(new TextEncoder().encode("😀")))
+      `) as string);
       assert.deepStrictEqual(result, [0xF0, 0x9F, 0x98, 0x80]);
     });
 

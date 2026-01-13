@@ -40,7 +40,7 @@ serve({
           return Response.json({ error: "No file provided" }, { status: 400 });
         }
 
-        const root = await fs.getDirectory("/uploads");
+        const root = await getDirectory("/uploads");
         // FormData file entries are WHATWG File instances with standard properties
         const fileHandle = await root.getFileHandle(file.name, { create: true });
         const writable = await fileHandle.createWritable();
@@ -65,7 +65,7 @@ serve({
     // GET /api/files - List uploaded files
     if (url.pathname === "/api/files" && request.method === "GET") {
       try {
-        const root = await fs.getDirectory("/uploads");
+        const root = await getDirectory("/uploads");
         const files = [];
 
         // Use keys() to get filenames, then getFileHandle() to get each file
@@ -97,7 +97,7 @@ serve({
     if (url.pathname.startsWith("/api/files/") && request.method === "GET") {
       try {
         const filename = decodeURIComponent(url.pathname.slice("/api/files/".length));
-        const root = await fs.getDirectory("/uploads");
+        const root = await getDirectory("/uploads");
         const fileHandle = await root.getFileHandle(filename);
         const file = await fileHandle.getFile();
 
@@ -116,7 +116,7 @@ serve({
     if (url.pathname.startsWith("/api/files/") && request.method === "DELETE") {
       try {
         const filename = decodeURIComponent(url.pathname.slice("/api/files/".length));
-        const root = await fs.getDirectory("/uploads");
+        const root = await getDirectory("/uploads");
         await root.removeEntry(filename);
 
         return Response.json({ success: true, deleted: filename });

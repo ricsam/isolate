@@ -51,12 +51,8 @@ const runtime = await createRuntime({
     onFetch: async (request) => fetch(request), // Proxy to host
   },
   fs: {
-    handler: {
-      // Implement FileSystemHandler interface
-      getDirectory: async (path) => {
-        // Return a FileSystemDirectoryHandle implementation
-      },
-    },
+    // Return a FileSystemHandler for the given directory path
+    getDirectory: async (path) => createNodeFileSystemHandler(`./data${path}`),
   },
 });
 
@@ -67,7 +63,7 @@ await runtime.context.eval(`
       const url = new URL(request.url);
 
       if (url.pathname === "/api/files") {
-        const root = await fs.getDirectory("/data");
+        const root = await getDirectory("/data");
         const entries = [];
         for await (const [name] of root.entries()) {
           entries.push(name);
@@ -554,20 +550,19 @@ File System Access API (OPFS-compatible).
 import { setupFs } from "@ricsam/isolate-fs";
 
 const handle = await setupFs(context, {
-  handler: {
-    getDirectory: async (path) => {
-      // Validate path access and return FileSystemDirectoryHandle
-      if (!path.startsWith("/allowed")) {
-        throw new Error("Access denied");
-      }
-      return createDirectoryHandle(`./sandbox${path}`);
-    },
+  // Return a FileSystemHandler for the given directory path
+  getDirectory: async (path) => {
+    // Validate path access
+    if (!path.startsWith("/allowed")) {
+      throw new Error("Access denied");
+    }
+    return createNodeFileSystemHandler(`./sandbox${path}`);
   },
 });
 ```
 
 **Injected Globals:**
-- `fs.getDirectory(path)` - Entry point for file system access
+- `getDirectory(path)` - Entry point for file system access
 - `FileSystemDirectoryHandle`, `FileSystemFileHandle`
 - `FileSystemWritableFileStream`
 
@@ -575,7 +570,7 @@ const handle = await setupFs(context, {
 
 ```javascript
 // Get directory handle
-const root = await fs.getDirectory("/data");
+const root = await getDirectory("/data");
 
 // Read a file
 const fileHandle = await root.getFileHandle("config.json");
@@ -624,9 +619,7 @@ const runtime = await createRuntime({
   },
   // File System API (optional)
   fs: {
-    handler: {
-      getDirectory: async (path) => createDirectoryHandle(path),
-    },
+    getDirectory: async (path) => createNodeFileSystemHandler(`./data${path}`),
   },
 });
 
@@ -817,7 +810,7 @@ The type definitions are also exported as strings for custom use cases:
 import {
   CORE_TYPES,   // ReadableStream, Blob, File, URL, etc.
   FETCH_TYPES,  // fetch, Request, Response, serve, etc.
-  FS_TYPES,     // fs.getDirectory, FileSystemHandle, etc.
+  FS_TYPES,     // getDirectory, FileSystemHandle, etc.
   CRYPTO_TYPES, // crypto.subtle, CryptoKey, etc.
   TYPE_DEFINITIONS  // All types as { core, fetch, fs, crypto, ... }
 } from "@ricsam/isolate-test-utils";

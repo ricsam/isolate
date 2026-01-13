@@ -203,12 +203,12 @@ describe("@ricsam/isolate-fs", () => {
 
   describe("FileSystemDirectoryHandle", () => {
     test("getFileHandle creates new file", async () => {
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("test.txt", { create: true });
           return JSON.stringify({ kind: fileHandle.kind, name: fileHandle.name });
         })();
@@ -230,12 +230,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "text/plain",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("existing.txt");
           const file = fileHandle.getFile();
           const text = file.text();
@@ -249,12 +249,12 @@ describe("@ricsam/isolate-fs", () => {
     });
 
     test("getDirectoryHandle creates new directory", async () => {
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const dirHandle = root.getDirectoryHandle("subdir", { create: true });
           return JSON.stringify({ kind: dirHandle.kind, name: dirHandle.name });
         })();
@@ -275,12 +275,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           root.removeEntry("to-delete.txt");
         })();
       `,
@@ -299,12 +299,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           root.removeEntry("parent", { recursive: true });
         })();
       `,
@@ -329,12 +329,12 @@ describe("@ricsam/isolate-fs", () => {
       });
       mockFs.directories.add("/subdir");
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const entries = [];
           for await (const [name, handle] of root.entries()) {
             entries.push({ name, kind: handle.kind });
@@ -356,12 +356,12 @@ describe("@ricsam/isolate-fs", () => {
       mockFs.files.set("/a.txt", { data: new Uint8Array(), lastModified: Date.now(), type: "" });
       mockFs.files.set("/b.txt", { data: new Uint8Array(), lastModified: Date.now(), type: "" });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const keys = [];
           for await (const name of root.keys()) {
             keys.push(name);
@@ -379,12 +379,12 @@ describe("@ricsam/isolate-fs", () => {
     test("values() returns handles", async () => {
       mockFs.files.set("/test.txt", { data: new Uint8Array(), lastModified: Date.now(), type: "" });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const handles = [];
           for await (const handle of root.values()) {
             handles.push({ name: handle.name, kind: handle.kind });
@@ -410,12 +410,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "text/plain",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("myfile.txt");
           const file = fileHandle.getFile();
           const text = await file.text();
@@ -446,12 +446,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("writable.txt");
           const writable = fileHandle.createWritable();
           return typeof writable.write === 'function' && typeof writable.close === 'function';
@@ -472,12 +472,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("test.txt");
           const writable = fileHandle.createWritable();
           writable.write("hello world");
@@ -499,12 +499,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("binary.dat");
           const writable = fileHandle.createWritable();
           const buffer = new Uint8Array([1, 2, 3, 4, 5]);
@@ -527,12 +527,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("test.txt");
           const writable = fileHandle.createWritable();
           writable.write({ type: 'write', data: 'XXXXX', position: 6 });
@@ -554,12 +554,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("test.txt");
           const writable = fileHandle.createWritable();
           writable.write("start");
@@ -585,12 +585,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("test.txt");
           const writable = fileHandle.createWritable();
           writable.truncate(5);
@@ -612,13 +612,13 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       // Test that writing after close throws
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("test.txt");
           const writable = fileHandle.createWritable();
           writable.write("initial");
@@ -648,12 +648,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "text/plain",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("stream.txt");
           const file = fileHandle.getFile();
           const stream = file.stream();
@@ -674,12 +674,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "text/plain",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const fileHandle = root.getFileHandle("chunks.txt");
           const file = fileHandle.getFile();
           const stream = file.stream();
@@ -706,13 +706,13 @@ describe("@ricsam/isolate-fs", () => {
 
   describe("error handling", () => {
     test("getFileHandle throws NotFoundError for missing file", async () => {
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
           try {
-            const root = navigator.storage.getDirectory();
+            const root = await getDirectory("/");
             root.getFileHandle("nonexistent.txt");
             return "no error";
           } catch (e) {
@@ -727,13 +727,13 @@ describe("@ricsam/isolate-fs", () => {
     });
 
     test("getDirectoryHandle throws NotFoundError for missing directory", async () => {
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
           try {
-            const root = navigator.storage.getDirectory();
+            const root = await getDirectory("/");
             root.getDirectoryHandle("nonexistent");
             return "no error";
           } catch (e) {
@@ -755,13 +755,13 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
           try {
-            const root = navigator.storage.getDirectory();
+            const root = await getDirectory("/");
             root.removeEntry("nonempty");
             return "no error";
           } catch (e) {
@@ -780,12 +780,12 @@ describe("@ricsam/isolate-fs", () => {
     test("returns true for same file", async () => {
       mockFs.files.set("/same.txt", { data: new Uint8Array(), lastModified: Date.now(), type: "" });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const handle1 = root.getFileHandle("same.txt");
           const handle2 = root.getFileHandle("same.txt");
           return handle1.isSameEntry(handle2);
@@ -801,12 +801,12 @@ describe("@ricsam/isolate-fs", () => {
       mockFs.files.set("/file1.txt", { data: new Uint8Array(), lastModified: Date.now(), type: "" });
       mockFs.files.set("/file2.txt", { data: new Uint8Array(), lastModified: Date.now(), type: "" });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const handle1 = root.getFileHandle("file1.txt");
           const handle2 = root.getFileHandle("file2.txt");
           return handle1.isSameEntry(handle2);
@@ -829,12 +829,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const parent = root.getDirectoryHandle("parent");
           const child = parent.getDirectoryHandle("child");
           const file = child.getFileHandle("file.txt");
@@ -859,12 +859,12 @@ describe("@ricsam/isolate-fs", () => {
         type: "",
       });
 
-      await setupFs(context, { handler: mockFs });
+      await setupFs(context, { getDirectory: async () => mockFs });
 
       const result = await context.eval(
         `
         (async () => {
-          const root = navigator.storage.getDirectory();
+          const root = await getDirectory("/");
           const dir1 = root.getDirectoryHandle("dir1");
           const dir2 = root.getDirectoryHandle("dir2");
           const file = dir2.getFileHandle("file.txt");

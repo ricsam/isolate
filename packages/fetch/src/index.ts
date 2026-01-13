@@ -838,9 +838,8 @@ function setupResponse(
       return Array.from(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
     }
     if (body instanceof Blob) {
-      // For Blob, we need to get the bytes synchronously
-      // This is a limitation - we'll convert to string for now
-      throw new TypeError('Blob body requires async handling');
+      // Mark as needing async Blob handling - will be read in constructor
+      return { __isBlob: true, blob: body };
     }
     // Handle ReadableStream (both native and host-backed)
     if (body instanceof ReadableStream || body instanceof HostBackedReadableStream) {
@@ -854,6 +853,7 @@ function setupResponse(
     #instanceId;
     #headers;
     #streamId = null;
+    #blobInitPromise = null; // For async Blob body initialization
 
     constructor(body, init = {}) {
       // Handle internal construction from instance ID
@@ -865,6 +865,37 @@ function setupResponse(
       }
 
       const preparedBody = __prepareBody(body);
+
+      // Handle Blob body - create streaming response and push blob data
+      if (preparedBody && preparedBody.__isBlob) {
+        this.#streamId = __Stream_create();
+        const status = init.status ?? 200;
+        const statusText = init.statusText ?? '';
+        const headers = new Headers(init.headers);
+        const headersArray = Array.from(headers.entries());
+
+        this.#instanceId = __Response_constructStreaming(
+          this.#streamId,
+          status,
+          statusText,
+          headersArray
+        );
+        this.#headers = headers;
+
+        // Start async blob initialization and stream pumping
+        const streamId = this.#streamId;
+        const blob = preparedBody.blob;
+        this.#blobInitPromise = (async () => {
+          try {
+            const buffer = await blob.arrayBuffer();
+            __Stream_push(streamId, Array.from(new Uint8Array(buffer)));
+            __Stream_close(streamId);
+          } catch (error) {
+            __Stream_error(streamId, String(error));
+          }
+        })();
+        return;
+      }
 
       // Handle streaming body
       if (preparedBody && preparedBody.__isStream) {
@@ -1003,6 +1034,33 @@ function setupResponse(
       } catch (err) {
         throw __decodeError(err);
       }
+
+      // For streaming responses (including Blob bodies), consume the stream
+      if (this.#streamId !== null) {
+        // Wait for blob init to complete if needed
+        if (this.#blobInitPromise) {
+          await this.#blobInitPromise;
+          this.#blobInitPromise = null;
+        }
+
+        const reader = this.body.getReader();
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) chunks.push(value);
+        }
+        // Concatenate all chunks
+        const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+        const result = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          result.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return result.buffer;
+      }
+
       return __Response_arrayBuffer(this.#instanceId);
     }
 
