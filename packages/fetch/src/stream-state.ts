@@ -1,32 +1,3 @@
-# Plan 01: Stream State Registry
-
-> **Status: ✅ COMPLETE**
->
-> Implemented in `packages/fetch/src/stream-state.ts` with 28 passing unit tests.
-
-## Overview
-
-Create a host-side registry to manage stream state (queues, flags, waiters) that can be accessed synchronously from both host and isolate code.
-
-## Problem
-
-The isolate cannot directly access JavaScript object internals. To implement streaming, we need a shared state mechanism where:
-- Host can push chunks to a queue
-- Isolate can pull chunks from the queue (blocking if empty)
-- Both sides can check/set closed/error states
-
-## Solution
-
-Create a `StreamStateRegistry` that:
-1. Stores stream state by numeric ID (like existing instance state pattern)
-2. Provides sync callbacks for isolate to interact with state
-3. Provides async primitives for blocking operations
-
-## Implementation
-
-### File: `packages/fetch/src/stream-state.ts` (new file)
-
-```typescript
 import ivm from "isolated-vm";
 
 // ============================================================================
@@ -70,7 +41,9 @@ export interface StreamStateRegistry {
   push(streamId: number, chunk: Uint8Array): boolean;
 
   /** Pull a chunk from the stream (returns Promise that resolves when data available) */
-  pull(streamId: number): Promise<{ value: Uint8Array; done: false } | { done: true }>;
+  pull(
+    streamId: number
+  ): Promise<{ value: Uint8Array; done: false } | { done: true }>;
 
   /** Close the stream (no more data) */
   close(streamId: number): void;
@@ -147,7 +120,9 @@ export function createStreamStateRegistry(): StreamStateRegistry {
       return true;
     },
 
-    async pull(streamId: number): Promise<{ value: Uint8Array; done: false } | { done: true }> {
+    async pull(
+      streamId: number
+    ): Promise<{ value: Uint8Array; done: false } | { done: true }> {
       const state = streams.get(streamId);
       if (!state) {
         return { done: true };
@@ -220,7 +195,10 @@ export function createStreamStateRegistry(): StreamStateRegistry {
     isQueueFull(streamId: number): boolean {
       const state = streams.get(streamId);
       if (!state) return true;
-      return state.queueSize >= HIGH_WATER_MARK || state.queue.length >= MAX_QUEUE_CHUNKS;
+      return (
+        state.queueSize >= HIGH_WATER_MARK ||
+        state.queue.length >= MAX_QUEUE_CHUNKS
+      );
     },
 
     delete(streamId: number): void {
@@ -245,7 +223,9 @@ export function createStreamStateRegistry(): StreamStateRegistry {
 
 const contextRegistries = new WeakMap<ivm.Context, StreamStateRegistry>();
 
-export function getStreamRegistryForContext(context: ivm.Context): StreamStateRegistry {
+export function getStreamRegistryForContext(
+  context: ivm.Context
+): StreamStateRegistry {
   let registry = contextRegistries.get(context);
   if (!registry) {
     registry = createStreamStateRegistry();
@@ -261,173 +241,3 @@ export function clearStreamRegistryForContext(context: ivm.Context): void {
     contextRegistries.delete(context);
   }
 }
-```
-
-### Host Callbacks Registration
-
-> **Note:** This section shows the planned integration with `setupFetch()`. This will be implemented in Plan 02 or 03.
-
-In `setupFetch()`, register callbacks for isolate access:
-
-```typescript
-import { getStreamRegistryForContext } from "./stream-state.ts";
-
-// In setupFetch():
-const streamRegistry = getStreamRegistryForContext(context);
-const global = context.global;
-
-// Create a new stream (returns stream ID)
-global.setSync(
-  "__Stream_create",
-  new ivm.Callback(() => {
-    return streamRegistry.create();
-  })
-);
-
-// Push chunk to stream (sync, for host-side use)
-global.setSync(
-  "__Stream_push",
-  new ivm.Callback((streamId: number, chunkArray: number[]) => {
-    const chunk = new Uint8Array(chunkArray);
-    return streamRegistry.push(streamId, chunk);
-  })
-);
-
-// Pull chunk from stream (async, blocks until data available)
-const pullRef = new ivm.Reference(async (streamId: number) => {
-  const result = await streamRegistry.pull(streamId);
-  if (result.done) {
-    return JSON.stringify({ done: true });
-  }
-  return JSON.stringify({ done: false, value: Array.from(result.value) });
-});
-global.setSync("__Stream_pull_ref", pullRef);
-
-// Close stream (sync)
-global.setSync(
-  "__Stream_close",
-  new ivm.Callback((streamId: number) => {
-    streamRegistry.close(streamId);
-  })
-);
-
-// Error stream (sync)
-global.setSync(
-  "__Stream_error",
-  new ivm.Callback((streamId: number, message: string) => {
-    streamRegistry.error(streamId, new Error(message));
-  })
-);
-
-// Check if queue is full (for backpressure)
-global.setSync(
-  "__Stream_isQueueFull",
-  new ivm.Callback((streamId: number) => {
-    return streamRegistry.isQueueFull(streamId);
-  })
-);
-```
-
-## Testing
-
-### Unit Tests
-
-```typescript
-import { createStreamStateRegistry } from "./stream-state.ts";
-
-describe("StreamStateRegistry", () => {
-  test("create returns unique IDs", () => {
-    const registry = createStreamStateRegistry();
-    const id1 = registry.create();
-    const id2 = registry.create();
-    expect(id1).not.toBe(id2);
-  });
-
-  test("push and pull work synchronously when data available", async () => {
-    const registry = createStreamStateRegistry();
-    const streamId = registry.create();
-
-    registry.push(streamId, new Uint8Array([1, 2, 3]));
-    const result = await registry.pull(streamId);
-
-    expect(result.done).toBe(false);
-    expect(result.value).toEqual(new Uint8Array([1, 2, 3]));
-  });
-
-  test("pull waits for data when queue empty", async () => {
-    const registry = createStreamStateRegistry();
-    const streamId = registry.create();
-
-    // Start pull (will wait)
-    const pullPromise = registry.pull(streamId);
-
-    // Push after delay
-    setTimeout(() => {
-      registry.push(streamId, new Uint8Array([4, 5, 6]));
-    }, 10);
-
-    const result = await pullPromise;
-    expect(result.done).toBe(false);
-    expect(result.value).toEqual(new Uint8Array([4, 5, 6]));
-  });
-
-  test("close resolves waiting pull with done", async () => {
-    const registry = createStreamStateRegistry();
-    const streamId = registry.create();
-
-    const pullPromise = registry.pull(streamId);
-    registry.close(streamId);
-
-    const result = await pullPromise;
-    expect(result.done).toBe(true);
-  });
-
-  test("error rejects waiting pull", async () => {
-    const registry = createStreamStateRegistry();
-    const streamId = registry.create();
-
-    const pullPromise = registry.pull(streamId);
-    registry.error(streamId, new Error("test error"));
-
-    await expect(pullPromise).rejects.toThrow("test error");
-  });
-
-  test("isQueueFull respects high water mark", () => {
-    const registry = createStreamStateRegistry();
-    const streamId = registry.create();
-
-    expect(registry.isQueueFull(streamId)).toBe(false);
-
-    // Push 64KB (at high water mark)
-    registry.push(streamId, new Uint8Array(64 * 1024));
-    expect(registry.isQueueFull(streamId)).toBe(true);
-  });
-});
-```
-
-## Verification
-
-1. All unit tests pass
-2. Memory doesn't grow unbounded when pushing without pulling
-3. Cleanup works correctly (no dangling promises/callbacks)
-
-## Dependencies
-
-None - this is the foundation layer.
-
-## Files Modified/Created
-
-| File | Action | Status |
-|------|--------|--------|
-| `packages/fetch/src/stream-state.ts` | Create | ✅ Done |
-| `packages/fetch/src/stream-state.test.ts` | Create | ✅ Done |
-
-## Implementation Notes
-
-The implementation follows the spec exactly. Key exports:
-- `createStreamStateRegistry()` - Factory for standalone registry
-- `getStreamRegistryForContext(context)` - Get context-scoped registry
-- `clearStreamRegistryForContext(context)` - Cleanup for context
-- `HIGH_WATER_MARK` (64KB) and `MAX_QUEUE_CHUNKS` (16) constants
-
-The host callbacks registration (shown in this plan) will be done as part of Plan 02 or 03 when integrating with `setupFetch()`.

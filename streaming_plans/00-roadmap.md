@@ -60,14 +60,14 @@ Implement true lazy streaming for Request and Response bodies in `@ricsam/isolat
 
 ## Implementation Plans
 
-| Plan | Title | Description | Dependencies |
-|------|-------|-------------|--------------|
-| [01](./01-stream-state-registry.md) | Stream State Registry | Host-side state management for streams | None |
-| [02](./02-host-backed-readable-stream.md) | Host-Backed ReadableStream | ReadableStream class backed by host state | 01 |
-| [03](./03-upload-streaming.md) | Upload Streaming | Native → Isolate streaming for Request bodies | 01, 02 |
-| [04](./04-download-streaming.md) | Download Streaming | Isolate → Native streaming for Response bodies | 01, 02 |
-| [05](./05-multipart-formdata.md) | Multipart FormData | Parse and serialize multipart/form-data | 01-04 |
-| [06](./06-streaming-tests.md) | Streaming Tests | Comprehensive test suite | 01-05 |
+| Plan | Title | Description | Dependencies | Status |
+|------|-------|-------------|--------------|--------|
+| [01](./01-stream-state-registry.md) | Stream State Registry | Host-side state management for streams | None | ✅ Done |
+| [02](./02-host-backed-readable-stream.md) | Host-Backed ReadableStream | ReadableStream class backed by host state | 01 | Pending |
+| [03](./03-upload-streaming.md) | Upload Streaming | Native → Isolate streaming for Request bodies | 01, 02 | Pending |
+| [04](./04-download-streaming.md) | Download Streaming | Isolate → Native streaming for Response bodies | 01, 02 | Pending |
+| [05](./05-multipart-formdata.md) | Multipart FormData | Parse and serialize multipart/form-data | 01-04 | Pending |
+| [06](./06-streaming-tests.md) | Streaming Tests | Comprehensive test suite | 01-05 | Pending |
 
 ## Implementation Order
 
