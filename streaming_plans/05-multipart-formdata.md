@@ -1,8 +1,27 @@
 # Plan 05: Multipart FormData
 
+## Status: ✅ Done
+
 ## Overview
 
 Implement multipart/form-data parsing (incoming) and serialization (outgoing) with proper File object support.
+
+## Implementation Notes
+
+**Completed:** All planned functionality has been implemented.
+
+**Key difference from original plan:** Instead of adding new `__Blob_getBytes` and `__File_getBytes` callbacks, we reused the existing `__Blob_bytes` callback from `@ricsam/isolate-core` which already provides the required functionality via `ivm.ExternalCopy`.
+
+**Tests added:** 10 new tests in `packages/fetch/src/form-data.test.ts`:
+- Parsing multipart with text fields only
+- Parsing multipart with file fields (returns File instances)
+- File.text() works on parsed files
+- Parsing multipart with mixed text and file fields
+- Serializing FormData with File as multipart
+- Request with FormData + File uses multipart Content-Type
+- Request with string-only FormData uses url-encoded
+- Round-trip: serialize then parse recovers original data
+- Handles Blob entries in FormData
 
 ## Problem
 
@@ -550,12 +569,12 @@ describe("FormData Serialization", () => {
 
 ## Verification
 
-1. Parsing multipart with text fields works
-2. Parsing multipart with file fields returns File instances
-3. File.text(), File.arrayBuffer() work on parsed files
-4. Serializing FormData with Files produces valid multipart
-5. Request with FormData + File sends multipart
-6. E2E file upload tests pass
+1. ✅ Parsing multipart with text fields works
+2. ✅ Parsing multipart with file fields returns File instances
+3. ✅ File.text(), File.arrayBuffer() work on parsed files
+4. ✅ Serializing FormData with Files produces valid multipart
+5. ✅ Request with FormData + File sends multipart
+6. ⏳ E2E file upload tests (to be verified separately)
 
 ## Dependencies
 
@@ -565,14 +584,16 @@ describe("FormData Serialization", () => {
 
 ## Files Modified/Created
 
-| File | Action |
-|------|--------|
-| `packages/fetch/src/index.ts` | Modify - add `multipartCode` |
-| `packages/fetch/src/index.ts` | Modify - add `__Blob_getBytes`, `__File_getBytes` |
-| `packages/fetch/src/index.ts` | Modify - update `Response.formData()` |
-| `packages/fetch/src/index.ts` | Modify - update `Request.formData()` |
-| `packages/fetch/src/index.ts` | Modify - update `__prepareBody()` |
-| `packages/fetch/src/form-data.test.ts` | Modify - add multipart tests |
+| File | Action | Status |
+|------|--------|--------|
+| `packages/fetch/src/index.ts` | Modify - add `multipartCode` (~160 lines) | ✅ Done |
+| `packages/fetch/src/index.ts` | Modify - update `Response.formData()` | ✅ Done |
+| `packages/fetch/src/index.ts` | Modify - update `Request.formData()` | ✅ Done |
+| `packages/fetch/src/index.ts` | Modify - update `__prepareBody()` | ✅ Done |
+| `packages/fetch/src/index.ts` | Modify - update Request constructor Content-Type | ✅ Done |
+| `packages/fetch/src/form-data.test.ts` | Modify - add multipart tests | ✅ Done |
+
+**Note:** `__Blob_getBytes` and `__File_getBytes` were not added - instead reused existing `__Blob_bytes` from core.
 
 ## Notes
 

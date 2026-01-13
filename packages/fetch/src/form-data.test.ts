@@ -470,3 +470,355 @@ describe("Native FormData -> Isolate", () => {
     });
   });
 });
+
+/**
+ * Multipart FormData Parsing and Serialization Tests
+ */
+describe("Multipart FormData", () => {
+  let ctx: FetchTestContext;
+
+  beforeEach(async () => {
+    ctx = await createFetchTestContext();
+  });
+
+  afterEach(() => {
+    ctx.dispose();
+  });
+
+  describe("Parsing", () => {
+    test("parses multipart with text fields only", async () => {
+      const data = await ctx.context.eval(
+        `
+        (async () => {
+          const boundary = "----TestBoundary";
+          const body = [
+            "------TestBoundary\\r\\n",
+            'Content-Disposition: form-data; name="field1"\\r\\n',
+            "\\r\\n",
+            "value1",
+            "\\r\\n------TestBoundary\\r\\n",
+            'Content-Disposition: form-data; name="field2"\\r\\n',
+            "\\r\\n",
+            "value2",
+            "\\r\\n------TestBoundary--\\r\\n"
+          ].join("");
+
+          const response = new Response(body, {
+            headers: { 'Content-Type': 'multipart/form-data; boundary=----TestBoundary' }
+          });
+          const formData = await response.formData();
+          return JSON.stringify({
+            field1: formData.get('field1'),
+            field2: formData.get('field2')
+          });
+        })()
+        `,
+        { promise: true }
+      );
+
+      const result = JSON.parse(data as string) as { field1: string; field2: string };
+      assert.strictEqual(result.field1, "value1");
+      assert.strictEqual(result.field2, "value2");
+    });
+
+    test("parses multipart with file fields - returns File instances", async () => {
+      const data = await ctx.context.eval(
+        `
+        (async () => {
+          const encoder = new TextEncoder();
+          const body = encoder.encode([
+            '------TestBoundary\\r\\n',
+            'Content-Disposition: form-data; name="file"; filename="test.txt"\\r\\n',
+            'Content-Type: text/plain\\r\\n',
+            '\\r\\n',
+            'Hello World',
+            '\\r\\n------TestBoundary--\\r\\n'
+          ].join(''));
+
+          const response = new Response(body, {
+            headers: { 'Content-Type': 'multipart/form-data; boundary=----TestBoundary' }
+          });
+          const formData = await response.formData();
+          const file = formData.get('file');
+
+          return JSON.stringify({
+            isFile: file instanceof File,
+            name: file.name,
+            type: file.type,
+            size: file.size
+          });
+        })()
+        `,
+        { promise: true }
+      );
+
+      const result = JSON.parse(data as string) as {
+        isFile: boolean;
+        name: string;
+        type: string;
+        size: number;
+      };
+      assert.strictEqual(result.isFile, true);
+      assert.strictEqual(result.name, "test.txt");
+      assert.strictEqual(result.type, "text/plain");
+      assert.strictEqual(result.size, 11);
+    });
+
+    test("File.text() works on parsed file", async () => {
+      const data = await ctx.context.eval(
+        `
+        (async () => {
+          const encoder = new TextEncoder();
+          const body = encoder.encode([
+            '------TestBoundary\\r\\n',
+            'Content-Disposition: form-data; name="file"; filename="test.txt"\\r\\n',
+            'Content-Type: text/plain\\r\\n',
+            '\\r\\n',
+            'File content here',
+            '\\r\\n------TestBoundary--\\r\\n'
+          ].join(''));
+
+          const response = new Response(body, {
+            headers: { 'Content-Type': 'multipart/form-data; boundary=----TestBoundary' }
+          });
+          const formData = await response.formData();
+          const file = formData.get('file');
+          return await file.text();
+        })()
+        `,
+        { promise: true }
+      );
+
+      assert.strictEqual(data, "File content here");
+    });
+
+    test("parses multipart with mixed text and file fields", async () => {
+      const data = await ctx.context.eval(
+        `
+        (async () => {
+          const encoder = new TextEncoder();
+          const body = encoder.encode([
+            '------TestBoundary\\r\\n',
+            'Content-Disposition: form-data; name="name"\\r\\n',
+            '\\r\\n',
+            'John Doe',
+            '\\r\\n------TestBoundary\\r\\n',
+            'Content-Disposition: form-data; name="avatar"; filename="photo.jpg"\\r\\n',
+            'Content-Type: image/jpeg\\r\\n',
+            '\\r\\n',
+            'binary-image-data',
+            '\\r\\n------TestBoundary--\\r\\n'
+          ].join(''));
+
+          const response = new Response(body, {
+            headers: { 'Content-Type': 'multipart/form-data; boundary=----TestBoundary' }
+          });
+          const formData = await response.formData();
+
+          return JSON.stringify({
+            name: formData.get('name'),
+            isFile: formData.get('avatar') instanceof File,
+            filename: formData.get('avatar').name,
+            filetype: formData.get('avatar').type
+          });
+        })()
+        `,
+        { promise: true }
+      );
+
+      const result = JSON.parse(data as string) as {
+        name: string;
+        isFile: boolean;
+        filename: string;
+        filetype: string;
+      };
+      assert.strictEqual(result.name, "John Doe");
+      assert.strictEqual(result.isFile, true);
+      assert.strictEqual(result.filename, "photo.jpg");
+      assert.strictEqual(result.filetype, "image/jpeg");
+    });
+  });
+
+  describe("Serialization", () => {
+    test("serializes FormData with File as multipart", async () => {
+      const data = await ctx.context.eval(
+        `
+        (async () => {
+          const file = new File(["test content"], "test.txt", { type: "text/plain" });
+          const formData = new FormData();
+          formData.append("file", file);
+          formData.append("name", "John");
+
+          const { body, contentType } = __serializeFormData(formData);
+          const text = new TextDecoder().decode(body);
+
+          return JSON.stringify({
+            hasBoundary: contentType.includes('boundary='),
+            hasFilename: text.includes('filename="test.txt"'),
+            hasFileContent: text.includes('test content'),
+            hasName: text.includes('name="name"'),
+            hasJohn: text.includes('John')
+          });
+        })()
+        `,
+        { promise: true }
+      );
+
+      const result = JSON.parse(data as string) as {
+        hasBoundary: boolean;
+        hasFilename: boolean;
+        hasFileContent: boolean;
+        hasName: boolean;
+        hasJohn: boolean;
+      };
+      assert.strictEqual(result.hasBoundary, true);
+      assert.strictEqual(result.hasFilename, true);
+      assert.strictEqual(result.hasFileContent, true);
+      assert.strictEqual(result.hasName, true);
+      assert.strictEqual(result.hasJohn, true);
+    });
+
+    test("Request with FormData + File uses multipart Content-Type", async () => {
+      const data = await ctx.context.eval(
+        `
+        (async () => {
+          const file = new File(["uploaded content"], "upload.txt", { type: "text/plain" });
+          const formData = new FormData();
+          formData.append("file", file);
+
+          const request = new Request("http://test/upload", {
+            method: "POST",
+            body: formData
+          });
+
+          const contentType = request.headers.get('content-type');
+          return JSON.stringify({
+            isMultipart: contentType.includes('multipart/form-data'),
+            hasBoundary: contentType.includes('boundary=')
+          });
+        })()
+        `,
+        { promise: true }
+      );
+
+      const result = JSON.parse(data as string) as {
+        isMultipart: boolean;
+        hasBoundary: boolean;
+      };
+      assert.strictEqual(result.isMultipart, true);
+      assert.strictEqual(result.hasBoundary, true);
+    });
+
+    test("Request with string-only FormData uses url-encoded", async () => {
+      const data = await ctx.context.eval(
+        `
+        (async () => {
+          const formData = new FormData();
+          formData.append("name", "John");
+          formData.append("email", "john@example.com");
+
+          const request = new Request("http://test/submit", {
+            method: "POST",
+            body: formData
+          });
+
+          return request.headers.get('content-type');
+        })()
+        `,
+        { promise: true }
+      );
+
+      assert.strictEqual(data, "application/x-www-form-urlencoded");
+    });
+  });
+
+  describe("Round-trip", () => {
+    test("serialize then parse recovers original data", async () => {
+      const data = await ctx.context.eval(
+        `
+        (async () => {
+          // Create original FormData with file and text
+          const originalFile = new File(["Hello, World!"], "greeting.txt", { type: "text/plain" });
+          const originalFormData = new FormData();
+          originalFormData.append("message", "Test message");
+          originalFormData.append("attachment", originalFile);
+
+          // Serialize to multipart
+          const { body, contentType } = __serializeFormData(originalFormData);
+
+          // Parse it back
+          const response = new Response(body, {
+            headers: { 'Content-Type': contentType }
+          });
+          const parsedFormData = await response.formData();
+
+          // Check values
+          const parsedFile = parsedFormData.get('attachment');
+          const parsedFileContent = await parsedFile.text();
+
+          return JSON.stringify({
+            message: parsedFormData.get('message'),
+            isFile: parsedFile instanceof File,
+            filename: parsedFile.name,
+            filetype: parsedFile.type,
+            fileContent: parsedFileContent
+          });
+        })()
+        `,
+        { promise: true }
+      );
+
+      const result = JSON.parse(data as string) as {
+        message: string;
+        isFile: boolean;
+        filename: string;
+        filetype: string;
+        fileContent: string;
+      };
+      assert.strictEqual(result.message, "Test message");
+      assert.strictEqual(result.isFile, true);
+      assert.strictEqual(result.filename, "greeting.txt");
+      assert.strictEqual(result.filetype, "text/plain");
+      assert.strictEqual(result.fileContent, "Hello, World!");
+    });
+
+    test("handles Blob entries in FormData", async () => {
+      const data = await ctx.context.eval(
+        `
+        (async () => {
+          const blob = new Blob(["blob content"], { type: "application/octet-stream" });
+          const formData = new FormData();
+          formData.append("data", blob);
+
+          // Serialize and parse back
+          const { body, contentType } = __serializeFormData(formData);
+          const response = new Response(body, {
+            headers: { 'Content-Type': contentType }
+          });
+          const parsedFormData = await response.formData();
+
+          const parsedBlob = parsedFormData.get('data');
+          const content = await parsedBlob.text();
+
+          return JSON.stringify({
+            isFile: parsedBlob instanceof File,
+            filename: parsedBlob.name,
+            content: content
+          });
+        })()
+        `,
+        { promise: true }
+      );
+
+      const result = JSON.parse(data as string) as {
+        isFile: boolean;
+        filename: string;
+        content: string;
+      };
+      // Blob is serialized as File with default name "blob"
+      assert.strictEqual(result.isFile, true);
+      assert.strictEqual(result.filename, "blob");
+      assert.strictEqual(result.content, "blob content");
+    });
+  });
+});

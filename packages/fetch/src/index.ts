@@ -287,6 +287,170 @@ const formDataCode = `
 `;
 
 // ============================================================================
+// Multipart FormData Parsing/Serialization (Pure JS)
+// ============================================================================
+
+const multipartCode = `
+(function() {
+  // Find byte sequence in Uint8Array
+  function findSequence(haystack, needle, start = 0) {
+    outer: for (let i = start; i <= haystack.length - needle.length; i++) {
+      for (let j = 0; j < needle.length; j++) {
+        if (haystack[i + j] !== needle[j]) continue outer;
+      }
+      return i;
+    }
+    return -1;
+  }
+
+  // Parse header lines into object
+  function parseHeaders(text) {
+    const headers = {};
+    for (const line of text.split(/\\r?\\n/)) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx > 0) {
+        const name = line.slice(0, colonIdx).trim().toLowerCase();
+        const value = line.slice(colonIdx + 1).trim();
+        headers[name] = value;
+      }
+    }
+    return headers;
+  }
+
+  // Parse multipart/form-data body into FormData
+  globalThis.__parseMultipartFormData = function(bodyBytes, contentType) {
+    const formData = new FormData();
+
+    // Extract boundary from Content-Type
+    const boundaryMatch = contentType.match(/boundary=([^;]+)/i);
+    if (!boundaryMatch) return formData;
+
+    const boundary = boundaryMatch[1].replace(/^["']|["']$/g, '');
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const boundaryBytes = encoder.encode('--' + boundary);
+
+    // Find first boundary
+    let pos = findSequence(bodyBytes, boundaryBytes, 0);
+    if (pos === -1) return formData;
+    pos += boundaryBytes.length;
+
+    while (pos < bodyBytes.length) {
+      // Skip CRLF after boundary
+      if (bodyBytes[pos] === 0x0d && bodyBytes[pos + 1] === 0x0a) pos += 2;
+      else if (bodyBytes[pos] === 0x0a) pos += 1;
+
+      // Check for closing boundary (--)
+      if (bodyBytes[pos] === 0x2d && bodyBytes[pos + 1] === 0x2d) break;
+
+      // Find header/body separator (CRLFCRLF)
+      const crlfcrlf = encoder.encode('\\r\\n\\r\\n');
+      const headersEnd = findSequence(bodyBytes, crlfcrlf, pos);
+      if (headersEnd === -1) break;
+
+      // Parse headers
+      const headersText = decoder.decode(bodyBytes.slice(pos, headersEnd));
+      const headers = parseHeaders(headersText);
+      pos = headersEnd + 4;
+
+      // Find next boundary
+      const nextBoundary = findSequence(bodyBytes, boundaryBytes, pos);
+      if (nextBoundary === -1) break;
+
+      // Extract content (minus trailing CRLF)
+      let contentEnd = nextBoundary;
+      if (contentEnd > 0 && bodyBytes[contentEnd - 1] === 0x0a) contentEnd--;
+      if (contentEnd > 0 && bodyBytes[contentEnd - 1] === 0x0d) contentEnd--;
+      const content = bodyBytes.slice(pos, contentEnd);
+
+      // Parse Content-Disposition
+      const disposition = headers['content-disposition'] || '';
+      const nameMatch = disposition.match(/name="([^"]+)"/);
+      const filenameMatch = disposition.match(/filename="([^"]+)"/);
+
+      if (nameMatch) {
+        const name = nameMatch[1];
+        if (filenameMatch) {
+          const filename = filenameMatch[1];
+          const mimeType = headers['content-type'] || 'application/octet-stream';
+          const file = new File([content], filename, { type: mimeType });
+          formData.append(name, file);
+        } else {
+          formData.append(name, decoder.decode(content));
+        }
+      }
+
+      pos = nextBoundary + boundaryBytes.length;
+    }
+
+    return formData;
+  };
+
+  // Serialize FormData to multipart/form-data format
+  globalThis.__serializeFormData = function(formData) {
+    const boundary = '----FormDataBoundary' + Math.random().toString(36).slice(2) +
+                     Math.random().toString(36).slice(2);
+    const encoder = new TextEncoder();
+    const parts = [];
+
+    for (const [name, value] of formData.entries()) {
+      if (value instanceof File) {
+        const header = [
+          '--' + boundary,
+          'Content-Disposition: form-data; name="' + name + '"; filename="' + value.name + '"',
+          'Content-Type: ' + (value.type || 'application/octet-stream'),
+          '',
+          ''
+        ].join('\\r\\n');
+        parts.push(encoder.encode(header));
+        // Use existing __Blob_bytes callback (File extends Blob)
+        parts.push(__Blob_bytes(value._getInstanceId()));
+        parts.push(encoder.encode('\\r\\n'));
+      } else if (value instanceof Blob) {
+        const header = [
+          '--' + boundary,
+          'Content-Disposition: form-data; name="' + name + '"; filename="blob"',
+          'Content-Type: ' + (value.type || 'application/octet-stream'),
+          '',
+          ''
+        ].join('\\r\\n');
+        parts.push(encoder.encode(header));
+        parts.push(__Blob_bytes(value._getInstanceId()));
+        parts.push(encoder.encode('\\r\\n'));
+      } else {
+        const header = [
+          '--' + boundary,
+          'Content-Disposition: form-data; name="' + name + '"',
+          '',
+          ''
+        ].join('\\r\\n');
+        parts.push(encoder.encode(header));
+        parts.push(encoder.encode(String(value)));
+        parts.push(encoder.encode('\\r\\n'));
+      }
+    }
+
+    // Closing boundary
+    parts.push(encoder.encode('--' + boundary + '--\\r\\n'));
+
+    // Concatenate all parts
+    const totalLength = parts.reduce((sum, p) => sum + p.length, 0);
+    const body = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const part of parts) {
+      body.set(part, offset);
+      offset += part.length;
+    }
+
+    return {
+      body: body,
+      contentType: 'multipart/form-data; boundary=' + boundary
+    };
+  };
+})();
+`;
+
+// ============================================================================
 // Stream Callbacks (Host State)
 // ============================================================================
 
@@ -850,10 +1014,16 @@ function setupResponse(
 
     async formData() {
       const contentType = this.headers.get('content-type') || '';
-      const text = await this.text();
+
+      // Parse multipart/form-data
+      if (contentType.includes('multipart/form-data')) {
+        const buffer = await this.arrayBuffer();
+        return __parseMultipartFormData(new Uint8Array(buffer), contentType);
+      }
 
       // Parse application/x-www-form-urlencoded
       if (contentType.includes('application/x-www-form-urlencoded')) {
+        const text = await this.text();
         const formData = new FormData();
         const params = new URLSearchParams(text);
         for (const [key, value] of params) {
@@ -862,7 +1032,6 @@ function setupResponse(
         return formData;
       }
 
-      // For multipart/form-data, throw for now (complex parsing)
       throw new TypeError('Unsupported content type for formData()');
     }
 
@@ -1137,7 +1306,23 @@ function setupRequest(
       return Array.from(new TextEncoder().encode(body.toString()));
     }
     if (body instanceof FormData) {
-      // Serialize FormData as URL-encoded for simplicity
+      // Check if FormData has any File/Blob entries
+      let hasFiles = false;
+      for (const [, value] of body.entries()) {
+        if (value instanceof File || value instanceof Blob) {
+          hasFiles = true;
+          break;
+        }
+      }
+
+      if (hasFiles) {
+        // Serialize as multipart/form-data
+        const { body: bytes, contentType } = __serializeFormData(body);
+        globalThis.__pendingFormDataContentType = contentType;
+        return Array.from(bytes);
+      }
+
+      // URL-encoded for string-only FormData
       const parts = [];
       body.forEach((value, key) => {
         if (typeof value === 'string') {
@@ -1236,6 +1421,15 @@ function setupRequest(
       }
 
       const bodyBytes = __prepareBody(body);
+
+      // Handle Content-Type for FormData
+      if (globalThis.__pendingFormDataContentType) {
+        headers.set('content-type', globalThis.__pendingFormDataContentType);
+        delete globalThis.__pendingFormDataContentType;
+      } else if (body instanceof FormData && !headers.has('content-type')) {
+        headers.set('content-type', 'application/x-www-form-urlencoded');
+      }
+
       const headersArray = Array.from(headers.entries());
 
       this.#instanceId = __Request_construct(
@@ -1364,10 +1558,16 @@ function setupRequest(
 
     async formData() {
       const contentType = this.headers.get('content-type') || '';
-      const text = await this.text();
+
+      // Parse multipart/form-data
+      if (contentType.includes('multipart/form-data')) {
+        const buffer = await this.arrayBuffer();
+        return __parseMultipartFormData(new Uint8Array(buffer), contentType);
+      }
 
       // Parse application/x-www-form-urlencoded
       if (contentType.includes('application/x-www-form-urlencoded')) {
+        const text = await this.text();
         const formData = new FormData();
         const params = new URLSearchParams(text);
         for (const [key, value] of params) {
@@ -1695,6 +1895,9 @@ export async function setupFetch(
 
   // Inject FormData (pure JS)
   context.evalSync(formDataCode);
+
+  // Inject multipart parsing/serialization (pure JS)
+  context.evalSync(multipartCode);
 
   // Setup stream callbacks and inject HostBackedReadableStream
   setupStreamCallbacks(context, streamRegistry);
