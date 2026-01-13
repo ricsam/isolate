@@ -241,3 +241,88 @@ export function clearStreamRegistryForContext(context: ivm.Context): void {
     contextRegistries.delete(context);
   }
 }
+
+// ============================================================================
+// Native Stream Reader
+// ============================================================================
+
+/**
+ * Start reading from a native ReadableStream and push to host queue.
+ * Respects backpressure by pausing when queue is full.
+ *
+ * @param nativeStream The native ReadableStream to read from
+ * @param streamId The stream ID in the registry
+ * @param registry The stream state registry
+ * @returns Cleanup function to cancel the reader
+ */
+export function startNativeStreamReader(
+  nativeStream: ReadableStream<Uint8Array>,
+  streamId: number,
+  registry: StreamStateRegistry
+): () => void {
+  let cancelled = false;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
+  const CHUNK_SIZE = 64 * 1024; // 64KB max chunk size
+
+  async function readLoop() {
+    try {
+      reader = nativeStream.getReader();
+
+      while (!cancelled) {
+        // Respect backpressure - wait if queue is full
+        while (registry.isQueueFull(streamId) && !cancelled) {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+        if (cancelled) break;
+
+        const { done, value } = await reader.read();
+
+        if (done) {
+          registry.close(streamId);
+          break;
+        }
+
+        if (value) {
+          // Split large chunks to maintain granularity
+          if (value.length > CHUNK_SIZE) {
+            for (let offset = 0; offset < value.length; offset += CHUNK_SIZE) {
+              const chunk = value.slice(
+                offset,
+                Math.min(offset + CHUNK_SIZE, value.length)
+              );
+              registry.push(streamId, chunk);
+            }
+          } else {
+            registry.push(streamId, value);
+          }
+        }
+      }
+    } catch (error) {
+      registry.error(streamId, error);
+    } finally {
+      if (reader) {
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore release errors
+        }
+      }
+    }
+  }
+
+  // Start the read loop (fire and forget)
+  readLoop();
+
+  // Return cleanup function
+  return () => {
+    cancelled = true;
+    if (reader) {
+      try {
+        reader.cancel();
+      } catch {
+        // Ignore cancel errors
+      }
+    }
+  };
+}

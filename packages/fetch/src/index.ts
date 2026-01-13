@@ -1,6 +1,9 @@
 import ivm from "isolated-vm";
 import { setupCore, clearAllInstanceState } from "@ricsam/isolate-core";
-import { getStreamRegistryForContext } from "./stream-state.ts";
+import {
+  getStreamRegistryForContext,
+  startNativeStreamReader,
+} from "./stream-state.ts";
 import type { StreamStateRegistry } from "./stream-state.ts";
 
 export { clearAllInstanceState };
@@ -94,6 +97,7 @@ interface RequestState {
   headers: [string, string][];
   body: Uint8Array | null;
   bodyUsed: boolean;
+  streamId: number | null;
   mode: string;
   credentials: string;
   cache: string;
@@ -852,6 +856,7 @@ function setupRequest(
           headers,
           body,
           bodyUsed: false,
+          streamId: null,
           mode,
           credentials,
           cache,
@@ -1008,6 +1013,14 @@ function setupRequest(
     })
   );
 
+  global.setSync(
+    "__Request_getStreamId",
+    new ivm.Callback((instanceId: number) => {
+      const state = stateMap.get(instanceId) as RequestState | undefined;
+      return state?.streamId ?? null;
+    })
+  );
+
   // Inject Request class
   const requestCode = `
 (function() {
@@ -1053,10 +1066,34 @@ function setupRequest(
     return Array.from(new TextEncoder().encode(String(body)));
   }
 
+  // Helper to consume a HostBackedReadableStream and concatenate all chunks
+  async function __consumeStream(stream) {
+    const reader = stream.getReader();
+    const chunks = [];
+    let totalLength = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      totalLength += value.length;
+    }
+
+    // Concatenate all chunks
+    const result = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return result;
+  }
+
   class Request {
     #instanceId;
     #headers;
     #signal;
+    #streamId;
 
     constructor(input, init = {}) {
       // Handle internal construction from instance ID
@@ -1064,6 +1101,7 @@ function setupRequest(
         this.#instanceId = input;
         this.#headers = new Headers(__Request_get_headers(input));
         this.#signal = null;
+        this.#streamId = __Request_getStreamId(input);
         return;
       }
 
@@ -1122,6 +1160,7 @@ function setupRequest(
       );
       this.#headers = headers;
       this.#signal = signal;
+      this.#streamId = null;
     }
 
     _getInstanceId() {
@@ -1177,17 +1216,22 @@ function setupRequest(
     }
 
     get body() {
-      // Return a ReadableStream that reads the body
+      // If we have a stream ID, return a HostBackedReadableStream
+      if (this.#streamId !== null) {
+        return HostBackedReadableStream._fromStreamId(this.#streamId);
+      }
+
+      // Fallback: create stream from buffered body
       const instanceId = this.#instanceId;
-      return new ReadableStream({
-        start(controller) {
-          const buffer = __Request_arrayBuffer(instanceId);
-          if (buffer.byteLength > 0) {
-            controller.enqueue(new Uint8Array(buffer));
-          }
-          controller.close();
-        }
-      });
+      const newStreamId = __Stream_create();
+      const buffer = __Request_arrayBuffer(instanceId);
+
+      if (buffer.byteLength > 0) {
+        __Stream_push(newStreamId, Array.from(new Uint8Array(buffer)));
+      }
+      __Stream_close(newStreamId);
+
+      return HostBackedReadableStream._fromStreamId(newStreamId);
     }
 
     async text() {
@@ -1196,6 +1240,14 @@ function setupRequest(
       } catch (err) {
         throw __decodeError(err);
       }
+
+      // If streaming, consume the stream
+      if (this.#streamId !== null) {
+        const bytes = await __consumeStream(this.body);
+        return new TextDecoder().decode(bytes);
+      }
+
+      // Fallback to host callback for buffered body
       return __Request_text(this.#instanceId);
     }
 
@@ -1210,6 +1262,13 @@ function setupRequest(
       } catch (err) {
         throw __decodeError(err);
       }
+
+      // If streaming, consume the stream
+      if (this.#streamId !== null) {
+        const bytes = await __consumeStream(this.body);
+        return bytes.buffer;
+      }
+
       return __Request_arrayBuffer(this.#instanceId);
     }
 
@@ -1609,66 +1668,89 @@ export async function setupFetch(
         throw new Error("No serve() handler registered");
       }
 
-      // Convert native Request to RequestState
-      const requestBody = await request.arrayBuffer();
-      const bodyBytes = requestBody.byteLength > 0
-        ? Array.from(new Uint8Array(requestBody))
-        : null;
-      const headersArray = Array.from(request.headers.entries());
+      // Setup streaming for request body
+      let requestStreamId: number | null = null;
+      let streamCleanup: (() => void) | null = null;
 
-      // Create Request instance in isolate
-      const requestInstanceId = nextInstanceId++;
-      const requestState: RequestState = {
-        url: request.url,
-        method: request.method,
-        headers: headersArray,
-        body: bodyBytes ? new Uint8Array(bodyBytes) : null,
-        bodyUsed: false,
-        mode: request.mode,
-        credentials: request.credentials,
-        cache: request.cache,
-        redirect: request.redirect,
-        referrer: request.referrer,
-        integrity: request.integrity,
-      };
-      stateMap.set(requestInstanceId, requestState);
+      if (request.body) {
+        // Create a stream in the registry for the request body
+        requestStreamId = streamRegistry.create();
 
-      // Call the fetch handler and get response
-      // We use eval with promise: true to handle async handlers
-      const responseInstanceId = await context.eval(`
-        (async function() {
-          const request = Request._fromInstanceId(${requestInstanceId});
-          const server = new __Server__();
-          const response = await Promise.resolve(__serveOptions__.fetch(request, server));
-          return response._getInstanceId();
-        })()
-      `, { promise: true });
-
-      // Get ResponseState from the instance
-      const responseState = stateMap.get(responseInstanceId) as ResponseState | undefined;
-      if (!responseState) {
-        throw new Error("Response state not found");
+        // Start background reader that pushes from native stream to host queue
+        streamCleanup = startNativeStreamReader(
+          request.body,
+          requestStreamId,
+          streamRegistry
+        );
       }
 
-      // Convert to native Response
-      const responseHeaders = new Headers(responseState.headers);
-      const responseBody = responseState.body;
+      try {
+        const headersArray = Array.from(request.headers.entries());
 
-      // Note: Status 101 (Switching Protocols) is not valid for Response constructor
-      // We use 200 as the status but preserve the actual status in a custom header
-      // The caller should check getUpgradeRequest() for WebSocket upgrades
-      const status = responseState.status === 101 ? 200 : responseState.status;
-      const response = new Response(responseBody, {
-        status,
-        statusText: responseState.statusText,
-        headers: responseHeaders,
-      });
+        // Create Request instance in isolate
+        const requestInstanceId = nextInstanceId++;
+        const requestState: RequestState = {
+          url: request.url,
+          method: request.method,
+          headers: headersArray,
+          body: null, // No buffered body - using stream
+          bodyUsed: false,
+          streamId: requestStreamId,
+          mode: request.mode,
+          credentials: request.credentials,
+          cache: request.cache,
+          redirect: request.redirect,
+          referrer: request.referrer,
+          integrity: request.integrity,
+        };
+        stateMap.set(requestInstanceId, requestState);
 
-      // Expose the original status via a property for callers to check
-      // @ts-expect-error - adding custom property
-      response._originalStatus = responseState.status;
+        // Call the fetch handler and get response
+        // We use eval with promise: true to handle async handlers
+        const responseInstanceId = await context.eval(`
+          (async function() {
+            const request = Request._fromInstanceId(${requestInstanceId});
+            const server = new __Server__();
+            const response = await Promise.resolve(__serveOptions__.fetch(request, server));
+            return response._getInstanceId();
+          })()
+        `, { promise: true });
 
-      return response;
+        // Get ResponseState from the instance
+        const responseState = stateMap.get(responseInstanceId) as ResponseState | undefined;
+        if (!responseState) {
+          throw new Error("Response state not found");
+        }
+
+        // Convert to native Response
+        const responseHeaders = new Headers(responseState.headers);
+        const responseBody = responseState.body;
+
+        // Note: Status 101 (Switching Protocols) is not valid for Response constructor
+        // We use 200 as the status but preserve the actual status in a custom header
+        // The caller should check getUpgradeRequest() for WebSocket upgrades
+        const status = responseState.status === 101 ? 200 : responseState.status;
+        const response = new Response(responseBody, {
+          status,
+          statusText: responseState.statusText,
+          headers: responseHeaders,
+        });
+
+        // Expose the original status via a property for callers to check
+        // @ts-expect-error - adding custom property
+        response._originalStatus = responseState.status;
+
+        return response;
+      } finally {
+        // Cleanup: cancel stream reader if still running
+        if (streamCleanup) {
+          streamCleanup();
+        }
+        // Delete stream from registry
+        if (requestStreamId !== null) {
+          streamRegistry.delete(requestStreamId);
+        }
+      }
     },
 
     getUpgradeRequest(): UpgradeRequest | null {

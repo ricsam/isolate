@@ -6,10 +6,12 @@ Implement true lazy streaming for Request and Response bodies in `@ricsam/isolat
 
 ## Current State
 
-- Bodies are fully buffered as `Uint8Array` before crossing the isolate boundary
-- `ReadableStream` as body throws an error
+- ✅ Stream State Registry implemented with backpressure support
+- ✅ HostBackedReadableStream class for isolate-side streaming
+- ✅ Request bodies stream from native to isolate (upload streaming)
+- Response bodies still buffered before crossing isolate boundary
 - `FormData` with files only serializes string values (ignores files)
-- No backpressure support
+- Multipart parsing not yet implemented
 
 ## Target State
 
@@ -64,7 +66,7 @@ Implement true lazy streaming for Request and Response bodies in `@ricsam/isolat
 |------|-------|-------------|--------------|--------|
 | [01](./01-stream-state-registry.md) | Stream State Registry | Host-side state management for streams | None | ✅ Done |
 | [02](./02-host-backed-readable-stream.md) | Host-Backed ReadableStream | ReadableStream class backed by host state | 01 | ✅ Done |
-| [03](./03-upload-streaming.md) | Upload Streaming | Native → Isolate streaming for Request bodies | 01, 02 | Pending |
+| [03](./03-upload-streaming.md) | Upload Streaming | Native → Isolate streaming for Request bodies | 01, 02 | ✅ Done |
 | [04](./04-download-streaming.md) | Download Streaming | Isolate → Native streaming for Response bodies | 01, 02 | Pending |
 | [05](./05-multipart-formdata.md) | Multipart FormData | Parse and serialize multipart/form-data | 01-04 | Pending |
 | [06](./06-streaming-tests.md) | Streaming Tests | Comprehensive test suite | 01-05 | Pending |

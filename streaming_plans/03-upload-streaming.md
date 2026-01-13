@@ -1,5 +1,7 @@
 # Plan 03: Upload Streaming (Native → Isolate)
 
+**Status: ✅ Implemented**
+
 ## Overview
 
 Implement streaming for Request bodies where native `ReadableStream` data flows chunk-by-chunk into the isolate without full buffering.
@@ -467,10 +469,12 @@ describe("Upload Streaming", () => {
 
 | File | Action |
 |------|--------|
-| `packages/fetch/src/stream-state.ts` | Modify - add `startNativeStreamReader` |
-| `packages/fetch/src/index.ts` | Modify - update `dispatchRequest` |
-| `packages/fetch/src/index.ts` | Modify - update Request class |
-| `packages/fetch/src/upload-streaming.test.ts` | Create |
+| `packages/fetch/src/stream-state.ts` | ✅ Modified - added `startNativeStreamReader` function |
+| `packages/fetch/src/index.ts` | ✅ Modified - updated `RequestState` interface with `streamId` |
+| `packages/fetch/src/index.ts` | ✅ Modified - added `__Request_getStreamId` callback |
+| `packages/fetch/src/index.ts` | ✅ Modified - updated Request class (`body`, `text()`, `arrayBuffer()`) |
+| `packages/fetch/src/index.ts` | ✅ Modified - updated `dispatchRequest` for streaming |
+| `packages/fetch/src/request.test.ts` | ✅ Modified - updated test for `HostBackedReadableStream` |
 
 ## Notes
 

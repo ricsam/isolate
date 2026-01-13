@@ -125,7 +125,7 @@ describe("Request", () => {
     assert.strictEqual(result.hasBodyUsed, true);
   });
 
-  test("body property returns ReadableStream", () => {
+  test("body property returns HostBackedReadableStream", () => {
     const isStream = evalCode<boolean>(
       ctx.context,
       `
@@ -133,7 +133,7 @@ describe("Request", () => {
         method: "POST",
         body: "test body"
       });
-      request.body instanceof ReadableStream
+      request.body instanceof HostBackedReadableStream
       `
     );
     assert.strictEqual(isStream, true);
