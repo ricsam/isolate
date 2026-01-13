@@ -35,10 +35,15 @@ interface ServeState {
   activeConnections: Map<string, { connectionId: string }>;
 }
 
+export interface DispatchRequestOptions {
+  /** Tick function to pump isolate timers - required for streaming responses */
+  tick?: () => Promise<void>;
+}
+
 export interface FetchHandle {
   dispose(): void;
   /** Dispatch an HTTP request to the isolate's serve() handler */
-  dispatchRequest(request: Request): Promise<Response>;
+  dispatchRequest(request: Request, options?: DispatchRequestOptions): Promise<Response>;
   /** Check if isolate requested WebSocket upgrade */
   getUpgradeRequest(): UpgradeRequest | null;
   /** Dispatch WebSocket open event to isolate */
@@ -452,6 +457,34 @@ function setupResponse(
     )
   );
 
+  // Streaming Response constructor - creates Response with stream ID but no buffered body
+  global.setSync(
+    "__Response_constructStreaming",
+    new ivm.Callback(
+      (
+        streamId: number,
+        status: number,
+        statusText: string,
+        headers: [string, string][]
+      ) => {
+        const instanceId = nextInstanceId++;
+        const state: ResponseState = {
+          status,
+          statusText,
+          headers,
+          body: null, // No buffered body - using stream
+          bodyUsed: false,
+          type: "default",
+          url: "",
+          redirected: false,
+          streamId, // Stream ID for body
+        };
+        stateMap.set(instanceId, state);
+        return instanceId;
+      }
+    )
+  );
+
   global.setSync(
     "__Response_constructFromFetch",
     new ivm.Callback(
@@ -645,8 +678,9 @@ function setupResponse(
       // This is a limitation - we'll convert to string for now
       throw new TypeError('Blob body requires async handling');
     }
-    if (body instanceof ReadableStream) {
-      throw new TypeError('ReadableStream body not yet supported');
+    // Handle ReadableStream (both native and host-backed)
+    if (body instanceof ReadableStream || body instanceof HostBackedReadableStream) {
+      return { __isStream: true, stream: body };
     }
     // Try to convert to string
     return Array.from(new TextEncoder().encode(String(body)));
@@ -655,16 +689,42 @@ function setupResponse(
   class Response {
     #instanceId;
     #headers;
+    #streamId = null;
 
     constructor(body, init = {}) {
       // Handle internal construction from instance ID
       if (typeof body === 'number' && init === null) {
         this.#instanceId = body;
         this.#headers = new Headers(__Response_get_headers(body));
+        this.#streamId = __Response_getStreamId(body);
         return;
       }
 
-      const bodyBytes = __prepareBody(body);
+      const preparedBody = __prepareBody(body);
+
+      // Handle streaming body
+      if (preparedBody && preparedBody.__isStream) {
+        this.#streamId = __Stream_create();
+        const status = init.status ?? 200;
+        const statusText = init.statusText ?? '';
+        const headers = new Headers(init.headers);
+        const headersArray = Array.from(headers.entries());
+
+        this.#instanceId = __Response_constructStreaming(
+          this.#streamId,
+          status,
+          statusText,
+          headersArray
+        );
+        this.#headers = headers;
+
+        // Start pumping the source stream to host queue (fire-and-forget)
+        this._startStreamPump(preparedBody.stream);
+        return;
+      }
+
+      // Existing buffered body handling
+      const bodyBytes = preparedBody;
       const status = init.status ?? 200;
       const statusText = init.statusText ?? '';
       const headersInit = init.headers;
@@ -673,6 +733,30 @@ function setupResponse(
 
       this.#instanceId = __Response_construct(bodyBytes, status, statusText, headersArray);
       this.#headers = headers;
+    }
+
+    async _startStreamPump(sourceStream) {
+      const streamId = this.#streamId;
+      try {
+        const reader = sourceStream.getReader();
+        while (true) {
+          // Check backpressure - wait if queue is full
+          while (__Stream_isQueueFull(streamId)) {
+            await new Promise(r => setTimeout(r, 1));
+          }
+
+          const { done, value } = await reader.read();
+          if (done) {
+            __Stream_close(streamId);
+            break;
+          }
+          if (value) {
+            __Stream_push(streamId, Array.from(value));
+          }
+        }
+      } catch (error) {
+        __Stream_error(streamId, String(error));
+      }
     }
 
     _getInstanceId() {
@@ -1654,7 +1738,12 @@ export async function setupFetch(
       serveState.pendingUpgrade = null;
     },
 
-    async dispatchRequest(request: Request): Promise<Response> {
+    async dispatchRequest(
+      request: Request,
+      dispatchOptions?: DispatchRequestOptions
+    ): Promise<Response> {
+      const tick = dispatchOptions?.tick;
+
       // Clean up previous pending upgrade if not consumed
       if (serveState.pendingUpgrade) {
         const oldConnectionId = serveState.pendingUpgrade.connectionId;
@@ -1722,7 +1811,80 @@ export async function setupFetch(
           throw new Error("Response state not found");
         }
 
-        // Convert to native Response
+        // Check if response has streaming body
+        if (responseState.streamId !== null) {
+          const responseStreamId = responseState.streamId;
+          let streamDone = false;
+
+          // Create native stream that pumps isolate timers while waiting
+          const pumpedStream = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              if (streamDone) return;
+
+              // Pump isolate timers to allow stream pump to progress
+              while (!streamDone) {
+                if (tick) {
+                  await tick();
+                }
+
+                // Check if data is available
+                const state = streamRegistry.get(responseStreamId);
+                if (!state) {
+                  controller.close();
+                  streamDone = true;
+                  return;
+                }
+
+                // If queue has data or stream is done, break and pull
+                if (state.queue.length > 0 || state.closed || state.errored) {
+                  break;
+                }
+
+                // Small delay to avoid busy-waiting
+                await new Promise((r) => setTimeout(r, 1));
+              }
+
+              try {
+                const result = await streamRegistry.pull(responseStreamId);
+                if (result.done) {
+                  controller.close();
+                  streamDone = true;
+                  streamRegistry.delete(responseStreamId);
+                  return;
+                }
+                controller.enqueue(result.value);
+              } catch (error) {
+                controller.error(error);
+                streamDone = true;
+                streamRegistry.delete(responseStreamId);
+              }
+            },
+            cancel() {
+              streamDone = true;
+              streamRegistry.error(
+                responseStreamId,
+                new Error("Stream cancelled")
+              );
+              streamRegistry.delete(responseStreamId);
+            },
+          });
+
+          const responseHeaders = new Headers(responseState.headers);
+          const status =
+            responseState.status === 101 ? 200 : responseState.status;
+          const response = new Response(pumpedStream, {
+            status,
+            statusText: responseState.statusText,
+            headers: responseHeaders,
+          });
+
+          // @ts-expect-error - adding custom property
+          response._originalStatus = responseState.status;
+
+          return response;
+        }
+
+        // Convert to native Response (non-streaming)
         const responseHeaders = new Headers(responseState.headers);
         const responseBody = responseState.body;
 

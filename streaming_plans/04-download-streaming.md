@@ -1,5 +1,19 @@
 # Plan 04: Download Streaming (Isolate → Native)
 
+## Status: ✅ Complete
+
+Implemented in the following files:
+- `packages/fetch/src/index.ts` - Added `__Response_constructStreaming`, updated Response constructor and `dispatchRequest()`
+- `packages/fetch/src/stream-state.ts` - Fixed `pull()` ordering for errored streams
+- `packages/core/src/index.ts` - Fixed `ReadableStream` to set `started = true` synchronously when no `start()` callback
+- `packages/fetch/src/download-streaming.test.ts` - 9 comprehensive tests
+
+Key implementation details:
+- Added `tick` option to `dispatchRequest()` for timer pumping during streaming
+- Isolate stream pump uses `setTimeout` for backpressure waits
+- Native consumer calls `tick()` while reading to process isolate timers
+- All 183 fetch package tests pass
+
 ## Overview
 
 Implement streaming for Response bodies where isolate-generated `ReadableStream` data flows chunk-by-chunk to native code without full buffering.

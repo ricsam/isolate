@@ -128,16 +128,16 @@ export function createStreamStateRegistry(): StreamStateRegistry {
         return { done: true };
       }
 
-      // If errored, throw
-      if (state.errored) {
-        throw state.errorValue;
-      }
-
-      // If queue has data, return immediately
+      // If queue has data, return it first (even if stream is errored)
       if (state.queue.length > 0) {
         const chunk = state.queue.shift()!;
         state.queueSize -= chunk.length;
         return { value: chunk, done: false };
+      }
+
+      // If errored (and queue is empty), throw
+      if (state.errored) {
+        throw state.errorValue;
       }
 
       // If closed and queue empty, we're done

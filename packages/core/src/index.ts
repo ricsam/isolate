@@ -2056,12 +2056,17 @@ async function injectStreams(
       this.#controller = controller;
 
       // Start the underlying source
-      const startPromise = Promise.resolve(underlyingSource.start?.(controller));
-      startPromise.then(() => {
+      if (underlyingSource.start) {
+        const startPromise = Promise.resolve(underlyingSource.start(controller));
+        startPromise.then(() => {
+          controller.started = true;
+        }).catch((e) => {
+          controller.error(e);
+        });
+      } else {
+        // No start callback - mark as started immediately
         controller.started = true;
-      }).catch((e) => {
-        controller.error(e);
-      });
+      }
     }
 
     get locked() {
