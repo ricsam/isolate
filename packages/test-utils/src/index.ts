@@ -168,6 +168,10 @@ export { createRuntimeTestContext } from "./runtime-context.ts";
 export type { RuntimeTestContext } from "./runtime-context.ts";
 export { startIntegrationServer } from "./server.ts";
 export type { IntegrationServer } from "./server.ts";
+export { runTestCode } from "./native-input-test.ts";
+export type { TestRunner, TestRuntime } from "./native-input-test.ts";
+export { createFetchTestContext } from "./fetch-context.ts";
+export type { FetchTestContext } from "./fetch-context.ts";
 
 // Re-export useful types
 export type { FileSystemHandler } from "@ricsam/isolate-fs";
