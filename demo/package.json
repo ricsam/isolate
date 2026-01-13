@@ -13,7 +13,9 @@
   },
   "dependencies": {
     "@ricsam/isolate-runtime": "*",
+    "@ricsam/isolate-test-utils": "*",
     "isolated-vm": "^6",
+    "esbuild": "^0.24.0",
     "@whatwg-node/server": "^0.10.18",
     "express": "^5.2.1",
     "@tanstack/react-router": "^1.145.7",
@@ -26,6 +28,7 @@
     "@richie-rpc/client": "^1.2.6",
     "@richie-rpc/core": "^1.2.4",
     "@richie-rpc/server": "^1.2.8",
+    "rollup": "^4.30.0",
     "@rollup/plugin-commonjs": "^29.0.0",
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-replace": "^6.0.3"

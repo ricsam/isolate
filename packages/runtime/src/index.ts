@@ -33,6 +33,8 @@ export interface RuntimeHandle {
   readonly isolate: ivm.Isolate;
   /** The context instance */
   readonly context: ivm.Context;
+  /** The fetch handle for serve() and WebSocket dispatching */
+  readonly fetch: FetchHandle;
   /** Process pending timers */
   tick(ms?: number): Promise<void>;
   /** Dispose all resources */
@@ -114,6 +116,7 @@ export async function createRuntime(
   return {
     isolate,
     context,
+    fetch: handles.fetch!,
     async tick(ms?: number) {
       await handles.timers!.tick(ms);
     },
@@ -149,7 +152,7 @@ export { setupEncoding } from "@ricsam/isolate-encoding";
 export type { EncodingHandle } from "@ricsam/isolate-encoding";
 
 export { setupFetch } from "@ricsam/isolate-fetch";
-export type { FetchHandle, FetchOptions } from "@ricsam/isolate-fetch";
+export type { FetchHandle, FetchOptions, WebSocketCommand, UpgradeRequest } from "@ricsam/isolate-fetch";
 
 export { setupFs, createNodeFileSystemHandler } from "@ricsam/isolate-fs";
 export type { FsHandle, FsOptions, FileSystemHandler, NodeFileSystemHandlerOptions } from "@ricsam/isolate-fs";
