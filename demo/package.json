@@ -5,18 +5,33 @@
   "type": "module",
   "scripts": {
     "dev": "node --experimental-strip-types src/server.ts",
-    "build": "tsc",
+    "build": "bun build src/index.html --outdir dist",
+    "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types 'tests/**/*.test.ts'",
     "test:e2e": "playwright test",
-    "typecheck": "tsc --noEmit"
+    "test:e2e:logs": "bun scripts/e2e-with-logs.ts"
   },
   "dependencies": {
     "@ricsam/isolate-runtime": "*",
-    "isolated-vm": "^6"
+    "isolated-vm": "^6",
+    "@whatwg-node/server": "^0.10.18",
+    "express": "^5.2.1",
+    "@tanstack/react-router": "^1.145.7",
+    "@tanstack/react-router-devtools": "^1.145.7",
+    "@tanstack/router-plugin": "^1.145.7",
+    "zod": "^4.3.5",
+    "react": "^19",
+    "react-dom": "^19",
+    "@richie-rpc/client": "^1.2.6",
+    "@richie-rpc/core": "^1.2.4",
+    "@richie-rpc/server": "^1.2.8"
   },
   "devDependencies": {
     "@playwright/test": "^1",
     "@types/node": "^24",
-    "typescript": "^5"
+    "@types/express": "^5.0.0",
+    "typescript": "^5",
+     "@types/react": "^19",
+    "@types/react-dom": "^19"
   }
 }
