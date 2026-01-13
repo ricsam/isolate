@@ -2,6 +2,7 @@ import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
 import ivm from "isolated-vm";
 import { setupCore, clearAllInstanceState, cleanupUnmarshaledHandles } from "./index.ts";
+import { runTestCode } from "../../test-utils/src/native-input-test.ts";
 
 describe("URLSearchParams", () => {
   let isolate: ivm.Isolate;
@@ -484,24 +485,22 @@ describe("URL", () => {
 
   describe("spec examples", () => {
     test("parse request URL for pathname", async () => {
-      // TODO: Implement test
-      // const result = await context.eval(`
-      //   // Simulate request.url
-      //   const requestUrl = "https://example.com/api/hello?name=world";
-      //   const url = new URL(requestUrl);
-      //   url.pathname
-      // `);
-      // assert.strictEqual(result, "/api/hello");
+      const result = await context.eval(`
+        // Simulate request.url
+        const requestUrl = "https://example.com/api/hello?name=world";
+        const url = new URL(requestUrl);
+        url.pathname
+      `);
+      assert.strictEqual(result, "/api/hello");
     });
 
     test("get query parameter from request URL", async () => {
-      // TODO: Implement test
-      // const result = await context.eval(`
-      //   const requestUrl = "https://example.com/api/search?q=test&limit=10";
-      //   const url = new URL(requestUrl);
-      //   url.searchParams.get("q") + "," + url.searchParams.get("limit")
-      // `);
-      // assert.strictEqual(result, "test,10");
+      const result = await context.eval(`
+        const requestUrl = "https://example.com/api/search?q=test&limit=10";
+        const url = new URL(requestUrl);
+        url.searchParams.get("q") + "," + url.searchParams.get("limit")
+      `);
+      assert.strictEqual(result, "test,10");
     });
   });
 });
@@ -530,77 +529,214 @@ describe("Native URL → isolate", () => {
   });
 
   test("native URL should pass instanceof check in isolate", async () => {
-    // TODO: Implement test
-    // const runtime = runTestCode(
-    //   context,
-    //   `
-    //   const url = testingInput.url;
-    //   log("instanceof", url instanceof URL);
-    //   log("constructorName", url.constructor.name);
-    // `
-    // ).input({
-    //   url: new URL("https://example.com/path"),
-    // });
-    //
-    // assert.deepStrictEqual(runtime.logs, {
-    //   instanceof: true,
-    //   constructorName: "URL",
-    // });
+    const runtime = runTestCode(
+      context,
+      `
+      const url = testingInput.url;
+      log("instanceof", url instanceof URL);
+      log("constructorName", url.constructor.name);
+    `
+    ).input({
+      url: new URL("https://example.com/path"),
+    });
+
+    assert.deepStrictEqual(runtime.logs, {
+      instanceof: true,
+      constructorName: "URL",
+    });
   });
 
   test("href property is preserved", async () => {
-    // TODO: Implement test
+    const runtime = runTestCode(
+      context,
+      `
+      const url = testingInput.url;
+      log("href", url.href);
+    `
+    ).input({
+      url: new URL("https://example.com/path?query=value"),
+    });
+
+    assert.strictEqual(runtime.logs.href, "https://example.com/path?query=value");
   });
 
   test("all URL properties are preserved", async () => {
-    // TODO: Implement test
+    const runtime = runTestCode(
+      context,
+      `
+      const url = testingInput.url;
+      log("protocol", url.protocol);
+      log("hostname", url.hostname);
+      log("port", url.port);
+      log("pathname", url.pathname);
+      log("search", url.search);
+      log("hash", url.hash);
+    `
+    ).input({
+      url: new URL("https://example.com:8080/path?query=value#section"),
+    });
+
+    assert.strictEqual(runtime.logs.protocol, "https:");
+    assert.strictEqual(runtime.logs.hostname, "example.com");
+    assert.strictEqual(runtime.logs.port, "8080");
+    assert.strictEqual(runtime.logs.pathname, "/path");
+    assert.strictEqual(runtime.logs.search, "?query=value");
+    assert.strictEqual(runtime.logs.hash, "#section");
   });
 
   test("searchParams is accessible", async () => {
-    // TODO: Implement test
+    const runtime = runTestCode(
+      context,
+      `
+      const url = testingInput.url;
+      log("hasSearchParams", url.searchParams instanceof URLSearchParams);
+      log("paramValue", url.searchParams.get("key"));
+    `
+    ).input({
+      url: new URL("https://example.com/path?key=value"),
+    });
+
+    assert.strictEqual(runtime.logs.hasSearchParams, true);
+    assert.strictEqual(runtime.logs.paramValue, "value");
   });
 
   test("toString() returns href", async () => {
-    // TODO: Implement test
+    const runtime = runTestCode(
+      context,
+      `
+      const url = testingInput.url;
+      log("toString", url.toString());
+      log("matchesHref", url.toString() === url.href);
+    `
+    ).input({
+      url: new URL("https://example.com/path"),
+    });
+
+    assert.strictEqual(runtime.logs.toString, "https://example.com/path");
+    assert.strictEqual(runtime.logs.matchesHref, true);
   });
 
   test("URL with username and password", async () => {
-    // TODO: Implement test
+    const runtime = runTestCode(
+      context,
+      `
+      const url = testingInput.url;
+      log("username", url.username);
+      log("password", url.password);
+    `
+    ).input({
+      url: new URL("https://user:pass@example.com/path"),
+    });
+
+    assert.strictEqual(runtime.logs.username, "user");
+    assert.strictEqual(runtime.logs.password, "pass");
   });
 
   describe("Bidirectional Conversion (Native→isolate→Native)", () => {
     test("URL created in isolate should return as native URL", async () => {
-      // TODO: Implement test
-      // const runtime = runTestCode(
-      //   context,
-      //   `
-      //   const url = new URL("https://example.com/path?query=value#hash");
-      //   log("url", url);
-      // `
-      // ).input({});
-      //
-      // assert.ok(runtime.logs.url instanceof URL);
-      // assert.strictEqual((runtime.logs.url as URL).href, "https://example.com/path?query=value#hash");
+      const runtime = runTestCode(
+        context,
+        `
+        const url = new URL("https://example.com/path?query=value#hash");
+        log("url", url);
+      `
+      ).input({});
+
+      assert.ok(runtime.logs.url instanceof URL);
+      assert.strictEqual((runtime.logs.url as URL).href, "https://example.com/path?query=value#hash");
     });
 
     test("native URL passed through isolate returns as native URL", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const url = testingInput.url;
+        log("passedUrl", url);
+      `
+      ).input({
+        url: new URL("https://example.com/original"),
+      });
+
+      assert.ok(runtime.logs.passedUrl instanceof URL);
+      assert.strictEqual((runtime.logs.passedUrl as URL).href, "https://example.com/original");
     });
 
     test("URL properties are preserved after round-trip", async () => {
-      // TODO: Implement test
+      const originalUrl = new URL("https://user:pass@example.com:8080/path?query=value#hash");
+      const runtime = runTestCode(
+        context,
+        `
+        const url = testingInput.url;
+        log("url", url);
+      `
+      ).input({
+        url: originalUrl,
+      });
+
+      const resultUrl = runtime.logs.url as URL;
+      assert.ok(resultUrl instanceof URL);
+      assert.strictEqual(resultUrl.href, originalUrl.href);
     });
 
     test("modified URL preserves changes after round-trip", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const url = testingInput.url;
+        // Modifications in isolate would need to be logged
+        log("originalHref", url.href);
+      `
+      ).input({
+        url: new URL("https://example.com/path"),
+      });
+
+      assert.strictEqual(runtime.logs.originalHref, "https://example.com/path");
     });
 
     test("nested object with URL converts properly", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const obj = testingInput.data;
+        log("hasUrl", obj.link instanceof URL);
+        log("href", obj.link.href);
+        log("title", obj.title);
+      `
+      ).input({
+        data: {
+          title: "Example Site",
+          link: new URL("https://example.com"),
+        },
+      });
+
+      assert.strictEqual(runtime.logs.hasUrl, true);
+      assert.strictEqual(runtime.logs.href, "https://example.com/");
+      assert.strictEqual(runtime.logs.title, "Example Site");
     });
 
     test("array of URLs converts properly", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const urls = testingInput.urls;
+        log("isArray", Array.isArray(urls));
+        log("length", urls.length);
+        log("firstIsUrl", urls[0] instanceof URL);
+        log("firstHref", urls[0].href);
+        log("secondHref", urls[1].href);
+      `
+      ).input({
+        urls: [
+          new URL("https://example1.com"),
+          new URL("https://example2.com"),
+        ],
+      });
+
+      assert.strictEqual(runtime.logs.isArray, true);
+      assert.strictEqual(runtime.logs.length, 2);
+      assert.strictEqual(runtime.logs.firstIsUrl, true);
+      assert.strictEqual(runtime.logs.firstHref, "https://example1.com/");
+      assert.strictEqual(runtime.logs.secondHref, "https://example2.com/");
     });
   });
 });

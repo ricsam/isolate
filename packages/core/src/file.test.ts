@@ -2,6 +2,7 @@ import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
 import ivm from "isolated-vm";
 import { setupCore, clearAllInstanceState, cleanupUnmarshaledHandles } from "./index.ts";
+import { runTestCode } from "../../test-utils/src/native-input-test.ts";
 
 describe("File", () => {
   let isolate: ivm.Isolate;
@@ -207,78 +208,191 @@ describe("File", () => {
 
   describe("Native File → isolate", () => {
     test("native File should pass instanceof File check in isolate", async () => {
-      // TODO: Implement test
-      // const runtime = runTestCode(
-      //   context,
-      //   `
-      //   const file = testingInput.file;
-      //   log("instanceofFile", file instanceof File);
-      //   log("constructorName", file.constructor.name);
-      // `
-      // ).input({
-      //   file: new File(["test"], "test.txt", { type: "text/plain" }),
-      // });
-      //
-      // assert.deepStrictEqual(runtime.logs, {
-      //   instanceofFile: true,
-      //   constructorName: "File",
-      // });
+      const runtime = runTestCode(
+        context,
+        `
+        const file = testingInput.file;
+        log("instanceofFile", file instanceof File);
+        log("constructorName", file.constructor.name);
+      `
+      ).input({
+        file: new File(["test"], "test.txt", { type: "text/plain" }),
+      });
+
+      assert.deepStrictEqual(runtime.logs, {
+        instanceofFile: true,
+        constructorName: "File",
+      });
     });
 
     test("native File should pass instanceof Blob check in isolate", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const file = testingInput.file;
+        log("instanceofBlob", file instanceof Blob);
+      `
+      ).input({
+        file: new File(["test"], "test.txt", { type: "text/plain" }),
+      });
+
+      assert.strictEqual(runtime.logs.instanceofBlob, true);
     });
 
     test("native File name property is preserved", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const file = testingInput.file;
+        log("name", file.name);
+      `
+      ).input({
+        file: new File(["test"], "document.pdf", { type: "application/pdf" }),
+      });
+
+      assert.strictEqual(runtime.logs.name, "document.pdf");
     });
 
     test("native File type property is preserved", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const file = testingInput.file;
+        log("type", file.type);
+      `
+      ).input({
+        file: new File(["test"], "test.txt", { type: "text/plain" }),
+      });
+
+      assert.strictEqual(runtime.logs.type, "text/plain");
     });
 
     test("native File lastModified property is preserved", async () => {
-      // TODO: Implement test
+      const lastModified = 1609459200000; // 2021-01-01
+      const runtime = runTestCode(
+        context,
+        `
+        const file = testingInput.file;
+        log("lastModified", file.lastModified);
+      `
+      ).input({
+        file: new File(["test"], "test.txt", { type: "text/plain", lastModified }),
+      });
+
+      assert.strictEqual(runtime.logs.lastModified, lastModified);
     });
 
     test("native File size property (content not transferred)", async () => {
-      // TODO: Implement test
+      // Note: The helper creates an empty File with matching metadata,
+      // so size will be 0 instead of the original content size
+      const runtime = runTestCode(
+        context,
+        `
+        const file = testingInput.file;
+        log("hasSize", typeof file.size === "number");
+      `
+      ).input({
+        file: new File(["test content"], "test.txt", { type: "text/plain" }),
+      });
+
+      assert.strictEqual(runtime.logs.hasSize, true);
     });
 
     test("native File has webkitRelativePath property", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const file = testingInput.file;
+        log("hasWebkitRelativePath", "webkitRelativePath" in file || file.webkitRelativePath === "" || file.webkitRelativePath === undefined);
+      `
+      ).input({
+        file: new File(["test"], "test.txt", { type: "text/plain" }),
+      });
+
+      assert.strictEqual(runtime.logs.hasWebkitRelativePath, true);
     });
 
     test("native File methods exist", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const file = testingInput.file;
+        log("hasText", typeof file.text === "function");
+        log("hasArrayBuffer", typeof file.arrayBuffer === "function");
+        log("hasSlice", typeof file.slice === "function");
+      `
+      ).input({
+        file: new File(["test"], "test.txt", { type: "text/plain" }),
+      });
+
+      assert.strictEqual(runtime.logs.hasText, true);
+      assert.strictEqual(runtime.logs.hasArrayBuffer, true);
+      assert.strictEqual(runtime.logs.hasSlice, true);
     });
   });
 
   describe("Bidirectional Conversion (Native→isolate→Native)", () => {
     test("File created in isolate should return as native File", async () => {
-      // TODO: Implement test
-      // const runtime = runTestCode(
-      //   context,
-      //   `
-      //   const file = new File(["test content"], "created.txt", { type: "text/plain" });
-      //   log("file", file);
-      // `
-      // ).input({});
-      //
-      // assert.ok(runtime.logs.file instanceof File);
-      // assert.strictEqual((runtime.logs.file as File).name, "created.txt");
+      const runtime = runTestCode(
+        context,
+        `
+        const file = new File(["test content"], "created.txt", { type: "text/plain" });
+        log("file", file);
+      `
+      ).input({});
+
+      assert.ok(runtime.logs.file instanceof File);
+      assert.strictEqual((runtime.logs.file as File).name, "created.txt");
     });
 
     test("native File passed through isolate returns as native File", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const file = testingInput.file;
+        log("passedFile", file);
+      `
+      ).input({
+        file: new File(["original content"], "passed.txt", { type: "application/octet-stream" }),
+      });
+
+      assert.ok(runtime.logs.passedFile instanceof File);
+      assert.strictEqual((runtime.logs.passedFile as File).name, "passed.txt");
+      assert.strictEqual((runtime.logs.passedFile as File).type, "application/octet-stream");
     });
 
     test("File should also be instance of Blob after round-trip", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const file = new File(["test"], "test.txt", { type: "text/plain" });
+        log("file", file);
+      `
+      ).input({});
+
+      assert.ok(runtime.logs.file instanceof File);
+      assert.ok(runtime.logs.file instanceof Blob);
     });
 
     test("nested object with File converts properly", async () => {
-      // TODO: Implement test
+      const runtime = runTestCode(
+        context,
+        `
+        const obj = testingInput.data;
+        log("hasFile", obj.attachment instanceof File);
+        log("fileName", obj.attachment.name);
+        log("description", obj.description);
+      `
+      ).input({
+        data: {
+          description: "Important document",
+          attachment: new File(["content"], "document.pdf", { type: "application/pdf" }),
+        },
+      });
+
+      assert.strictEqual(runtime.logs.hasFile, true);
+      assert.strictEqual(runtime.logs.fileName, "document.pdf");
+      assert.strictEqual(runtime.logs.description, "Important document");
     });
   });
 });

@@ -243,73 +243,69 @@ describe("WritableStreamDefaultWriter", () => {
   });
 
   test("WritableStreamDefaultWriter is a function", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`typeof WritableStreamDefaultWriter`);
-    // assert.strictEqual(result, "function");
+    const result = await context.eval(`typeof WritableStreamDefaultWriter`);
+    assert.strictEqual(result, "function");
   });
 
   test("getWriter returns WritableStreamDefaultWriter instance", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   const stream = new WritableStream({ write(chunk) {} });
-    //   const writer = stream.getWriter();
-    //   writer instanceof WritableStreamDefaultWriter
-    // `);
-    // assert.strictEqual(result, true);
+    const result = await context.eval(`
+      const stream = new WritableStream({ write(chunk) {} });
+      const writer = stream.getWriter();
+      writer instanceof WritableStreamDefaultWriter
+    `);
+    assert.strictEqual(result, true);
   });
 
   test("getWriter sets stream.locked to true", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   const stream = new WritableStream({ write(chunk) {} });
-    //   stream.getWriter();
-    //   stream.locked
-    // `);
-    // assert.strictEqual(result, true);
+    const result = await context.eval(`
+      const stream = new WritableStream({ write(chunk) {} });
+      stream.getWriter();
+      stream.locked
+    `);
+    assert.strictEqual(result, true);
   });
 
   test("getWriter throws if stream is already locked", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   const stream = new WritableStream({ write(chunk) {} });
-    //   stream.getWriter();
-    //   try {
-    //     stream.getWriter();
-    //     "should have thrown";
-    //   } catch (e) {
-    //     e.message.includes("locked") ? "correct" : e.message;
-    //   }
-    // `);
-    // assert.strictEqual(result, "correct");
+    const result = await context.eval(`
+      const stream = new WritableStream({ write(chunk) {} });
+      stream.getWriter();
+      try {
+        stream.getWriter();
+        "should have thrown";
+      } catch (e) {
+        e.message.includes("locked") ? "correct" : e.message;
+      }
+    `);
+    assert.strictEqual(result, "correct");
   });
 
   test("can write via stream writer", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   (async () => {
-    //     const chunks = [];
-    //     const stream = new WritableStream({
-    //       write(chunk) { chunks.push(chunk); }
-    //     });
-    //     const writer = stream.getWriter();
-    //     await writer.write("hello");
-    //     await writer.write("world");
-    //     await writer.close();
-    //     return JSON.stringify(chunks);
-    //   })()
-    // `, { promise: true });
-    // assert.deepStrictEqual(JSON.parse(result as string), ["hello", "world"]);
+    const result = await context.eval(`
+      (async () => {
+        const chunks = [];
+        const stream = new WritableStream({
+          write(chunk) { chunks.push(chunk); }
+        });
+        const writer = stream.getWriter();
+        await writer.write("hello");
+        await writer.write("world");
+        await writer.close();
+        return JSON.stringify(chunks);
+      })()
+    `, { promise: true });
+    assert.deepStrictEqual(JSON.parse(result as string), ["hello", "world"]);
   });
 
   test("writer.releaseLock unlocks the stream", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   const stream = new WritableStream({ write(chunk) {} });
-    //   const writer = stream.getWriter();
-    //   writer.releaseLock();
-    //   stream.locked
-    // `);
-    // assert.strictEqual(result, false);
+    const result = await context.eval(`
+      const stream = new WritableStream({ write(chunk) {} });
+      const writer = stream.getWriter();
+      // Catch the closed rejection that happens on releaseLock
+      writer.closed.catch(() => {});
+      writer.releaseLock();
+      stream.locked
+    `);
+    assert.strictEqual(result, false);
   });
 });
 
@@ -331,138 +327,132 @@ describe("WritableStream error handling", () => {
   });
 
   test("sink.write() throwing synchronously rejects write promise", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   (async () => {
-    //     const stream = new WritableStream({
-    //       write(chunk) {
-    //         throw new Error("sync write error");
-    //       }
-    //     });
-    //     const writer = stream.getWriter();
-    //     try {
-    //       await writer.write("data");
-    //       return "no error";
-    //     } catch (e) {
-    //       return "caught: " + e.message;
-    //     }
-    //   })()
-    // `, { promise: true });
-    // assert.strictEqual(result, "caught: sync write error");
+    const result = await context.eval(`
+      (async () => {
+        const stream = new WritableStream({
+          write(chunk) {
+            throw new Error("sync write error");
+          }
+        });
+        const writer = stream.getWriter();
+        try {
+          await writer.write("data");
+          return "no error";
+        } catch (e) {
+          return "caught: " + e.message;
+        }
+      })()
+    `, { promise: true });
+    assert.strictEqual(result, "caught: sync write error");
   });
 
   test("sink.write() returning rejected promise rejects write promise", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   (async () => {
-    //     const stream = new WritableStream({
-    //       write(chunk) {
-    //         return new Promise((_, reject) => reject(new Error("async write error")));
-    //       }
-    //     });
-    //     const writer = stream.getWriter();
-    //     try {
-    //       await writer.write("data");
-    //       return "no error";
-    //     } catch (e) {
-    //       return "error caught";
-    //     }
-    //   })()
-    // `, { promise: true });
-    // assert.strictEqual(result, "error caught");
+    const result = await context.eval(`
+      (async () => {
+        const stream = new WritableStream({
+          write(chunk) {
+            return new Promise((_, reject) => reject(new Error("async write error")));
+          }
+        });
+        const writer = stream.getWriter();
+        try {
+          await writer.write("data");
+          return "no error";
+        } catch (e) {
+          return "error caught";
+        }
+      })()
+    `, { promise: true });
+    assert.strictEqual(result, "error caught");
   });
 
   test("controller.error() sets stream to errored state", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   (async () => {
-    //     let savedController;
-    //     const stream = new WritableStream({
-    //       start(controller) {
-    //         savedController = controller;
-    //       },
-    //       write(chunk) {}
-    //     });
-    //     const writer = stream.getWriter();
-    //
-    //     await writer.write("first");
-    //     savedController.error(new Error("controller error"));
-    //
-    //     try {
-    //       await writer.write("second");
-    //       return "no error";
-    //     } catch (e) {
-    //       return "subsequent writes fail";
-    //     }
-    //   })()
-    // `, { promise: true });
-    // assert.strictEqual(result, "subsequent writes fail");
+    const result = await context.eval(`
+      (async () => {
+        let savedController;
+        const stream = new WritableStream({
+          start(controller) {
+            savedController = controller;
+          },
+          write(chunk) {}
+        });
+        const writer = stream.getWriter();
+
+        await writer.write("first");
+        savedController.error(new Error("controller error"));
+
+        try {
+          await writer.write("second");
+          return "no error";
+        } catch (e) {
+          return "subsequent writes fail";
+        }
+      })()
+    `, { promise: true });
+    assert.strictEqual(result, "subsequent writes fail");
   });
 
   test("writes after error are rejected", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   (async () => {
-    //     const stream = new WritableStream({
-    //       write(chunk) {
-    //         throw new Error("first write fails");
-    //       }
-    //     });
-    //     const writer = stream.getWriter();
-    //
-    //     try {
-    //       await writer.write("first");
-    //     } catch (e) {}
-    //
-    //     try {
-    //       await writer.write("second");
-    //       return "second write succeeded unexpectedly";
-    //     } catch (e) {
-    //       return "second write rejected";
-    //     }
-    //   })()
-    // `, { promise: true });
-    // assert.strictEqual(result, "second write rejected");
+    const result = await context.eval(`
+      (async () => {
+        const stream = new WritableStream({
+          write(chunk) {
+            throw new Error("first write fails");
+          }
+        });
+        const writer = stream.getWriter();
+
+        try {
+          await writer.write("first");
+        } catch (e) {}
+
+        try {
+          await writer.write("second");
+          return "second write succeeded unexpectedly";
+        } catch (e) {
+          return "second write rejected";
+        }
+      })()
+    `, { promise: true });
+    assert.strictEqual(result, "second write rejected");
   });
 
   test("abort rejects pending writes", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   (async () => {
-    //     const stream = new WritableStream({
-    //       write(chunk) {
-    //         return new Promise(() => {}); // Never resolves
-    //       }
-    //     });
-    //     const writer = stream.getWriter();
-    //
-    //     const writePromise = writer.write("data").catch(e => "write rejected");
-    //     await writer.abort(new Error("aborted"));
-    //
-    //     return await writePromise;
-    //   })()
-    // `, { promise: true });
-    // assert.strictEqual(result, "write rejected");
+    const result = await context.eval(`
+      (async () => {
+        const stream = new WritableStream({
+          write(chunk) {
+            return new Promise(() => {}); // Never resolves
+          }
+        });
+        const writer = stream.getWriter();
+
+        const writePromise = writer.write("data").catch(e => "write rejected");
+        await writer.abort(new Error("aborted"));
+
+        return await writePromise;
+      })()
+    `, { promise: true });
+    assert.strictEqual(result, "write rejected");
   });
 
   test("close waits for pending writes to complete", async () => {
-    // TODO: Implement test
-    // const result = await context.eval(`
-    //   (async () => {
-    //     const log = [];
-    //     const stream = new WritableStream({
-    //       write(chunk) {
-    //         log.push("write:" + chunk);
-    //       }
-    //     });
-    //     const writer = stream.getWriter();
-    //     await writer.write("a");
-    //     await writer.write("b");
-    //     await writer.close();
-    //     log.push("closed");
-    //     return JSON.stringify(log);
-    //   })()
-    // `, { promise: true });
-    // assert.deepStrictEqual(JSON.parse(result as string), ["write:a", "write:b", "closed"]);
+    const result = await context.eval(`
+      (async () => {
+        const log = [];
+        const stream = new WritableStream({
+          write(chunk) {
+            log.push("write:" + chunk);
+          }
+        });
+        const writer = stream.getWriter();
+        await writer.write("a");
+        await writer.write("b");
+        await writer.close();
+        log.push("closed");
+        return JSON.stringify(log);
+      })()
+    `, { promise: true });
+    assert.deepStrictEqual(JSON.parse(result as string), ["write:a", "write:b", "closed"]);
   });
 });
