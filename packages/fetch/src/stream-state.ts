@@ -253,15 +253,16 @@ export function clearStreamRegistryForContext(context: ivm.Context): void {
  * @param nativeStream The native ReadableStream to read from
  * @param streamId The stream ID in the registry
  * @param registry The stream state registry
- * @returns Cleanup function to cancel the reader
+ * @returns Async cleanup function to cancel the reader
  */
 export function startNativeStreamReader(
   nativeStream: ReadableStream<Uint8Array>,
   streamId: number,
   registry: StreamStateRegistry
-): () => void {
+): () => Promise<void> {
   let cancelled = false;
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let readLoopPromise: Promise<void> | null = null;
 
   const CHUNK_SIZE = 64 * 1024; // 64KB max chunk size
 
@@ -311,17 +312,25 @@ export function startNativeStreamReader(
     }
   }
 
-  // Start the read loop (fire and forget)
-  readLoop();
+  // Start the read loop and save the promise
+  readLoopPromise = readLoop();
 
-  // Return cleanup function
-  return () => {
+  // Return async cleanup function
+  return async () => {
     cancelled = true;
     if (reader) {
       try {
-        reader.cancel();
+        await reader.cancel();
       } catch {
         // Ignore cancel errors
+      }
+    }
+    // Wait for read loop to finish
+    if (readLoopPromise) {
+      try {
+        await readLoopPromise;
+      } catch {
+        // Ignore read loop errors during cleanup
       }
     }
   };

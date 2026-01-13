@@ -2020,7 +2020,7 @@ export async function setupFetch(
 
       // Setup streaming for request body
       let requestStreamId: number | null = null;
-      let streamCleanup: (() => void) | null = null;
+      let streamCleanup: (() => Promise<void>) | null = null;
 
       if (request.body) {
         // Create a stream in the registry for the request body
@@ -2167,7 +2167,7 @@ export async function setupFetch(
       } finally {
         // Cleanup: cancel stream reader if still running
         if (streamCleanup) {
-          streamCleanup();
+          await streamCleanup();
         }
         // Delete stream from registry
         if (requestStreamId !== null) {
