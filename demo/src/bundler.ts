@@ -1,7 +1,11 @@
 import { rollup } from "rollup";
-import resolve from "@rollup/plugin-node-resolve";
-import commonjs from "@rollup/plugin-commonjs";
-import replace from "@rollup/plugin-replace";
+import * as resolveModule from "@rollup/plugin-node-resolve";
+import * as commonjsModule from "@rollup/plugin-commonjs";
+import * as replaceModule from "@rollup/plugin-replace";
+
+const resolve = resolveModule.default;
+const commonjs = commonjsModule.default;
+const replace = replaceModule.default;
 
 // Known modules that should be externalized (resolved by module loader)
 const KNOWN_MODULES = ["zod", "@richie-rpc/core", "@richie-rpc/server"];

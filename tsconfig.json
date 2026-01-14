@@ -3,6 +3,6 @@
   "compilerOptions": {
     "rootDir": "."
   },
-  "include": ["packages/*/src/**/*", "demo/src/**/*"],
+  "include": ["packages/*/src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }

@@ -102,7 +102,7 @@ export async function createRuntimeTestContext(
         });
       },
     },
-    fs: opts.fs ? { handler: mockFs } : undefined,
+    fs: opts.fs ? { getDirectory: async () => mockFs } : undefined,
   });
 
   return {

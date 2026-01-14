@@ -898,52 +898,6 @@ function setupFileSystemWritableFileStream(
 }
 
 // ============================================================================
-// navigator.storage.getDirectory() Implementation
-// ============================================================================
-
-function setupNavigatorStorage(
-  context: ivm.Context,
-  stateMap: Map<number, unknown>
-): void {
-  const global = context.global;
-
-  // getDirectory - sync callback that returns root directory handle
-  global.setSync(
-    "__navigator_storage_getDirectory",
-    new ivm.Callback(() => {
-      // Create root directory handle state
-      const instanceId = nextInstanceId++;
-      const state: DirectoryHandleState = {
-        instanceId,
-        path: "/",
-        name: "",
-      };
-      stateMap.set(instanceId, state);
-      return instanceId;
-    })
-  );
-
-  // Inject navigator.storage
-  const navigatorStorageCode = `
-(function() {
-  if (!globalThis.navigator) {
-    globalThis.navigator = {};
-  }
-  if (!globalThis.navigator.storage) {
-    globalThis.navigator.storage = {};
-  }
-
-  globalThis.navigator.storage.getDirectory = function() {
-    const instanceId = __navigator_storage_getDirectory();
-    return FileSystemDirectoryHandle._fromInstanceId(instanceId);
-  };
-})();
-`;
-
-  context.evalSync(navigatorStorageCode);
-}
-
-// ============================================================================
 // Global getDirectory(path) Implementation
 // ============================================================================
 

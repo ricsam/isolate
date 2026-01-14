@@ -6,6 +6,8 @@
     "moduleDetection": "force",
     "allowJs": true,
 
+    "jsx": "react-jsx",
+
     "moduleResolution": "NodeNext",
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,

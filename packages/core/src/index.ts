@@ -184,7 +184,7 @@ export function marshal(
             return new ivm.ExternalCopy(obj).copyInto();
           }
           // Other typed arrays - convert to regular array for now
-          return Array.from(obj as Iterable<number>);
+          return Array.from(new Uint8Array(obj.buffer, obj.byteOffset, obj.byteLength));
         }
 
         // Handle ArrayBuffer
@@ -465,7 +465,7 @@ export function defineFunction(
         throw err;
       }
     },
-    { async: false }
+    { sync: true }
   );
 
   // Set it on the global object in the context
@@ -583,7 +583,7 @@ export function defineClass<TState extends object = object>(
   // Build method callback/reference registrations
   // Sync methods use Callback, async methods use Reference (for applySyncPromise)
   const methodCallbacks: Record<string, ivm.Callback> = {};
-  const methodReferences: Record<string, ivm.Reference<(...args: unknown[]) => Promise<unknown>>> = {};
+  const methodReferences: Record<string, ivm.Reference<(instanceId: number, ...args: unknown[]) => Promise<unknown>>> = {};
 
   for (const [methodName, methodDef] of Object.entries(methods)) {
     if (methodDef.async) {

@@ -403,9 +403,20 @@ const testEnvironmentCode = `
     });
   };
 
+  test.todo = function(name) {
+    currentSuite.tests.push({
+      name,
+      fn: null,
+      skip: false,
+      only: false,
+      todo: true,
+    });
+  };
+
   const it = test;
   it.skip = test.skip;
   it.only = test.only;
+  it.todo = test.todo;
 
   // ============================================================
   // Lifecycle Hooks
@@ -484,11 +495,22 @@ const testEnvironmentCode = `
       for (const t of suite.tests) {
         const testName = namePath ? namePath + ' > ' + t.name : t.name;
 
-        // Skip if .only is used and this test isn't .only
-        if (hasOnly && !t.only) continue;
+        // Skip if .only is used and this test isn't .only AND the suite doesn't have .only
+        if (hasOnly && !t.only && !suite.only) continue;
 
         // Skip if test is marked as skip
         if (t.skip) {
+          results.push({
+            name: testName,
+            passed: true,
+            skipped: true,
+            duration: 0,
+          });
+          continue;
+        }
+
+        // Handle todo tests (no function provided)
+        if (t.todo) {
           results.push({
             name: testName,
             passed: true,

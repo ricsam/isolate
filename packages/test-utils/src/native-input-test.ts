@@ -340,12 +340,12 @@ function unmarshalFromJson(value: unknown): unknown {
       return new Request(obj.url as string, {
         method: obj.method as string,
         headers,
-        mode: obj.mode as RequestMode,
-        credentials: obj.credentials as RequestCredentials,
-        cache: obj.cache as RequestCache,
-        redirect: obj.redirect as RequestRedirect,
+        mode: obj.mode as Request["mode"],
+        credentials: obj.credentials as Request["credentials"],
+        cache: obj.cache as Request["cache"],
+        redirect: obj.redirect as Request["redirect"],
         referrer: obj.referrer as string,
-        referrerPolicy: obj.referrerPolicy as ReferrerPolicy,
+        referrerPolicy: obj.referrerPolicy as Request["referrerPolicy"],
         integrity: obj.integrity as string,
       });
     }

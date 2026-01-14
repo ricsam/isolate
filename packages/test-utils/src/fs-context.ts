@@ -49,7 +49,7 @@ export async function createFsTestContext(): Promise<FsTestContext> {
   const coreHandle = await setupCore(context);
 
   // Setup file system APIs with mock handler
-  const fsHandle = await setupFs(context, { handler: mockFs });
+  const fsHandle = await setupFs(context, { getDirectory: async () => mockFs });
 
   return {
     isolate,

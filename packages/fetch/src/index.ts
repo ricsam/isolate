@@ -1421,6 +1421,7 @@ function setupRequest(
     #headers;
     #signal;
     #streamId;
+    #cachedBody = null;
 
     constructor(input, init = {}) {
       // Handle internal construction from instance ID
@@ -1552,22 +1553,27 @@ function setupRequest(
     }
 
     get body() {
-      // If we have a stream ID, return a HostBackedReadableStream
-      if (this.#streamId !== null) {
-        return HostBackedReadableStream._fromStreamId(this.#streamId);
+      // Return cached body if available
+      if (this.#cachedBody !== null) {
+        return this.#cachedBody;
       }
 
-      // Fallback: create stream from buffered body
-      const instanceId = this.#instanceId;
-      const newStreamId = __Stream_create();
-      const buffer = __Request_arrayBuffer(instanceId);
+      // If we have a stream ID, create and cache the stream
+      if (this.#streamId !== null) {
+        this.#cachedBody = HostBackedReadableStream._fromStreamId(this.#streamId);
+        return this.#cachedBody;
+      }
 
+      // Create stream from buffered body
+      const newStreamId = __Stream_create();
+      const buffer = __Request_arrayBuffer(this.#instanceId);
       if (buffer.byteLength > 0) {
         __Stream_push(newStreamId, Array.from(new Uint8Array(buffer)));
       }
       __Stream_close(newStreamId);
 
-      return HostBackedReadableStream._fromStreamId(newStreamId);
+      this.#cachedBody = HostBackedReadableStream._fromStreamId(newStreamId);
+      return this.#cachedBody;
     }
 
     async text() {
@@ -2153,7 +2159,7 @@ export async function setupFetch(
         // We use 200 as the status but preserve the actual status in a custom header
         // The caller should check getUpgradeRequest() for WebSocket upgrades
         const status = responseState.status === 101 ? 200 : responseState.status;
-        const response = new Response(responseBody, {
+        const response = new Response(responseBody as ConstructorParameters<typeof Response>[0], {
           status,
           statusText: responseState.statusText,
           headers: responseHeaders,
