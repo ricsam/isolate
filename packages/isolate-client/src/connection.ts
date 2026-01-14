@@ -678,12 +678,12 @@ function deserializeRequest(data: SerializedRequestData): Request {
   return new Request(data.url, {
     method: data.method,
     headers: data.headers,
-    body: data.body,
+    body: data.body as unknown as BodyInit | null | undefined,
   });
 }
 
 function deserializeResponse(data: SerializedResponse): Response {
-  return new Response(data.body, {
+  return new Response(data.body as unknown as BodyInit | null, {
     status: data.status,
     statusText: data.statusText,
     headers: data.headers,
