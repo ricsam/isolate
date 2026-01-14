@@ -508,7 +508,7 @@ async function handleDispatchRequest(
     const request = new Request(message.request.url, {
       method: message.request.method,
       headers: message.request.headers,
-      body: message.request.body as Uint8Array | null | undefined,
+      body: message.request.body as any,
     });
 
     // Dispatch to isolate
@@ -696,7 +696,7 @@ async function serializeResponse(response: Response): Promise<SerializedResponse
 }
 
 function deserializeResponse(data: SerializedResponseData): Response {
-  return new Response(data.body as Uint8Array | null, {
+  return new Response(data.body as any, {
     status: data.status,
     statusText: data.statusText,
     headers: data.headers,

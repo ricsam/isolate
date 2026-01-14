@@ -1237,7 +1237,7 @@ node -e "
 "
 ```
 
-### Step 2: Connect from Bun
+### Step 2: Connect from host
 
 ```typescript
 // bun-app.ts
@@ -1295,62 +1295,6 @@ console.log(`Bun server running at http://localhost:${server.port}`);
 Run with:
 ```bash
 bun run bun-app.ts
-```
-
-### Step 3: Connect from Deno
-
-```typescript
-// deno-app.ts
-import { connect } from "npm:@ricsam/isolate-client";
-
-const client = await connect({ socket: "/tmp/isolate.sock" });
-
-const runtime = await client.createRuntime({
-  console: {
-    log: (...args) => console.log("[isolate]", ...args),
-  },
-  fetch: async (request) => fetch(request), // Deno's native fetch
-  fs: {
-    readFile: async (path) => {
-      const data = await Deno.readFile(path);
-      return data.buffer;
-    },
-    writeFile: async (path, data) => {
-      await Deno.writeFile(path, new Uint8Array(data));
-    },
-    readdir: async (path) => {
-      const entries = [];
-      for await (const entry of Deno.readDir(path)) {
-        entries.push(entry.name);
-      }
-      return entries;
-    },
-    stat: async (path) => {
-      const stat = await Deno.stat(path);
-      return {
-        isFile: stat.isFile,
-        isDirectory: stat.isDirectory,
-        size: stat.size,
-      };
-    },
-    mkdir: async (path, options) => {
-      await Deno.mkdir(path, options);
-    },
-    unlink: async (path) => {
-      await Deno.remove(path);
-    },
-  },
-});
-
-await runtime.eval(`console.log("Hello from Deno via isolated-vm!")`);
-
-// Serve HTTP with Deno
-Deno.serve({ port: 3000 }, (request) => runtime.dispatchRequest(request));
-```
-
-Run with:
-```bash
-deno run --allow-net --allow-read --allow-write deno-app.ts
 ```
 
 ### Benefits of the Daemon Architecture
