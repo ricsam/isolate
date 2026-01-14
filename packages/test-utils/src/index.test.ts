@@ -308,7 +308,7 @@ describe("createFsTestContext", () => {
     const result = await ctx.context.eval(
       `
       (async () => {
-        const root = await navigator.storage.getDirectory();
+        const root = await getDirectory('/');
         const fileHandle = await root.getFileHandle("test.txt");
         const file = await fileHandle.getFile();
         return await file.text();
