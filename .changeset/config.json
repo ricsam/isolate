@@ -8,7 +8,6 @@
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
   "ignore": [
-    "@ricsam/isolate-demo",
-    "@ricsam/isolate-test-utils"
+    "@ricsam/isolate-demo"
   ]
 }
