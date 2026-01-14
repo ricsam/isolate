@@ -2,7 +2,7 @@ import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
 import ivm from "isolated-vm";
 import { setupCore, clearAllInstanceState, cleanupUnmarshaledHandles } from "./index.ts";
-import { runTestCode } from "../../test-utils/src/native-input-test.ts";
+import { runTestCode } from "@ricsam/isolate-test-utils";
 
 describe("URLSearchParams", () => {
   let isolate: ivm.Isolate;
