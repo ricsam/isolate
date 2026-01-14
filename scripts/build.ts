@@ -2,8 +2,8 @@ import path from 'node:path';
 import { $, Glob } from 'bun';
 import { TYPE_DEFINITIONS } from '../packages/isolate-types/src/isolate-types.ts';
 
-// Packages to build (in dependency order: core first, then new packages, then fetch/fs, then runtime, then test-environment)
-const PACKAGES = ['core', 'isolate-types', 'console', 'crypto', 'encoding', 'path', 'timers', 'fetch', 'fs', 'runtime', 'test-environment'];
+// Packages to build (in dependency order: core first, then new packages, then fetch/fs, then runtime, then test-environment, then standalone packages)
+const PACKAGES = ['core', 'isolate-types', 'console', 'crypto', 'encoding', 'path', 'timers', 'fetch', 'fs', 'runtime', 'test-environment', 'playwright'];
 
 // Mapping from package names to TYPE_DEFINITIONS keys for isolate.d.ts generation
 const ISOLATE_TYPE_MAPPING: Record<string, keyof typeof TYPE_DEFINITIONS | undefined> = {
@@ -270,6 +270,7 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata, rea
       fs: 'File system API implementation for isolated-vm V8 sandbox',
       runtime: 'Complete isolated-vm V8 sandbox runtime with fetch, fs, and core bindings',
       'test-environment': 'Test environment for running tests inside isolated-vm V8 sandbox',
+      playwright: 'Playwright bridge for running browser tests in isolated-vm V8 sandbox',
     };
     publishPackageJson.description = descriptions[packageName] || rootMetadata.description;
   }

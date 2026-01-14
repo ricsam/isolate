@@ -1,5 +1,11 @@
 # @ricsam/isolate-core
 
+## 0.1.3
+
+### Patch Changes
+
+- add playwright package
+
 ## 0.1.2
 
 ### Patch Changes

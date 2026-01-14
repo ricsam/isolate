@@ -1,5 +1,13 @@
 # @ricsam/isolate-timers
 
+## 0.1.3
+
+### Patch Changes
+
+- add playwright package
+- Updated dependencies
+  - @ricsam/isolate-core@0.1.3
+
 ## 0.1.2
 
 ### Patch Changes

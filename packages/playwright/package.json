@@ -1,6 +1,6 @@
 {
-  "name": "@ricsam/isolate-timers",
-  "version": "0.1.3",
+  "name": "@ricsam/isolate-playwright",
+  "version": "0.1.1",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -16,14 +16,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-core": "*",
     "isolated-vm": "^6"
   },
   "devDependencies": {
     "@types/node": "^24",
+    "playwright": "^1",
     "typescript": "^5"
   },
   "peerDependencies": {
-    "isolated-vm": "^6"
+    "isolated-vm": "^6",
+    "playwright": "^1"
   }
 }
