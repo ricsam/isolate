@@ -234,6 +234,41 @@ wss.on("connection", async (ws, req) => {
 
   wsConnections.set(connectionId, ws);
 
+  // Buffer messages until we know the connection is ready
+  const messageBuffer: Buffer[] = [];
+  let connectionReady = false;
+  let activeConnectionId: string | null = null;
+
+  // Set up message handler EARLY to avoid race conditions
+  // Messages arriving before upgrade completes will be buffered
+  ws.on("message", (data) => {
+    if (connectionReady && activeConnectionId) {
+      const message = (data as Buffer).toString();
+      runtime.fetch.dispatchWebSocketMessage(activeConnectionId, message);
+    } else {
+      // Buffer the message until connection is ready
+      messageBuffer.push(data as Buffer);
+    }
+  });
+
+  ws.on("close", (code, reason) => {
+    if (activeConnectionId) {
+      runtime.fetch.dispatchWebSocketClose(
+        activeConnectionId,
+        code,
+        reason.toString()
+      );
+      wsConnections.delete(activeConnectionId);
+    }
+  });
+
+  ws.on("error", (error) => {
+    console.error("WebSocket error:", error);
+    if (activeConnectionId) {
+      runtime.fetch.dispatchWebSocketError(activeConnectionId, error);
+    }
+  });
+
   // First, dispatch a request to get the upgrade approved
   const upgradeRequest = new Request(`http://localhost:${port}${url}`, {
     method: "GET",
@@ -254,25 +289,15 @@ wss.on("connection", async (ws, req) => {
       // Update our tracking to use the isolate's connectionId
       wsConnections.delete(connectionId);
       wsConnections.set(upgrade.connectionId, ws);
+      activeConnectionId = upgrade.connectionId;
+      connectionReady = true;
 
-      ws.on("message", (data) => {
-        const message = data.toString();
+      // Process any buffered messages
+      for (const bufferedData of messageBuffer) {
+        const message = bufferedData.toString();
         runtime.fetch.dispatchWebSocketMessage(upgrade.connectionId, message);
-      });
-
-      ws.on("close", (code, reason) => {
-        runtime.fetch.dispatchWebSocketClose(
-          upgrade.connectionId,
-          code,
-          reason.toString()
-        );
-        wsConnections.delete(upgrade.connectionId);
-      });
-
-      ws.on("error", (error) => {
-        console.error("WebSocket error:", error);
-        runtime.fetch.dispatchWebSocketError(upgrade.connectionId, error);
-      });
+      }
+      messageBuffer.length = 0; // Clear the buffer
     } else {
       // No upgrade requested, close the connection
       ws.close(1002, "Upgrade not requested");

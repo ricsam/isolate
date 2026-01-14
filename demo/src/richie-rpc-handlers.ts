@@ -990,7 +990,10 @@ serve({
     open(ws) {
       // Check if richie-rpc WebSocket (match by endpointName from matchAndPrepareUpgrade)
       if (ws.data?.endpointName) {
-        return rpcWsRouter.websocketHandler.open({ ws, upgradeData: ws.data });
+        // Note: Don't return the Promise - isolated-vm can't serialize Promises
+        rpcWsRouter.websocketHandler.open({ ws, upgradeData: ws.data })
+          .catch((e: any) => console.error('richie-rpc open handler error:', e));
+        return;
       }
 
       // Existing manual handlers
@@ -1013,7 +1016,10 @@ serve({
     message(ws, message) {
       // Check if richie-rpc WebSocket
       if (ws.data?.endpointName) {
-        return rpcWsRouter.websocketHandler.message({ ws, rawMessage: message, upgradeData: ws.data });
+        // Note: Don't return the Promise - isolated-vm can't serialize Promises
+        rpcWsRouter.websocketHandler.message({ ws, rawMessage: message, upgradeData: ws.data })
+          .catch((e: any) => console.error('richie-rpc message handler error:', e));
+        return;
       }
 
       // Existing manual handlers
@@ -1035,7 +1041,9 @@ serve({
     close(ws, code, reason) {
       // Check if richie-rpc WebSocket
       if (ws.data?.endpointName) {
-        return rpcWsRouter.websocketHandler.close({ ws, code, reason, upgradeData: ws.data });
+        // Note: close handler is sync but handle any errors gracefully
+        rpcWsRouter.websocketHandler.close({ ws, code, reason, upgradeData: ws.data });
+        return;
       }
 
       // Existing manual handlers
