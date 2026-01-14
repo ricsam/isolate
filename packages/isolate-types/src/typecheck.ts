@@ -5,7 +5,7 @@
  * the isolate global type definitions before running them in the sandbox.
  *
  * @example
- * import { typecheckIsolateCode } from "@ricsam/isolate-test-utils";
+ * import { typecheckIsolateCode } from "@ricsam/isolate-types";
  *
  * const result = typecheckIsolateCode(`
  *   serve({

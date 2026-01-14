@@ -5,7 +5,7 @@
  * The .d.ts files in each package are generated from these strings during build.
  *
  * @example
- * import { TYPE_DEFINITIONS } from "@ricsam/isolate-test-utils";
+ * import { TYPE_DEFINITIONS } from "@ricsam/isolate-types";
  *
  * // Use with ts-morph for type checking code strings
  * project.createSourceFile("types.d.ts", TYPE_DEFINITIONS.fetch);

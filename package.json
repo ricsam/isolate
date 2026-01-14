@@ -30,6 +30,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
+    "build:npm": "bun scripts/build.ts",
     "test": "npm test --workspaces",
     "typecheck": "tsc --noEmit"
   },

@@ -1,9 +1,9 @@
 import path from 'node:path';
 import { $, Glob } from 'bun';
-import { TYPE_DEFINITIONS } from '../packages/test-utils/src/isolate-types.ts';
+import { TYPE_DEFINITIONS } from '../packages/isolate-types/src/isolate-types.ts';
 
-// Packages to build (in dependency order: core first, then new packages, then fetch/fs, then runtime, then test-utils/test-environment)
-const PACKAGES = ['core', 'console', 'crypto', 'encoding', 'path', 'timers', 'fetch', 'fs', 'runtime', 'test-utils', 'test-environment'];
+// Packages to build (in dependency order: core first, then new packages, then fetch/fs, then runtime, then test-environment)
+const PACKAGES = ['core', 'isolate-types', 'console', 'crypto', 'encoding', 'path', 'timers', 'fetch', 'fs', 'runtime', 'test-environment'];
 
 // Mapping from package names to TYPE_DEFINITIONS keys for isolate.d.ts generation
 const ISOLATE_TYPE_MAPPING: Record<string, keyof typeof TYPE_DEFINITIONS | undefined> = {
@@ -67,7 +67,7 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata, rea
           declaration: true,
           esModuleInterop: true,
           inlineSourceMap: false,
-          lib: ['ESNext', "DOM"],
+          lib: ['ESNext', 'DOM', 'DOM.Iterable'],
           listEmittedFiles: false,
           listFiles: false,
           moduleResolution: 'bundler',
@@ -260,6 +260,7 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata, rea
   if (!publishPackageJson.description) {
     const descriptions: Record<string, string> = {
       core: 'Core utilities and class builder for isolated-vm V8 sandbox bindings',
+      'isolate-types': 'Type definition strings and type-checking utilities for isolated-vm V8 sandbox APIs',
       console: 'Console API implementation for isolated-vm V8 sandbox',
       crypto: 'Web Crypto API implementation for isolated-vm V8 sandbox',
       encoding: 'Base64 encoding APIs (atob, btoa) for isolated-vm V8 sandbox',
@@ -268,7 +269,6 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata, rea
       fetch: 'Fetch API implementation for isolated-vm V8 sandbox',
       fs: 'File system API implementation for isolated-vm V8 sandbox',
       runtime: 'Complete isolated-vm V8 sandbox runtime with fetch, fs, and core bindings',
-      'test-utils': 'Testing utilities for isolated-vm V8 sandbox',
       'test-environment': 'Test environment for running tests inside isolated-vm V8 sandbox',
     };
     publishPackageJson.description = descriptions[packageName] || rootMetadata.description;
@@ -388,10 +388,10 @@ const main = async () => {
   console.log('  1. Review the built packages in packages/*/dist');
   console.log('  2. Test the packages locally if needed');
   console.log('  3. Publish with: npm publish packages/core');
+  console.log('                   npm publish packages/isolate-types');
   console.log('                   npm publish packages/fetch');
   console.log('                   npm publish packages/fs');
   console.log('                   npm publish packages/runtime');
-  console.log('                   npm publish packages/test-utils');
   console.log('                   npm publish packages/test-environment');
   console.log('\n   Or use: bun run publish:all\n');
 };

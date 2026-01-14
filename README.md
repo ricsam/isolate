@@ -102,6 +102,7 @@ const handle = await setupCore(context);
 - `Blob`, `File`
 - `URL`, `URLSearchParams`
 - `DOMException`
+- `AbortController`, `AbortSignal`
 - `TextEncoder`, `TextDecoder`
 
 **Usage in Isolate:**
@@ -339,14 +340,12 @@ Node.js-compatible path utilities for POSIX paths.
 ```typescript
 import { setupPath } from "@ricsam/isolate-path";
 
-const handle = await setupPath(context, {
-  cwd: "/home/user", // Optional: set working directory for resolve()
-});
+const handle = await setupPath(context);
 ```
 
 **Injected Globals:**
 - `path.join(...paths)` - Join path segments
-- `path.resolve(...paths)` - Resolve to absolute path
+- `path.resolve(...paths)` - Resolve to absolute path (uses `/` as base)
 - `path.normalize(path)` - Normalize a path
 - `path.basename(path, ext?)` - Get file name
 - `path.dirname(path)` - Get directory name
@@ -355,9 +354,9 @@ const handle = await setupPath(context, {
 - `path.parse(path)` - Parse into components
 - `path.format(obj)` - Format from components
 - `path.relative(from, to)` - Get relative path
-- `path.cwd()` - Get working directory
 - `path.sep` - Path separator (`/`)
 - `path.delimiter` - Path delimiter (`:`)
+- `path.posix` - Alias to `path` (POSIX-only implementation)
 
 **Usage in Isolate:**
 
@@ -367,7 +366,7 @@ path.join('/foo', 'bar', 'baz'); // "/foo/bar/baz"
 path.join('foo', 'bar', '..', 'baz'); // "foo/baz"
 
 // Resolve to absolute
-path.resolve('foo/bar'); // "/home/user/foo/bar" (with cwd)
+path.resolve('foo/bar'); // "/foo/bar"
 path.resolve('/foo', 'bar'); // "/foo/bar"
 
 // Parse and format
@@ -657,24 +656,31 @@ runtime.dispose();
 <!-- BEGIN:test-environment -->
 ### @ricsam/isolate-test-environment
 
-Test primitives for running tests in sandboxed V8. Provides a Jest/Vitest-compatible API with handler-based result streaming.
+Test primitives for running tests in sandboxed V8. Provides a Jest/Vitest-compatible API.
 
 ```typescript
-import { setupTestEnvironment } from "@ricsam/isolate-test-environment";
+import { setupTestEnvironment, runTests } from "@ricsam/isolate-test-environment";
 
-const handle = await setupTestEnvironment(context, {
-  onTestPass: (test) => console.log(`✓ ${test.fullName}`),
-  onTestFail: (test) => console.log(`✗ ${test.fullName}: ${test.error?.message}`),
-  onRunComplete: (results) => {
-    console.log(`\n${results.passed}/${results.total} tests passed`);
-  },
-});
+const handle = await setupTestEnvironment(context);
 ```
 
 **Injected Globals:**
 - `describe`, `it`, `test` (with `.skip`, `.only`, `.todo` modifiers)
 - `beforeAll`, `afterAll`, `beforeEach`, `afterEach`
-- `expect` with matchers (`toBe`, `toEqual`, `toThrow`, etc.) and modifiers (`.not`, `.resolves`, `.rejects`)
+- `expect` with matchers and `.not` modifier
+
+**Expect Matchers:**
+- `toBe(expected)` - Strict equality (`===`)
+- `toEqual(expected)` - Deep equality
+- `toStrictEqual(expected)` - Strict deep equality (includes prototype checks)
+- `toBeTruthy()`, `toBeFalsy()`
+- `toBeNull()`, `toBeUndefined()`, `toBeDefined()`
+- `toContain(item)` - Array/string includes
+- `toThrow(expected?)` - Function throws
+- `toBeInstanceOf(cls)` - Instance check
+- `toHaveLength(length)` - Array/string length
+- `toMatch(pattern)` - String/regex match
+- `toHaveProperty(path, value?)` - Object property check
 
 **Usage in Isolate:**
 
@@ -697,50 +703,59 @@ describe("Math operations", () => {
     it.skip("should handle infinity", () => {
       expect(1 / 0).toBe(Infinity);
     });
+
+    it.todo("should handle NaN");
   });
 });
+
+// Negation with .not
+expect(1).not.toBe(2);
+expect([1, 2]).not.toContain(3);
 ```
 
 **Running tests from host:**
 
 ```typescript
-// Load untrusted test code
+import { setupTestEnvironment, runTests } from "@ricsam/isolate-test-environment";
+
+// Setup test environment
+const handle = await setupTestEnvironment(context);
+
+// Load test code
 await context.eval(userProvidedTestCode, { promise: true });
 
-// Check test count
-console.log(`Found ${handle.getTestCount()} tests`);
-
 // Run all registered tests
-const results = await handle.run();
+const results = await runTests(context);
 console.log(`${results.passed}/${results.total} passed`);
 
-// Reset for re-running (optional)
-handle.reset();
+// Results structure:
+// {
+//   passed: number,
+//   failed: number,
+//   skipped: number,
+//   total: number,
+//   results: Array<{
+//     name: string,
+//     passed: boolean,
+//     error?: string,
+//     duration: number,
+//     skipped?: boolean
+//   }>
+// }
 
 handle.dispose();
 ```
-
-**Event Handlers:**
-
-| Handler | Description |
-|---------|-------------|
-| `onSuiteStart` | Called when a describe block begins |
-| `onSuiteEnd` | Called when a describe block completes |
-| `onTestStart` | Called before each test runs |
-| `onTestPass` | Called when a test passes |
-| `onTestFail` | Called when a test fails |
-| `onRunComplete` | Called after all tests complete |
 <!-- END:test-environment -->
 
 ---
 
-<!-- BEGIN:test-utils -->
-### @ricsam/isolate-test-utils
+<!-- BEGIN:isolate-types -->
+### @ricsam/isolate-types
 
-Testing utilities including type checking for isolate user code.
+Type definitions and type-checking utilities for isolate user code.
 
 ```bash
-npm add @ricsam/isolate-test-utils
+npm add @ricsam/isolate-types
 ```
 
 #### Type Checking Isolate Code
@@ -748,7 +763,7 @@ npm add @ricsam/isolate-test-utils
 Validate TypeScript/JavaScript code that will run inside the isolate before execution using `ts-morph`:
 
 ```typescript
-import { typecheckIsolateCode } from "@ricsam/isolate-test-utils";
+import { typecheckIsolateCode } from "@ricsam/isolate-types";
 
 const result = typecheckIsolateCode(`
   serve({
@@ -784,13 +799,13 @@ if (!result.success) {
 |--------|-------------|
 | `include` | Which package types to include: `"core"`, `"fetch"`, `"fs"`, `"console"`, `"encoding"`, `"timers"`, `"testEnvironment"` (default: `["core", "fetch", "fs"]`) |
 | `compilerOptions` | Additional TypeScript compiler options |
-| `libraryTypes` | External library type definitions for import resolution |
+| `libraryTypes` | External library type definitions for import resolution (for validating user imports) |
 
 **Using with tests:**
 
 ```typescript
 import { describe, expect, test } from "node:test";
-import { typecheckIsolateCode } from "@ricsam/isolate-test-utils";
+import { typecheckIsolateCode } from "@ricsam/isolate-types";
 
 describe("Isolate code validation", () => {
   test("server code is type-safe", () => {
@@ -804,39 +819,26 @@ describe("Isolate code validation", () => {
 
 #### Type Definition Strings
 
-The type definitions are also exported as strings for custom use cases:
+The type definitions are exported as strings for custom use cases:
 
 ```typescript
 import {
-  CORE_TYPES,   // ReadableStream, Blob, File, URL, etc.
-  FETCH_TYPES,  // fetch, Request, Response, serve, etc.
-  FS_TYPES,     // getDirectory, FileSystemHandle, etc.
-  CRYPTO_TYPES, // crypto.subtle, CryptoKey, etc.
-  TYPE_DEFINITIONS  // All types as { core, fetch, fs, crypto, ... }
-} from "@ricsam/isolate-test-utils";
+  CORE_TYPES,      // ReadableStream, Blob, File, URL, etc.
+  CONSOLE_TYPES,   // console.log, console.time, etc.
+  CRYPTO_TYPES,    // crypto.subtle, CryptoKey, etc.
+  ENCODING_TYPES,  // atob, btoa
+  FETCH_TYPES,     // fetch, Request, Response, serve, etc.
+  FS_TYPES,        // getDirectory, FileSystemHandle, etc.
+  PATH_TYPES,      // path.join, path.resolve, etc.
+  TEST_ENV_TYPES,  // describe, it, expect, etc.
+  TIMERS_TYPES,    // setTimeout, setInterval, etc.
+  TYPE_DEFINITIONS // All types as { core, fetch, fs, ... }
+} from "@ricsam/isolate-types";
 
 // Use with your own ts-morph project
 project.createSourceFile("isolate-globals.d.ts", FETCH_TYPES);
 ```
-
-#### Type Definition Files
-
-Each package also exports `.d.ts` files for use with `tsconfig.json`:
-
-```json
-{
-  "compilerOptions": {
-    "lib": ["ESNext", "DOM"]
-  },
-  "include": ["isolate-code/**/*.ts"],
-  "references": [
-    { "path": "./node_modules/@ricsam/isolate-core/dist/types/isolate.d.ts" },
-    { "path": "./node_modules/@ricsam/isolate-fetch/dist/types/isolate.d.ts" },
-    { "path": "./node_modules/@ricsam/isolate-fs/dist/types/isolate.d.ts" }
-  ]
-}
-```
-<!-- END:test-utils -->
+<!-- END:isolate-types -->
 
 ## Architecture
 
@@ -862,6 +864,8 @@ Each package also exports `.d.ts` files for use with `tsconfig.json`:
 
 @ricsam/isolate-test-environment
 └── @ricsam/isolate-core
+
+@ricsam/isolate-types (no dependencies)
 ```
 
 ### Design Principles

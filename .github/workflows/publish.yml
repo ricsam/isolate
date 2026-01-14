@@ -39,7 +39,7 @@ jobs:
       - name: Update npm
         run: npm install -g npm@latest
       - run: npm ci
-      - run: npm run build
+      - run: npm run build:npm
       - run: npx changeset publish --access=public --registry=https://registry.npmjs.org/
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

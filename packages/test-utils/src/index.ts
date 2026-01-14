@@ -175,35 +175,3 @@ export type { FetchTestContext } from "./fetch-context.ts";
 
 // Re-export useful types
 export type { FileSystemHandler } from "@ricsam/isolate-fs";
-
-// ============================================================================
-// Type Checking Utilities
-// ============================================================================
-
-export {
-  typecheckIsolateCode,
-  formatTypecheckErrors,
-  type TypecheckResult,
-  type TypecheckError,
-  type TypecheckOptions,
-  type LibraryTypes,
-  type LibraryTypeFile,
-} from "./typecheck.ts";
-
-// ============================================================================
-// Type Definitions
-// ============================================================================
-
-export {
-  CORE_TYPES,
-  CONSOLE_TYPES,
-  CRYPTO_TYPES,
-  ENCODING_TYPES,
-  FETCH_TYPES,
-  FS_TYPES,
-  PATH_TYPES,
-  TEST_ENV_TYPES,
-  TIMERS_TYPES,
-  TYPE_DEFINITIONS,
-  type TypeDefinitionKey,
-} from "./isolate-types.ts";

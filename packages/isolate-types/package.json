@@ -1,0 +1,50 @@
+{
+  "name": "@ricsam/isolate-types",
+  "version": "0.1.1",
+  "main": "./dist/cjs/index.cjs",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "require": "./dist/cjs/index.cjs",
+      "import": "./dist/mjs/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ts-morph": "^24.0.0"
+  },
+  "author": "Richard Samuelsson",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ricsam/isolate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ricsam/isolate/issues"
+  },
+  "homepage": "https://github.com/ricsam/isolate#readme",
+  "keywords": [
+    "isolated-vm",
+    "sandbox",
+    "javascript",
+    "runtime",
+    "fetch",
+    "filesystem",
+    "streams",
+    "v8",
+    "isolate"
+  ],
+  "description": "Type definition strings and type-checking utilities for isolated-vm V8 sandbox APIs",
+  "module": "./dist/mjs/index.mjs",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

@@ -1,7 +1,7 @@
 import {
   formatTypecheckErrors,
   typecheckIsolateCode,
-} from "@ricsam/isolate-test-utils";
+} from "@ricsam/isolate-types";
 import express from "express";
 import { createServerAdapter } from "@whatwg-node/server";
 import {

@@ -94,7 +94,7 @@ async function buildLibraryTypes() {
  * DO NOT EDIT MANUALLY
  */
 
-import type { LibraryTypes } from "@ricsam/isolate-test-utils";
+import type { LibraryTypes } from "@ricsam/isolate-types";
 
 export const LIBRARY_TYPES: Record<string, LibraryTypes> = ${JSON.stringify(bundle, null, 2)};
 `;
