@@ -1,0 +1,33 @@
+{
+  "name": "@ricsam/isolate-daemon",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "bin": {
+    "isolate-daemon": "./bin/daemon.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ricsam/isolate-protocol": "*",
+    "@ricsam/isolate-runtime": "*",
+    "@ricsam/isolate-fs": "*",
+    "@ricsam/isolate-test-environment": "*",
+    "@ricsam/isolate-playwright": "*",
+    "playwright": "^1"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "typescript": "^5"
+  }
+}

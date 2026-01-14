@@ -38,6 +38,9 @@ npm add @ricsam/isolate-test-environment # Test primitives (describe, it, expect
 npm add @ricsam/isolate-test-utils       # Testing utilities
 npm add @ricsam/isolate-types            # Types and type utils
 npm add @ricsam/isolate-playwright       # Playwright browser testing bridge
+npm add @ricsam/isolate-protocol         # Binary protocol for daemon communication
+npm add @ricsam/isolate-daemon           # Node.js daemon server
+npm add @ricsam/isolate-client           # Client for Bun/Deno/Node.js
 ```
 
 ## Quick Start
@@ -873,6 +876,236 @@ interface PlaywrightExecutionResult {
 
 ---
 
+<!-- BEGIN:isolate-protocol -->
+### @ricsam/isolate-protocol
+
+Binary protocol for daemon-client communication. Uses MessagePack for efficient serialization with a simple frame format.
+
+```bash
+npm add @ricsam/isolate-protocol
+```
+
+**Frame Format:**
+
+```
+┌──────────┬──────────┬─────────────────┐
+│ Length   │ Type     │ Payload         │
+│ (4 bytes)│ (1 byte) │ (MessagePack)   │
+└──────────┴──────────┴─────────────────┘
+```
+
+**Features:**
+- MessagePack serialization (5-10x faster than JSON)
+- Request/response correlation via request IDs
+- Bidirectional callbacks for console, fetch, and fs operations
+- Streaming support for large request/response bodies
+- Event streaming for Playwright console logs and network activity
+
+**Usage:**
+
+```typescript
+import {
+  createFrameParser,
+  buildFrame,
+  MessageType,
+  type CreateRuntimeRequest,
+  type ResponseOk,
+} from "@ricsam/isolate-protocol";
+
+// Build a frame to send
+const request: CreateRuntimeRequest = {
+  type: MessageType.CREATE_RUNTIME,
+  requestId: 1,
+  options: { memoryLimit: 128 },
+};
+const frame = buildFrame(request);
+
+// Parse incoming frames
+const parser = createFrameParser();
+for (const { message } of parser.feed(data)) {
+  if (message.type === MessageType.RESPONSE_OK) {
+    console.log("Response:", (message as ResponseOk).data);
+  }
+}
+```
+<!-- END:isolate-protocol -->
+
+---
+
+<!-- BEGIN:isolate-daemon -->
+### @ricsam/isolate-daemon
+
+Node.js daemon server that manages isolated-vm runtimes via Unix socket or TCP. Allows non-Node.js runtimes (Bun, Deno, etc.) to use isolated-vm through IPC.
+
+```bash
+npm add @ricsam/isolate-daemon
+```
+
+**Features:**
+- Unix domain socket and TCP transport
+- Multiple concurrent connections
+- Runtime lifecycle management (create, dispose)
+- Bidirectional callback bridging (console, fetch, fs)
+- Test environment and Playwright integration
+- Connection-scoped resource cleanup
+
+**Starting the Daemon:**
+
+```typescript
+import { startDaemon } from "@ricsam/isolate-daemon";
+
+const daemon = await startDaemon({
+  socketPath: "/tmp/isolate-daemon.sock", // Unix socket
+  // Or TCP: host: "127.0.0.1", port: 47891
+  maxIsolates: 100,
+  defaultMemoryLimit: 128,
+});
+
+console.log(`Daemon listening on ${daemon.socketPath}`);
+
+// Get stats
+const stats = daemon.getStats();
+console.log(`Active isolates: ${stats.activeIsolates}`);
+
+// Graceful shutdown
+await daemon.close();
+```
+
+**CLI Usage:**
+
+```bash
+# Start daemon on default socket
+npx isolate-daemon
+
+# Custom socket path
+npx isolate-daemon --socket /var/run/isolate.sock
+
+# TCP mode
+npx isolate-daemon --host 127.0.0.1 --port 47891
+```
+<!-- END:isolate-daemon -->
+
+---
+
+<!-- BEGIN:isolate-client -->
+### @ricsam/isolate-client
+
+Client library for connecting to the isolate daemon. Works with **any JavaScript runtime** (Node.js, Bun, Deno) since it only requires standard socket APIs.
+
+```bash
+npm add @ricsam/isolate-client
+```
+
+**Features:**
+- Connect via Unix socket or TCP
+- Create and manage remote runtimes
+- Execute code in isolated V8 contexts
+- Dispatch HTTP requests to isolate handlers
+- Bidirectional callbacks (console, fetch, fs)
+- Test environment and Playwright support
+
+**Basic Usage:**
+
+```typescript
+import { connect } from "@ricsam/isolate-client";
+
+// Connect to daemon
+const client = await connect({
+  socket: "/tmp/isolate-daemon.sock",
+  // Or TCP: host: "127.0.0.1", port: 47891
+});
+
+// Create a runtime with callbacks
+const runtime = await client.createRuntime({
+  memoryLimit: 128,
+  console: {
+    log: (...args) => console.log("[isolate]", ...args),
+    error: (...args) => console.error("[isolate]", ...args),
+  },
+  fetch: async (request) => fetch(request),
+  fs: {
+    readFile: async (path) => Bun.file(path).arrayBuffer(),
+    writeFile: async (path, data) => Bun.write(path, data),
+    stat: async (path) => {
+      const stat = await Bun.file(path).stat();
+      return { isFile: true, isDirectory: false, size: stat.size };
+    },
+  },
+});
+
+// Execute code
+await runtime.eval(`console.log("Hello from isolate!")`);
+
+// Set up HTTP handler and dispatch requests
+await runtime.eval(`
+  serve({
+    fetch(request) {
+      return Response.json({ message: "Hello!" });
+    }
+  });
+`);
+
+const response = await runtime.dispatchRequest(
+  new Request("http://localhost/api")
+);
+console.log(await response.json()); // { message: "Hello!" }
+
+// Cleanup
+await runtime.dispose();
+await client.close();
+```
+
+**Test Environment:**
+
+```typescript
+// Setup test framework in isolate
+await runtime.setupTestEnvironment();
+
+// Define tests
+await runtime.eval(`
+  describe("math", () => {
+    it("adds numbers", () => {
+      expect(1 + 1).toBe(2);
+    });
+  });
+`);
+
+// Run tests
+const results = await runtime.runTests();
+console.log(`${results.passed}/${results.total} passed`);
+```
+
+**Playwright Integration:**
+
+```typescript
+// Setup Playwright (daemon launches browser)
+await runtime.setupPlaywright({
+  browserType: "chromium",
+  headless: true,
+  onConsoleLog: (log) => console.log("[browser]", log),
+});
+
+// Define browser tests
+await runtime.eval(`
+  test("homepage loads", async () => {
+    await page.goto("https://example.com");
+    await expect(page.getByText("Example Domain")).toBeVisible();
+  });
+`);
+
+// Run tests
+const results = await runtime.runPlaywrightTests();
+console.log(`${results.passed}/${results.total} passed`);
+
+// Get collected data
+const data = await runtime.getCollectedData();
+console.log("Console logs:", data.consoleLogs);
+console.log("Network requests:", data.networkRequests);
+```
+<!-- END:isolate-client -->
+
+---
+
 <!-- BEGIN:isolate-types -->
 ### @ricsam/isolate-types
 
@@ -964,6 +1197,214 @@ project.createSourceFile("isolate-globals.d.ts", FETCH_TYPES);
 ```
 <!-- END:isolate-types -->
 
+## Using from Other Runtimes (Bun, Deno)
+
+The `isolated-vm` package only works in Node.js, but you can use the daemon/client architecture to run isolated code from **any JavaScript runtime**.
+
+### Architecture Overview
+
+```
+┌─────────────────┐         Unix Socket          ┌─────────────────────┐
+│   Bun/Deno      │ ◄──────────────────────────► │   Node.js Daemon    │
+│   Client App    │      MessagePack frames      │                     │
+│ isolate-client  │                              │  isolate-daemon     │
+└─────────────────┘                              └──────────┬──────────┘
+                                                            │
+                                          ┌─────────────────┼─────────────────┐
+                                          ▼                 ▼                 ▼
+                                   ┌───────────┐    ┌─────────────┐    ┌───────────┐
+                                   │isolated-vm│    │ Playwright  │    │   Test    │
+                                   │(V8 Isolate│    │  (Browser)  │    │Environment│
+                                   └───────────┘    └─────────────┘    └───────────┘
+```
+
+### Step 1: Start the Daemon (Node.js)
+
+Start the daemon process using Node.js:
+
+```bash
+# Install the daemon
+npm add @ricsam/isolate-daemon
+
+# Start via CLI
+npx isolate-daemon --socket /tmp/isolate.sock
+
+# Or programmatically
+node -e "
+  import('@ricsam/isolate-daemon').then(({ startDaemon }) => {
+    startDaemon({ socketPath: '/tmp/isolate.sock' });
+  });
+"
+```
+
+### Step 2: Connect from Bun
+
+```typescript
+// bun-app.ts
+import { connect } from "@ricsam/isolate-client";
+
+const client = await connect({ socket: "/tmp/isolate.sock" });
+
+const runtime = await client.createRuntime({
+  console: {
+    log: (...args) => console.log("[isolate]", ...args),
+  },
+  fetch: async (request) => fetch(request), // Bun's native fetch
+  fs: {
+    readFile: async (path) => Bun.file(path).arrayBuffer(),
+    writeFile: async (path, data) => Bun.write(path, data),
+    readdir: async (path) => {
+      const entries = [];
+      for await (const entry of new Bun.Glob("*").scan({ cwd: path })) {
+        entries.push(entry);
+      }
+      return entries;
+    },
+    stat: async (path) => {
+      const file = Bun.file(path);
+      const stat = await file.stat();
+      return {
+        isFile: stat.isFile,
+        isDirectory: stat.isDirectory,
+        size: stat.size,
+      };
+    },
+  },
+});
+
+// Execute sandboxed code
+await runtime.eval(`
+  serve({
+    async fetch(request) {
+      // This fetch() is proxied through Bun's native fetch
+      const data = await fetch("https://api.example.com/data");
+      return Response.json(await data.json());
+    }
+  });
+`);
+
+// Handle requests
+const server = Bun.serve({
+  port: 3000,
+  fetch: (request) => runtime.dispatchRequest(request),
+});
+
+console.log(`Bun server running at http://localhost:${server.port}`);
+```
+
+Run with:
+```bash
+bun run bun-app.ts
+```
+
+### Step 3: Connect from Deno
+
+```typescript
+// deno-app.ts
+import { connect } from "npm:@ricsam/isolate-client";
+
+const client = await connect({ socket: "/tmp/isolate.sock" });
+
+const runtime = await client.createRuntime({
+  console: {
+    log: (...args) => console.log("[isolate]", ...args),
+  },
+  fetch: async (request) => fetch(request), // Deno's native fetch
+  fs: {
+    readFile: async (path) => {
+      const data = await Deno.readFile(path);
+      return data.buffer;
+    },
+    writeFile: async (path, data) => {
+      await Deno.writeFile(path, new Uint8Array(data));
+    },
+    readdir: async (path) => {
+      const entries = [];
+      for await (const entry of Deno.readDir(path)) {
+        entries.push(entry.name);
+      }
+      return entries;
+    },
+    stat: async (path) => {
+      const stat = await Deno.stat(path);
+      return {
+        isFile: stat.isFile,
+        isDirectory: stat.isDirectory,
+        size: stat.size,
+      };
+    },
+    mkdir: async (path, options) => {
+      await Deno.mkdir(path, options);
+    },
+    unlink: async (path) => {
+      await Deno.remove(path);
+    },
+  },
+});
+
+await runtime.eval(`console.log("Hello from Deno via isolated-vm!")`);
+
+// Serve HTTP with Deno
+Deno.serve({ port: 3000 }, (request) => runtime.dispatchRequest(request));
+```
+
+Run with:
+```bash
+deno run --allow-net --allow-read --allow-write deno-app.ts
+```
+
+### Benefits of the Daemon Architecture
+
+| Benefit | Description |
+|---------|-------------|
+| **Runtime Agnostic** | Use isolated-vm from Bun, Deno, or any runtime with socket support |
+| **Performance** | Unix sockets are 2-3x faster than TCP; MessagePack is 5-10x faster than JSON |
+| **Resource Sharing** | Single daemon serves multiple client connections efficiently |
+| **Native APIs** | Callbacks run in your runtime, so you get native fetch, file system, etc. |
+| **Isolation** | V8 isolate provides true process-level sandboxing |
+
+### Running Tests from Bun/Deno
+
+```typescript
+// Run Jest-style tests in the sandbox
+await runtime.setupTestEnvironment();
+
+await runtime.eval(`
+  describe("API integration", () => {
+    it("fetches data correctly", async () => {
+      const response = await fetch("https://api.example.com/users");
+      const users = await response.json();
+      expect(users).toHaveLength(10);
+    });
+  });
+`);
+
+const results = await runtime.runTests();
+console.log(`Tests: ${results.passed} passed, ${results.failed} failed`);
+```
+
+### Running Playwright Tests from Bun/Deno
+
+```typescript
+// Browser tests run in the daemon's Node.js process
+await runtime.setupPlaywright({
+  browserType: "chromium",
+  headless: true,
+});
+
+await runtime.eval(`
+  test("login flow", async () => {
+    await page.goto("https://app.example.com/login");
+    await page.getByLabel("Email").fill("test@example.com");
+    await page.getByLabel("Password").fill("password123");
+    await page.getByRole("button", { name: "Sign In" }).click();
+    await expect(page.getByText("Dashboard")).toBeVisible();
+  });
+`);
+
+const results = await runtime.runPlaywrightTests();
+```
+
 ## Architecture
 
 ### Package Dependency Graph
@@ -990,6 +1431,18 @@ project.createSourceFile("isolate-globals.d.ts", FETCH_TYPES);
 └── @ricsam/isolate-core
 
 @ricsam/isolate-playwright (standalone - requires playwright)
+
+@ricsam/isolate-daemon
+├── @ricsam/isolate-protocol
+├── @ricsam/isolate-runtime
+├── @ricsam/isolate-fs
+├── @ricsam/isolate-test-environment
+└── @ricsam/isolate-playwright
+
+@ricsam/isolate-client
+└── @ricsam/isolate-protocol
+
+@ricsam/isolate-protocol (standalone - msgpack-lite)
 
 @ricsam/isolate-types (no dependencies)
 ```

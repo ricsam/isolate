@@ -2,8 +2,24 @@ import path from 'node:path';
 import { $, Glob } from 'bun';
 import { TYPE_DEFINITIONS } from '../packages/isolate-types/src/isolate-types.ts';
 
-// Packages to build (in dependency order: core first, then new packages, then fetch/fs, then runtime, then test-environment, then standalone packages)
-const PACKAGES = ['core', 'isolate-types', 'console', 'crypto', 'encoding', 'path', 'timers', 'fetch', 'fs', 'runtime', 'test-environment', 'playwright'];
+// Packages to build (in dependency order: core first, then new packages, then fetch/fs, then runtime, then test-environment, then standalone packages, then daemon/client)
+const PACKAGES = [
+  'core',
+  'isolate-types',
+  'console',
+  'crypto',
+  'encoding',
+  'path',
+  'timers',
+  'fetch',
+  'fs',
+  'runtime',
+  'test-environment',
+  'playwright',
+  'isolate-protocol',
+  'isolate-daemon',
+  'isolate-client',
+];
 
 // Mapping from package names to TYPE_DEFINITIONS keys for isolate.d.ts generation
 const ISOLATE_TYPE_MAPPING: Record<string, keyof typeof TYPE_DEFINITIONS | undefined> = {
@@ -48,9 +64,19 @@ interface RootMetadata {
   description: string;
 }
 
+// Helper to get the full npm package name from directory name
+const getNpmPackageName = (packageName: string): string => {
+  // If package already starts with 'isolate-', use it as-is
+  if (packageName.startsWith('isolate-')) {
+    return `@ricsam/${packageName}`;
+  }
+  return `@ricsam/isolate-${packageName}`;
+};
+
 const buildPackage = async (packageName: string, rootMetadata: RootMetadata, readme: string) => {
   const packageDir = path.join(__dirname, '..', 'packages', packageName);
-  console.log(`\n📦 Building @ricsam/isolate-${packageName}...`);
+  const npmPackageName = getNpmPackageName(packageName);
+  console.log(`\n📦 Building ${npmPackageName}...`);
 
   const packageJson = await Bun.file(path.join(packageDir, 'package.json')).json();
 
@@ -207,7 +233,7 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata, rea
   ).every((s) => s);
 
   if (!success) {
-    throw new Error(`Failed to build @ricsam/isolate-${packageName}`);
+    throw new Error(`Failed to build ${npmPackageName}`);
   }
 
   // Generate isolate.d.ts if this package has type definitions
@@ -271,6 +297,9 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata, rea
       runtime: 'Complete isolated-vm V8 sandbox runtime with fetch, fs, and core bindings',
       'test-environment': 'Test environment for running tests inside isolated-vm V8 sandbox',
       playwright: 'Playwright bridge for running browser tests in isolated-vm V8 sandbox',
+      'isolate-protocol': 'Binary protocol for communication between isolate daemon and client',
+      'isolate-daemon': 'Node.js daemon server for running isolated-vm runtimes via IPC',
+      'isolate-client': 'Client library for connecting to the isolate daemon from any JavaScript runtime',
     };
     publishPackageJson.description = descriptions[packageName] || rootMetadata.description;
   }
@@ -352,7 +381,7 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata, rea
     console.log(`  ⚠️ No README section found for ${packageName}`);
   }
 
-  console.log(`✨ Finished building @ricsam/isolate-${packageName} v${version}`);
+  console.log(`✨ Finished building ${npmPackageName} v${version}`);
 };
 
 // Main build process
@@ -379,7 +408,7 @@ const main = async () => {
     try {
       await buildPackage(pkg, rootMetadata, readme);
     } catch (error) {
-      console.error(`❌ Failed to build @ricsam/isolate-${pkg}:`, error);
+      console.error(`❌ Failed to build ${getNpmPackageName(pkg)}:`, error);
       process.exit(1);
     }
   }
