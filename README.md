@@ -34,7 +34,8 @@ npm add @ricsam/isolate-encoding         # Base64 encoding (atob, btoa)
 npm add @ricsam/isolate-path             # Path utilities
 npm add @ricsam/isolate-timers           # Timer APIs
 npm add @ricsam/isolate-test-environment # Test primitives (describe, it, expect)
-npm add @ricsam/isolate-test-utils       # Testing utilities and type checking
+npm add @ricsam/isolate-test-utils       # Testing utilities
+npm add @ricsam/isolate-types            # Types and type utils
 ```
 
 ## Quick Start
