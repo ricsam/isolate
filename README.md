@@ -287,6 +287,8 @@ interface Runtime {
   readonly fetch: FetchHandle;
   readonly timers: TimersHandle;
   readonly console: ConsoleHandle;
+  readonly testEnvironment: TestEnvironmentHandle;
+  readonly playwright: PlaywrightHandle;
 }
 
 interface FetchHandle {
@@ -312,19 +314,6 @@ interface FetchHandle {
   onWebSocketCommand(callback: (cmd: WebSocketCommand) => void): () => void;
 }
 
-interface UpgradeRequest {
-  requested: true;
-  connectionId: string;
-}
-
-interface WebSocketCommand {
-  type: "message" | "close";
-  connectionId: string;
-  data?: string | ArrayBuffer;
-  code?: number;
-  reason?: string;
-}
-
 interface TimersHandle {
   clearAll(): void;
 }
@@ -334,6 +323,24 @@ interface ConsoleHandle {
   getTimers(): Map<string, number>;
   getCounters(): Map<string, number>;
   getGroupDepth(): number;
+}
+
+interface TestEnvironmentHandle {
+  /** Run all registered tests */
+  runTests(timeout?: number): Promise<TestResults>;
+  /** Reset test environment state */
+  reset(): void;
+}
+
+interface PlaywrightHandle {
+  /** Run all registered Playwright tests */
+  runTests(timeout?: number): Promise<PlaywrightTestResults>;
+  /** Reset/clear all Playwright tests */
+  reset(): void;
+  /** Get collected console logs and network data */
+  getCollectedData(): CollectedData;
+  /** Clear collected data */
+  clearCollectedData(): void;
 }
 ```
 
@@ -363,6 +370,27 @@ interface RuntimeOptions {
 
   /** Current working directory for path.resolve(). Defaults to "/" */
   cwd?: string;
+
+  /** Enable test environment (describe, it, expect, etc.) */
+  testEnvironment?: boolean;
+
+  /** Playwright options - user provides page object */
+  playwright?: PlaywrightOptions;
+}
+
+interface PlaywrightOptions {
+  /** Playwright page object */
+  page: import("playwright").Page;
+  /** Default timeout for operations in ms */
+  timeout?: number;
+  /** Base URL for navigation */
+  baseUrl?: string;
+  /** Console log event handler */
+  onConsoleLog?: (entry: { level: string; args: unknown[] }) => void;
+  /** Network request event handler */
+  onNetworkRequest?: (info: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
+  /** Network response event handler */
+  onNetworkResponse?: (info: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
 }
 ```
 
@@ -589,10 +617,12 @@ const diagnostics = project.getPreEmitDiagnostics();
 
 ## Test Environment
 
-Run tests inside the sandbox:
+Run tests inside the sandbox by enabling `testEnvironment` in options:
 
 ```typescript
-await runtime.setupTestEnvironment();
+const runtime = await createRuntime({
+  testEnvironment: true,
+});
 
 await runtime.eval(`
   describe("math", () => {
@@ -607,28 +637,50 @@ await runtime.eval(`
   });
 `);
 
-const results = await runtime.runTests();
+const results = await runtime.testEnvironment.runTests();
 console.log(`${results.passed}/${results.total} passed`);
+
+// Reset test environment for new tests
+runtime.testEnvironment.reset();
 ```
 
 ## Playwright Integration
 
-Run browser tests with untrusted code:
+Run browser tests with untrusted code. **The client owns the browser** - you provide the Playwright page object:
 
 ```typescript
-await runtime.setupPlaywright({
-  browserType: "chromium",
-  headless: true,
+import { chromium } from "playwright";
+
+// Launch browser (client owns the browser)
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage();
+
+const runtime = await createRuntime({
+  playwright: {
+    page,
+    baseUrl: "https://example.com",
+    onConsoleLog: (entry) => console.log("[browser]", entry.level, ...entry.args),
+  },
 });
 
 await runtime.eval(`
   test("homepage loads", async () => {
-    await page.goto("https://example.com");
+    await page.goto("/");
     await expect(page.getByText("Example Domain")).toBeVisible();
   });
 `);
 
-const results = await runtime.runPlaywrightTests();
+const results = await runtime.playwright.runTests();
+console.log(`${results.passed}/${results.total} passed`);
+
+// Get collected network data
+const data = runtime.playwright.getCollectedData();
+console.log("Console logs:", data.consoleLogs);
+console.log("Network requests:", data.networkRequests);
+
+// Cleanup
+await runtime.dispose();
+await browser.close();
 ```
 
 ## Packages

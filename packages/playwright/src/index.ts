@@ -1,8 +1,15 @@
 import ivm from "isolated-vm";
 import type { Page, Locator as PlaywrightLocator } from "playwright";
+import type {
+  PlaywrightOperation,
+  PlaywrightResult,
+} from "@ricsam/isolate-protocol";
+
+// Re-export protocol types
+export type { PlaywrightOperation, PlaywrightResult } from "@ricsam/isolate-protocol";
 
 // ============================================================================
-// Types and Interfaces (Pattern 2, 3)
+// Types and Interfaces
 // ============================================================================
 
 export interface NetworkRequestInfo {
@@ -28,6 +35,37 @@ export interface ConsoleLogEntry {
   timestamp: number;
 }
 
+/**
+ * Callback type for handling playwright operations.
+ * Used for remote execution where the page lives on the client.
+ */
+export type PlaywrightCallback = (
+  op: PlaywrightOperation
+) => Promise<PlaywrightResult>;
+
+/**
+ * Options for setting up playwright in an isolate.
+ */
+export interface PlaywrightSetupOptions {
+  /** Direct page object (for local use) */
+  page?: Page;
+  /** Handler callback (for remote use - daemon invokes this) */
+  handler?: PlaywrightCallback;
+  /** Default timeout for operations */
+  timeout?: number;
+  /** Base URL for relative navigation */
+  baseUrl?: string;
+  /** Callback for console log events */
+  onConsoleLog?: (entry: ConsoleLogEntry) => void;
+  /** Callback for network request events */
+  onNetworkRequest?: (info: NetworkRequestInfo) => void;
+  /** Callback for network response events */
+  onNetworkResponse?: (info: NetworkResponseInfo) => void;
+}
+
+/**
+ * @deprecated Use PlaywrightSetupOptions instead
+ */
 export interface PlaywrightOptions {
   page: Page;
   timeout?: number;
@@ -60,43 +98,6 @@ export interface PlaywrightExecutionResult {
 }
 
 // ============================================================================
-// Error Encoding Helpers (Pattern 8)
-// ============================================================================
-
-const KNOWN_ERROR_TYPES = [
-  "TypeError",
-  "RangeError",
-  "SyntaxError",
-  "ReferenceError",
-  "URIError",
-  "EvalError",
-  "TimeoutError",
-] as const;
-
-function getErrorConstructorName(errorType: string): string {
-  return (KNOWN_ERROR_TYPES as readonly string[]).includes(errorType)
-    ? errorType
-    : "Error";
-}
-
-function encodeErrorForTransfer(err: Error): Error {
-  const errorType = getErrorConstructorName(err.name);
-  return new Error(`[${errorType}]${err.message}`);
-}
-
-const DECODE_ERROR_JS = `
-function __decodeError(err) {
-  if (!(err instanceof Error)) return err;
-  const match = err.message.match(/^\\[(TypeError|RangeError|SyntaxError|ReferenceError|URIError|EvalError|TimeoutError|Error)\\](.*)$/);
-  if (match) {
-    const ErrorType = globalThis[match[1]] || Error;
-    return new ErrorType(match[2]);
-  }
-  return err;
-}
-`.trim();
-
-// ============================================================================
 // Helper: Get locator from selector info
 // ============================================================================
 
@@ -127,16 +128,255 @@ function getLocator(
 }
 
 // ============================================================================
-// Setup Playwright (Pattern 2)
+// Helper: Execute locator action
 // ============================================================================
 
+async function executeLocatorAction(
+  locator: PlaywrightLocator,
+  action: string,
+  actionArg: unknown,
+  timeout: number
+): Promise<unknown> {
+  switch (action) {
+    case "click":
+      await locator.click({ timeout });
+      return null;
+    case "dblclick":
+      await locator.dblclick({ timeout });
+      return null;
+    case "fill":
+      await locator.fill(String(actionArg ?? ""), { timeout });
+      return null;
+    case "type":
+      await locator.pressSequentially(String(actionArg ?? ""), { timeout });
+      return null;
+    case "check":
+      await locator.check({ timeout });
+      return null;
+    case "uncheck":
+      await locator.uncheck({ timeout });
+      return null;
+    case "selectOption":
+      await locator.selectOption(String(actionArg ?? ""), { timeout });
+      return null;
+    case "clear":
+      await locator.clear({ timeout });
+      return null;
+    case "press":
+      await locator.press(String(actionArg ?? ""), { timeout });
+      return null;
+    case "hover":
+      await locator.hover({ timeout });
+      return null;
+    case "focus":
+      await locator.focus({ timeout });
+      return null;
+    case "getText":
+      return await locator.textContent({ timeout });
+    case "getValue":
+      return await locator.inputValue({ timeout });
+    case "isVisible":
+      return await locator.isVisible();
+    case "isEnabled":
+      return await locator.isEnabled();
+    case "isChecked":
+      return await locator.isChecked();
+    case "count":
+      return await locator.count();
+    default:
+      throw new Error(`Unknown action: ${action}`);
+  }
+}
+
+// ============================================================================
+// Helper: Execute expect assertion
+// ============================================================================
+
+async function executeExpectAssertion(
+  locator: PlaywrightLocator,
+  matcher: string,
+  expected: unknown,
+  negated: boolean,
+  timeout: number
+): Promise<void> {
+  switch (matcher) {
+    case "toBeVisible": {
+      const isVisible = await locator.isVisible();
+      if (negated) {
+        if (isVisible) throw new Error("Expected element to not be visible, but it was visible");
+      } else {
+        if (!isVisible) throw new Error("Expected element to be visible, but it was not");
+      }
+      break;
+    }
+    case "toContainText": {
+      const text = await locator.textContent({ timeout });
+      const matches = text?.includes(String(expected)) ?? false;
+      if (negated) {
+        if (matches) throw new Error(`Expected text to not contain "${expected}", but got "${text}"`);
+      } else {
+        if (!matches) throw new Error(`Expected text to contain "${expected}", but got "${text}"`);
+      }
+      break;
+    }
+    case "toHaveValue": {
+      const value = await locator.inputValue({ timeout });
+      const matches = value === String(expected);
+      if (negated) {
+        if (matches) throw new Error(`Expected value to not be "${expected}", but it was`);
+      } else {
+        if (!matches) throw new Error(`Expected value to be "${expected}", but got "${value}"`);
+      }
+      break;
+    }
+    case "toBeEnabled": {
+      const isEnabled = await locator.isEnabled();
+      if (negated) {
+        if (isEnabled) throw new Error("Expected element to be disabled, but it was enabled");
+      } else {
+        if (!isEnabled) throw new Error("Expected element to be enabled, but it was disabled");
+      }
+      break;
+    }
+    case "toBeChecked": {
+      const isChecked = await locator.isChecked();
+      if (negated) {
+        if (isChecked) throw new Error("Expected element to not be checked, but it was checked");
+      } else {
+        if (!isChecked) throw new Error("Expected element to be checked, but it was not");
+      }
+      break;
+    }
+    default:
+      throw new Error(`Unknown matcher: ${matcher}`);
+  }
+}
+
+// ============================================================================
+// Create Playwright Handler (for remote use)
+// ============================================================================
+
+/**
+ * Create a playwright handler from a Page object.
+ * This handler is called by the daemon (via callback) when sandbox needs page operations.
+ * Used for remote runtime where the browser runs on the client.
+ */
+export function createPlaywrightHandler(
+  page: Page,
+  options?: { timeout?: number; baseUrl?: string }
+): PlaywrightCallback {
+  const timeout = options?.timeout ?? 30000;
+  const baseUrl = options?.baseUrl;
+
+  return async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
+    try {
+      switch (op.type) {
+        case "goto": {
+          const [url, waitUntil] = op.args as [string, string?];
+          const targetUrl = baseUrl && !url.startsWith("http") ? `${baseUrl}${url}` : url;
+          await page.goto(targetUrl, {
+            timeout,
+            waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
+          });
+          return { ok: true };
+        }
+        case "reload":
+          await page.reload({ timeout });
+          return { ok: true };
+        case "url":
+          return { ok: true, value: page.url() };
+        case "title":
+          return { ok: true, value: await page.title() };
+        case "content":
+          return { ok: true, value: await page.content() };
+        case "waitForSelector": {
+          const [selector, optionsJson] = op.args as [string, string?];
+          const opts = optionsJson ? JSON.parse(optionsJson) : {};
+          await page.waitForSelector(selector, { timeout, ...opts });
+          return { ok: true };
+        }
+        case "waitForTimeout": {
+          const [ms] = op.args as [number];
+          await page.waitForTimeout(ms);
+          return { ok: true };
+        }
+        case "waitForLoadState": {
+          const [state] = op.args as [string?];
+          await page.waitForLoadState(
+            (state as "load" | "domcontentloaded" | "networkidle") ?? "load",
+            { timeout }
+          );
+          return { ok: true };
+        }
+        case "evaluate": {
+          const [script] = op.args as [string];
+          const result = await page.evaluate(script);
+          return { ok: true, value: result };
+        }
+        case "locatorAction": {
+          const [selectorType, selectorValue, roleOptions, action, actionArg] = op.args as [
+            string,
+            string,
+            string | null,
+            string,
+            unknown
+          ];
+          const locator = getLocator(page, selectorType, selectorValue, roleOptions);
+          const result = await executeLocatorAction(locator, action, actionArg, timeout);
+          return { ok: true, value: result };
+        }
+        case "expectLocator": {
+          const [selectorType, selectorValue, roleOptions, matcher, expected, negated] = op.args as [
+            string,
+            string,
+            string | null,
+            string,
+            unknown,
+            boolean
+          ];
+          const locator = getLocator(page, selectorType, selectorValue, roleOptions);
+          await executeExpectAssertion(locator, matcher, expected, negated ?? false, timeout);
+          return { ok: true };
+        }
+        default:
+          return { ok: false, error: { name: "Error", message: `Unknown operation: ${(op as PlaywrightOperation).type}` } };
+      }
+    } catch (err) {
+      const error = err as Error;
+      return { ok: false, error: { name: error.name, message: error.message } };
+    }
+  };
+}
+
+// ============================================================================
+// Setup Playwright
+// ============================================================================
+
+/**
+ * Set up playwright in an isolate context.
+ *
+ * For local use: provide `page` option (direct page access)
+ * For remote use: provide `handler` option (callback pattern)
+ */
 export async function setupPlaywright(
   context: ivm.Context,
-  options: PlaywrightOptions
+  options: PlaywrightSetupOptions | PlaywrightOptions
 ): Promise<PlaywrightHandle> {
-  const { page, timeout = 30000, baseUrl } = options;
+  const timeout = options.timeout ?? 30000;
+  const baseUrl = options.baseUrl;
 
-  // State for collected data
+  // Determine if we have a page or handler
+  const page = "page" in options ? options.page : undefined;
+  const handler = "handler" in options ? options.handler : undefined;
+
+  // Create handler from page if needed
+  const effectiveHandler = handler ?? (page ? createPlaywrightHandler(page, { timeout, baseUrl }) : undefined);
+
+  if (!effectiveHandler) {
+    throw new Error("Either page or handler must be provided to setupPlaywright");
+  }
+
+  // State for collected data (only used when page is provided directly)
   const consoleLogs: ConsoleLogEntry[] = [];
   const networkRequests: NetworkRequestInfo[] = [];
   const networkResponses: NetworkResponseInfo[] = [];
@@ -144,437 +384,104 @@ export async function setupPlaywright(
   const global = context.global;
 
   // ========================================================================
-  // Event Capture
+  // Event Capture (only when page is provided directly)
   // ========================================================================
 
-  const requestHandler = (request: import("playwright").Request) => {
-    const info: NetworkRequestInfo = {
-      url: request.url(),
-      method: request.method(),
-      headers: request.headers(),
-      postData: request.postData() ?? undefined,
-      resourceType: request.resourceType(),
-      timestamp: Date.now(),
+  let requestHandler: ((request: import("playwright").Request) => void) | undefined;
+  let responseHandler: ((response: import("playwright").Response) => void) | undefined;
+  let consoleHandler: ((msg: import("playwright").ConsoleMessage) => void) | undefined;
+
+  if (page) {
+    requestHandler = (request: import("playwright").Request) => {
+      const info: NetworkRequestInfo = {
+        url: request.url(),
+        method: request.method(),
+        headers: request.headers(),
+        postData: request.postData() ?? undefined,
+        resourceType: request.resourceType(),
+        timestamp: Date.now(),
+      };
+      networkRequests.push(info);
+      if ("onNetworkRequest" in options && options.onNetworkRequest) {
+        options.onNetworkRequest(info);
+      }
     };
-    networkRequests.push(info);
-    options.onNetworkRequest?.(info);
-  };
 
-  const responseHandler = (response: import("playwright").Response) => {
-    const info: NetworkResponseInfo = {
-      url: response.url(),
-      status: response.status(),
-      statusText: response.statusText(),
-      headers: response.headers(),
-      timestamp: Date.now(),
+    responseHandler = (response: import("playwright").Response) => {
+      const info: NetworkResponseInfo = {
+        url: response.url(),
+        status: response.status(),
+        statusText: response.statusText(),
+        headers: response.headers(),
+        timestamp: Date.now(),
+      };
+      networkResponses.push(info);
+      if ("onNetworkResponse" in options && options.onNetworkResponse) {
+        options.onNetworkResponse(info);
+      }
     };
-    networkResponses.push(info);
-    options.onNetworkResponse?.(info);
-  };
 
-  const consoleHandler = (msg: import("playwright").ConsoleMessage) => {
-    const entry: ConsoleLogEntry = {
-      level: msg.type(),
-      args: msg.args().map((arg) => String(arg)),
-      timestamp: Date.now(),
+    consoleHandler = (msg: import("playwright").ConsoleMessage) => {
+      const entry: ConsoleLogEntry = {
+        level: msg.type(),
+        args: msg.args().map((arg) => String(arg)),
+        timestamp: Date.now(),
+      };
+      consoleLogs.push(entry);
+      if ("onConsoleLog" in options && options.onConsoleLog) {
+        // Handle both old and new signature
+        if ("page" in options && options.page && !("handler" in options)) {
+          // Old PlaywrightOptions: onConsoleLog(level, ...args)
+          (options.onConsoleLog as (level: string, ...args: unknown[]) => void)(entry.level, ...entry.args);
+        } else {
+          // New PlaywrightSetupOptions: onConsoleLog(entry)
+          (options.onConsoleLog as (entry: ConsoleLogEntry) => void)(entry);
+        }
+      }
     };
-    consoleLogs.push(entry);
-    options.onConsoleLog?.(entry.level, ...entry.args);
+
+    page.on("request", requestHandler);
+    page.on("response", responseHandler);
+    page.on("console", consoleHandler);
+  }
+
+  // ========================================================================
+  // Unified Handler Reference
+  // ========================================================================
+
+  // Single handler reference that receives operation objects
+  global.setSync(
+    "__Playwright_handler_ref",
+    new ivm.Reference(async (opJson: string): Promise<string> => {
+      const op = JSON.parse(opJson) as PlaywrightOperation;
+      const result = await effectiveHandler(op);
+      return JSON.stringify(result);
+    })
+  );
+
+  // ========================================================================
+  // Injected JavaScript
+  // ========================================================================
+
+  // Helper function to invoke handler and handle errors
+  context.evalSync(`
+(function() {
+  globalThis.__pw_invoke = async function(type, args) {
+    const op = JSON.stringify({ type, args });
+    const resultJson = __Playwright_handler_ref.applySyncPromise(undefined, [op]);
+    const result = JSON.parse(resultJson);
+    if (result.ok) {
+      return result.value;
+    } else {
+      const error = new Error(result.error.message);
+      error.name = result.error.name;
+      throw error;
+    }
   };
+})();
+`);
 
-  page.on("request", requestHandler);
-  page.on("response", responseHandler);
-  page.on("console", consoleHandler);
-
-  // ========================================================================
-  // Page Operations - Async References (Pattern 6, 10)
-  // ========================================================================
-
-  // goto
-  global.setSync(
-    "__Playwright_goto_ref",
-    new ivm.Reference(async (url: string, waitUntil?: string) => {
-      try {
-        const targetUrl = baseUrl && !url.startsWith("http") ? `${baseUrl}${url}` : url;
-        await page.goto(targetUrl, {
-          timeout,
-          waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
-        });
-      } catch (err) {
-        if (err instanceof Error) {
-          throw encodeErrorForTransfer(err);
-        }
-        throw err;
-      }
-    })
-  );
-
-  // reload
-  global.setSync(
-    "__Playwright_reload_ref",
-    new ivm.Reference(async () => {
-      try {
-        await page.reload({ timeout });
-      } catch (err) {
-        if (err instanceof Error) {
-          throw encodeErrorForTransfer(err);
-        }
-        throw err;
-      }
-    })
-  );
-
-  // url (sync callback)
-  global.setSync(
-    "__Playwright_url",
-    new ivm.Callback(() => {
-      return page.url();
-    })
-  );
-
-  // title
-  global.setSync(
-    "__Playwright_title_ref",
-    new ivm.Reference(async () => {
-      try {
-        return await page.title();
-      } catch (err) {
-        if (err instanceof Error) {
-          throw encodeErrorForTransfer(err);
-        }
-        throw err;
-      }
-    })
-  );
-
-  // content
-  global.setSync(
-    "__Playwright_content_ref",
-    new ivm.Reference(async () => {
-      try {
-        return await page.content();
-      } catch (err) {
-        if (err instanceof Error) {
-          throw encodeErrorForTransfer(err);
-        }
-        throw err;
-      }
-    })
-  );
-
-  // waitForSelector
-  global.setSync(
-    "__Playwright_waitForSelector_ref",
-    new ivm.Reference(async (selector: string, optionsJson?: string) => {
-      try {
-        const opts = optionsJson ? JSON.parse(optionsJson) : {};
-        await page.waitForSelector(selector, { timeout, ...opts });
-      } catch (err) {
-        if (err instanceof Error) {
-          throw encodeErrorForTransfer(err);
-        }
-        throw err;
-      }
-    })
-  );
-
-  // waitForTimeout
-  global.setSync(
-    "__Playwright_waitForTimeout_ref",
-    new ivm.Reference(async (ms: number) => {
-      try {
-        await page.waitForTimeout(ms);
-      } catch (err) {
-        if (err instanceof Error) {
-          throw encodeErrorForTransfer(err);
-        }
-        throw err;
-      }
-    })
-  );
-
-  // waitForLoadState
-  global.setSync(
-    "__Playwright_waitForLoadState_ref",
-    new ivm.Reference(async (state?: string) => {
-      try {
-        await page.waitForLoadState(
-          (state as "load" | "domcontentloaded" | "networkidle") ?? "load",
-          { timeout }
-        );
-      } catch (err) {
-        if (err instanceof Error) {
-          throw encodeErrorForTransfer(err);
-        }
-        throw err;
-      }
-    })
-  );
-
-  // evaluate
-  global.setSync(
-    "__Playwright_evaluate_ref",
-    new ivm.Reference(async (script: string) => {
-      try {
-        const result = await page.evaluate(script);
-        // Only return serializable values
-        return JSON.stringify(result);
-      } catch (err) {
-        if (err instanceof Error) {
-          throw encodeErrorForTransfer(err);
-        }
-        throw err;
-      }
-    })
-  );
-
-  // ========================================================================
-  // Locator Operations (Pattern 14 - JSON serialization)
-  // ========================================================================
-
-  global.setSync(
-    "__Playwright_locatorAction_ref",
-    new ivm.Reference(
-      async (
-        selectorType: string,
-        selectorValue: string,
-        roleOptionsJson: string | null,
-        action: string,
-        actionArg: string | null
-      ) => {
-        try {
-          const locator = getLocator(page, selectorType, selectorValue, roleOptionsJson);
-
-          switch (action) {
-            case "click":
-              await locator.click({ timeout });
-              return null;
-            case "dblclick":
-              await locator.dblclick({ timeout });
-              return null;
-            case "fill":
-              await locator.fill(actionArg ?? "", { timeout });
-              return null;
-            case "type":
-              await locator.pressSequentially(actionArg ?? "", { timeout });
-              return null;
-            case "check":
-              await locator.check({ timeout });
-              return null;
-            case "uncheck":
-              await locator.uncheck({ timeout });
-              return null;
-            case "selectOption":
-              await locator.selectOption(actionArg ?? "", { timeout });
-              return null;
-            case "clear":
-              await locator.clear({ timeout });
-              return null;
-            case "press":
-              await locator.press(actionArg ?? "", { timeout });
-              return null;
-            case "hover":
-              await locator.hover({ timeout });
-              return null;
-            case "focus":
-              await locator.focus({ timeout });
-              return null;
-            case "getText":
-              return await locator.textContent({ timeout });
-            case "getValue":
-              return await locator.inputValue({ timeout });
-            case "isVisible":
-              return await locator.isVisible();
-            case "isEnabled":
-              return await locator.isEnabled();
-            case "isChecked":
-              return await locator.isChecked();
-            case "count":
-              return await locator.count();
-            default:
-              throw new Error(`Unknown action: ${action}`);
-          }
-        } catch (err) {
-          if (err instanceof Error) {
-            throw encodeErrorForTransfer(err);
-          }
-          throw err;
-        }
-      }
-    )
-  );
-
-  // ========================================================================
-  // Expect Operations
-  // ========================================================================
-
-  global.setSync(
-    "__Playwright_expectVisible_ref",
-    new ivm.Reference(
-      async (
-        selectorType: string,
-        selectorValue: string,
-        roleOptionsJson: string | null,
-        not: boolean
-      ) => {
-        try {
-          const locator = getLocator(page, selectorType, selectorValue, roleOptionsJson);
-          const isVisible = await locator.isVisible();
-          if (not) {
-            if (isVisible) {
-              throw new Error(`Expected element to not be visible, but it was visible`);
-            }
-          } else {
-            if (!isVisible) {
-              throw new Error(`Expected element to be visible, but it was not`);
-            }
-          }
-        } catch (err) {
-          if (err instanceof Error) {
-            throw encodeErrorForTransfer(err);
-          }
-          throw err;
-        }
-      }
-    )
-  );
-
-  global.setSync(
-    "__Playwright_expectText_ref",
-    new ivm.Reference(
-      async (
-        selectorType: string,
-        selectorValue: string,
-        roleOptionsJson: string | null,
-        expected: string,
-        not: boolean
-      ) => {
-        try {
-          const locator = getLocator(page, selectorType, selectorValue, roleOptionsJson);
-          const text = await locator.textContent({ timeout });
-          const matches = text?.includes(expected) ?? false;
-          if (not) {
-            if (matches) {
-              throw new Error(`Expected text to not contain "${expected}", but got "${text}"`);
-            }
-          } else {
-            if (!matches) {
-              throw new Error(`Expected text to contain "${expected}", but got "${text}"`);
-            }
-          }
-        } catch (err) {
-          if (err instanceof Error) {
-            throw encodeErrorForTransfer(err);
-          }
-          throw err;
-        }
-      }
-    )
-  );
-
-  global.setSync(
-    "__Playwright_expectValue_ref",
-    new ivm.Reference(
-      async (
-        selectorType: string,
-        selectorValue: string,
-        roleOptionsJson: string | null,
-        expected: string,
-        not: boolean
-      ) => {
-        try {
-          const locator = getLocator(page, selectorType, selectorValue, roleOptionsJson);
-          const value = await locator.inputValue({ timeout });
-          const matches = value === expected;
-          if (not) {
-            if (matches) {
-              throw new Error(`Expected value to not be "${expected}", but it was`);
-            }
-          } else {
-            if (!matches) {
-              throw new Error(`Expected value to be "${expected}", but got "${value}"`);
-            }
-          }
-        } catch (err) {
-          if (err instanceof Error) {
-            throw encodeErrorForTransfer(err);
-          }
-          throw err;
-        }
-      }
-    )
-  );
-
-  global.setSync(
-    "__Playwright_expectEnabled_ref",
-    new ivm.Reference(
-      async (
-        selectorType: string,
-        selectorValue: string,
-        roleOptionsJson: string | null,
-        not: boolean
-      ) => {
-        try {
-          const locator = getLocator(page, selectorType, selectorValue, roleOptionsJson);
-          const isEnabled = await locator.isEnabled();
-          if (not) {
-            if (isEnabled) {
-              throw new Error(`Expected element to be disabled, but it was enabled`);
-            }
-          } else {
-            if (!isEnabled) {
-              throw new Error(`Expected element to be enabled, but it was disabled`);
-            }
-          }
-        } catch (err) {
-          if (err instanceof Error) {
-            throw encodeErrorForTransfer(err);
-          }
-          throw err;
-        }
-      }
-    )
-  );
-
-  global.setSync(
-    "__Playwright_expectChecked_ref",
-    new ivm.Reference(
-      async (
-        selectorType: string,
-        selectorValue: string,
-        roleOptionsJson: string | null,
-        not: boolean
-      ) => {
-        try {
-          const locator = getLocator(page, selectorType, selectorValue, roleOptionsJson);
-          const isChecked = await locator.isChecked();
-          if (not) {
-            if (isChecked) {
-              throw new Error(`Expected element to not be checked, but it was checked`);
-            }
-          } else {
-            if (!isChecked) {
-              throw new Error(`Expected element to be checked, but it was not`);
-            }
-          }
-        } catch (err) {
-          if (err instanceof Error) {
-            throw encodeErrorForTransfer(err);
-          }
-          throw err;
-        }
-      }
-    )
-  );
-
-  // ========================================================================
-  // Injected JavaScript (Pattern 7, 21)
-  // ========================================================================
-
-  // Error decoder helper
-  context.evalSync(DECODE_ERROR_JS);
-
-  // Test framework (Pattern 21)
+  // Test framework
   context.evalSync(`
 (function() {
   const tests = [];
@@ -605,46 +512,31 @@ export async function setupPlaywright(
 (function() {
   globalThis.page = {
     async goto(url, options) {
-      try {
-        return __Playwright_goto_ref.applySyncPromise(undefined, [url, options?.waitUntil || null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("goto", [url, options?.waitUntil || null]);
     },
     async reload() {
-      try {
-        return __Playwright_reload_ref.applySyncPromise(undefined, []);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("reload", []);
     },
-    url() { return __Playwright_url(); },
+    async url() {
+      return __pw_invoke("url", []);
+    },
     async title() {
-      try {
-        return __Playwright_title_ref.applySyncPromise(undefined, []);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("title", []);
     },
     async content() {
-      try {
-        return __Playwright_content_ref.applySyncPromise(undefined, []);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("content", []);
     },
     async waitForSelector(selector, options) {
-      try {
-        return __Playwright_waitForSelector_ref.applySyncPromise(undefined, [selector, options ? JSON.stringify(options) : null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("waitForSelector", [selector, options ? JSON.stringify(options) : null]);
     },
     async waitForTimeout(ms) {
-      try {
-        return __Playwright_waitForTimeout_ref.applySyncPromise(undefined, [ms]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("waitForTimeout", [ms]);
     },
     async waitForLoadState(state) {
-      try {
-        return __Playwright_waitForLoadState_ref.applySyncPromise(undefined, [state]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("waitForLoadState", [state || null]);
     },
     async evaluate(script) {
-      try {
-        const resultJson = __Playwright_evaluate_ref.applySyncPromise(undefined, [script]);
-        return resultJson ? JSON.parse(resultJson) : undefined;
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("evaluate", [script]);
     },
     locator(selector) { return new Locator("css", selector, null); },
     getByRole(role, options) { return new Locator("role", role, options ? JSON.stringify(options) : null); },
@@ -656,7 +548,7 @@ export async function setupPlaywright(
 })();
 `);
 
-  // Locator class (Pure JS with private fields - stays in isolate)
+  // Locator class
   context.evalSync(`
 (function() {
   class Locator {
@@ -670,105 +562,55 @@ export async function setupPlaywright(
     _getInfo() { return [this.#type, this.#value, this.#options]; }
 
     async click() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "click", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "click", null]);
     }
-
     async dblclick() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "dblclick", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "dblclick", null]);
     }
-
     async fill(text) {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "fill", text]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "fill", text]);
     }
-
     async type(text) {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "type", text]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "type", text]);
     }
-
     async check() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "check", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "check", null]);
     }
-
     async uncheck() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "uncheck", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "uncheck", null]);
     }
-
     async selectOption(value) {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "selectOption", value]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "selectOption", value]);
     }
-
     async clear() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "clear", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "clear", null]);
     }
-
     async press(key) {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "press", key]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "press", key]);
     }
-
     async hover() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "hover", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "hover", null]);
     }
-
     async focus() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "focus", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "focus", null]);
     }
-
     async textContent() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "getText", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "getText", null]);
     }
-
     async inputValue() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "getValue", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "getValue", null]);
     }
-
     async isVisible() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "isVisible", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "isVisible", null]);
     }
-
     async isEnabled() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "isEnabled", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "isEnabled", null]);
     }
-
     async isChecked() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "isChecked", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "isChecked", null]);
     }
-
     async count() {
-      try {
-        return __Playwright_locatorAction_ref.applySyncPromise(undefined, [...this._getInfo(), "count", null]);
-      } catch (err) { throw __decodeError(err); }
+      return __pw_invoke("locatorAction", [...this._getInfo(), "count", null]);
     }
   }
   globalThis.Locator = Locator;
@@ -783,55 +625,35 @@ export async function setupPlaywright(
       const info = actual._getInfo();
       return {
         async toBeVisible() {
-          try {
-            await __Playwright_expectVisible_ref.applySyncPromise(undefined, [...info, false]);
-          } catch (err) { throw __decodeError(err); }
+          return __pw_invoke("expectLocator", [...info, "toBeVisible", null, false]);
         },
         async toContainText(expected) {
-          try {
-            await __Playwright_expectText_ref.applySyncPromise(undefined, [...info, expected, false]);
-          } catch (err) { throw __decodeError(err); }
+          return __pw_invoke("expectLocator", [...info, "toContainText", expected, false]);
         },
         async toHaveValue(expected) {
-          try {
-            await __Playwright_expectValue_ref.applySyncPromise(undefined, [...info, expected, false]);
-          } catch (err) { throw __decodeError(err); }
+          return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, false]);
         },
         async toBeEnabled() {
-          try {
-            await __Playwright_expectEnabled_ref.applySyncPromise(undefined, [...info, false]);
-          } catch (err) { throw __decodeError(err); }
+          return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, false]);
         },
         async toBeChecked() {
-          try {
-            await __Playwright_expectChecked_ref.applySyncPromise(undefined, [...info, false]);
-          } catch (err) { throw __decodeError(err); }
+          return __pw_invoke("expectLocator", [...info, "toBeChecked", null, false]);
         },
         not: {
           async toBeVisible() {
-            try {
-              await __Playwright_expectVisible_ref.applySyncPromise(undefined, [...info, true]);
-            } catch (err) { throw __decodeError(err); }
+            return __pw_invoke("expectLocator", [...info, "toBeVisible", null, true]);
           },
           async toContainText(expected) {
-            try {
-              await __Playwright_expectText_ref.applySyncPromise(undefined, [...info, expected, true]);
-            } catch (err) { throw __decodeError(err); }
+            return __pw_invoke("expectLocator", [...info, "toContainText", expected, true]);
           },
           async toHaveValue(expected) {
-            try {
-              await __Playwright_expectValue_ref.applySyncPromise(undefined, [...info, expected, true]);
-            } catch (err) { throw __decodeError(err); }
+            return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, true]);
           },
           async toBeEnabled() {
-            try {
-              await __Playwright_expectEnabled_ref.applySyncPromise(undefined, [...info, true]);
-            } catch (err) { throw __decodeError(err); }
+            return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, true]);
           },
           async toBeChecked() {
-            try {
-              await __Playwright_expectChecked_ref.applySyncPromise(undefined, [...info, true]);
-            } catch (err) { throw __decodeError(err); }
+            return __pw_invoke("expectLocator", [...info, "toBeChecked", null, true]);
           },
         },
       };
@@ -890,14 +712,17 @@ export async function setupPlaywright(
 `);
 
   // ========================================================================
-  // Return Handle (Pattern 3)
+  // Return Handle
   // ========================================================================
 
   return {
     dispose() {
-      page.off("request", requestHandler);
-      page.off("response", responseHandler);
-      page.off("console", consoleHandler);
+      // Only remove listeners if page was provided directly
+      if (page && requestHandler && responseHandler && consoleHandler) {
+        page.off("request", requestHandler);
+        page.off("response", responseHandler);
+        page.off("console", consoleHandler);
+      }
       consoleLogs.length = 0;
       networkRequests.length = 0;
       networkResponses.length = 0;

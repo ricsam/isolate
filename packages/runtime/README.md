@@ -66,6 +66,8 @@ interface RuntimeHandle {
   readonly fetch: RuntimeFetchHandle;
   readonly timers: RuntimeTimersHandle;
   readonly console: RuntimeConsoleHandle;
+  readonly testEnvironment: RuntimeTestEnvironmentHandle;
+  readonly playwright: RuntimePlaywrightHandle;
 }
 
 interface RuntimeFetchHandle {
@@ -86,6 +88,18 @@ interface RuntimeConsoleHandle {
   getCounters(): Map<string, number>;
   getGroupDepth(): number;
 }
+
+interface RuntimeTestEnvironmentHandle {
+  runTests(timeout?: number): Promise<TestResults>;
+  reset(): void;
+}
+
+interface RuntimePlaywrightHandle {
+  runTests(timeout?: number): Promise<PlaywrightTestResults>;
+  reset(): void;
+  getCollectedData(): CollectedData;
+  clearCollectedData(): void;
+}
 ```
 
 ## Options
@@ -98,6 +112,20 @@ interface RuntimeOptions {
   fs?: FsOptions;
   moduleLoader?: ModuleLoaderCallback;
   customFunctions?: CustomFunctions;
+  cwd?: string;
+  /** Enable test environment (describe, it, expect) */
+  testEnvironment?: boolean;
+  /** Playwright options - user provides page object */
+  playwright?: PlaywrightOptions;
+}
+
+interface PlaywrightOptions {
+  page: import("playwright").Page;
+  timeout?: number;
+  baseUrl?: string;
+  onConsoleLog?: (entry: { level: string; args: unknown[] }) => void;
+  onNetworkRequest?: (info: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
+  onNetworkResponse?: (info: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
 }
 ```
 
@@ -147,6 +175,69 @@ await runtime.eval(`
 `);
 ```
 
+## Test Environment
+
+Enable test environment to run tests inside the sandbox:
+
+```typescript
+import { createRuntime } from "@ricsam/isolate-runtime";
+
+const runtime = await createRuntime({
+  testEnvironment: true,
+});
+
+await runtime.eval(`
+  describe("math", () => {
+    it("adds numbers", () => {
+      expect(1 + 1).toBe(2);
+    });
+  });
+`);
+
+const results = await runtime.testEnvironment.runTests();
+console.log(`${results.passed}/${results.total} passed`);
+
+// Reset for new tests
+runtime.testEnvironment.reset();
+```
+
+## Playwright Integration
+
+Run browser tests with untrusted code. **You provide the Playwright page object**:
+
+```typescript
+import { createRuntime } from "@ricsam/isolate-runtime";
+import { chromium } from "playwright";
+
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage();
+
+const runtime = await createRuntime({
+  playwright: {
+    page,
+    baseUrl: "https://example.com",
+    onConsoleLog: (entry) => console.log("[browser]", ...entry.args),
+  },
+});
+
+await runtime.eval(`
+  test("homepage loads", async () => {
+    await page.goto("/");
+    await expect(page.getByText("Example Domain")).toBeVisible();
+  });
+`);
+
+const results = await runtime.playwright.runTests();
+console.log(`${results.passed}/${results.total} passed`);
+
+// Get collected data
+const data = runtime.playwright.getCollectedData();
+console.log("Network requests:", data.networkRequests);
+
+await runtime.dispose();
+await browser.close();
+```
+
 ## Included APIs
 
 - Core (Blob, File, streams, URL, TextEncoder/Decoder)
@@ -157,6 +248,8 @@ await runtime.eval(`
 - Crypto (randomUUID, getRandomValues, subtle)
 - Fetch API
 - File System (if handler provided)
+- Test Environment (if enabled)
+- Playwright (if page provided)
 
 ## Legacy API
 

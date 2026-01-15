@@ -19,16 +19,17 @@ import {
   type DispatchRequestRequest,
   type CallbackResponseMsg,
   type CallbackInvoke,
-  type SetupTestEnvRequest,
   type RunTestsRequest,
-  type SetupPlaywrightRequest,
   type RunPlaywrightTestsRequest,
   type ResetPlaywrightTestsRequest,
   type GetCollectedDataRequest,
-  type PlaywrightEvent,
+  type ResetTestEnvRequest,
+  type ClearCollectedDataRequest,
   type FsCallbackRegistrations,
   type CustomFunctionRegistrations,
   type CallbackRegistration,
+  type PlaywrightOperation,
+  type PlaywrightResult,
   type WsOpenRequest,
   type WsMessageRequest,
   type WsCloseRequest,
@@ -51,8 +52,11 @@ import {
   setupPlaywright,
   runPlaywrightTests,
   resetPlaywrightTests,
+  type PlaywrightCallback,
+  type ConsoleLogEntry,
+  type NetworkRequestInfo,
+  type NetworkResponseInfo,
 } from "@ricsam/isolate-playwright";
-import { chromium, firefox, webkit } from "playwright";
 import {
   createInternalRuntime,
   type InternalRuntimeHandle,
@@ -104,12 +108,6 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
           // Clean up Playwright resources if present
           if (instance.playwrightHandle) {
             instance.playwrightHandle.dispose();
-          }
-          if (instance.browserContext) {
-            instance.browserContext.close().catch(() => {});
-          }
-          if (instance.browser) {
-            instance.browser.close().catch(() => {});
           }
           instance.runtime.dispose();
         } catch {
@@ -293,21 +291,13 @@ async function handleMessage(
       );
       break;
 
-    case MessageType.SETUP_TEST_ENV:
-      await handleSetupTestEnv(
-        message as SetupTestEnvRequest,
-        connection,
-        state
-      );
-      break;
-
     case MessageType.RUN_TESTS:
       await handleRunTests(message as RunTestsRequest, connection, state);
       break;
 
-    case MessageType.SETUP_PLAYWRIGHT:
-      await handleSetupPlaywright(
-        message as SetupPlaywrightRequest,
+    case MessageType.RESET_TEST_ENV:
+      await handleResetTestEnv(
+        message as ResetTestEnvRequest,
         connection,
         state
       );
@@ -332,6 +322,14 @@ async function handleMessage(
     case MessageType.GET_COLLECTED_DATA:
       await handleGetCollectedData(
         message as GetCollectedDataRequest,
+        connection,
+        state
+      );
+      break;
+
+    case MessageType.CLEAR_COLLECTED_DATA:
+      await handleClearCollectedData(
+        message as ClearCollectedDataRequest,
         connection,
         state
       );
@@ -380,17 +378,22 @@ async function handleCreateRuntime(
     const moduleLoaderCallback = message.options.callbacks?.moduleLoader;
     const customCallbacks = message.options.callbacks?.custom;
 
+    // Track pending callbacks so eval can wait for them
+    const pendingCallbacks: Promise<unknown>[] = [];
+
     const runtime = await createInternalRuntime({
       memoryLimit: message.options.memoryLimit ?? state.options.defaultMemoryLimit,
       cwd: message.options.cwd,
       console: consoleCallbacks?.onEntry
         ? {
-            onEntry: async (entry) => {
-              await invokeClientCallback(
+            onEntry: (entry) => {
+              // Track this callback so eval waits for it to complete
+              const promise = invokeClientCallback(
                 connection,
                 consoleCallbacks.onEntry!.callbackId,
                 [entry]
-              );
+              ).catch(() => {}); // Ignore errors, just track completion
+              pendingCallbacks.push(promise);
             },
           }
         : undefined,
@@ -428,6 +431,7 @@ async function handleCreateRuntime(
       callbacks: new Map(),
       createdAt: Date.now(),
       lastActivity: Date.now(),
+      pendingCallbacks,
     };
 
     // Setup module loader
@@ -467,6 +471,63 @@ async function handleCreateRuntime(
           instance.callbacks.set(reg.callbackId, { ...reg, name });
         }
       }
+    }
+
+    // Setup test environment if requested
+    if (message.options.testEnvironment) {
+      await setupTestEnvironment(runtime.context);
+      instance.testEnvironmentEnabled = true;
+    }
+
+    // Setup playwright if callbacks are provided (client owns the browser)
+    const playwrightCallbacks = message.options.callbacks?.playwright;
+    if (playwrightCallbacks) {
+      // Create handler that invokes client callback
+      const handler: PlaywrightCallback = async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
+        try {
+          const resultJson = await invokeClientCallback(
+            connection,
+            playwrightCallbacks.handlerCallbackId,
+            [JSON.stringify(op)]
+          );
+          return JSON.parse(resultJson as string) as PlaywrightResult;
+        } catch (err) {
+          const error = err as Error;
+          return { ok: false, error: { name: error.name, message: error.message } };
+        }
+      };
+
+      instance.playwrightHandle = await setupPlaywright(runtime.context, {
+        handler,
+        // Event callbacks invoke client directly
+        onConsoleLog: playwrightCallbacks.onConsoleLogCallbackId
+          ? (entry: ConsoleLogEntry) => {
+              invokeClientCallback(
+                connection,
+                playwrightCallbacks.onConsoleLogCallbackId!,
+                [entry]
+              ).catch(() => {});
+            }
+          : undefined,
+        onNetworkRequest: playwrightCallbacks.onNetworkRequestCallbackId
+          ? (info: NetworkRequestInfo) => {
+              invokeClientCallback(
+                connection,
+                playwrightCallbacks.onNetworkRequestCallbackId!,
+                [info]
+              ).catch(() => {});
+            }
+          : undefined,
+        onNetworkResponse: playwrightCallbacks.onNetworkResponseCallbackId
+          ? (info: NetworkResponseInfo) => {
+              invokeClientCallback(
+                connection,
+                playwrightCallbacks.onNetworkResponseCallbackId!,
+                [info]
+              ).catch(() => {});
+            }
+          : undefined,
+      });
     }
 
     state.isolates.set(isolateId, instance);
@@ -520,12 +581,6 @@ async function handleDisposeRuntime(
     // Clean up Playwright resources if present
     if (instance.playwrightHandle) {
       instance.playwrightHandle.dispose();
-    }
-    if (instance.browserContext) {
-      await instance.browserContext.close();
-    }
-    if (instance.browser) {
-      await instance.browser.close();
     }
 
     instance.runtime.dispose();
@@ -588,6 +643,11 @@ async function handleEval(
 
     // Evaluate the module
     await mod.evaluate();
+
+    // Wait for all pending callbacks (e.g., console.log) to complete
+    // This ensures the client receives all callbacks before eval resolves
+    await Promise.all(instance.pendingCallbacks);
+    instance.pendingCallbacks.length = 0; // Clear for next eval
 
     // Return undefined for module evaluation
     sendOk(connection.socket, message.requestId, { value: undefined });
@@ -1362,44 +1422,6 @@ function deserializeResponse(data: SerializedResponseData): Response {
 // ============================================================================
 
 /**
- * Handle SETUP_TEST_ENV message.
- */
-async function handleSetupTestEnv(
-  message: SetupTestEnvRequest,
-  connection: ConnectionState,
-  state: DaemonState
-): Promise<void> {
-  const instance = state.isolates.get(message.isolateId);
-
-  if (!instance) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.ISOLATE_NOT_FOUND,
-      `Isolate not found: ${message.isolateId}`
-    );
-    return;
-  }
-
-  instance.lastActivity = Date.now();
-
-  try {
-    // Setup test environment in the isolate's context
-    await setupTestEnvironment(instance.runtime.context);
-    sendOk(connection.socket, message.requestId);
-  } catch (err) {
-    const error = err as Error;
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      error.message,
-      { name: error.name, stack: error.stack }
-    );
-  }
-}
-
-/**
  * Handle RUN_TESTS message.
  */
 async function handleRunTests(
@@ -1415,6 +1437,16 @@ async function handleRunTests(
       message.requestId,
       ErrorCode.ISOLATE_NOT_FOUND,
       `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  if (!instance.testEnvironmentEnabled) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      "Test environment not enabled. Set testEnvironment: true in createRuntime options."
     );
     return;
   }
@@ -1446,15 +1478,11 @@ async function handleRunTests(
   }
 }
 
-// ============================================================================
-// Playwright Handlers
-// ============================================================================
-
 /**
- * Handle SETUP_PLAYWRIGHT message.
+ * Handle RESET_TEST_ENV message.
  */
-async function handleSetupPlaywright(
-  message: SetupPlaywrightRequest,
+async function handleResetTestEnv(
+  message: ResetTestEnvRequest,
   connection: ConnectionState,
   state: DaemonState
 ): Promise<void> {
@@ -1470,12 +1498,12 @@ async function handleSetupPlaywright(
     return;
   }
 
-  if (instance.browser) {
+  if (!instance.testEnvironmentEnabled) {
     sendError(
       connection.socket,
       message.requestId,
       ErrorCode.SCRIPT_ERROR,
-      "Playwright already set up for this isolate"
+      "Test environment not enabled. Set testEnvironment: true in createRuntime options."
     );
     return;
   }
@@ -1483,68 +1511,8 @@ async function handleSetupPlaywright(
   instance.lastActivity = Date.now();
 
   try {
-    // Launch browser based on type
-    const browserType = message.options.browserType ?? "chromium";
-    const headless = message.options.headless ?? true;
-
-    let browser;
-    switch (browserType) {
-      case "firefox":
-        browser = await firefox.launch({ headless });
-        break;
-      case "webkit":
-        browser = await webkit.launch({ headless });
-        break;
-      default:
-        browser = await chromium.launch({ headless });
-    }
-
-    // Create context and page
-    const browserContext = await browser.newContext();
-    const page = await browserContext.newPage();
-
-    // Setup Playwright in the isolate context with event streaming
-    const playwrightHandle = await setupPlaywright(instance.runtime.context, {
-      page,
-      baseUrl: message.options.baseURL,
-      onConsoleLog: (level, ...args) => {
-        // Stream console logs to client
-        const event: PlaywrightEvent = {
-          type: MessageType.PLAYWRIGHT_EVENT,
-          isolateId: message.isolateId,
-          eventType: "consoleLog",
-          payload: { level, args },
-        };
-        sendMessage(connection.socket, event);
-      },
-      onNetworkRequest: (info) => {
-        // Stream network requests to client
-        const event: PlaywrightEvent = {
-          type: MessageType.PLAYWRIGHT_EVENT,
-          isolateId: message.isolateId,
-          eventType: "networkRequest",
-          payload: info,
-        };
-        sendMessage(connection.socket, event);
-      },
-      onNetworkResponse: (info) => {
-        // Stream network responses to client
-        const event: PlaywrightEvent = {
-          type: MessageType.PLAYWRIGHT_EVENT,
-          isolateId: message.isolateId,
-          eventType: "networkResponse",
-          payload: info,
-        };
-        sendMessage(connection.socket, event);
-      },
-    });
-
-    // Store references
-    instance.browser = browser;
-    instance.browserContext = browserContext;
-    instance.page = page;
-    instance.playwrightHandle = playwrightHandle;
-
+    // Reset test environment state
+    await instance.runtime.context.eval("__resetTestEnvironment()", { promise: true });
     sendOk(connection.socket, message.requestId);
   } catch (err) {
     const error = err as Error;
@@ -1557,6 +1525,10 @@ async function handleSetupPlaywright(
     );
   }
 }
+
+// ============================================================================
+// Playwright Handlers
+// ============================================================================
 
 /**
  * Handle RUN_PLAYWRIGHT_TESTS message.
@@ -1583,7 +1555,7 @@ async function handleRunPlaywrightTests(
       connection.socket,
       message.requestId,
       ErrorCode.SCRIPT_ERROR,
-      "Playwright not set up for this isolate"
+      "Playwright not configured. Provide playwright.page in createRuntime options."
     );
     return;
   }
@@ -1639,7 +1611,7 @@ async function handleResetPlaywrightTests(
       connection.socket,
       message.requestId,
       ErrorCode.SCRIPT_ERROR,
-      "Playwright not set up for this isolate"
+      "Playwright not configured. Provide playwright.page in createRuntime options."
     );
     return;
   }
@@ -1686,7 +1658,7 @@ async function handleGetCollectedData(
       connection.socket,
       message.requestId,
       ErrorCode.SCRIPT_ERROR,
-      "Playwright not set up for this isolate"
+      "Playwright not configured. Provide playwright.page in createRuntime options."
     );
     return;
   }
@@ -1701,6 +1673,53 @@ async function handleGetCollectedData(
     };
 
     sendOk(connection.socket, message.requestId, data);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle CLEAR_COLLECTED_DATA message.
+ */
+async function handleClearCollectedData(
+  message: ClearCollectedDataRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  if (!instance.playwrightHandle) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      "Playwright not configured. Provide playwright.page in createRuntime options."
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    instance.playwrightHandle.clearCollected();
+    sendOk(connection.socket, message.requestId);
   } catch (err) {
     const error = err as Error;
     sendError(

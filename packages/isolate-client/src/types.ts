@@ -61,6 +61,29 @@ export interface RuntimeOptions {
   customFunctions?: CustomFunctions;
   /** Current working directory for path.resolve(). Defaults to "/" */
   cwd?: string;
+  /** Enable test environment (describe, it, expect, etc.) */
+  testEnvironment?: boolean;
+  /** Playwright options - user provides page */
+  playwright?: PlaywrightOptions;
+}
+
+/**
+ * Options for Playwright integration.
+ * User provides the page object - client owns the browser.
+ */
+export interface PlaywrightOptions {
+  /** Playwright page object */
+  page: import("playwright").Page;
+  /** Default timeout for operations in ms */
+  timeout?: number;
+  /** Base URL for navigation */
+  baseUrl?: string;
+  /** Console log event handler */
+  onConsoleLog?: (entry: { level: string; args: unknown[] }) => void;
+  /** Network request event handler */
+  onNetworkRequest?: (info: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
+  /** Network response event handler */
+  onNetworkResponse?: (info: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
 }
 
 /**
@@ -220,6 +243,10 @@ export interface RemoteRuntime {
   readonly timers: RemoteTimersHandle;
   /** Console handle - access to console state */
   readonly console: RemoteConsoleHandle;
+  /** Test environment handle (methods throw if not enabled) */
+  readonly testEnvironment: RemoteTestEnvironmentHandle;
+  /** Playwright handle (methods throw if not configured) */
+  readonly playwright: RemotePlaywrightHandle;
 
   /**
    * Execute code as ES module in the isolate.
@@ -234,26 +261,34 @@ export interface RemoteRuntime {
    */
   eval(code: string, options?: EvalOptions): Promise<void>;
 
-  /** Setup test environment (describe, it, expect, etc.) */
-  setupTestEnvironment(): Promise<void>;
-
-  /** Run all registered tests and return results */
-  runTests(timeout?: number): Promise<TestResults>;
-
-  /** Setup Playwright browser environment */
-  setupPlaywright(options?: PlaywrightSetupOptions): Promise<void>;
-
-  /** Run all registered Playwright tests */
-  runPlaywrightTests(timeout?: number): Promise<PlaywrightTestResults>;
-
-  /** Reset/clear all Playwright tests */
-  resetPlaywrightTests(): Promise<void>;
-
-  /** Get collected console logs and network data */
-  getCollectedData(): Promise<CollectedData>;
-
   /** Dispose the runtime */
   dispose(): Promise<void>;
+}
+
+/**
+ * Remote test environment handle.
+ * All methods are async since they communicate over IPC.
+ */
+export interface RemoteTestEnvironmentHandle {
+  /** Run all registered tests and return results */
+  runTests(timeout?: number): Promise<TestResults>;
+  /** Reset test environment state */
+  reset(): Promise<void>;
+}
+
+/**
+ * Remote playwright handle.
+ * All methods are async since they communicate over IPC.
+ */
+export interface RemotePlaywrightHandle {
+  /** Run all registered Playwright tests */
+  runTests(timeout?: number): Promise<PlaywrightTestResults>;
+  /** Reset/clear all Playwright tests */
+  reset(): Promise<void>;
+  /** Get collected console logs and network data */
+  getCollectedData(): Promise<CollectedData>;
+  /** Clear collected data */
+  clearCollectedData(): Promise<void>;
 }
 
 /**
@@ -264,29 +299,3 @@ export interface DispatchOptions {
   timeout?: number;
 }
 
-/**
- * Options for setting up Playwright.
- */
-export interface PlaywrightSetupOptions {
-  /** Browser type to use */
-  browserType?: "chromium" | "firefox" | "webkit";
-  /** Run browser in headless mode */
-  headless?: boolean;
-  /** Base URL for navigation */
-  baseURL?: string;
-  /** Console log event handler */
-  onConsoleLog?: (log: { level: string; args: unknown[] }) => void;
-  /** Network request event handler */
-  onNetworkRequest?: (request: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
-  /** Network response event handler */
-  onNetworkResponse?: (response: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
-}
-
-/**
- * Handler for Playwright events streamed from daemon.
- */
-export interface PlaywrightEventHandler {
-  onConsoleLog?: (log: { level: string; args: unknown[] }) => void;
-  onNetworkRequest?: (request: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
-  onNetworkResponse?: (response: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
-}

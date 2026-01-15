@@ -7,6 +7,15 @@ import { setupPath } from "@ricsam/isolate-path";
 import { setupCrypto } from "@ricsam/isolate-crypto";
 import { setupFetch } from "@ricsam/isolate-fetch";
 import { setupFs } from "@ricsam/isolate-fs";
+import {
+  setupTestEnvironment,
+  runTests as runTestsInContext,
+} from "@ricsam/isolate-test-environment";
+import {
+  setupPlaywright,
+  runPlaywrightTests as runPlaywrightTestsInContext,
+  resetPlaywrightTests as resetPlaywrightTestsInContext,
+} from "@ricsam/isolate-playwright";
 
 import type { ConsoleOptions, ConsoleHandle } from "@ricsam/isolate-console";
 import type { FetchOptions, FetchHandle, DispatchRequestOptions, UpgradeRequest, WebSocketCommand } from "@ricsam/isolate-fetch";
@@ -16,6 +25,14 @@ import type { EncodingHandle } from "@ricsam/isolate-encoding";
 import type { TimersHandle } from "@ricsam/isolate-timers";
 import type { PathHandle } from "@ricsam/isolate-path";
 import type { CryptoHandle } from "@ricsam/isolate-crypto";
+import type { TestEnvironmentHandle, TestResults } from "@ricsam/isolate-test-environment";
+import type {
+  PlaywrightHandle,
+  PlaywrightExecutionResult,
+  NetworkRequestInfo,
+  NetworkResponseInfo,
+  ConsoleLogEntry,
+} from "@ricsam/isolate-playwright";
 import type {
   ConsoleCallbacks,
   ConsoleEntry,
@@ -60,6 +77,28 @@ export interface RuntimeOptions {
   customFunctions?: CustomFunctions;
   /** Current working directory for path.resolve(). Defaults to "/" */
   cwd?: string;
+  /** Enable test environment (describe, it, expect, etc.) */
+  testEnvironment?: boolean;
+  /** Playwright options - user provides page object */
+  playwright?: PlaywrightOptions;
+}
+
+/**
+ * Options for playwright in local runtime.
+ */
+export interface PlaywrightOptions {
+  /** Playwright Page object - user launches browser and creates page */
+  page: import("playwright").Page;
+  /** Default timeout for operations (default: 30000ms) */
+  timeout?: number;
+  /** Base URL for relative navigation */
+  baseUrl?: string;
+  /** Callback for browser console log events */
+  onConsoleLog?: (entry: ConsoleLogEntry) => void;
+  /** Callback for network request events */
+  onNetworkRequest?: (info: NetworkRequestInfo) => void;
+  /** Callback for network response events */
+  onNetworkResponse?: (info: NetworkResponseInfo) => void;
 }
 
 /**
@@ -110,6 +149,39 @@ export interface RuntimeConsoleHandle {
 }
 
 /**
+ * Runtime test environment handle - provides access to test execution.
+ */
+export interface RuntimeTestEnvironmentHandle {
+  /** Run all registered tests */
+  runTests(timeout?: number): Promise<TestResults>;
+  /** Reset test state */
+  reset(): void;
+}
+
+/**
+ * Runtime playwright handle - provides access to playwright test execution.
+ */
+export interface RuntimePlaywrightHandle {
+  /** Run all registered playwright tests */
+  runTests(timeout?: number): Promise<PlaywrightExecutionResult>;
+  /** Reset playwright test state */
+  reset(): void;
+  /** Get collected browser data (console logs, network requests/responses) */
+  getCollectedData(): CollectedData;
+  /** Clear collected browser data */
+  clearCollectedData(): void;
+}
+
+/**
+ * Collected browser data from playwright.
+ */
+export interface CollectedData {
+  consoleLogs: ConsoleLogEntry[];
+  networkRequests: NetworkRequestInfo[];
+  networkResponses: NetworkResponseInfo[];
+}
+
+/**
  * Runtime handle - the main interface for interacting with the isolate.
  */
 export interface RuntimeHandle {
@@ -126,6 +198,10 @@ export interface RuntimeHandle {
   readonly timers: RuntimeTimersHandle;
   /** Console handle - access to console state */
   readonly console: RuntimeConsoleHandle;
+  /** Test environment handle - access to test execution (throws if not enabled) */
+  readonly testEnvironment: RuntimeTestEnvironmentHandle;
+  /** Playwright handle - access to playwright operations (throws if not configured) */
+  readonly playwright: RuntimePlaywrightHandle;
 }
 
 // Internal state for runtime
@@ -141,6 +217,8 @@ interface RuntimeState {
     crypto?: CryptoHandle;
     fetch?: FetchHandle;
     fs?: FsHandle;
+    testEnvironment?: TestEnvironmentHandle;
+    playwright?: PlaywrightHandle;
   };
   moduleCache: Map<string, ivm.Module>;
   moduleLoader?: ModuleLoaderCallback;
@@ -365,6 +443,23 @@ export async function createRuntime(
     );
   }
 
+  // Setup test environment (if enabled)
+  if (opts.testEnvironment) {
+    state.handles.testEnvironment = await setupTestEnvironment(context);
+  }
+
+  // Setup playwright (if page provided)
+  if (opts.playwright) {
+    state.handles.playwright = await setupPlaywright(context, {
+      page: opts.playwright.page,
+      timeout: opts.playwright.timeout,
+      baseUrl: opts.playwright.baseUrl,
+      onConsoleLog: opts.playwright.onConsoleLog,
+      onNetworkRequest: opts.playwright.onNetworkRequest,
+      onNetworkResponse: opts.playwright.onNetworkResponse,
+    });
+  }
+
   // Create fetch handle wrapper
   const fetchHandle: RuntimeFetchHandle = {
     async dispatchRequest(request: Request, options?: DispatchRequestOptions): Promise<Response> {
@@ -446,6 +541,48 @@ export async function createRuntime(
     },
   };
 
+  // Create test environment handle wrapper
+  const testEnvironmentHandle: RuntimeTestEnvironmentHandle = {
+    async runTests(_timeout?: number): Promise<TestResults> {
+      if (!state.handles.testEnvironment) {
+        throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
+      }
+      // Note: timeout parameter reserved for future use
+      return runTestsInContext(state.context);
+    },
+    reset() {
+      state.handles.testEnvironment?.dispose();
+    },
+  };
+
+  // Create playwright handle wrapper
+  const playwrightHandle: RuntimePlaywrightHandle = {
+    async runTests(timeout?: number): Promise<PlaywrightExecutionResult> {
+      if (!state.handles.playwright) {
+        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
+      }
+      return runPlaywrightTestsInContext(state.context);
+    },
+    reset() {
+      if (state.handles.playwright) {
+        resetPlaywrightTestsInContext(state.context);
+      }
+    },
+    getCollectedData(): CollectedData {
+      if (!state.handles.playwright) {
+        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
+      }
+      return {
+        consoleLogs: state.handles.playwright.getConsoleLogs(),
+        networkRequests: state.handles.playwright.getNetworkRequests(),
+        networkResponses: state.handles.playwright.getNetworkResponses(),
+      };
+    },
+    clearCollectedData() {
+      state.handles.playwright?.clearCollected();
+    },
+  };
+
   return {
     id,
 
@@ -453,6 +590,8 @@ export async function createRuntime(
     fetch: fetchHandle,
     timers: timersHandle,
     console: consoleHandle,
+    testEnvironment: testEnvironmentHandle,
+    playwright: playwrightHandle,
 
     async eval(code: string, filename?: string): Promise<void> {
       // Compile as ES module
@@ -474,7 +613,9 @@ export async function createRuntime(
         state.customFnInvokeRef.release();
       }
 
-      // Dispose all handles
+      // Dispose all handles (in reverse order of setup)
+      state.handles.playwright?.dispose();
+      state.handles.testEnvironment?.dispose();
       state.handles.fs?.dispose();
       state.handles.fetch?.dispose();
       state.handles.crypto?.dispose();
@@ -518,3 +659,22 @@ export type { PathHandle, PathOptions } from "@ricsam/isolate-path";
 
 export { setupTimers } from "@ricsam/isolate-timers";
 export type { TimersHandle } from "@ricsam/isolate-timers";
+
+export { setupTestEnvironment, runTests } from "@ricsam/isolate-test-environment";
+export type { TestEnvironmentHandle, TestResults, TestResult } from "@ricsam/isolate-test-environment";
+
+export {
+  setupPlaywright,
+  runPlaywrightTests,
+  resetPlaywrightTests,
+  createPlaywrightHandler,
+} from "@ricsam/isolate-playwright";
+export type {
+  PlaywrightHandle,
+  PlaywrightExecutionResult,
+  PlaywrightSetupOptions,
+  PlaywrightCallback,
+  NetworkRequestInfo,
+  NetworkResponseInfo,
+  ConsoleLogEntry,
+} from "@ricsam/isolate-playwright";

@@ -6,6 +6,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
 import { connect } from "./connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
+import { chromium, type Browser, type Page } from "playwright";
 import type { DaemonConnection, RemoteRuntime } from "./types.ts";
 
 const TEST_SOCKET = "/tmp/isolate-test-daemon.sock";
@@ -208,12 +209,11 @@ describe("isolate-client integration", () => {
 
   // Test Environment Integration Tests
   it("should setup test environment and run tests", async () => {
-    const runtime = await client.createRuntime();
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+    });
 
     try {
-      // Setup test environment
-      await runtime.setupTestEnvironment();
-
       // Define some tests
       await runtime.eval(`
         describe('math', () => {
@@ -228,7 +228,7 @@ describe("isolate-client integration", () => {
       `);
 
       // Run tests
-      const results = await runtime.runTests();
+      const results = await runtime.testEnvironment.runTests();
 
       assert.strictEqual(results.passed, 2);
       assert.strictEqual(results.failed, 0);
@@ -239,11 +239,11 @@ describe("isolate-client integration", () => {
   });
 
   it("should report test failures", async () => {
-    const runtime = await client.createRuntime();
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+    });
 
     try {
-      await runtime.setupTestEnvironment();
-
       await runtime.eval(`
         describe('failing tests', () => {
           it('passes', () => {
@@ -256,14 +256,14 @@ describe("isolate-client integration", () => {
         });
       `);
 
-      const results = await runtime.runTests();
+      const results = await runtime.testEnvironment.runTests();
 
       assert.strictEqual(results.passed, 1);
       assert.strictEqual(results.failed, 1);
       assert.strictEqual(results.total, 2);
 
       // Check error message
-      const failedTest = results.results.find((r) => !r.passed);
+      const failedTest = results.results.find((r: { passed: boolean }) => !r.passed);
       assert.ok(failedTest);
       assert.ok(failedTest.error?.includes("Expected"));
     } finally {
@@ -272,11 +272,11 @@ describe("isolate-client integration", () => {
   });
 
   it("should support async tests", async () => {
-    const runtime = await client.createRuntime();
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+    });
 
     try {
-      await runtime.setupTestEnvironment();
-
       await runtime.eval(`
         describe('async tests', () => {
           it('handles async', async () => {
@@ -286,7 +286,7 @@ describe("isolate-client integration", () => {
         });
       `);
 
-      const results = await runtime.runTests();
+      const results = await runtime.testEnvironment.runTests();
 
       assert.strictEqual(results.passed, 1);
       assert.strictEqual(results.failed, 0);
@@ -296,11 +296,11 @@ describe("isolate-client integration", () => {
   });
 
   it("should support beforeEach and afterEach hooks", async () => {
-    const runtime = await client.createRuntime();
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+    });
 
     try {
-      await runtime.setupTestEnvironment();
-
       await runtime.eval(`
         let count = 0;
 
@@ -319,7 +319,7 @@ describe("isolate-client integration", () => {
         });
       `);
 
-      const results = await runtime.runTests();
+      const results = await runtime.testEnvironment.runTests();
 
       assert.strictEqual(results.passed, 2);
       assert.strictEqual(results.failed, 0);
@@ -329,16 +329,17 @@ describe("isolate-client integration", () => {
   });
 
   // Playwright Integration Tests
+  // NOTE: Client now owns the browser - tests launch browser and pass page to createRuntime
   it("should setup and run playwright tests", async () => {
-    const runtime = await client.createRuntime();
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      playwright: { page },
+    });
 
     try {
-      // Setup Playwright (launches browser in daemon)
-      await runtime.setupPlaywright({
-        browserType: "chromium",
-        headless: true,
-      });
-
       // Define a simple test
       await runtime.eval(`
         test('simple test', async () => {
@@ -347,25 +348,27 @@ describe("isolate-client integration", () => {
       `);
 
       // Run tests
-      const results = await runtime.runPlaywrightTests();
+      const results = await runtime.playwright.runTests();
 
       assert.strictEqual(results.passed, 1);
       assert.strictEqual(results.failed, 0);
       assert.strictEqual(results.total, 1);
     } finally {
       await runtime.dispose();
+      await browser.close();
     }
   });
 
   it("should collect console logs and network data", async () => {
-    const runtime = await client.createRuntime();
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      playwright: { page },
+    });
 
     try {
-      await runtime.setupPlaywright({
-        browserType: "chromium",
-        headless: true,
-      });
-
       // Navigate to a page that logs to console
       await runtime.eval(`
         test('console logging', async () => {
@@ -374,10 +377,10 @@ describe("isolate-client integration", () => {
         });
       `);
 
-      await runtime.runPlaywrightTests();
+      await runtime.playwright.runTests();
 
       // Get collected data
-      const data = await runtime.getCollectedData();
+      const data = await runtime.playwright.getCollectedData();
 
       // Should have captured the console log
       assert.ok(data.consoleLogs.length >= 0); // Console logs might be captured
@@ -385,18 +388,20 @@ describe("isolate-client integration", () => {
       assert.ok(Array.isArray(data.networkResponses));
     } finally {
       await runtime.dispose();
+      await browser.close();
     }
   });
 
   it("should reset playwright tests", async () => {
-    const runtime = await client.createRuntime();
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      playwright: { page },
+    });
 
     try {
-      await runtime.setupPlaywright({
-        browserType: "chromium",
-        headless: true,
-      });
-
       // Define a test
       await runtime.eval(`
         test('first test', async () => {
@@ -405,11 +410,11 @@ describe("isolate-client integration", () => {
       `);
 
       // Run tests
-      let results = await runtime.runPlaywrightTests();
+      let results = await runtime.playwright.runTests();
       assert.strictEqual(results.total, 1);
 
       // Reset tests
-      await runtime.resetPlaywrightTests();
+      await runtime.playwright.reset();
 
       // Define new tests
       await runtime.eval(`
@@ -422,23 +427,25 @@ describe("isolate-client integration", () => {
       `);
 
       // Run tests again
-      results = await runtime.runPlaywrightTests();
+      results = await runtime.playwright.runTests();
       assert.strictEqual(results.total, 2);
       assert.strictEqual(results.passed, 2);
     } finally {
       await runtime.dispose();
+      await browser.close();
     }
   });
 
   it("should report playwright test failures", async () => {
-    const runtime = await client.createRuntime();
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      playwright: { page },
+    });
 
     try {
-      await runtime.setupPlaywright({
-        browserType: "chromium",
-        headless: true,
-      });
-
       await runtime.eval(`
         test('passing test', async () => {
           expect(true).toBe(true);
@@ -449,32 +456,36 @@ describe("isolate-client integration", () => {
         });
       `);
 
-      const results = await runtime.runPlaywrightTests();
+      const results = await runtime.playwright.runTests();
 
       assert.strictEqual(results.passed, 1);
       assert.strictEqual(results.failed, 1);
       assert.strictEqual(results.total, 2);
 
       // Check error message is present
-      const failedTest = results.results.find((t) => !t.passed);
+      const failedTest = results.results.find((t: { passed: boolean }) => !t.passed);
       assert.ok(failedTest);
       assert.ok(failedTest.error);
     } finally {
       await runtime.dispose();
+      await browser.close();
     }
   });
 
   it("should stream playwright events", async () => {
     const consoleLogs: { level: string; args: unknown[] }[] = [];
-    const runtime = await client.createRuntime();
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      playwright: {
+        page,
+        onConsoleLog: (log: { level: string; args: unknown[] }) => consoleLogs.push(log),
+      },
+    });
 
     try {
-      await runtime.setupPlaywright({
-        browserType: "chromium",
-        headless: true,
-        onConsoleLog: (log) => consoleLogs.push(log),
-      });
-
       await runtime.eval(`
         test('console test', async () => {
           await page.goto('data:text/html,<script>console.log("streamed message")</script>');
@@ -482,7 +493,7 @@ describe("isolate-client integration", () => {
         });
       `);
 
-      await runtime.runPlaywrightTests();
+      await runtime.playwright.runTests();
 
       // Wait a bit for events to arrive
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -492,6 +503,7 @@ describe("isolate-client integration", () => {
       assert.ok(Array.isArray(consoleLogs));
     } finally {
       await runtime.dispose();
+      await browser.close();
     }
   });
 

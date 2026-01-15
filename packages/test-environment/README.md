@@ -8,7 +8,32 @@ Test primitives for running tests in sandboxed V8. Provides a Jest/Vitest-compat
 npm add @ricsam/isolate-test-environment
 ```
 
-## Usage
+## Usage with isolate-runtime (Recommended)
+
+The easiest way to use this package is through `@ricsam/isolate-runtime`:
+
+```typescript
+import { createRuntime } from "@ricsam/isolate-runtime";
+
+const runtime = await createRuntime({
+  testEnvironment: true,
+});
+
+await runtime.eval(`
+  describe("math", () => {
+    it("adds numbers", () => {
+      expect(1 + 1).toBe(2);
+    });
+  });
+`);
+
+const results = await runtime.testEnvironment.runTests();
+console.log(`${results.passed}/${results.total} passed`);
+```
+
+## Low-level Usage (Direct ivm)
+
+For advanced use cases with direct isolated-vm access:
 
 ```typescript
 import { setupTestEnvironment, runTests } from "@ricsam/isolate-test-environment";

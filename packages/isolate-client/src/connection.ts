@@ -20,16 +20,17 @@ import {
   type RuntimeCallbackRegistrations,
   type CreateRuntimeResult,
   type SerializedResponse,
-  type SetupTestEnvRequest,
   type RunTestsRequest,
   type RunTestsResult,
-  type SetupPlaywrightRequest,
   type RunPlaywrightTestsRequest,
   type ResetPlaywrightTestsRequest,
   type GetCollectedDataRequest,
   type PlaywrightTestResult,
   type CollectedData,
-  type PlaywrightEvent,
+  type ResetTestEnvRequest,
+  type ClearCollectedDataRequest,
+  type PlaywrightOperation,
+  type PlaywrightResult,
   type WsOpenRequest,
   type WsMessageRequest,
   type WsCloseRequest,
@@ -43,6 +44,7 @@ import {
   type ConsoleGetCountersRequest,
   type ConsoleGetGroupDepthRequest,
 } from "@ricsam/isolate-protocol";
+import { createPlaywrightHandler, type PlaywrightCallback } from "@ricsam/isolate-playwright";
 import type {
   ConnectOptions,
   DaemonConnection,
@@ -51,12 +53,12 @@ import type {
   RemoteFetchHandle,
   RemoteTimersHandle,
   RemoteConsoleHandle,
+  RemoteTestEnvironmentHandle,
+  RemotePlaywrightHandle,
   DispatchOptions,
   ConsoleCallbacks,
   FetchCallback,
   FileSystemCallbacks,
-  PlaywrightSetupOptions,
-  PlaywrightEventHandler,
   ModuleLoaderCallback,
   CustomFunctions,
   CustomFunctionDefinition,
@@ -80,8 +82,6 @@ interface ConnectionState {
   nextRequestId: number;
   nextCallbackId: number;
   connected: boolean;
-  /** Playwright event handlers per isolate */
-  playwrightEventHandlers: Map<string, PlaywrightEventHandler>;
 }
 
 /**
@@ -97,7 +97,6 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
     nextRequestId: 1,
     nextCallbackId: 1,
     connected: true,
-    playwrightEventHandlers: new Map(),
   };
 
   const parser = createFrameParser();
@@ -222,25 +221,6 @@ function handleMessage(message: Message, state: ConnectionState): void {
       // Heartbeat response, ignore
       break;
 
-    case MessageType.PLAYWRIGHT_EVENT: {
-      const event = message as PlaywrightEvent;
-      const handler = state.playwrightEventHandlers.get(event.isolateId);
-      if (handler) {
-        switch (event.eventType) {
-          case "consoleLog":
-            handler.onConsoleLog?.(event.payload as { level: string; args: unknown[] });
-            break;
-          case "networkRequest":
-            handler.onNetworkRequest?.(event.payload as { url: string; method: string; headers: Record<string, string>; timestamp: number });
-            break;
-          case "networkResponse":
-            handler.onNetworkResponse?.(event.payload as { url: string; status: number; headers: Record<string, string>; timestamp: number });
-            break;
-        }
-      }
-      break;
-    }
-
     default:
       console.warn(`Unexpected message type: ${message.type}`);
   }
@@ -354,6 +334,41 @@ async function createRuntime(
     callbacks.custom = registerCustomFunctions(state, options.customFunctions);
   }
 
+  // Playwright callback registration - client owns the browser
+  let playwrightHandler: PlaywrightCallback | undefined;
+  if (options.playwright) {
+    playwrightHandler = createPlaywrightHandler(options.playwright.page, {
+      timeout: options.playwright.timeout,
+      baseUrl: options.playwright.baseUrl,
+    });
+
+    const handlerCallbackId = state.nextCallbackId++;
+    state.callbacks.set(handlerCallbackId, async (opJson: unknown) => {
+      const op = JSON.parse(opJson as string) as PlaywrightOperation;
+      const result = await playwrightHandler!(op);
+      return JSON.stringify(result);
+    });
+
+    callbacks.playwright = {
+      handlerCallbackId,
+      onConsoleLogCallbackId: options.playwright.onConsoleLog
+        ? registerEventCallback(state, (entry: unknown) => {
+            options.playwright!.onConsoleLog!(entry as { level: string; args: unknown[] });
+          })
+        : undefined,
+      onNetworkRequestCallbackId: options.playwright.onNetworkRequest
+        ? registerEventCallback(state, (info: unknown) => {
+            options.playwright!.onNetworkRequest!(info as { url: string; method: string; headers: Record<string, string>; timestamp: number });
+          })
+        : undefined,
+      onNetworkResponseCallbackId: options.playwright.onNetworkResponse
+        ? registerEventCallback(state, (info: unknown) => {
+            options.playwright!.onNetworkResponse!(info as { url: string; status: number; headers: Record<string, string>; timestamp: number });
+          })
+        : undefined,
+    };
+  }
+
   const requestId = state.nextRequestId++;
   const request: CreateRuntimeRequest = {
     type: MessageType.CREATE_RUNTIME,
@@ -362,6 +377,7 @@ async function createRuntime(
       memoryLimit: options.memoryLimit,
       cwd: options.cwd,
       callbacks,
+      testEnvironment: options.testEnvironment,
     },
   };
 
@@ -536,6 +552,96 @@ async function createRuntime(
     },
   };
 
+  // Track whether testEnvironment and playwright were enabled
+  const testEnvironmentEnabled = !!options.testEnvironment;
+  const playwrightEnabled = !!options.playwright;
+
+  // Create test environment handle
+  const testEnvironmentHandle: RemoteTestEnvironmentHandle = {
+    async runTests(timeout?: number): Promise<RunTestsResult> {
+      if (!testEnvironmentEnabled) {
+        throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
+      }
+      const reqId = state.nextRequestId++;
+      const req: RunTestsRequest = {
+        type: MessageType.RUN_TESTS,
+        requestId: reqId,
+        isolateId,
+        timeout,
+      };
+      return sendRequest<RunTestsResult>(state, req, timeout ?? DEFAULT_TIMEOUT);
+    },
+
+    async reset(): Promise<void> {
+      if (!testEnvironmentEnabled) {
+        throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
+      }
+      const reqId = state.nextRequestId++;
+      const req: ResetTestEnvRequest = {
+        type: MessageType.RESET_TEST_ENV,
+        requestId: reqId,
+        isolateId,
+      };
+      await sendRequest(state, req);
+    },
+  };
+
+  // Create playwright handle
+  const playwrightHandle: RemotePlaywrightHandle = {
+    async runTests(timeout?: number): Promise<PlaywrightTestResult> {
+      if (!playwrightEnabled) {
+        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
+      }
+      const reqId = state.nextRequestId++;
+      const req: RunPlaywrightTestsRequest = {
+        type: MessageType.RUN_PLAYWRIGHT_TESTS,
+        requestId: reqId,
+        isolateId,
+        timeout,
+      };
+      return sendRequest<PlaywrightTestResult>(state, req, timeout ?? DEFAULT_TIMEOUT);
+    },
+
+    async reset(): Promise<void> {
+      if (!playwrightEnabled) {
+        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
+      }
+      const reqId = state.nextRequestId++;
+      const req: ResetPlaywrightTestsRequest = {
+        type: MessageType.RESET_PLAYWRIGHT_TESTS,
+        requestId: reqId,
+        isolateId,
+      };
+      await sendRequest(state, req);
+    },
+
+    async getCollectedData(): Promise<CollectedData> {
+      if (!playwrightEnabled) {
+        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
+      }
+      const reqId = state.nextRequestId++;
+      const req: GetCollectedDataRequest = {
+        type: MessageType.GET_COLLECTED_DATA,
+        requestId: reqId,
+        isolateId,
+      };
+      return sendRequest<CollectedData>(state, req);
+    },
+
+    async clearCollectedData(): Promise<void> {
+      if (!playwrightEnabled) {
+        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
+      }
+      const reqId = state.nextRequestId++;
+      const req: ClearCollectedDataRequest = {
+        type: MessageType.CLEAR_COLLECTED_DATA,
+        requestId: reqId,
+        isolateId,
+      };
+      await sendRequest(state, req);
+    },
+  };
+
   return {
     id: isolateId,
     isolateId,
@@ -544,6 +650,8 @@ async function createRuntime(
     fetch: fetchHandle,
     timers: timersHandle,
     console: consoleHandle,
+    testEnvironment: testEnvironmentHandle,
+    playwright: playwrightHandle,
 
     eval: async (
       code: string,
@@ -567,87 +675,7 @@ async function createRuntime(
       // Module evaluation returns void - don't return the value
     },
 
-    setupTestEnvironment: async () => {
-      const reqId = state.nextRequestId++;
-      const req: SetupTestEnvRequest = {
-        type: MessageType.SETUP_TEST_ENV,
-        requestId: reqId,
-        isolateId,
-      };
-      await sendRequest(state, req);
-    },
-
-    runTests: async (timeout?: number) => {
-      const reqId = state.nextRequestId++;
-      const req: RunTestsRequest = {
-        type: MessageType.RUN_TESTS,
-        requestId: reqId,
-        isolateId,
-        timeout,
-      };
-      return sendRequest<RunTestsResult>(state, req, timeout ?? DEFAULT_TIMEOUT);
-    },
-
-    setupPlaywright: async (playwrightOptions?: PlaywrightSetupOptions) => {
-      const reqId = state.nextRequestId++;
-      const req: SetupPlaywrightRequest = {
-        type: MessageType.SETUP_PLAYWRIGHT,
-        requestId: reqId,
-        isolateId,
-        options: {
-          browserType: playwrightOptions?.browserType,
-          headless: playwrightOptions?.headless,
-          baseURL: playwrightOptions?.baseURL,
-        },
-      };
-
-      // Register event handlers if provided
-      if (playwrightOptions?.onConsoleLog || playwrightOptions?.onNetworkRequest || playwrightOptions?.onNetworkResponse) {
-        state.playwrightEventHandlers.set(isolateId, {
-          onConsoleLog: playwrightOptions.onConsoleLog,
-          onNetworkRequest: playwrightOptions.onNetworkRequest,
-          onNetworkResponse: playwrightOptions.onNetworkResponse,
-        });
-      }
-
-      await sendRequest(state, req);
-    },
-
-    runPlaywrightTests: async (timeout?: number) => {
-      const reqId = state.nextRequestId++;
-      const req: RunPlaywrightTestsRequest = {
-        type: MessageType.RUN_PLAYWRIGHT_TESTS,
-        requestId: reqId,
-        isolateId,
-        timeout,
-      };
-      return sendRequest<PlaywrightTestResult>(state, req, timeout ?? DEFAULT_TIMEOUT);
-    },
-
-    resetPlaywrightTests: async () => {
-      const reqId = state.nextRequestId++;
-      const req: ResetPlaywrightTestsRequest = {
-        type: MessageType.RESET_PLAYWRIGHT_TESTS,
-        requestId: reqId,
-        isolateId,
-      };
-      await sendRequest(state, req);
-    },
-
-    getCollectedData: async () => {
-      const reqId = state.nextRequestId++;
-      const req: GetCollectedDataRequest = {
-        type: MessageType.GET_COLLECTED_DATA,
-        requestId: reqId,
-        isolateId,
-      };
-      return sendRequest<CollectedData>(state, req);
-    },
-
     dispose: async () => {
-      // Clean up event handlers
-      state.playwrightEventHandlers.delete(isolateId);
-
       const reqId = state.nextRequestId++;
       const req: DisposeRuntimeRequest = {
         type: MessageType.DISPOSE_RUNTIME,
@@ -657,6 +685,21 @@ async function createRuntime(
       await sendRequest(state, req);
     },
   };
+}
+
+/**
+ * Register a simple event callback (fire-and-forget).
+ */
+function registerEventCallback(
+  state: ConnectionState,
+  handler: (data: unknown) => void
+): number {
+  const callbackId = state.nextCallbackId++;
+  state.callbacks.set(callbackId, (data: unknown) => {
+    handler(data);
+    return undefined;
+  });
+  return callbackId;
 }
 
 /**

@@ -36,14 +36,14 @@ export const MessageType = {
   CONSOLE_GET_GROUP_DEPTH: 0x1b,
 
   // Client → Daemon: Test environment
-  SETUP_TEST_ENV: 0x20,
   RUN_TESTS: 0x21,
+  RESET_TEST_ENV: 0x22,
 
   // Client → Daemon: Playwright
-  SETUP_PLAYWRIGHT: 0x30,
   RUN_PLAYWRIGHT_TESTS: 0x31,
   RESET_PLAYWRIGHT_TESTS: 0x32,
   GET_COLLECTED_DATA: 0x33,
+  CLEAR_COLLECTED_DATA: 0x34,
 
   // Daemon → Client: Responses
   RESPONSE_OK: 0x80,
@@ -148,12 +148,62 @@ export interface CustomFunctionRegistrations {
   [name: string]: CallbackRegistration;
 }
 
+// ============================================================================
+// Playwright Callback Types
+// ============================================================================
+
+/**
+ * Playwright operation sent from daemon to client via callback.
+ * The client executes this operation on the real Page object.
+ */
+export interface PlaywrightOperation {
+  type:
+    | "goto"
+    | "reload"
+    | "url"
+    | "title"
+    | "content"
+    | "waitForSelector"
+    | "waitForTimeout"
+    | "waitForLoadState"
+    | "evaluate"
+    | "locatorAction"
+    | "expectLocator";
+  args: unknown[];
+}
+
+/**
+ * Result of a playwright operation.
+ */
+export type PlaywrightResult =
+  | { ok: true; value?: unknown }
+  | { ok: false; error: { name: string; message: string } };
+
+/**
+ * Callback registrations for playwright operations.
+ */
+export interface PlaywrightCallbackRegistration {
+  /** Callback ID for page operations */
+  handlerCallbackId: number;
+  /** Optional callback for console log events */
+  onConsoleLogCallbackId?: number;
+  /** Optional callback for network request events */
+  onNetworkRequestCallbackId?: number;
+  /** Optional callback for network response events */
+  onNetworkResponseCallbackId?: number;
+}
+
+// ============================================================================
+// Runtime Callback Registrations
+// ============================================================================
+
 export interface RuntimeCallbackRegistrations {
   console?: ConsoleCallbackRegistrations;
   fetch?: CallbackRegistration;
   fs?: FsCallbackRegistrations;
   moduleLoader?: CallbackRegistration;
   custom?: CustomFunctionRegistrations;
+  playwright?: PlaywrightCallbackRegistration;
 }
 
 // ============================================================================
@@ -167,6 +217,8 @@ export interface CreateRuntimeRequest extends BaseMessage {
     callbacks?: RuntimeCallbackRegistrations;
     /** Current working directory for path.resolve(). Defaults to "/" */
     cwd?: string;
+    /** Enable test environment (describe, it, expect, etc.) */
+    testEnvironment?: boolean;
   };
 }
 
@@ -277,28 +329,18 @@ export interface ConsoleGetGroupDepthRequest extends BaseMessage {
 }
 
 // Test environment messages
-export interface SetupTestEnvRequest extends BaseMessage {
-  type: typeof MessageType.SETUP_TEST_ENV;
-  isolateId: string;
-}
-
 export interface RunTestsRequest extends BaseMessage {
   type: typeof MessageType.RUN_TESTS;
   isolateId: string;
   timeout?: number;
 }
 
-// Playwright messages
-export interface SetupPlaywrightRequest extends BaseMessage {
-  type: typeof MessageType.SETUP_PLAYWRIGHT;
+export interface ResetTestEnvRequest extends BaseMessage {
+  type: typeof MessageType.RESET_TEST_ENV;
   isolateId: string;
-  options: {
-    browserType?: "chromium" | "firefox" | "webkit";
-    headless?: boolean;
-    baseURL?: string;
-  };
 }
 
+// Playwright messages
 export interface RunPlaywrightTestsRequest extends BaseMessage {
   type: typeof MessageType.RUN_PLAYWRIGHT_TESTS;
   isolateId: string;
@@ -312,6 +354,11 @@ export interface ResetPlaywrightTestsRequest extends BaseMessage {
 
 export interface GetCollectedDataRequest extends BaseMessage {
   type: typeof MessageType.GET_COLLECTED_DATA;
+  isolateId: string;
+}
+
+export interface ClearCollectedDataRequest extends BaseMessage {
+  type: typeof MessageType.CLEAR_COLLECTED_DATA;
   isolateId: string;
 }
 
@@ -462,12 +509,12 @@ export type ClientMessage =
   | ConsoleGetTimersRequest
   | ConsoleGetCountersRequest
   | ConsoleGetGroupDepthRequest
-  | SetupTestEnvRequest
   | RunTestsRequest
-  | SetupPlaywrightRequest
+  | ResetTestEnvRequest
   | RunPlaywrightTestsRequest
   | ResetPlaywrightTestsRequest
   | GetCollectedDataRequest
+  | ClearCollectedDataRequest
   | CallbackResponseMsg
   | StreamPush
   | StreamPull

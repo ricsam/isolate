@@ -8,12 +8,54 @@ Playwright bridge for running browser tests in a V8 sandbox. Execute untrusted P
 npm add @ricsam/isolate-playwright playwright
 ```
 
-## Usage
+## Usage with isolate-runtime (Recommended)
+
+The easiest way to use this package is through `@ricsam/isolate-runtime`:
+
+```typescript
+import { createRuntime } from "@ricsam/isolate-runtime";
+import { chromium } from "playwright";
+
+// Launch browser (you own the browser)
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage();
+
+const runtime = await createRuntime({
+  playwright: {
+    page,
+    baseUrl: "https://example.com",
+    onConsoleLog: (entry) => console.log("[browser]", entry.level, ...entry.args),
+    onNetworkRequest: (info) => console.log("Request:", info.url),
+  },
+});
+
+await runtime.eval(`
+  test("homepage loads correctly", async () => {
+    await page.goto("/");
+    const heading = page.getByRole("heading", { name: "Example Domain" });
+    await expect(heading).toBeVisible();
+  });
+`);
+
+const results = await runtime.playwright.runTests();
+console.log(`${results.passed}/${results.total} tests passed`);
+
+// Get collected network data
+const data = runtime.playwright.getCollectedData();
+console.log("Console logs:", data.consoleLogs);
+
+await runtime.dispose();
+await browser.close();
+```
+
+## Low-level Usage (Direct ivm)
+
+For advanced use cases with direct isolated-vm access:
 
 ```typescript
 import ivm from "isolated-vm";
 import { chromium } from "playwright";
-import { setupPlaywright, runPlaywrightTests } from "@ricsam/isolate-playwright";
+import { setupPlaywright, runPlaywrightTests, createPlaywrightHandler } from "@ricsam/isolate-playwright";
 
 // Create browser and page
 const browser = await chromium.launch();
@@ -25,12 +67,12 @@ const context = await isolate.createContext();
 
 // Setup playwright bridge
 const handle = await setupPlaywright(context, {
-  page,
+  page,  // Direct page object
   timeout: 30000,
   baseUrl: "https://example.com",
   onNetworkRequest: (info) => console.log("Request:", info.url),
   onNetworkResponse: (info) => console.log("Response:", info.status),
-  onConsoleLog: (level, ...args) => console.log(`[${level}]`, ...args),
+  onConsoleLog: (entry) => console.log(`[${entry.level}]`, ...entry.args),
 });
 
 // Load and run untrusted test code
@@ -39,13 +81,6 @@ await context.eval(`
     await page.goto("/");
     const heading = page.getByRole("heading", { name: "Example Domain" });
     await expect(heading).toBeVisible();
-  });
-
-  test("can interact with elements", async () => {
-    const link = page.locator("a");
-    await expect(link).toBeVisible();
-    const text = await link.textContent();
-    expect(text).toContain("More information");
   });
 `);
 
@@ -58,6 +93,29 @@ handle.dispose();
 context.release();
 isolate.dispose();
 await browser.close();
+```
+
+## Handler-based API (for Remote Execution)
+
+For daemon/client architectures where the browser runs on the client:
+
+```typescript
+import { createPlaywrightHandler, setupPlaywright, type PlaywrightCallback } from "@ricsam/isolate-playwright";
+import { chromium } from "playwright";
+
+// On the client: create handler from page
+const browser = await chromium.launch();
+const page = await browser.newPage();
+const handler: PlaywrightCallback = createPlaywrightHandler(page, {
+  timeout: 30000,
+  baseUrl: "https://example.com",
+});
+
+// On the daemon: setup playwright with handler (instead of page)
+const handle = await setupPlaywright(context, {
+  handler,  // Handler callback instead of direct page
+  onConsoleLog: (entry) => sendToClient("consoleLog", entry),
+});
 ```
 
 ## Injected Globals (in isolate)

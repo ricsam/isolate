@@ -156,8 +156,12 @@ const runtime = await client.createRuntime({
 
 ## Test Environment
 
+Enable test environment to run tests inside the sandbox:
+
 ```typescript
-await runtime.setupTestEnvironment();
+const runtime = await client.createRuntime({
+  testEnvironment: true,
+});
 
 await runtime.eval(`
   describe("math", () => {
@@ -167,27 +171,48 @@ await runtime.eval(`
   });
 `);
 
-const results = await runtime.runTests();
+const results = await runtime.testEnvironment.runTests();
 console.log(`${results.passed}/${results.total} passed`);
+
+// Reset for new tests
+await runtime.testEnvironment.reset();
 ```
 
 ## Playwright Integration
 
+Run browser tests with untrusted code. **The client owns the browser** - you provide the Playwright page object:
+
 ```typescript
-await runtime.setupPlaywright({
-  browserType: "chromium",
-  headless: true,
-  onConsoleLog: (log) => console.log("[browser]", log),
+import { chromium } from "playwright";
+
+// Launch browser (client owns the browser)
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage();
+
+const runtime = await client.createRuntime({
+  playwright: {
+    page,
+    baseUrl: "https://example.com",
+    onConsoleLog: (entry) => console.log("[browser]", ...entry.args),
+  },
 });
 
 await runtime.eval(`
   test("homepage loads", async () => {
-    await page.goto("https://example.com");
+    await page.goto("/");
     await expect(page.getByText("Example Domain")).toBeVisible();
   });
 `);
 
-const results = await runtime.runPlaywrightTests();
+const results = await runtime.playwright.runTests();
+console.log(`${results.passed}/${results.total} passed`);
+
+// Get collected data
+const data = await runtime.playwright.getCollectedData();
+console.log("Network requests:", data.networkRequests);
+
+await runtime.dispose();
+await browser.close();
 ```
 
 ## Runtime Interface
@@ -202,12 +227,8 @@ interface RemoteRuntime {
   readonly fetch: RemoteFetchHandle;
   readonly timers: RemoteTimersHandle;
   readonly console: RemoteConsoleHandle;
-
-  // Test environment
-  setupTestEnvironment(): Promise<void>;
-  runTests(timeout?: number): Promise<TestResults>;
-  setupPlaywright(options?: PlaywrightOptions): Promise<void>;
-  runPlaywrightTests(): Promise<PlaywrightResults>;
+  readonly testEnvironment: RemoteTestEnvironmentHandle;
+  readonly playwright: RemotePlaywrightHandle;
 }
 
 interface RemoteFetchHandle {
@@ -227,6 +248,18 @@ interface RemoteConsoleHandle {
   getTimers(): Promise<Map<string, number>>;
   getCounters(): Promise<Map<string, number>>;
   getGroupDepth(): Promise<number>;
+}
+
+interface RemoteTestEnvironmentHandle {
+  runTests(timeout?: number): Promise<TestResults>;
+  reset(): Promise<void>;
+}
+
+interface RemotePlaywrightHandle {
+  runTests(timeout?: number): Promise<PlaywrightTestResults>;
+  reset(): Promise<void>;
+  getCollectedData(): Promise<CollectedData>;
+  clearCollectedData(): Promise<void>;
 }
 ```
 

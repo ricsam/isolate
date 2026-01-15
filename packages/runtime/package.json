@@ -26,6 +26,10 @@
     "@ricsam/isolate-encoding": "*",
     "@ricsam/isolate-fetch": "*",
     "@ricsam/isolate-fs": "*",
+    "@ricsam/isolate-path": "*",
+    "@ricsam/isolate-playwright": "workspace:*",
+    "@ricsam/isolate-protocol": "workspace:*",
+    "@ricsam/isolate-test-environment": "workspace:*",
     "@ricsam/isolate-timers": "*",
     "isolated-vm": "^6"
   },
@@ -35,6 +39,12 @@
     "typescript": "^5"
   },
   "peerDependencies": {
-    "isolated-vm": "^6"
+    "isolated-vm": "^6",
+    "playwright": ">=1.40.0"
+  },
+  "peerDependenciesMeta": {
+    "playwright": {
+      "optional": true
+    }
   }
 }

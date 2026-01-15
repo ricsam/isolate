@@ -7,6 +7,7 @@ import { createServerAdapter } from "@whatwg-node/server";
 import {
   createRuntime,
   createNodeFileSystemHandler,
+  simpleConsoleHandler,
   type WebSocketCommand,
 } from "@ricsam/isolate-runtime";
 import { richieRpcHandlerCode } from "./richie-rpc-handlers.ts";
@@ -14,7 +15,6 @@ import { bundleAllModules } from "./bundler.ts";
 import { LIBRARY_TYPES } from "./library-types.ts";
 import { WebSocketServer, WebSocket } from "ws";
 import * as esbuild from "esbuild";
-import ivm from "isolated-vm";
 
 // Start server
 const port = parseInt(process.env.PORT || "6421", 10);
@@ -51,71 +51,47 @@ console.log("Type check passed");
 */
 //#endregion
 
-// Initialize isolated-vm runtime
-console.log("Initializing isolated-vm runtime...");
-
 // Bundle modules for the isolate
 console.log("Bundling modules...");
 const bundledModules = await bundleAllModules();
 
+// Initialize isolated-vm runtime
+console.log("Initializing isolated-vm runtime...");
+
 // Create the runtime with all WHATWG APIs
 const runtime = await createRuntime({
   memoryLimit: 128, // 128MB memory limit
-  console: {
-    onLog: (level, ...args) => console.log(`[Isolate ${level}]`, ...args),
-  },
-  fetch: {
-    onFetch: async (req: Request) => fetch(req),
-  },
+  console: simpleConsoleHandler({
+    log: (...args) => console.log(`[Isolate log]`, ...args),
+    warn: (...args) => console.log(`[Isolate warn]`, ...args),
+    error: (...args) => console.log(`[Isolate error]`, ...args),
+    info: (...args) => console.log(`[Isolate info]`, ...args),
+    debug: (...args) => console.log(`[Isolate debug]`, ...args),
+  }),
+  fetch: async (req: Request) => fetch(req),
   fs: {
     getDirectory: async (path: string) => {
       // All paths map to demo-data directory (relative to cwd which is demo/)
       return createNodeFileSystemHandler(`./demo-data${path}`);
     },
   },
+  moduleLoader: async (specifier: string) => {
+    const code = bundledModules.get(specifier);
+    if (!code) {
+      throw new Error(`Module not found: ${specifier}`);
+    }
+    return code;
+  },
 });
 
-// Module cache for compiled modules
-const moduleCache = new Map<string, ivm.Module>();
-
-/**
- * Compile and cache an ES module for the isolate
- */
-async function compileModule(
-  specifier: string,
-  code: string
-): Promise<ivm.Module> {
-  const cached = moduleCache.get(specifier);
-  if (cached) return cached;
-
-  const mod = await runtime.isolate.compileModule(code, {
-    filename: specifier,
-  });
-  moduleCache.set(specifier, mod);
-  return mod;
-}
-
-/**
- * Resolve module imports
- */
-async function resolveModule(specifier: string): Promise<ivm.Module> {
-  const code = bundledModules.get(specifier);
-  if (!code) {
-    throw new Error(`Module not found: ${specifier}`);
-  }
-  return compileModule(specifier, code);
-}
-
-// Load bundled modules into isolate using compileModule
-console.log("Loading bundled modules into isolate...");
-for (const [moduleName, code] of bundledModules) {
+// Pre-load bundled modules sequentially to avoid concurrent linking issues
+console.log("Pre-loading bundled modules...");
+for (const [moduleName] of bundledModules) {
   try {
-    const mod = await compileModule(moduleName, code);
-    await mod.instantiate(runtime.context, resolveModule);
-    await mod.evaluate();
-    console.log(`Loaded module: ${moduleName}`);
+    await runtime.eval(`import "${moduleName}"`, `preload-${moduleName}.js`);
+    console.log(`Pre-loaded module: ${moduleName}`);
   } catch (error) {
-    console.error(`Failed to load module ${moduleName}:`, error);
+    console.error(`Failed to pre-load module ${moduleName}:`, error);
     throw error;
   }
 }
@@ -129,11 +105,7 @@ const transpiled = await esbuild.transform(richieRpcHandlerCode, {
 });
 
 try {
-  const handlerModule = await runtime.isolate.compileModule(transpiled.code, {
-    filename: "richie-rpc-handlers.js",
-  });
-  await handlerModule.instantiate(runtime.context, resolveModule);
-  await handlerModule.evaluate();
+  await runtime.eval(transpiled.code, "richie-rpc-handlers.js");
   console.log("richie-rpc handlers loaded successfully");
 } catch (error) {
   console.error("Failed to load richie-rpc handlers:", error);
@@ -310,29 +282,18 @@ wss.on("connection", async (ws, req) => {
   }
 });
 
-// Timer tick interval for isolate timers
-const tickInterval = setInterval(async () => {
-  try {
-    await runtime.tick(100);
-  } catch (error) {
-    // Ignore tick errors
-  }
-}, 100);
-
 // Graceful shutdown
-process.on("SIGINT", () => {
+process.on("SIGINT", async () => {
   console.log("\nShutting down...");
-  clearInterval(tickInterval);
-  runtime.dispose();
+  await runtime.dispose();
   wss.close();
   server.close();
   process.exit(0);
 });
 
-process.on("SIGTERM", () => {
+process.on("SIGTERM", async () => {
   console.log("\nShutting down...");
-  clearInterval(tickInterval);
-  runtime.dispose();
+  await runtime.dispose();
   wss.close();
   server.close();
   process.exit(0);

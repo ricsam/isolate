@@ -14,7 +14,8 @@ npm add @ricsam/isolate-daemon
 - Multiple concurrent connections
 - Runtime lifecycle management (create, dispose)
 - Bidirectional callback bridging (console, fetch, fs)
-- Test environment and Playwright integration
+- Test environment support (enabled via `testEnvironment: true`)
+- Playwright integration (client owns the browser, daemon invokes callbacks)
 - Connection-scoped resource cleanup
 
 ## Starting the Daemon
