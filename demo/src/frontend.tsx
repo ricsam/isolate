@@ -17,14 +17,14 @@ import {
 } from "@tanstack/react-router";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
 
-import { HomePage } from "./pages/HomePage";
-import { APITester } from "./pages/APITester";
-import { FileUploader } from "./pages/FileUploader";
-import { WebSocketTester } from "./pages/WebSocketTester";
-import { ChatPage } from "./pages/ChatPage";
-import { AIPage } from "./pages/AIPage";
-import { LogsPage } from "./pages/LogsPage";
-import { DownloadsPage } from "./pages/DownloadsPage";
+import { HomePage } from "./pages/HomePage.ts";
+import { APITester } from "./pages/APITester.ts";
+import { FileUploader } from "./pages/FileUploader.ts";
+import { WebSocketTester } from "./pages/WebSocketTester.ts";
+import { ChatPage } from "./pages/ChatPage.ts";
+import { AIPage } from "./pages/AIPage.ts";
+import { LogsPage } from "./pages/LogsPage.ts";
+import { DownloadsPage } from "./pages/DownloadsPage.ts";
 
 import "./index.css";
 
@@ -35,28 +35,60 @@ const rootRoute = createRootRoute({
       <nav className="main-nav">
         <div className="nav-brand">QuickJS Demo</div>
         <div className="nav-links">
-          <Link to="/" className="nav-link" activeProps={{ className: "nav-link active" }}>
+          <Link
+            to="/"
+            className="nav-link"
+            activeProps={{ className: "nav-link active" }}
+          >
             Home
           </Link>
-          <Link to="/api" className="nav-link" activeProps={{ className: "nav-link active" }}>
+          <Link
+            to="/api"
+            className="nav-link"
+            activeProps={{ className: "nav-link active" }}
+          >
             API
           </Link>
-          <Link to="/files" className="nav-link" activeProps={{ className: "nav-link active" }}>
+          <Link
+            to="/files"
+            className="nav-link"
+            activeProps={{ className: "nav-link active" }}
+          >
             Files
           </Link>
-          <Link to="/websocket" className="nav-link" activeProps={{ className: "nav-link active" }}>
+          <Link
+            to="/websocket"
+            className="nav-link"
+            activeProps={{ className: "nav-link active" }}
+          >
             WebSocket
           </Link>
-          <Link to="/chat" className="nav-link" activeProps={{ className: "nav-link active" }}>
+          <Link
+            to="/chat"
+            className="nav-link"
+            activeProps={{ className: "nav-link active" }}
+          >
             Chat
           </Link>
-          <Link to="/ai" className="nav-link" activeProps={{ className: "nav-link active" }}>
+          <Link
+            to="/ai"
+            className="nav-link"
+            activeProps={{ className: "nav-link active" }}
+          >
             AI
           </Link>
-          <Link to="/logs" className="nav-link" activeProps={{ className: "nav-link active" }}>
+          <Link
+            to="/logs"
+            className="nav-link"
+            activeProps={{ className: "nav-link active" }}
+          >
             Logs
           </Link>
-          <Link to="/downloads" className="nav-link" activeProps={{ className: "nav-link active" }}>
+          <Link
+            to="/downloads"
+            className="nav-link"
+            activeProps={{ className: "nav-link active" }}
+          >
             Downloads
           </Link>
         </div>
@@ -148,11 +180,4 @@ const app = (
   </StrictMode>
 );
 
-if (import.meta.hot) {
-  // With hot module reloading, `import.meta.hot.data` is persisted.
-  const root = (import.meta.hot.data.root ??= createRoot(elem));
-  root.render(app);
-} else {
-  // The hot module reloading API is not available in production.
-  createRoot(elem).render(app);
-}
+createRoot(elem).render(app);

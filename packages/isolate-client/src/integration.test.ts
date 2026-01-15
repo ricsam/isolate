@@ -51,7 +51,7 @@ describe("isolate-client integration", () => {
     try {
       // eval returns void now (always module mode)
       await runtime.eval("console.log(1 + 2)");
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // No delay needed - eval waits for callbacks to complete
       assert.strictEqual(logs[0], 3);
     } finally {
       await runtime.dispose();
@@ -73,8 +73,7 @@ describe("isolate-client integration", () => {
 
     try {
       await runtime.eval(`console.log("hello", "world")`);
-      // Give callbacks time to arrive
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // No delay needed - eval waits for callbacks to complete
       assert.deepStrictEqual(logs, [["hello", "world"]]);
     } finally {
       await runtime.dispose();
@@ -100,8 +99,7 @@ describe("isolate-client integration", () => {
         console.warn("warn message");
         console.error("error message");
       `);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
+      // No delay needed - eval waits for callbacks to complete
       assert.strictEqual(consoleCalls.length, 3);
       assert.deepStrictEqual(consoleCalls[0], {
         method: "log",
@@ -494,12 +492,8 @@ describe("isolate-client integration", () => {
       `);
 
       await runtime.playwright.runTests();
-
-      // Wait a bit for events to arrive
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
+      // No delay needed - runTests waits for callbacks to complete
       // Console logs should have been streamed
-      // Note: This test might be flaky depending on timing
       assert.ok(Array.isArray(consoleLogs));
     } finally {
       await runtime.dispose();
@@ -944,9 +938,7 @@ describe("isolate-client integration", () => {
         const sum = await add(5, 3);
         console.log(greeting, sum);
       `);
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
+      // No delay needed - eval waits for callbacks to complete
       assert.deepStrictEqual(logs[0], ["Hello, World!", 8]);
       assert.strictEqual(calls.length, 2);
       assert.strictEqual(calls[0], "greet:World");
@@ -997,9 +989,7 @@ describe("isolate-client integration", () => {
         const sum = add(5, 3);
         console.log(greeting, sum);
       `);
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
+      // No delay needed - eval waits for callbacks to complete
       assert.deepStrictEqual(logs[0], ["Hello, World!", 8]);
       assert.strictEqual(calls.length, 2);
       assert.strictEqual(calls[0], "greet:World");
@@ -1039,10 +1029,7 @@ describe("isolate-client integration", () => {
         console.log("sum:", add(2, 3));
         console.log("product:", multiply(4, 5));
       `); // module: true is now default
-
-      // Wait for callbacks
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
+      // No delay needed - eval waits for callbacks to complete
       assert.ok(logs.some((l) => l.includes("sum: 5")));
       assert.ok(logs.some((l) => l.includes("product: 20")));
     } finally {
@@ -1084,10 +1071,7 @@ describe("isolate-client integration", () => {
         import { sumOfSquares } from "@/calc";
         console.log("result:", sumOfSquares(3, 4));
       `); // module: true is now default
-
-      // Wait for callbacks
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
+      // No delay needed - eval waits for callbacks to complete
       assert.ok(logs.some((l) => l.includes("result: 25")));
     } finally {
       await runtime.dispose();
@@ -1121,10 +1105,7 @@ describe("isolate-client integration", () => {
         import { value as v2 } from "@/counter";
         console.log("values:", v1, v2);
       `); // module: true is now default
-
-      // Wait for callbacks
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
+      // No delay needed - eval waits for callbacks to complete
       // Module should be cached, so both imports get the same value
       assert.strictEqual(loadCount, 1);
       assert.ok(logs.some((l) => l.includes("values: 1 1")));
@@ -1245,10 +1226,7 @@ describe("isolate-client integration", () => {
         logMessage("Started");
         console.log("Direct log");
       `); // module: true is now default
-
-      // Wait for callbacks
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
+      // No delay needed - eval waits for callbacks to complete
       assert.ok(
         logs.some((l) => l.includes("[MODULE]") && l.includes("Started"))
       );

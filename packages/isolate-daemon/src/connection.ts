@@ -499,32 +499,35 @@ async function handleCreateRuntime(
 
       instance.playwrightHandle = await setupPlaywright(runtime.context, {
         handler,
-        // Event callbacks invoke client directly
+        // Event callbacks invoke client directly - track them for eval completion
         onConsoleLog: playwrightCallbacks.onConsoleLogCallbackId
           ? (entry: ConsoleLogEntry) => {
-              invokeClientCallback(
+              const promise = invokeClientCallback(
                 connection,
                 playwrightCallbacks.onConsoleLogCallbackId!,
                 [entry]
               ).catch(() => {});
+              pendingCallbacks.push(promise);
             }
           : undefined,
         onNetworkRequest: playwrightCallbacks.onNetworkRequestCallbackId
           ? (info: NetworkRequestInfo) => {
-              invokeClientCallback(
+              const promise = invokeClientCallback(
                 connection,
                 playwrightCallbacks.onNetworkRequestCallbackId!,
                 [info]
               ).catch(() => {});
+              pendingCallbacks.push(promise);
             }
           : undefined,
         onNetworkResponse: playwrightCallbacks.onNetworkResponseCallbackId
           ? (info: NetworkResponseInfo) => {
-              invokeClientCallback(
+              const promise = invokeClientCallback(
                 connection,
                 playwrightCallbacks.onNetworkResponseCallbackId!,
                 [info]
               ).catch(() => {});
+              pendingCallbacks.push(promise);
             }
           : undefined,
       });
@@ -1572,6 +1575,10 @@ async function handleRunPlaywrightTests(
       runPlaywrightTests(instance.runtime.context),
       timeoutPromise,
     ]);
+
+    // Wait for all pending callbacks (e.g., onConsoleLog) to complete
+    await Promise.all(instance.pendingCallbacks);
+    instance.pendingCallbacks.length = 0;
 
     sendOk(connection.socket, message.requestId, results);
   } catch (err) {

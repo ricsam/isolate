@@ -105,26 +105,51 @@ function getLocator(
   page: Page,
   selectorType: string,
   selectorValue: string,
-  roleOptionsJson: string | null
+  optionsJson: string | null
 ): PlaywrightLocator {
+  // Parse options and extract nth if present
+  const options = optionsJson ? JSON.parse(optionsJson) : undefined;
+  const nthIndex = options?.nth;
+
+  // For role selectors, pass options (excluding nth) to getByRole
+  const roleOptions = options ? { ...options } : undefined;
+  if (roleOptions) {
+    delete roleOptions.nth;
+  }
+
+  let locator: PlaywrightLocator;
   switch (selectorType) {
     case "css":
-      return page.locator(selectorValue);
-    case "role": {
-      const roleOptions = roleOptionsJson ? JSON.parse(roleOptionsJson) : undefined;
-      return page.getByRole(selectorValue as Parameters<Page["getByRole"]>[0], roleOptions);
-    }
+      locator = page.locator(selectorValue);
+      break;
+    case "role":
+      locator = page.getByRole(
+        selectorValue as Parameters<Page["getByRole"]>[0],
+        roleOptions && Object.keys(roleOptions).length > 0 ? roleOptions : undefined
+      );
+      break;
     case "text":
-      return page.getByText(selectorValue);
+      locator = page.getByText(selectorValue);
+      break;
     case "label":
-      return page.getByLabel(selectorValue);
+      locator = page.getByLabel(selectorValue);
+      break;
     case "placeholder":
-      return page.getByPlaceholder(selectorValue);
+      locator = page.getByPlaceholder(selectorValue);
+      break;
     case "testId":
-      return page.getByTestId(selectorValue);
+      locator = page.getByTestId(selectorValue);
+      break;
     default:
-      return page.locator(selectorValue);
+      locator = page.locator(selectorValue);
   }
+
+  // Apply nth if specified
+  if (nthIndex !== undefined) {
+    locator = locator.nth(nthIndex);
+  }
+
+  return locator;
 }
 
 // ============================================================================
@@ -326,17 +351,68 @@ export function createPlaywrightHandler(
           return { ok: true, value: result };
         }
         case "expectLocator": {
-          const [selectorType, selectorValue, roleOptions, matcher, expected, negated] = op.args as [
+          const [selectorType, selectorValue, roleOptions, matcher, expected, negated, customTimeout] = op.args as [
             string,
             string,
             string | null,
             string,
             unknown,
-            boolean
+            boolean,
+            number?
           ];
           const locator = getLocator(page, selectorType, selectorValue, roleOptions);
-          await executeExpectAssertion(locator, matcher, expected, negated ?? false, timeout);
+          const effectiveTimeout = customTimeout ?? timeout;
+          await executeExpectAssertion(locator, matcher, expected, negated ?? false, effectiveTimeout);
           return { ok: true };
+        }
+        case "request": {
+          const [url, method, data, headers] = op.args as [
+            string,
+            string,
+            unknown,
+            Record<string, string>?
+          ];
+          const targetUrl = baseUrl && !url.startsWith("http") ? `${baseUrl}${url}` : url;
+          const requestOptions: {
+            method?: string;
+            data?: unknown;
+            headers?: Record<string, string>;
+            timeout?: number;
+          } = {
+            timeout,
+          };
+          if (headers) {
+            requestOptions.headers = headers;
+          }
+          if (data !== undefined && data !== null) {
+            requestOptions.data = data;
+          }
+
+          const response = await page.request.fetch(targetUrl, {
+            method: method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS",
+            ...requestOptions,
+          });
+
+          // Get response data - try to parse as JSON, fall back to text
+          const text = await response.text();
+          let json: unknown = null;
+          try {
+            json = JSON.parse(text);
+          } catch {
+            // Not valid JSON, that's ok
+          }
+
+          return {
+            ok: true,
+            value: {
+              status: response.status(),
+              ok: response.ok(),
+              headers: response.headers(),
+              text,
+              json,
+              body: null, // ArrayBuffer not easily serializable, use text/json instead
+            },
+          };
         }
         default:
           return { ok: false, error: { name: "Error", message: `Unknown operation: ${(op as PlaywrightOperation).type}` } };
@@ -544,6 +620,33 @@ export async function setupPlaywright(
     getByLabel(label) { return new Locator("label", label, null); },
     getByPlaceholder(p) { return new Locator("placeholder", p, null); },
     getByTestId(id) { return new Locator("testId", id, null); },
+    async click(selector) { return this.locator(selector).click(); },
+    async fill(selector, value) { return this.locator(selector).fill(value); },
+    request: {
+      async fetch(url, options) {
+        const result = await __pw_invoke("request", [url, options?.method || "GET", options?.data, options?.headers]);
+        return {
+          status: () => result.status,
+          ok: () => result.ok,
+          headers: () => result.headers,
+          json: async () => result.json,
+          text: async () => result.text,
+          body: async () => result.body,
+        };
+      },
+      async get(url, options) {
+        return this.fetch(url, { ...options, method: "GET" });
+      },
+      async post(url, options) {
+        return this.fetch(url, { ...options, method: "POST" });
+      },
+      async put(url, options) {
+        return this.fetch(url, { ...options, method: "PUT" });
+      },
+      async delete(url, options) {
+        return this.fetch(url, { ...options, method: "DELETE" });
+      },
+    },
   };
 })();
 `);
@@ -612,6 +715,10 @@ export async function setupPlaywright(
     async count() {
       return __pw_invoke("locatorAction", [...this._getInfo(), "count", null]);
     }
+    nth(index) {
+      const existingOpts = this.#options ? JSON.parse(this.#options) : {};
+      return new Locator(this.#type, this.#value, JSON.stringify({ ...existingOpts, nth: index }));
+    }
   }
   globalThis.Locator = Locator;
 })();
@@ -624,36 +731,36 @@ export async function setupPlaywright(
     if (actual instanceof Locator) {
       const info = actual._getInfo();
       return {
-        async toBeVisible() {
-          return __pw_invoke("expectLocator", [...info, "toBeVisible", null, false]);
+        async toBeVisible(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeVisible", null, false, options?.timeout]);
         },
-        async toContainText(expected) {
-          return __pw_invoke("expectLocator", [...info, "toContainText", expected, false]);
+        async toContainText(expected, options) {
+          return __pw_invoke("expectLocator", [...info, "toContainText", expected, false, options?.timeout]);
         },
-        async toHaveValue(expected) {
-          return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, false]);
+        async toHaveValue(expected, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, false, options?.timeout]);
         },
-        async toBeEnabled() {
-          return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, false]);
+        async toBeEnabled(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, false, options?.timeout]);
         },
-        async toBeChecked() {
-          return __pw_invoke("expectLocator", [...info, "toBeChecked", null, false]);
+        async toBeChecked(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeChecked", null, false, options?.timeout]);
         },
         not: {
-          async toBeVisible() {
-            return __pw_invoke("expectLocator", [...info, "toBeVisible", null, true]);
+          async toBeVisible(options) {
+            return __pw_invoke("expectLocator", [...info, "toBeVisible", null, true, options?.timeout]);
           },
-          async toContainText(expected) {
-            return __pw_invoke("expectLocator", [...info, "toContainText", expected, true]);
+          async toContainText(expected, options) {
+            return __pw_invoke("expectLocator", [...info, "toContainText", expected, true, options?.timeout]);
           },
-          async toHaveValue(expected) {
-            return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, true]);
+          async toHaveValue(expected, options) {
+            return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, true, options?.timeout]);
           },
-          async toBeEnabled() {
-            return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, true]);
+          async toBeEnabled(options) {
+            return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, true, options?.timeout]);
           },
-          async toBeChecked() {
-            return __pw_invoke("expectLocator", [...info, "toBeChecked", null, true]);
+          async toBeChecked(options) {
+            return __pw_invoke("expectLocator", [...info, "toBeChecked", null, true, options?.timeout]);
           },
         },
       };
@@ -682,6 +789,32 @@ export async function setupPlaywright(
           throw new Error(\`Expected array to contain \${JSON.stringify(expected)}\`);
         }
       },
+      toBeDefined() {
+        if (actual === undefined) throw new Error(\`Expected value to be defined, but got undefined\`);
+      },
+      toBeGreaterThan(expected) {
+        if (typeof actual !== 'number' || actual <= expected) {
+          throw new Error(\`Expected \${actual} to be greater than \${expected}\`);
+        }
+      },
+      toBeGreaterThanOrEqual(expected) {
+        if (typeof actual !== 'number' || actual < expected) {
+          throw new Error(\`Expected \${actual} to be greater than or equal to \${expected}\`);
+        }
+      },
+      toHaveProperty(path, value) {
+        const parts = typeof path === 'string' ? path.split('.') : [path];
+        let current = actual;
+        for (const part of parts) {
+          if (current == null || !Object.prototype.hasOwnProperty.call(current, part)) {
+            throw new Error(\`Expected object to have property "\${path}"\`);
+          }
+          current = current[part];
+        }
+        if (arguments.length === 2 && current !== value) {
+          throw new Error(\`Expected property "\${path}" to be \${JSON.stringify(value)}, got \${JSON.stringify(current)}\`);
+        }
+      },
       not: {
         toBe(expected) {
           if (actual === expected) throw new Error(\`Expected \${JSON.stringify(actual)} to not be \${JSON.stringify(expected)}\`);
@@ -703,6 +836,34 @@ export async function setupPlaywright(
           }
           if (Array.isArray(actual) && actual.includes(expected)) {
             throw new Error(\`Expected array to not contain \${JSON.stringify(expected)}\`);
+          }
+        },
+        toBeDefined() {
+          if (actual !== undefined) throw new Error(\`Expected value to be undefined, but got \${JSON.stringify(actual)}\`);
+        },
+        toBeGreaterThan(expected) {
+          if (typeof actual === 'number' && actual > expected) {
+            throw new Error(\`Expected \${actual} to not be greater than \${expected}\`);
+          }
+        },
+        toBeGreaterThanOrEqual(expected) {
+          if (typeof actual === 'number' && actual >= expected) {
+            throw new Error(\`Expected \${actual} to not be greater than or equal to \${expected}\`);
+          }
+        },
+        toHaveProperty(path, value) {
+          const parts = typeof path === 'string' ? path.split('.') : [path];
+          let current = actual;
+          let hasProperty = true;
+          for (const part of parts) {
+            if (current == null || !Object.prototype.hasOwnProperty.call(current, part)) {
+              hasProperty = false;
+              break;
+            }
+            current = current[part];
+          }
+          if (hasProperty && (arguments.length === 1 || current === value)) {
+            throw new Error(\`Expected object to not have property "\${path}"\`);
           }
         },
       },

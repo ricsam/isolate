@@ -3,9 +3,9 @@ import * as resolveModule from "@rollup/plugin-node-resolve";
 import * as commonjsModule from "@rollup/plugin-commonjs";
 import * as replaceModule from "@rollup/plugin-replace";
 
-const resolve = resolveModule.default;
-const commonjs = commonjsModule.default;
-const replace = replaceModule.default;
+const resolve = resolveModule.default as unknown as (...args: any[]) => any;
+const commonjs = commonjsModule.default as unknown as (...args: any[]) => any;
+const replace = replaceModule.default as unknown as (...args: any[]) => any;
 
 // Known modules that should be externalized (resolved by module loader)
 const KNOWN_MODULES = ["zod", "@richie-rpc/core", "@richie-rpc/server"];

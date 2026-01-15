@@ -65,7 +65,7 @@ export interface IsolateInstance {
   /** Cache of compiled ES modules */
   moduleCache?: Map<string, ivm.Module>;
   /** Pending callback promises for current eval */
-  pendingCallbacks: Promise<void>[];
+  pendingCallbacks: Promise<unknown>[];
 }
 
 /**

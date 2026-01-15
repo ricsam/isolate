@@ -168,7 +168,8 @@ export interface PlaywrightOperation {
     | "waitForLoadState"
     | "evaluate"
     | "locatorAction"
-    | "expectLocator";
+    | "expectLocator"
+    | "request";
   args: unknown[];
 }
 
