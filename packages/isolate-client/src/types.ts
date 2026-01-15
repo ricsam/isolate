@@ -82,12 +82,6 @@ export interface PlaywrightOptions {
   console?: boolean;
   /** Unified event callback for all playwright events */
   onEvent?: (event: PlaywrightEvent) => void;
-  /** @deprecated Use onEvent instead. Browser console log event handler (from the page, not sandbox) */
-  onBrowserConsoleLog?: (entry: { level: string; args: unknown[]; timestamp: number }) => void;
-  /** @deprecated Use onEvent instead. Network request event handler */
-  onNetworkRequest?: (info: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
-  /** @deprecated Use onEvent instead. Network response event handler */
-  onNetworkResponse?: (info: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
 }
 
 /**

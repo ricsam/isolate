@@ -349,17 +349,13 @@ async function createRuntime(
     // Determine if we need event callbacks
     const hasOnEvent = !!options.playwright.onEvent;
     const hasConsoleHandler = options.playwright.console && options.console?.onEntry;
-    const hasLegacyCallbacks = options.playwright.onBrowserConsoleLog ||
-                               options.playwright.onNetworkRequest ||
-                               options.playwright.onNetworkResponse;
 
     // Browser console log callback
     let browserConsoleLogCallbackId: number | undefined;
-    if (hasOnEvent || hasConsoleHandler || options.playwright.onBrowserConsoleLog) {
+    if (hasOnEvent || hasConsoleHandler) {
       browserConsoleLogCallbackId = registerEventCallback(state, (entry: unknown) => {
         const browserEntry = entry as { level: string; args: unknown[]; timestamp: number };
 
-        // Unified event callback
         if (options.playwright!.onEvent) {
           options.playwright!.onEvent({
             type: "browserConsoleLog",
@@ -378,62 +374,41 @@ async function createRuntime(
             timestamp: browserEntry.timestamp,
           });
         }
-
-        // Legacy callback (deprecated)
-        if (options.playwright!.onBrowserConsoleLog) {
-          options.playwright!.onBrowserConsoleLog(browserEntry);
-        }
       });
     }
 
     // Network request callback
     let networkRequestCallbackId: number | undefined;
-    if (hasOnEvent || options.playwright.onNetworkRequest) {
+    if (hasOnEvent) {
       networkRequestCallbackId = registerEventCallback(state, (info: unknown) => {
         const reqInfo = info as { url: string; method: string; headers: Record<string, string>; postData?: string; resourceType?: string; timestamp: number };
 
-        // Unified event callback
-        if (options.playwright!.onEvent) {
-          options.playwright!.onEvent({
-            type: "networkRequest",
-            url: reqInfo.url,
-            method: reqInfo.method,
-            headers: reqInfo.headers,
-            postData: reqInfo.postData,
-            resourceType: reqInfo.resourceType,
-            timestamp: reqInfo.timestamp,
-          });
-        }
-
-        // Legacy callback (deprecated)
-        if (options.playwright!.onNetworkRequest) {
-          options.playwright!.onNetworkRequest(reqInfo);
-        }
+        options.playwright!.onEvent!({
+          type: "networkRequest",
+          url: reqInfo.url,
+          method: reqInfo.method,
+          headers: reqInfo.headers,
+          postData: reqInfo.postData,
+          resourceType: reqInfo.resourceType,
+          timestamp: reqInfo.timestamp,
+        });
       });
     }
 
     // Network response callback
     let networkResponseCallbackId: number | undefined;
-    if (hasOnEvent || options.playwright.onNetworkResponse) {
+    if (hasOnEvent) {
       networkResponseCallbackId = registerEventCallback(state, (info: unknown) => {
         const resInfo = info as { url: string; status: number; statusText?: string; headers: Record<string, string>; timestamp: number };
 
-        // Unified event callback
-        if (options.playwright!.onEvent) {
-          options.playwright!.onEvent({
-            type: "networkResponse",
-            url: resInfo.url,
-            status: resInfo.status,
-            statusText: resInfo.statusText,
-            headers: resInfo.headers,
-            timestamp: resInfo.timestamp,
-          });
-        }
-
-        // Legacy callback (deprecated)
-        if (options.playwright!.onNetworkResponse) {
-          options.playwright!.onNetworkResponse(resInfo);
-        }
+        options.playwright!.onEvent!({
+          type: "networkResponse",
+          url: resInfo.url,
+          status: resInfo.status,
+          statusText: resInfo.statusText,
+          headers: resInfo.headers,
+          timestamp: resInfo.timestamp,
+        });
       });
     }
 

@@ -58,7 +58,18 @@ describe("playwright bridge", () => {
     await setupTestEnvironment(context);
     const handle = await setupPlaywright(context, {
       page,
-      onNetworkRequest: (info) => capturedRequests.push(info),
+      onEvent: (event) => {
+        if (event.type === "networkRequest") {
+          capturedRequests.push({
+            url: event.url,
+            method: event.method,
+            headers: event.headers,
+            postData: event.postData,
+            resourceType: event.resourceType,
+            timestamp: event.timestamp,
+          });
+        }
+      },
     });
 
     await context.eval(`
@@ -89,7 +100,17 @@ describe("playwright bridge", () => {
     await setupTestEnvironment(context);
     const handle = await setupPlaywright(context, {
       page,
-      onNetworkResponse: (info) => capturedResponses.push(info),
+      onEvent: (event) => {
+        if (event.type === "networkResponse") {
+          capturedResponses.push({
+            url: event.url,
+            status: event.status,
+            statusText: event.statusText,
+            headers: event.headers,
+            timestamp: event.timestamp,
+          });
+        }
+      },
     });
 
     await context.eval(`
@@ -310,7 +331,15 @@ describe("playwright bridge", () => {
     await setupTestEnvironment(context);
     const handle = await setupPlaywright(context, {
       page,
-      onBrowserConsoleLog: (entry) => capturedLogs.push(entry),
+      onEvent: (event) => {
+        if (event.type === "browserConsoleLog") {
+          capturedLogs.push({
+            level: event.level,
+            args: event.args,
+            timestamp: event.timestamp,
+          });
+        }
+      },
     });
 
     await context.eval(`

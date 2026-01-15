@@ -93,12 +93,6 @@ export interface PlaywrightOptions {
   console?: boolean;
   /** Unified event callback for all playwright events */
   onEvent?: (event: PlaywrightEvent) => void;
-  /** @deprecated Use onEvent instead. Callback for browser console log events (from the page, not sandbox) */
-  onBrowserConsoleLog?: (entry: BrowserConsoleLogEntry) => void;
-  /** @deprecated Use onEvent instead. Callback for network request events */
-  onNetworkRequest?: (info: NetworkRequestInfo) => void;
-  /** @deprecated Use onEvent instead. Callback for network response events */
-  onNetworkResponse?: (info: NetworkResponseInfo) => void;
 }
 
 /**
@@ -478,10 +472,6 @@ export async function createRuntime(
       // Don't print directly if routing through console handler
       console: opts.playwright.console && !opts.console?.onEntry,
       onEvent: eventCallback,
-      // Legacy callbacks (deprecated)
-      onBrowserConsoleLog: opts.playwright.onBrowserConsoleLog,
-      onNetworkRequest: opts.playwright.onNetworkRequest,
-      onNetworkResponse: opts.playwright.onNetworkResponse,
     });
   }
 

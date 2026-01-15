@@ -63,12 +63,6 @@ export interface PlaywrightSetupOptions {
   console?: boolean;
   /** Unified event callback for all playwright events */
   onEvent?: (event: PlaywrightEvent) => void;
-  /** @deprecated Use onEvent instead. Callback for browser console log events (from the page, not sandbox) */
-  onBrowserConsoleLog?: (entry: BrowserConsoleLogEntry) => void;
-  /** @deprecated Use onEvent instead. Callback for network request events */
-  onNetworkRequest?: (info: NetworkRequestInfo) => void;
-  /** @deprecated Use onEvent instead. Callback for network response events */
-  onNetworkResponse?: (info: NetworkResponseInfo) => void;
 }
 
 /**
@@ -476,7 +470,6 @@ export async function setupPlaywright(
       };
       networkRequests.push(info);
 
-      // Unified event callback
       if (onEvent) {
         onEvent({
           type: "networkRequest",
@@ -487,11 +480,6 @@ export async function setupPlaywright(
           resourceType: info.resourceType,
           timestamp: info.timestamp,
         });
-      }
-
-      // Legacy callback (deprecated)
-      if ("onNetworkRequest" in options && options.onNetworkRequest) {
-        options.onNetworkRequest(info);
       }
     };
 
@@ -505,7 +493,6 @@ export async function setupPlaywright(
       };
       networkResponses.push(info);
 
-      // Unified event callback
       if (onEvent) {
         onEvent({
           type: "networkResponse",
@@ -515,11 +502,6 @@ export async function setupPlaywright(
           headers: info.headers,
           timestamp: info.timestamp,
         });
-      }
-
-      // Legacy callback (deprecated)
-      if ("onNetworkResponse" in options && options.onNetworkResponse) {
-        options.onNetworkResponse(info);
       }
     };
 
@@ -531,7 +513,6 @@ export async function setupPlaywright(
       };
       browserConsoleLogs.push(entry);
 
-      // Unified event callback
       if (onEvent) {
         onEvent({
           type: "browserConsoleLog",
@@ -539,11 +520,6 @@ export async function setupPlaywright(
           args: entry.args,
           timestamp: entry.timestamp,
         });
-      }
-
-      // Legacy callback (deprecated)
-      if ("onBrowserConsoleLog" in options && options.onBrowserConsoleLog) {
-        options.onBrowserConsoleLog(entry);
       }
 
       // Print to stdout if console option is true
