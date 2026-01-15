@@ -3,10 +3,11 @@ import type { Page, Locator as PlaywrightLocator } from "playwright";
 import type {
   PlaywrightOperation,
   PlaywrightResult,
+  PlaywrightEvent,
 } from "@ricsam/isolate-protocol";
 
 // Re-export protocol types
-export type { PlaywrightOperation, PlaywrightResult } from "@ricsam/isolate-protocol";
+export type { PlaywrightOperation, PlaywrightResult, PlaywrightEvent } from "@ricsam/isolate-protocol";
 
 // ============================================================================
 // Types and Interfaces
@@ -29,7 +30,10 @@ export interface NetworkResponseInfo {
   timestamp: number;
 }
 
-export interface ConsoleLogEntry {
+/**
+ * Browser console log entry - logs from the page context (not sandbox).
+ */
+export interface BrowserConsoleLogEntry {
   level: string;
   args: string[];
   timestamp: number;
@@ -55,11 +59,15 @@ export interface PlaywrightSetupOptions {
   timeout?: number;
   /** Base URL for relative navigation */
   baseUrl?: string;
-  /** Callback for console log events */
-  onConsoleLog?: (entry: ConsoleLogEntry) => void;
-  /** Callback for network request events */
+  /** If true, browser console logs are printed to stdout */
+  console?: boolean;
+  /** Unified event callback for all playwright events */
+  onEvent?: (event: PlaywrightEvent) => void;
+  /** @deprecated Use onEvent instead. Callback for browser console log events (from the page, not sandbox) */
+  onBrowserConsoleLog?: (entry: BrowserConsoleLogEntry) => void;
+  /** @deprecated Use onEvent instead. Callback for network request events */
   onNetworkRequest?: (info: NetworkRequestInfo) => void;
-  /** Callback for network response events */
+  /** @deprecated Use onEvent instead. Callback for network response events */
   onNetworkResponse?: (info: NetworkResponseInfo) => void;
 }
 
@@ -70,31 +78,17 @@ export interface PlaywrightOptions {
   page: Page;
   timeout?: number;
   baseUrl?: string;
-  onConsoleLog?: (level: string, ...args: unknown[]) => void;
   onNetworkRequest?: (info: NetworkRequestInfo) => void;
   onNetworkResponse?: (info: NetworkResponseInfo) => void;
 }
 
 export interface PlaywrightHandle {
   dispose(): void;
-  getConsoleLogs(): ConsoleLogEntry[];
+  /** Get browser console logs (from the page, not sandbox) */
+  getBrowserConsoleLogs(): BrowserConsoleLogEntry[];
   getNetworkRequests(): NetworkRequestInfo[];
   getNetworkResponses(): NetworkResponseInfo[];
   clearCollected(): void;
-}
-
-export interface TestResult {
-  name: string;
-  passed: boolean;
-  error?: string;
-  duration: number;
-}
-
-export interface PlaywrightExecutionResult {
-  passed: number;
-  failed: number;
-  total: number;
-  results: TestResult[];
 }
 
 // ============================================================================
@@ -453,7 +447,7 @@ export async function setupPlaywright(
   }
 
   // State for collected data (only used when page is provided directly)
-  const consoleLogs: ConsoleLogEntry[] = [];
+  const browserConsoleLogs: BrowserConsoleLogEntry[] = [];
   const networkRequests: NetworkRequestInfo[] = [];
   const networkResponses: NetworkResponseInfo[] = [];
 
@@ -468,6 +462,9 @@ export async function setupPlaywright(
   let consoleHandler: ((msg: import("playwright").ConsoleMessage) => void) | undefined;
 
   if (page) {
+    // Get onEvent callback if provided
+    const onEvent = "onEvent" in options ? options.onEvent : undefined;
+
     requestHandler = (request: import("playwright").Request) => {
       const info: NetworkRequestInfo = {
         url: request.url(),
@@ -478,6 +475,21 @@ export async function setupPlaywright(
         timestamp: Date.now(),
       };
       networkRequests.push(info);
+
+      // Unified event callback
+      if (onEvent) {
+        onEvent({
+          type: "networkRequest",
+          url: info.url,
+          method: info.method,
+          headers: info.headers,
+          postData: info.postData,
+          resourceType: info.resourceType,
+          timestamp: info.timestamp,
+        });
+      }
+
+      // Legacy callback (deprecated)
       if ("onNetworkRequest" in options && options.onNetworkRequest) {
         options.onNetworkRequest(info);
       }
@@ -492,27 +504,52 @@ export async function setupPlaywright(
         timestamp: Date.now(),
       };
       networkResponses.push(info);
+
+      // Unified event callback
+      if (onEvent) {
+        onEvent({
+          type: "networkResponse",
+          url: info.url,
+          status: info.status,
+          statusText: info.statusText,
+          headers: info.headers,
+          timestamp: info.timestamp,
+        });
+      }
+
+      // Legacy callback (deprecated)
       if ("onNetworkResponse" in options && options.onNetworkResponse) {
         options.onNetworkResponse(info);
       }
     };
 
     consoleHandler = (msg: import("playwright").ConsoleMessage) => {
-      const entry: ConsoleLogEntry = {
+      const entry: BrowserConsoleLogEntry = {
         level: msg.type(),
         args: msg.args().map((arg) => String(arg)),
         timestamp: Date.now(),
       };
-      consoleLogs.push(entry);
-      if ("onConsoleLog" in options && options.onConsoleLog) {
-        // Handle both old and new signature
-        if ("page" in options && options.page && !("handler" in options)) {
-          // Old PlaywrightOptions: onConsoleLog(level, ...args)
-          (options.onConsoleLog as (level: string, ...args: unknown[]) => void)(entry.level, ...entry.args);
-        } else {
-          // New PlaywrightSetupOptions: onConsoleLog(entry)
-          (options.onConsoleLog as (entry: ConsoleLogEntry) => void)(entry);
-        }
+      browserConsoleLogs.push(entry);
+
+      // Unified event callback
+      if (onEvent) {
+        onEvent({
+          type: "browserConsoleLog",
+          level: entry.level,
+          args: entry.args,
+          timestamp: entry.timestamp,
+        });
+      }
+
+      // Legacy callback (deprecated)
+      if ("onBrowserConsoleLog" in options && options.onBrowserConsoleLog) {
+        options.onBrowserConsoleLog(entry);
+      }
+
+      // Print to stdout if console option is true
+      if ("console" in options && options.console) {
+        const prefix = `[browser:${entry.level}]`;
+        console.log(prefix, ...entry.args);
       }
     };
 
@@ -554,32 +591,6 @@ export async function setupPlaywright(
       throw error;
     }
   };
-})();
-`);
-
-  // Test framework
-  context.evalSync(`
-(function() {
-  const tests = [];
-  globalThis.test = (name, fn) => tests.push({ name, fn });
-
-  globalThis.__runPlaywrightTests = async () => {
-    const results = [];
-    for (const t of tests) {
-      const start = Date.now();
-      try {
-        await t.fn();
-        results.push({ name: t.name, passed: true, duration: Date.now() - start });
-      } catch (err) {
-        results.push({ name: t.name, passed: false, error: err.message, duration: Date.now() - start });
-      }
-    }
-    const passed = results.filter(r => r.passed).length;
-    const failed = results.filter(r => !r.passed).length;
-    return JSON.stringify({ passed, failed, total: results.length, results });
-  };
-
-  globalThis.__resetPlaywrightTests = () => { tests.length = 0; };
 })();
 `);
 
@@ -724,151 +735,72 @@ export async function setupPlaywright(
 })();
 `);
 
-  // Expect for locators
+  // Extend expect with locator matchers (only if test-environment already defined expect)
   context.evalSync(`
 (function() {
-  globalThis.expect = (actual) => {
-    if (actual instanceof Locator) {
-      const info = actual._getInfo();
-      return {
-        async toBeVisible(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeVisible", null, false, options?.timeout]);
-        },
-        async toContainText(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toContainText", expected, false, options?.timeout]);
-        },
-        async toHaveValue(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, false, options?.timeout]);
-        },
-        async toBeEnabled(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, false, options?.timeout]);
-        },
-        async toBeChecked(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeChecked", null, false, options?.timeout]);
-        },
-        not: {
-          async toBeVisible(options) {
-            return __pw_invoke("expectLocator", [...info, "toBeVisible", null, true, options?.timeout]);
-          },
-          async toContainText(expected, options) {
-            return __pw_invoke("expectLocator", [...info, "toContainText", expected, true, options?.timeout]);
-          },
-          async toHaveValue(expected, options) {
-            return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, true, options?.timeout]);
-          },
-          async toBeEnabled(options) {
-            return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, true, options?.timeout]);
-          },
-          async toBeChecked(options) {
-            return __pw_invoke("expectLocator", [...info, "toBeChecked", null, true, options?.timeout]);
-          },
-        },
-      };
-    }
-    // Fallback: basic matchers for primitives
-    return {
-      toBe(expected) {
-        if (actual !== expected) throw new Error(\`Expected \${JSON.stringify(actual)} to be \${JSON.stringify(expected)}\`);
+  // Helper to create locator matchers
+  function createLocatorMatchers(locator, baseMatchers) {
+    const info = locator._getInfo();
+
+    const locatorMatchers = {
+      async toBeVisible(options) {
+        return __pw_invoke("expectLocator", [...info, "toBeVisible", null, false, options?.timeout]);
       },
-      toEqual(expected) {
-        if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-          throw new Error(\`Expected \${JSON.stringify(actual)} to equal \${JSON.stringify(expected)}\`);
-        }
+      async toContainText(expected, options) {
+        return __pw_invoke("expectLocator", [...info, "toContainText", expected, false, options?.timeout]);
       },
-      toBeTruthy() {
-        if (!actual) throw new Error(\`Expected \${JSON.stringify(actual)} to be truthy\`);
+      async toHaveValue(expected, options) {
+        return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, false, options?.timeout]);
       },
-      toBeFalsy() {
-        if (actual) throw new Error(\`Expected \${JSON.stringify(actual)} to be falsy\`);
+      async toBeEnabled(options) {
+        return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, false, options?.timeout]);
       },
-      toContain(expected) {
-        if (typeof actual === 'string' && !actual.includes(expected)) {
-          throw new Error(\`Expected "\${actual}" to contain "\${expected}"\`);
-        }
-        if (Array.isArray(actual) && !actual.includes(expected)) {
-          throw new Error(\`Expected array to contain \${JSON.stringify(expected)}\`);
-        }
-      },
-      toBeDefined() {
-        if (actual === undefined) throw new Error(\`Expected value to be defined, but got undefined\`);
-      },
-      toBeGreaterThan(expected) {
-        if (typeof actual !== 'number' || actual <= expected) {
-          throw new Error(\`Expected \${actual} to be greater than \${expected}\`);
-        }
-      },
-      toBeGreaterThanOrEqual(expected) {
-        if (typeof actual !== 'number' || actual < expected) {
-          throw new Error(\`Expected \${actual} to be greater than or equal to \${expected}\`);
-        }
-      },
-      toHaveProperty(path, value) {
-        const parts = typeof path === 'string' ? path.split('.') : [path];
-        let current = actual;
-        for (const part of parts) {
-          if (current == null || !Object.prototype.hasOwnProperty.call(current, part)) {
-            throw new Error(\`Expected object to have property "\${path}"\`);
-          }
-          current = current[part];
-        }
-        if (arguments.length === 2 && current !== value) {
-          throw new Error(\`Expected property "\${path}" to be \${JSON.stringify(value)}, got \${JSON.stringify(current)}\`);
-        }
+      async toBeChecked(options) {
+        return __pw_invoke("expectLocator", [...info, "toBeChecked", null, false, options?.timeout]);
       },
       not: {
-        toBe(expected) {
-          if (actual === expected) throw new Error(\`Expected \${JSON.stringify(actual)} to not be \${JSON.stringify(expected)}\`);
+        async toBeVisible(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeVisible", null, true, options?.timeout]);
         },
-        toEqual(expected) {
-          if (JSON.stringify(actual) === JSON.stringify(expected)) {
-            throw new Error(\`Expected \${JSON.stringify(actual)} to not equal \${JSON.stringify(expected)}\`);
-          }
+        async toContainText(expected, options) {
+          return __pw_invoke("expectLocator", [...info, "toContainText", expected, true, options?.timeout]);
         },
-        toBeTruthy() {
-          if (actual) throw new Error(\`Expected \${JSON.stringify(actual)} to not be truthy\`);
+        async toHaveValue(expected, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, true, options?.timeout]);
         },
-        toBeFalsy() {
-          if (!actual) throw new Error(\`Expected \${JSON.stringify(actual)} to not be falsy\`);
+        async toBeEnabled(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, true, options?.timeout]);
         },
-        toContain(expected) {
-          if (typeof actual === 'string' && actual.includes(expected)) {
-            throw new Error(\`Expected "\${actual}" to not contain "\${expected}"\`);
-          }
-          if (Array.isArray(actual) && actual.includes(expected)) {
-            throw new Error(\`Expected array to not contain \${JSON.stringify(expected)}\`);
-          }
+        async toBeChecked(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeChecked", null, true, options?.timeout]);
         },
-        toBeDefined() {
-          if (actual !== undefined) throw new Error(\`Expected value to be undefined, but got \${JSON.stringify(actual)}\`);
-        },
-        toBeGreaterThan(expected) {
-          if (typeof actual === 'number' && actual > expected) {
-            throw new Error(\`Expected \${actual} to not be greater than \${expected}\`);
-          }
-        },
-        toBeGreaterThanOrEqual(expected) {
-          if (typeof actual === 'number' && actual >= expected) {
-            throw new Error(\`Expected \${actual} to not be greater than or equal to \${expected}\`);
-          }
-        },
-        toHaveProperty(path, value) {
-          const parts = typeof path === 'string' ? path.split('.') : [path];
-          let current = actual;
-          let hasProperty = true;
-          for (const part of parts) {
-            if (current == null || !Object.prototype.hasOwnProperty.call(current, part)) {
-              hasProperty = false;
-              break;
-            }
-            current = current[part];
-          }
-          if (hasProperty && (arguments.length === 1 || current === value)) {
-            throw new Error(\`Expected object to not have property "\${path}"\`);
-          }
-        },
-      },
+      }
     };
-  };
+
+    // Merge locator matchers with base matchers from test-environment
+    if (baseMatchers) {
+      return {
+        ...baseMatchers,
+        ...locatorMatchers,
+        not: { ...baseMatchers.not, ...locatorMatchers.not }
+      };
+    }
+    return locatorMatchers;
+  }
+
+  // Only extend expect if test-environment already defined it
+  if (typeof globalThis.expect === 'function') {
+    const originalExpect = globalThis.expect;
+    globalThis.expect = function(actual) {
+      const baseMatchers = originalExpect(actual);
+      // If actual is a Locator, add locator-specific matchers
+      if (actual && actual.constructor && actual.constructor.name === 'Locator') {
+        return createLocatorMatchers(actual, baseMatchers);
+      }
+      return baseMatchers;
+    };
+  }
+  // If test-environment not loaded, expect remains undefined
 })();
 `);
 
@@ -884,12 +816,12 @@ export async function setupPlaywright(
         page.off("response", responseHandler);
         page.off("console", consoleHandler);
       }
-      consoleLogs.length = 0;
+      browserConsoleLogs.length = 0;
       networkRequests.length = 0;
       networkResponses.length = 0;
     },
-    getConsoleLogs() {
-      return [...consoleLogs];
+    getBrowserConsoleLogs() {
+      return [...browserConsoleLogs];
     },
     getNetworkRequests() {
       return [...networkRequests];
@@ -898,31 +830,9 @@ export async function setupPlaywright(
       return [...networkResponses];
     },
     clearCollected() {
-      consoleLogs.length = 0;
+      browserConsoleLogs.length = 0;
       networkRequests.length = 0;
       networkResponses.length = 0;
     },
   };
-}
-
-// ============================================================================
-// Run Playwright Tests
-// ============================================================================
-
-export async function runPlaywrightTests(
-  context: ivm.Context
-): Promise<PlaywrightExecutionResult> {
-  const runTestsRef = context.global.getSync("__runPlaywrightTests", {
-    reference: true,
-  }) as ivm.Reference<() => Promise<string>>;
-
-  const resultJson = await runTestsRef.apply(undefined, [], {
-    result: { promise: true },
-  });
-
-  return JSON.parse(resultJson as string) as PlaywrightExecutionResult;
-}
-
-export async function resetPlaywrightTests(context: ivm.Context): Promise<void> {
-  context.evalSync("__resetPlaywrightTests()");
 }

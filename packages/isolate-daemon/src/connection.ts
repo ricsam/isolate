@@ -50,10 +50,8 @@ import {
 } from "@ricsam/isolate-test-environment";
 import {
   setupPlaywright,
-  runPlaywrightTests,
-  resetPlaywrightTests,
   type PlaywrightCallback,
-  type ConsoleLogEntry,
+  type BrowserConsoleLogEntry,
   type NetworkRequestInfo,
   type NetworkResponseInfo,
 } from "@ricsam/isolate-playwright";
@@ -499,12 +497,14 @@ async function handleCreateRuntime(
 
       instance.playwrightHandle = await setupPlaywright(runtime.context, {
         handler,
+        // If console is true, browser logs are printed to stdout
+        console: playwrightCallbacks.console,
         // Event callbacks invoke client directly - track them for eval completion
-        onConsoleLog: playwrightCallbacks.onConsoleLogCallbackId
-          ? (entry: ConsoleLogEntry) => {
+        onBrowserConsoleLog: playwrightCallbacks.onBrowserConsoleLogCallbackId
+          ? (entry: BrowserConsoleLogEntry) => {
               const promise = invokeClientCallback(
                 connection,
-                playwrightCallbacks.onConsoleLogCallbackId!,
+                playwrightCallbacks.onBrowserConsoleLogCallbackId!,
                 [entry]
               ).catch(() => {});
               pendingCallbacks.push(promise);
@@ -1674,7 +1674,7 @@ async function handleGetCollectedData(
 
   try {
     const data = {
-      consoleLogs: instance.playwrightHandle.getConsoleLogs(),
+      browserConsoleLogs: instance.playwrightHandle.getBrowserConsoleLogs(),
       networkRequests: instance.playwrightHandle.getNetworkRequests(),
       networkResponses: instance.playwrightHandle.getNetworkResponses(),
     };

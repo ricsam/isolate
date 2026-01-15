@@ -11,11 +11,7 @@ import {
   setupTestEnvironment,
   runTests as runTestsInContext,
 } from "@ricsam/isolate-test-environment";
-import {
-  setupPlaywright,
-  runPlaywrightTests as runPlaywrightTestsInContext,
-  resetPlaywrightTests as resetPlaywrightTestsInContext,
-} from "@ricsam/isolate-playwright";
+import { setupPlaywright } from "@ricsam/isolate-playwright";
 
 import type { ConsoleOptions, ConsoleHandle } from "@ricsam/isolate-console";
 import type { FetchOptions, FetchHandle, DispatchRequestOptions, UpgradeRequest, WebSocketCommand } from "@ricsam/isolate-fetch";
@@ -28,10 +24,10 @@ import type { CryptoHandle } from "@ricsam/isolate-crypto";
 import type { TestEnvironmentHandle, TestResults } from "@ricsam/isolate-test-environment";
 import type {
   PlaywrightHandle,
-  PlaywrightExecutionResult,
   NetworkRequestInfo,
   NetworkResponseInfo,
-  ConsoleLogEntry,
+  BrowserConsoleLogEntry,
+  PlaywrightEvent,
 } from "@ricsam/isolate-playwright";
 import type {
   ConsoleCallbacks,
@@ -93,11 +89,15 @@ export interface PlaywrightOptions {
   timeout?: number;
   /** Base URL for relative navigation */
   baseUrl?: string;
-  /** Callback for browser console log events */
-  onConsoleLog?: (entry: ConsoleLogEntry) => void;
-  /** Callback for network request events */
+  /** If true, browser console logs are routed through console handler (or printed to stdout if no handler) */
+  console?: boolean;
+  /** Unified event callback for all playwright events */
+  onEvent?: (event: PlaywrightEvent) => void;
+  /** @deprecated Use onEvent instead. Callback for browser console log events (from the page, not sandbox) */
+  onBrowserConsoleLog?: (entry: BrowserConsoleLogEntry) => void;
+  /** @deprecated Use onEvent instead. Callback for network request events */
   onNetworkRequest?: (info: NetworkRequestInfo) => void;
-  /** Callback for network response events */
+  /** @deprecated Use onEvent instead. Callback for network response events */
   onNetworkResponse?: (info: NetworkResponseInfo) => void;
 }
 
@@ -159,13 +159,9 @@ export interface RuntimeTestEnvironmentHandle {
 }
 
 /**
- * Runtime playwright handle - provides access to playwright test execution.
+ * Runtime playwright handle - provides access to browser data collection.
  */
 export interface RuntimePlaywrightHandle {
-  /** Run all registered playwright tests */
-  runTests(timeout?: number): Promise<PlaywrightExecutionResult>;
-  /** Reset playwright test state */
-  reset(): void;
   /** Get collected browser data (console logs, network requests/responses) */
   getCollectedData(): CollectedData;
   /** Clear collected browser data */
@@ -176,7 +172,8 @@ export interface RuntimePlaywrightHandle {
  * Collected browser data from playwright.
  */
 export interface CollectedData {
-  consoleLogs: ConsoleLogEntry[];
+  /** Browser console logs (from the page, not sandbox) */
+  browserConsoleLogs: BrowserConsoleLogEntry[];
   networkRequests: NetworkRequestInfo[];
   networkResponses: NetworkResponseInfo[];
 }
@@ -448,13 +445,41 @@ export async function createRuntime(
     state.handles.testEnvironment = await setupTestEnvironment(context);
   }
 
-  // Setup playwright (if page provided)
+  // Setup playwright (if page provided) - AFTER test environment so expect can be extended
   if (opts.playwright) {
+    // Determine event handler
+    // If console: true and we have a console handler, wrap onEvent to route browser logs
+    let eventCallback = opts.playwright.onEvent;
+
+    if (opts.playwright.console && opts.console?.onEntry) {
+      const originalCallback = eventCallback;
+      const consoleHandler = opts.console.onEntry;
+      eventCallback = (event) => {
+        // Call original callback if provided
+        if (originalCallback) {
+          originalCallback(event);
+        }
+        // Route browser console logs through console handler as browserOutput entry
+        if (event.type === "browserConsoleLog") {
+          consoleHandler({
+            type: "browserOutput",
+            level: event.level,
+            args: event.args,
+            timestamp: event.timestamp,
+          });
+        }
+      };
+    }
+
     state.handles.playwright = await setupPlaywright(context, {
       page: opts.playwright.page,
       timeout: opts.playwright.timeout,
       baseUrl: opts.playwright.baseUrl,
-      onConsoleLog: opts.playwright.onConsoleLog,
+      // Don't print directly if routing through console handler
+      console: opts.playwright.console && !opts.console?.onEntry,
+      onEvent: eventCallback,
+      // Legacy callbacks (deprecated)
+      onBrowserConsoleLog: opts.playwright.onBrowserConsoleLog,
       onNetworkRequest: opts.playwright.onNetworkRequest,
       onNetworkResponse: opts.playwright.onNetworkResponse,
     });
@@ -557,23 +582,12 @@ export async function createRuntime(
 
   // Create playwright handle wrapper
   const playwrightHandle: RuntimePlaywrightHandle = {
-    async runTests(timeout?: number): Promise<PlaywrightExecutionResult> {
-      if (!state.handles.playwright) {
-        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
-      }
-      return runPlaywrightTestsInContext(state.context);
-    },
-    reset() {
-      if (state.handles.playwright) {
-        resetPlaywrightTestsInContext(state.context);
-      }
-    },
     getCollectedData(): CollectedData {
       if (!state.handles.playwright) {
         throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
       }
       return {
-        consoleLogs: state.handles.playwright.getConsoleLogs(),
+        browserConsoleLogs: state.handles.playwright.getBrowserConsoleLogs(),
         networkRequests: state.handles.playwright.getNetworkRequests(),
         networkResponses: state.handles.playwright.getNetworkResponses(),
       };
@@ -663,18 +677,13 @@ export type { TimersHandle } from "@ricsam/isolate-timers";
 export { setupTestEnvironment, runTests } from "@ricsam/isolate-test-environment";
 export type { TestEnvironmentHandle, TestResults, TestResult } from "@ricsam/isolate-test-environment";
 
-export {
-  setupPlaywright,
-  runPlaywrightTests,
-  resetPlaywrightTests,
-  createPlaywrightHandler,
-} from "@ricsam/isolate-playwright";
+export { setupPlaywright, createPlaywrightHandler } from "@ricsam/isolate-playwright";
 export type {
   PlaywrightHandle,
-  PlaywrightExecutionResult,
   PlaywrightSetupOptions,
   PlaywrightCallback,
+  PlaywrightEvent,
   NetworkRequestInfo,
   NetworkResponseInfo,
-  ConsoleLogEntry,
+  BrowserConsoleLogEntry,
 } from "@ricsam/isolate-playwright";

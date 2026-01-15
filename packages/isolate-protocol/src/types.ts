@@ -186,8 +186,10 @@ export type PlaywrightResult =
 export interface PlaywrightCallbackRegistration {
   /** Callback ID for page operations */
   handlerCallbackId: number;
-  /** Optional callback for console log events */
-  onConsoleLogCallbackId?: number;
+  /** If true, browser console logs are printed to stdout */
+  console?: boolean;
+  /** Optional callback for browser console log events (from the page, not sandbox) */
+  onBrowserConsoleLogCallbackId?: number;
   /** Optional callback for network request events */
   onNetworkRequestCallbackId?: number;
   /** Optional callback for network response events */
@@ -470,12 +472,40 @@ export type PlaywrightEventType =
   | "networkRequest"
   | "networkResponse";
 
-export interface PlaywrightEvent {
+export interface PlaywrightEventMessage {
   type: typeof MessageType.PLAYWRIGHT_EVENT;
   isolateId: string;
   eventType: PlaywrightEventType;
   payload: unknown;
 }
+
+/**
+ * Unified playwright event type for the onEvent callback.
+ */
+export type PlaywrightEvent =
+  | {
+      type: "browserConsoleLog";
+      level: string;
+      args: unknown[];
+      timestamp: number;
+    }
+  | {
+      type: "networkRequest";
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      postData?: string;
+      resourceType?: string;
+      timestamp: number;
+    }
+  | {
+      type: "networkResponse";
+      url: string;
+      status: number;
+      statusText?: string;
+      headers: Record<string, string>;
+      timestamp: number;
+    };
 
 // ============================================================================
 // Heartbeat
@@ -534,7 +564,7 @@ export type DaemonMessage =
   | StreamPull
   | StreamClose
   | StreamError
-  | PlaywrightEvent
+  | PlaywrightEventMessage
   | PongMessage;
 
 export type Message = ClientMessage | DaemonMessage;
@@ -600,6 +630,13 @@ export type ConsoleEntry =
       level: "log" | "warn" | "error" | "info" | "debug";
       args: unknown[];
       groupDepth: number;
+    }
+  | {
+      /** Browser console output (from Playwright page, not sandbox) */
+      type: "browserOutput";
+      level: string;
+      args: unknown[];
+      timestamp: number;
     }
   | { type: "dir"; value: unknown; groupDepth: number }
   | { type: "table"; data: unknown; columns?: string[]; groupDepth: number }
@@ -709,7 +746,8 @@ export interface PlaywrightTestResult {
 }
 
 export interface CollectedData {
-  consoleLogs: {
+  /** Browser console logs (from the page, not sandbox) */
+  browserConsoleLogs: {
     level: string;
     args: unknown[];
     timestamp: number;

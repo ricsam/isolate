@@ -22,10 +22,7 @@ import {
   type SerializedResponse,
   type RunTestsRequest,
   type RunTestsResult,
-  type RunPlaywrightTestsRequest,
-  type ResetPlaywrightTestsRequest,
   type GetCollectedDataRequest,
-  type PlaywrightTestResult,
   type CollectedData,
   type ResetTestEnvRequest,
   type ClearCollectedDataRequest,
@@ -349,23 +346,104 @@ async function createRuntime(
       return JSON.stringify(result);
     });
 
+    // Determine if we need event callbacks
+    const hasOnEvent = !!options.playwright.onEvent;
+    const hasConsoleHandler = options.playwright.console && options.console?.onEntry;
+    const hasLegacyCallbacks = options.playwright.onBrowserConsoleLog ||
+                               options.playwright.onNetworkRequest ||
+                               options.playwright.onNetworkResponse;
+
+    // Browser console log callback
+    let browserConsoleLogCallbackId: number | undefined;
+    if (hasOnEvent || hasConsoleHandler || options.playwright.onBrowserConsoleLog) {
+      browserConsoleLogCallbackId = registerEventCallback(state, (entry: unknown) => {
+        const browserEntry = entry as { level: string; args: unknown[]; timestamp: number };
+
+        // Unified event callback
+        if (options.playwright!.onEvent) {
+          options.playwright!.onEvent({
+            type: "browserConsoleLog",
+            level: browserEntry.level,
+            args: browserEntry.args,
+            timestamp: browserEntry.timestamp,
+          });
+        }
+
+        // Route through console handler as browserOutput entry if console: true
+        if (options.playwright!.console && options.console?.onEntry) {
+          options.console.onEntry({
+            type: "browserOutput",
+            level: browserEntry.level,
+            args: browserEntry.args,
+            timestamp: browserEntry.timestamp,
+          });
+        }
+
+        // Legacy callback (deprecated)
+        if (options.playwright!.onBrowserConsoleLog) {
+          options.playwright!.onBrowserConsoleLog(browserEntry);
+        }
+      });
+    }
+
+    // Network request callback
+    let networkRequestCallbackId: number | undefined;
+    if (hasOnEvent || options.playwright.onNetworkRequest) {
+      networkRequestCallbackId = registerEventCallback(state, (info: unknown) => {
+        const reqInfo = info as { url: string; method: string; headers: Record<string, string>; postData?: string; resourceType?: string; timestamp: number };
+
+        // Unified event callback
+        if (options.playwright!.onEvent) {
+          options.playwright!.onEvent({
+            type: "networkRequest",
+            url: reqInfo.url,
+            method: reqInfo.method,
+            headers: reqInfo.headers,
+            postData: reqInfo.postData,
+            resourceType: reqInfo.resourceType,
+            timestamp: reqInfo.timestamp,
+          });
+        }
+
+        // Legacy callback (deprecated)
+        if (options.playwright!.onNetworkRequest) {
+          options.playwright!.onNetworkRequest(reqInfo);
+        }
+      });
+    }
+
+    // Network response callback
+    let networkResponseCallbackId: number | undefined;
+    if (hasOnEvent || options.playwright.onNetworkResponse) {
+      networkResponseCallbackId = registerEventCallback(state, (info: unknown) => {
+        const resInfo = info as { url: string; status: number; statusText?: string; headers: Record<string, string>; timestamp: number };
+
+        // Unified event callback
+        if (options.playwright!.onEvent) {
+          options.playwright!.onEvent({
+            type: "networkResponse",
+            url: resInfo.url,
+            status: resInfo.status,
+            statusText: resInfo.statusText,
+            headers: resInfo.headers,
+            timestamp: resInfo.timestamp,
+          });
+        }
+
+        // Legacy callback (deprecated)
+        if (options.playwright!.onNetworkResponse) {
+          options.playwright!.onNetworkResponse(resInfo);
+        }
+      });
+    }
+
     callbacks.playwright = {
       handlerCallbackId,
-      onConsoleLogCallbackId: options.playwright.onConsoleLog
-        ? registerEventCallback(state, (entry: unknown) => {
-            options.playwright!.onConsoleLog!(entry as { level: string; args: unknown[] });
-          })
-        : undefined,
-      onNetworkRequestCallbackId: options.playwright.onNetworkRequest
-        ? registerEventCallback(state, (info: unknown) => {
-            options.playwright!.onNetworkRequest!(info as { url: string; method: string; headers: Record<string, string>; timestamp: number });
-          })
-        : undefined,
-      onNetworkResponseCallbackId: options.playwright.onNetworkResponse
-        ? registerEventCallback(state, (info: unknown) => {
-            options.playwright!.onNetworkResponse!(info as { url: string; status: number; headers: Record<string, string>; timestamp: number });
-          })
-        : undefined,
+      // Don't let daemon print directly if we're routing through console handler
+      console: options.playwright.console && !options.console?.onEntry,
+      onBrowserConsoleLogCallbackId: browserConsoleLogCallbackId,
+      onNetworkRequestCallbackId: networkRequestCallbackId,
+      onNetworkResponseCallbackId: networkResponseCallbackId,
     };
   }
 
@@ -588,33 +666,6 @@ async function createRuntime(
 
   // Create playwright handle
   const playwrightHandle: RemotePlaywrightHandle = {
-    async runTests(timeout?: number): Promise<PlaywrightTestResult> {
-      if (!playwrightEnabled) {
-        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
-      }
-      const reqId = state.nextRequestId++;
-      const req: RunPlaywrightTestsRequest = {
-        type: MessageType.RUN_PLAYWRIGHT_TESTS,
-        requestId: reqId,
-        isolateId,
-        timeout,
-      };
-      return sendRequest<PlaywrightTestResult>(state, req, timeout ?? DEFAULT_TIMEOUT);
-    },
-
-    async reset(): Promise<void> {
-      if (!playwrightEnabled) {
-        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
-      }
-      const reqId = state.nextRequestId++;
-      const req: ResetPlaywrightTestsRequest = {
-        type: MessageType.RESET_PLAYWRIGHT_TESTS,
-        requestId: reqId,
-        isolateId,
-      };
-      await sendRequest(state, req);
-    },
-
     async getCollectedData(): Promise<CollectedData> {
       if (!playwrightEnabled) {
         throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");

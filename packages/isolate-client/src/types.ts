@@ -5,17 +5,17 @@
 import type {
   RunTestsResult,
   TestResult as ProtocolTestResult,
-  PlaywrightTestResult as ProtocolPlaywrightTestResult,
   CollectedData as ProtocolCollectedData,
   ConsoleEntry as ProtocolConsoleEntry,
+  PlaywrightEvent as ProtocolPlaywrightEvent,
 } from "@ricsam/isolate-protocol";
 
 // Re-export test result types
 export type TestResults = RunTestsResult;
 export type TestResult = ProtocolTestResult;
-export type PlaywrightTestResults = ProtocolPlaywrightTestResult;
 export type CollectedData = ProtocolCollectedData;
 export type ConsoleEntry = ProtocolConsoleEntry;
+export type PlaywrightEvent = ProtocolPlaywrightEvent;
 
 /**
  * Options for connecting to the daemon.
@@ -78,11 +78,15 @@ export interface PlaywrightOptions {
   timeout?: number;
   /** Base URL for navigation */
   baseUrl?: string;
-  /** Console log event handler */
-  onConsoleLog?: (entry: { level: string; args: unknown[] }) => void;
-  /** Network request event handler */
+  /** If true, browser console logs are routed through console handler (or printed to stdout if no handler) */
+  console?: boolean;
+  /** Unified event callback for all playwright events */
+  onEvent?: (event: PlaywrightEvent) => void;
+  /** @deprecated Use onEvent instead. Browser console log event handler (from the page, not sandbox) */
+  onBrowserConsoleLog?: (entry: { level: string; args: unknown[]; timestamp: number }) => void;
+  /** @deprecated Use onEvent instead. Network request event handler */
   onNetworkRequest?: (info: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
-  /** Network response event handler */
+  /** @deprecated Use onEvent instead. Network response event handler */
   onNetworkResponse?: (info: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
 }
 
@@ -277,15 +281,11 @@ export interface RemoteTestEnvironmentHandle {
 }
 
 /**
- * Remote playwright handle.
+ * Remote playwright handle - provides access to browser data collection.
  * All methods are async since they communicate over IPC.
  */
 export interface RemotePlaywrightHandle {
-  /** Run all registered Playwright tests */
-  runTests(timeout?: number): Promise<PlaywrightTestResults>;
-  /** Reset/clear all Playwright tests */
-  reset(): Promise<void>;
-  /** Get collected console logs and network data */
+  /** Get collected browser console logs and network data */
   getCollectedData(): Promise<CollectedData>;
   /** Clear collected data */
   clearCollectedData(): Promise<void>;

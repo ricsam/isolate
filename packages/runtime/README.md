@@ -16,7 +16,7 @@ import { createRuntime } from "@ricsam/isolate-runtime";
 const runtime = await createRuntime({
   memoryLimit: 128,
   console: {
-    log: (...args) => console.log("[sandbox]", ...args),
+    onEntry: (entry) => console.log("[sandbox]", entry),
   },
   fetch: async (request) => fetch(request),
 });
@@ -95,8 +95,6 @@ interface RuntimeTestEnvironmentHandle {
 }
 
 interface RuntimePlaywrightHandle {
-  runTests(timeout?: number): Promise<PlaywrightTestResults>;
-  reset(): void;
   getCollectedData(): CollectedData;
   clearCollectedData(): void;
 }
@@ -123,7 +121,10 @@ interface PlaywrightOptions {
   page: import("playwright").Page;
   timeout?: number;
   baseUrl?: string;
-  onConsoleLog?: (entry: { level: string; args: unknown[] }) => void;
+  /** Print browser console logs to stdout */
+  console?: boolean;
+  /** Browser console log callback (from the page, not sandbox) */
+  onBrowserConsoleLog?: (entry: { level: string; args: unknown[]; timestamp: number }) => void;
   onNetworkRequest?: (info: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
   onNetworkResponse?: (info: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
 }
@@ -203,7 +204,9 @@ runtime.testEnvironment.reset();
 
 ## Playwright Integration
 
-Run browser tests with untrusted code. **You provide the Playwright page object**:
+Run browser automation with untrusted code. **You provide the Playwright page object**:
+
+### Script Mode (No Tests)
 
 ```typescript
 import { createRuntime } from "@ricsam/isolate-runtime";
@@ -216,23 +219,62 @@ const runtime = await createRuntime({
   playwright: {
     page,
     baseUrl: "https://example.com",
-    onConsoleLog: (entry) => console.log("[browser]", ...entry.args),
+    console: true, // Print browser console to stdout
   },
 });
 
+// Run automation script - no test framework needed
 await runtime.eval(`
-  test("homepage loads", async () => {
-    await page.goto("/");
-    await expect(page.getByText("Example Domain")).toBeVisible();
-  });
+  await page.goto("/");
+  const title = await page.title();
+  console.log("Page title:", title);
 `);
-
-const results = await runtime.playwright.runTests();
-console.log(`${results.passed}/${results.total} passed`);
 
 // Get collected data
 const data = runtime.playwright.getCollectedData();
 console.log("Network requests:", data.networkRequests);
+
+await runtime.dispose();
+await browser.close();
+```
+
+### Test Mode (With Test Framework)
+
+Combine `testEnvironment` and `playwright` for browser testing. Playwright extends `expect` with locator matchers:
+
+```typescript
+import { createRuntime } from "@ricsam/isolate-runtime";
+import { chromium } from "playwright";
+
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage();
+
+const runtime = await createRuntime({
+  testEnvironment: true, // Provides describe, it, expect
+  playwright: {
+    page,
+    baseUrl: "https://example.com",
+    onBrowserConsoleLog: (entry) => console.log("[browser]", ...entry.args),
+  },
+});
+
+await runtime.eval(`
+  describe("homepage", () => {
+    it("loads correctly", async () => {
+      await page.goto("/");
+      await expect(page.getByText("Example Domain")).toBeVisible(); // Locator matcher
+      expect(await page.title()).toBe("Example Domain"); // Primitive matcher
+    });
+  });
+`);
+
+// Run tests via test-environment
+const results = await runtime.testEnvironment.runTests();
+console.log(`${results.passed}/${results.total} passed`);
+
+// Get browser data
+const data = runtime.playwright.getCollectedData();
+console.log("Browser logs:", data.browserConsoleLogs);
 
 await runtime.dispose();
 await browser.close();

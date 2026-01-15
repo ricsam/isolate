@@ -34,8 +34,7 @@ const client = await connect({
 const runtime = await client.createRuntime({
   memoryLimit: 128,
   console: {
-    log: (...args) => console.log("[isolate]", ...args),
-    error: (...args) => console.error("[isolate]", ...args),
+    onEntry: (entry) => console.log("[isolate]", entry),
   },
   fetch: async (request) => fetch(request),
 });
@@ -180,12 +179,13 @@ await runtime.testEnvironment.reset();
 
 ## Playwright Integration
 
-Run browser tests with untrusted code. **The client owns the browser** - you provide the Playwright page object:
+Run browser automation with untrusted code. **The client owns the browser** - you provide the Playwright page object:
+
+### Script Mode (No Tests)
 
 ```typescript
 import { chromium } from "playwright";
 
-// Launch browser (client owns the browser)
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 
@@ -193,23 +193,80 @@ const runtime = await client.createRuntime({
   playwright: {
     page,
     baseUrl: "https://example.com",
-    onConsoleLog: (entry) => console.log("[browser]", ...entry.args),
+    onEvent: (event) => {
+      // Unified event handler for all playwright events
+      if (event.type === "browserConsoleLog") {
+        console.log(`[browser:${event.level}]`, ...event.args);
+      } else if (event.type === "networkRequest") {
+        console.log(`[request] ${event.method} ${event.url}`);
+      } else if (event.type === "networkResponse") {
+        console.log(`[response] ${event.status} ${event.url}`);
+      }
+    },
   },
 });
 
+// Run automation script - no test framework needed
 await runtime.eval(`
-  test("homepage loads", async () => {
-    await page.goto("/");
-    await expect(page.getByText("Example Domain")).toBeVisible();
-  });
+  await page.goto("/");
+  const title = await page.title();
+  console.log("Page title:", title);
 `);
-
-const results = await runtime.playwright.runTests();
-console.log(`${results.passed}/${results.total} passed`);
 
 // Get collected data
 const data = await runtime.playwright.getCollectedData();
 console.log("Network requests:", data.networkRequests);
+
+await runtime.dispose();
+await browser.close();
+```
+
+### Test Mode (With Test Framework)
+
+Combine `testEnvironment` and `playwright` for browser testing. Playwright extends `expect` with locator matchers:
+
+```typescript
+import { chromium } from "playwright";
+
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage();
+
+const runtime = await client.createRuntime({
+  // Unified console handler for both sandbox and browser logs
+  console: {
+    onEntry: (entry) => {
+      if (entry.type === "output") {
+        console.log(`[sandbox:${entry.level}]`, ...entry.args);
+      } else if (entry.type === "browserOutput") {
+        console.log(`[browser:${entry.level}]`, ...entry.args);
+      }
+    },
+  },
+  testEnvironment: true, // Provides describe, it, expect
+  playwright: {
+    page,
+    baseUrl: "https://example.com",
+    console: true, // Routes browser logs through the console handler above
+  },
+});
+
+await runtime.eval(`
+  describe("homepage", () => {
+    it("loads correctly", async () => {
+      await page.goto("/");
+      await expect(page.getByText("Example Domain")).toBeVisible(); // Locator matcher
+      expect(await page.title()).toBe("Example Domain"); // Primitive matcher
+    });
+  });
+`);
+
+// Run tests via test-environment
+const results = await runtime.testEnvironment.runTests();
+console.log(`${results.passed}/${results.total} passed`);
+
+// Get browser data
+const data = await runtime.playwright.getCollectedData();
+console.log("Browser logs:", data.browserConsoleLogs);
 
 await runtime.dispose();
 await browser.close();
@@ -256,8 +313,6 @@ interface RemoteTestEnvironmentHandle {
 }
 
 interface RemotePlaywrightHandle {
-  runTests(timeout?: number): Promise<PlaywrightTestResults>;
-  reset(): Promise<void>;
   getCollectedData(): Promise<CollectedData>;
   clearCollectedData(): Promise<void>;
 }

@@ -333,14 +333,17 @@ interface TestEnvironmentHandle {
 }
 
 interface PlaywrightHandle {
-  /** Run all registered Playwright tests */
-  runTests(timeout?: number): Promise<PlaywrightTestResults>;
-  /** Reset/clear all Playwright tests */
-  reset(): void;
-  /** Get collected console logs and network data */
+  /** Get collected browser console logs and network data */
   getCollectedData(): CollectedData;
   /** Clear collected data */
   clearCollectedData(): void;
+}
+
+interface CollectedData {
+  /** Browser console logs (from the page, not sandbox) */
+  browserConsoleLogs: Array<{ level: string; args: unknown[]; timestamp: number }>;
+  networkRequests: Array<{ url: string; method: string; headers: Record<string, string>; timestamp: number }>;
+  networkResponses: Array<{ url: string; status: number; headers: Record<string, string>; timestamp: number }>;
 }
 ```
 
@@ -385,13 +388,16 @@ interface PlaywrightOptions {
   timeout?: number;
   /** Base URL for navigation */
   baseUrl?: string;
-  /** Console log event handler */
-  onConsoleLog?: (entry: { level: string; args: unknown[] }) => void;
-  /** Network request event handler */
-  onNetworkRequest?: (info: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
-  /** Network response event handler */
-  onNetworkResponse?: (info: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
+  /** Route browser console logs through console handler (or print to stdout if no handler) */
+  console?: boolean;
+  /** Unified event callback for all playwright events */
+  onEvent?: (event: PlaywrightEvent) => void;
 }
+
+type PlaywrightEvent =
+  | { type: "browserConsoleLog"; level: string; args: unknown[]; timestamp: number }
+  | { type: "networkRequest"; url: string; method: string; headers: Record<string, string>; postData?: string; resourceType?: string; timestamp: number }
+  | { type: "networkResponse"; url: string; status: number; statusText?: string; headers: Record<string, string>; timestamp: number };
 ```
 
 ### Console Callbacks
@@ -405,6 +411,7 @@ interface ConsoleCallbacks {
 
 type ConsoleEntry =
   | { type: "output"; level: "log" | "warn" | "error" | "info" | "debug"; args: unknown[]; groupDepth: number }
+  | { type: "browserOutput"; level: string; args: unknown[]; timestamp: number } // Browser console (from Playwright page)
   | { type: "dir"; value: unknown; groupDepth: number }
   | { type: "table"; data: unknown; columns?: string[]; groupDepth: number }
   | { type: "time"; label: string; duration: number; groupDepth: number }
@@ -646,12 +653,13 @@ runtime.testEnvironment.reset();
 
 ## Playwright Integration
 
-Run browser tests with untrusted code. **The client owns the browser** - you provide the Playwright page object:
+Run browser automation with untrusted code. **The client owns the browser** - you provide the Playwright page object.
+
+### Script Mode (No Tests)
 
 ```typescript
 import { chromium } from "playwright";
 
-// Launch browser (client owns the browser)
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 
@@ -659,23 +667,84 @@ const runtime = await createRuntime({
   playwright: {
     page,
     baseUrl: "https://example.com",
-    onConsoleLog: (entry) => console.log("[browser]", entry.level, ...entry.args),
+    onEvent: (event) => {
+      // Unified event handler for all playwright events
+      switch (event.type) {
+        case "browserConsoleLog":
+          console.log(`[browser:${event.level}]`, ...event.args);
+          break;
+        case "networkRequest":
+          console.log(`[request] ${event.method} ${event.url}`);
+          break;
+        case "networkResponse":
+          console.log(`[response] ${event.status} ${event.url}`);
+          break;
+      }
+    },
+  },
+});
+
+// Run automation script - no test framework needed
+await runtime.eval(`
+  await page.goto("/");
+  const title = await page.title();
+  console.log("Page title:", title);
+`);
+
+// Get collected network data
+const data = runtime.playwright.getCollectedData();
+console.log("Network requests:", data.networkRequests);
+
+await runtime.dispose();
+await browser.close();
+```
+
+### Test Mode (With Test Framework)
+
+Combine `testEnvironment` and `playwright` for browser testing. Playwright extends `expect` with locator matchers:
+
+```typescript
+import { chromium } from "playwright";
+
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage();
+
+const runtime = await createRuntime({
+  // Unified console handler for both sandbox and browser logs
+  console: {
+    onEntry: (entry) => {
+      if (entry.type === "output") {
+        console.log(`[sandbox:${entry.level}]`, ...entry.args);
+      } else if (entry.type === "browserOutput") {
+        console.log(`[browser:${entry.level}]`, ...entry.args);
+      }
+    },
+  },
+  testEnvironment: true, // Provides describe, it, expect
+  playwright: {
+    page,
+    baseUrl: "https://example.com",
+    console: true, // Routes browser logs through the console handler above
   },
 });
 
 await runtime.eval(`
-  test("homepage loads", async () => {
-    await page.goto("/");
-    await expect(page.getByText("Example Domain")).toBeVisible();
+  describe("homepage", () => {
+    it("loads correctly", async () => {
+      await page.goto("/");
+      await expect(page.getByText("Example Domain")).toBeVisible(); // Locator matcher
+      expect(await page.title()).toBe("Example Domain"); // Primitive matcher
+    });
   });
 `);
 
-const results = await runtime.playwright.runTests();
+// Run tests via test-environment
+const results = await runtime.testEnvironment.runTests();
 console.log(`${results.passed}/${results.total} passed`);
 
-// Get collected network data
+// Get collected browser data
 const data = runtime.playwright.getCollectedData();
-console.log("Console logs:", data.consoleLogs);
+console.log("Browser logs:", data.browserConsoleLogs);
 console.log("Network requests:", data.networkRequests);
 
 // Cleanup
