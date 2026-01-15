@@ -21,8 +21,9 @@ export type {
   FetchCallback,
   FileSystemCallbacks,
   PlaywrightOptions,
+  PlaywrightEvent,
   TestResults,
   TestResult,
-  PlaywrightTestResults,
   CollectedData,
+  ConsoleEntry,
 } from "./types.ts";

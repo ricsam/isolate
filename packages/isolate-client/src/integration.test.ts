@@ -334,6 +334,7 @@ describe("isolate-client integration", () => {
     const page = await browserContext.newPage();
 
     const runtime = await client.createRuntime({
+      testEnvironment: true,
       playwright: { page },
     });
 
@@ -346,7 +347,7 @@ describe("isolate-client integration", () => {
       `);
 
       // Run tests
-      const results = await runtime.playwright.runTests();
+      const results = await runtime.testEnvironment.runTests();
 
       assert.strictEqual(results.passed, 1);
       assert.strictEqual(results.failed, 0);
@@ -363,6 +364,7 @@ describe("isolate-client integration", () => {
     const page = await browserContext.newPage();
 
     const runtime = await client.createRuntime({
+      testEnvironment: true,
       playwright: { page },
     });
 
@@ -375,13 +377,13 @@ describe("isolate-client integration", () => {
         });
       `);
 
-      await runtime.playwright.runTests();
+      await runtime.testEnvironment.runTests();
 
       // Get collected data
       const data = await runtime.playwright.getCollectedData();
 
       // Should have captured the console log
-      assert.ok(data.consoleLogs.length >= 0); // Console logs might be captured
+      assert.ok(data.browserConsoleLogs.length >= 0); // Console logs might be captured
       assert.ok(Array.isArray(data.networkRequests));
       assert.ok(Array.isArray(data.networkResponses));
     } finally {
@@ -396,6 +398,7 @@ describe("isolate-client integration", () => {
     const page = await browserContext.newPage();
 
     const runtime = await client.createRuntime({
+      testEnvironment: true,
       playwright: { page },
     });
 
@@ -408,11 +411,11 @@ describe("isolate-client integration", () => {
       `);
 
       // Run tests
-      let results = await runtime.playwright.runTests();
+      let results = await runtime.testEnvironment.runTests();
       assert.strictEqual(results.total, 1);
 
       // Reset tests
-      await runtime.playwright.reset();
+      await runtime.testEnvironment.reset();
 
       // Define new tests
       await runtime.eval(`
@@ -425,7 +428,7 @@ describe("isolate-client integration", () => {
       `);
 
       // Run tests again
-      results = await runtime.playwright.runTests();
+      results = await runtime.testEnvironment.runTests();
       assert.strictEqual(results.total, 2);
       assert.strictEqual(results.passed, 2);
     } finally {
@@ -440,6 +443,7 @@ describe("isolate-client integration", () => {
     const page = await browserContext.newPage();
 
     const runtime = await client.createRuntime({
+      testEnvironment: true,
       playwright: { page },
     });
 
@@ -454,7 +458,7 @@ describe("isolate-client integration", () => {
         });
       `);
 
-      const results = await runtime.playwright.runTests();
+      const results = await runtime.testEnvironment.runTests();
 
       assert.strictEqual(results.passed, 1);
       assert.strictEqual(results.failed, 1);
@@ -477,9 +481,14 @@ describe("isolate-client integration", () => {
     const page = await browserContext.newPage();
 
     const runtime = await client.createRuntime({
+      testEnvironment: true,
       playwright: {
         page,
-        onConsoleLog: (log: { level: string; args: unknown[] }) => consoleLogs.push(log),
+        onEvent: (event) => {
+          if (event.type === "browserConsoleLog") {
+            consoleLogs.push({ level: event.level, args: event.args });
+          }
+        },
       },
     });
 
@@ -491,7 +500,7 @@ describe("isolate-client integration", () => {
         });
       `);
 
-      await runtime.playwright.runTests();
+      await runtime.testEnvironment.runTests();
       // No delay needed - runTests waits for callbacks to complete
       // Console logs should have been streamed
       assert.ok(Array.isArray(consoleLogs));

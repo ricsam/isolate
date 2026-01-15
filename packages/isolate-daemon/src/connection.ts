@@ -499,37 +499,32 @@ async function handleCreateRuntime(
         handler,
         // If console is true, browser logs are printed to stdout
         console: playwrightCallbacks.console,
-        // Event callbacks invoke client directly - track them for eval completion
-        onBrowserConsoleLog: playwrightCallbacks.onBrowserConsoleLogCallbackId
-          ? (entry: BrowserConsoleLogEntry) => {
-              const promise = invokeClientCallback(
-                connection,
-                playwrightCallbacks.onBrowserConsoleLogCallbackId!,
-                [entry]
-              ).catch(() => {});
-              pendingCallbacks.push(promise);
-            }
-          : undefined,
-        onNetworkRequest: playwrightCallbacks.onNetworkRequestCallbackId
-          ? (info: NetworkRequestInfo) => {
-              const promise = invokeClientCallback(
-                connection,
-                playwrightCallbacks.onNetworkRequestCallbackId!,
-                [info]
-              ).catch(() => {});
-              pendingCallbacks.push(promise);
-            }
-          : undefined,
-        onNetworkResponse: playwrightCallbacks.onNetworkResponseCallbackId
-          ? (info: NetworkResponseInfo) => {
-              const promise = invokeClientCallback(
-                connection,
-                playwrightCallbacks.onNetworkResponseCallbackId!,
-                [info]
-              ).catch(() => {});
-              pendingCallbacks.push(promise);
-            }
-          : undefined,
+        // Unified event callback
+        onEvent: (event) => {
+          // Route events to appropriate client callbacks
+          if (event.type === "browserConsoleLog" && playwrightCallbacks.onBrowserConsoleLogCallbackId) {
+            const promise = invokeClientCallback(
+              connection,
+              playwrightCallbacks.onBrowserConsoleLogCallbackId,
+              [{ level: event.level, args: event.args, timestamp: event.timestamp }]
+            ).catch(() => {});
+            pendingCallbacks.push(promise);
+          } else if (event.type === "networkRequest" && playwrightCallbacks.onNetworkRequestCallbackId) {
+            const promise = invokeClientCallback(
+              connection,
+              playwrightCallbacks.onNetworkRequestCallbackId,
+              [event]
+            ).catch(() => {});
+            pendingCallbacks.push(promise);
+          } else if (event.type === "networkResponse" && playwrightCallbacks.onNetworkResponseCallbackId) {
+            const promise = invokeClientCallback(
+              connection,
+              playwrightCallbacks.onNetworkResponseCallbackId,
+              [event]
+            ).catch(() => {});
+            pendingCallbacks.push(promise);
+          }
+        },
       });
     }
 
@@ -1535,109 +1530,36 @@ async function handleResetTestEnv(
 
 /**
  * Handle RUN_PLAYWRIGHT_TESTS message.
+ * @deprecated Use testEnvironment.runTests() instead
  */
 async function handleRunPlaywrightTests(
   message: RunPlaywrightTestsRequest,
   connection: ConnectionState,
-  state: DaemonState
+  _state: DaemonState
 ): Promise<void> {
-  const instance = state.isolates.get(message.isolateId);
-
-  if (!instance) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.ISOLATE_NOT_FOUND,
-      `Isolate not found: ${message.isolateId}`
-    );
-    return;
-  }
-
-  if (!instance.playwrightHandle) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      "Playwright not configured. Provide playwright.page in createRuntime options."
-    );
-    return;
-  }
-
-  instance.lastActivity = Date.now();
-
-  try {
-    const timeout = message.timeout ?? 30000;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error("Playwright test timeout")), timeout);
-    });
-
-    const results = await Promise.race([
-      runPlaywrightTests(instance.runtime.context),
-      timeoutPromise,
-    ]);
-
-    // Wait for all pending callbacks (e.g., onConsoleLog) to complete
-    await Promise.all(instance.pendingCallbacks);
-    instance.pendingCallbacks.length = 0;
-
-    sendOk(connection.socket, message.requestId, results);
-  } catch (err) {
-    const error = err as Error;
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      error.message,
-      { name: error.name, stack: error.stack }
-    );
-  }
+  sendError(
+    connection.socket,
+    message.requestId,
+    ErrorCode.SCRIPT_ERROR,
+    "playwright.runTests() has been removed. Use testEnvironment.runTests() instead."
+  );
 }
 
 /**
  * Handle RESET_PLAYWRIGHT_TESTS message.
+ * @deprecated Use testEnvironment.reset() instead
  */
 async function handleResetPlaywrightTests(
   message: ResetPlaywrightTestsRequest,
   connection: ConnectionState,
-  state: DaemonState
+  _state: DaemonState
 ): Promise<void> {
-  const instance = state.isolates.get(message.isolateId);
-
-  if (!instance) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.ISOLATE_NOT_FOUND,
-      `Isolate not found: ${message.isolateId}`
-    );
-    return;
-  }
-
-  if (!instance.playwrightHandle) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      "Playwright not configured. Provide playwright.page in createRuntime options."
-    );
-    return;
-  }
-
-  instance.lastActivity = Date.now();
-
-  try {
-    await resetPlaywrightTests(instance.runtime.context);
-    sendOk(connection.socket, message.requestId);
-  } catch (err) {
-    const error = err as Error;
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      error.message,
-      { name: error.name, stack: error.stack }
-    );
-  }
+  sendError(
+    connection.socket,
+    message.requestId,
+    ErrorCode.SCRIPT_ERROR,
+    "playwright.reset() has been removed. Use testEnvironment.reset() instead."
+  );
 }
 
 /**

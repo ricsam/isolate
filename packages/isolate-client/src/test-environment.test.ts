@@ -659,7 +659,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -675,7 +675,7 @@ describe("playwright feature", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 2);
           assert.strictEqual(results.failed, 0);
         } finally {
@@ -690,7 +690,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -702,7 +702,7 @@ describe("playwright feature", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1);
           assert.strictEqual(results.failed, 0);
         } finally {
@@ -717,7 +717,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -736,7 +736,7 @@ describe("playwright feature", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1);
           assert.strictEqual(results.failed, 0);
         } finally {
@@ -751,7 +751,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -766,7 +766,7 @@ describe("playwright feature", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           if (results.failed > 0) {
             const failedTest = results.results.find((r: { passed: boolean }) => !r.passed);
             console.error("Failed test error:", failedTest?.error);
@@ -785,7 +785,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -801,7 +801,7 @@ describe("playwright feature", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1);
           assert.strictEqual(results.failed, 0);
         } finally {
@@ -816,7 +816,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -834,7 +834,7 @@ describe("playwright feature", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1);
           assert.strictEqual(results.failed, 0);
         } finally {
@@ -849,7 +849,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -868,7 +868,7 @@ describe("playwright feature", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1);
           assert.strictEqual(results.failed, 0);
         } finally {
@@ -883,7 +883,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -897,7 +897,7 @@ describe("playwright feature", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1);
           assert.strictEqual(results.failed, 1);
 
@@ -917,7 +917,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -927,17 +927,17 @@ describe("playwright feature", () => {
             test("test 2", async () => expect(true).toBe(true));
           `);
 
-          let results = await runtime.playwright.runTests();
+          let results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.total, 2);
 
           // Reset and new batch
-          await runtime.playwright.reset();
+          await runtime.testEnvironment.reset();
 
           await runtime.eval(`
             test("test 3", async () => expect(true).toBe(true));
           `);
 
-          results = await runtime.playwright.runTests();
+          results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.total, 1);
         } finally {
           await runtime.dispose();
@@ -954,7 +954,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -988,7 +988,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1021,7 +1021,7 @@ describe("playwright feature", () => {
       try {
         const logs: unknown[] = [];
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1053,7 +1053,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1100,7 +1100,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1138,7 +1138,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1172,7 +1172,7 @@ describe("playwright feature", () => {
       try {
         const logs: unknown[] = [];
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1205,7 +1205,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -1216,10 +1216,10 @@ describe("playwright feature", () => {
             });
           `);
 
-          await runtime.playwright.runTests();
+          await runtime.testEnvironment.runTests();
 
           const data = await runtime.playwright.getCollectedData();
-          assert.ok(Array.isArray(data.consoleLogs));
+          assert.ok(Array.isArray(data.browserConsoleLogs));
           assert.ok(Array.isArray(data.networkRequests));
           assert.ok(Array.isArray(data.networkResponses));
         } finally {
@@ -1234,7 +1234,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -1245,12 +1245,12 @@ describe("playwright feature", () => {
             });
           `);
 
-          await runtime.playwright.runTests();
+          await runtime.testEnvironment.runTests();
 
           // Clear and verify
           await runtime.playwright.clearCollectedData();
           const data = await runtime.playwright.getCollectedData();
-          assert.strictEqual(data.consoleLogs.length, 0);
+          assert.strictEqual(data.browserConsoleLogs.length, 0);
         } finally {
           await runtime.dispose();
         }
@@ -1267,9 +1267,14 @@ describe("playwright feature", () => {
 
       try {
         const runtime = await client.createRuntime({
+          testEnvironment: true,
           playwright: {
             page,
-            onConsoleLog: (entry) => receivedLogs.push(entry),
+            onEvent: (event) => {
+              if (event.type === "browserConsoleLog") {
+                receivedLogs.push({ level: event.level, args: event.args });
+              }
+            },
           },
         });
 
@@ -1281,7 +1286,7 @@ describe("playwright feature", () => {
             });
           `);
 
-          await runtime.playwright.runTests();
+          await runtime.testEnvironment.runTests();
 
           // Wait for events
           await new Promise(r => setTimeout(r, 200));

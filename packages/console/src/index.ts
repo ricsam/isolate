@@ -11,6 +11,13 @@ export type ConsoleEntry =
       args: unknown[];
       groupDepth: number;
     }
+  | {
+      /** Browser console output (from Playwright page, not sandbox) */
+      type: "browserOutput";
+      level: string;
+      args: unknown[];
+      timestamp: number;
+    }
   | { type: "dir"; value: unknown; groupDepth: number }
   | { type: "table"; data: unknown; columns?: string[]; groupDepth: number }
   | { type: "time"; label: string; duration: number; groupDepth: number }

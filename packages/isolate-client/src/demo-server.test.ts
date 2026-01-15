@@ -106,7 +106,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -123,7 +123,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Expected 1 passed. Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -137,7 +137,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -163,7 +163,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -177,7 +177,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -188,7 +188,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1);
         } finally {
           await runtime.dispose();
@@ -207,7 +207,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -223,7 +223,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -237,7 +237,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -251,7 +251,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1);
         } finally {
           await runtime.dispose();
@@ -270,7 +270,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -286,7 +286,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -300,7 +300,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -325,7 +325,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -339,7 +339,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -353,7 +353,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1);
         } finally {
           await runtime.dispose();
@@ -367,7 +367,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -421,7 +421,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -440,7 +440,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -475,7 +475,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -489,7 +489,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -526,14 +526,14 @@ describe("demo server tests", () => {
 
               expect(result.status).toBe(200);
               expect(result.contentType).toBe("application/x-ndjson");
-              expect(result.chunkCount).toBeGreaterThanOrEqual(1);
-              expect(result.lineCount).toBeGreaterThanOrEqual(3);
+              expect(result.chunkCount >= 1).toBe(true);
+              expect(result.lineCount >= 3).toBe(true);
               expect(result.parsed[0]).toHaveProperty("index");
               expect(result.parsed[0]).toHaveProperty("message");
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -547,7 +547,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -592,16 +592,16 @@ describe("demo server tests", () => {
               })()\`);
 
               expect(result.connectionOpened).toBe(true);
-              expect(result.events.length).toBeGreaterThanOrEqual(3);
+              expect(result.events.length >= 3).toBe(true);
 
               const messageEvents = result.events.filter(e => e.type === "message");
-              expect(messageEvents.length).toBeGreaterThan(0);
+              expect(messageEvents.length > 0).toBe(true);
               expect(messageEvents[0].data).toHaveProperty("count");
               expect(messageEvents[0].data).toHaveProperty("timestamp");
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -620,7 +620,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -654,7 +654,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -668,7 +668,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -713,7 +713,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -727,7 +727,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -763,7 +763,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -777,7 +777,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL, timeout: 30000 },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL, timeout: 30000 },
         });
 
         try {
@@ -818,7 +818,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests(60000);
+          const results = await runtime.testEnvironment.runTests(60000);
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -838,7 +838,7 @@ describe("demo server tests", () => {
         const page = await browser.newPage();
         try {
           const runtime = await client.createRuntime({
-            playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
           });
 
           try {
@@ -880,7 +880,7 @@ describe("demo server tests", () => {
               });
             `);
 
-            const results = await runtime.playwright.runTests();
+            const results = await runtime.testEnvironment.runTests();
             assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
           } finally {
             await runtime.dispose();
@@ -894,7 +894,7 @@ describe("demo server tests", () => {
         const page = await browser.newPage();
         try {
           const runtime = await client.createRuntime({
-            playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
           });
 
           try {
@@ -935,7 +935,7 @@ describe("demo server tests", () => {
               });
             `);
 
-            const results = await runtime.playwright.runTests();
+            const results = await runtime.testEnvironment.runTests();
             assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
           } finally {
             await runtime.dispose();
@@ -951,7 +951,7 @@ describe("demo server tests", () => {
         const page = await browser.newPage();
         try {
           const runtime = await client.createRuntime({
-            playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
           });
 
           try {
@@ -996,7 +996,7 @@ describe("demo server tests", () => {
               });
             `);
 
-            const results = await runtime.playwright.runTests();
+            const results = await runtime.testEnvironment.runTests();
             assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
           } finally {
             await runtime.dispose();
@@ -1010,7 +1010,7 @@ describe("demo server tests", () => {
         const page = await browser.newPage();
         try {
           const runtime = await client.createRuntime({
-            playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
           });
 
           try {
@@ -1055,7 +1055,7 @@ describe("demo server tests", () => {
               });
             `);
 
-            const results = await runtime.playwright.runTests();
+            const results = await runtime.testEnvironment.runTests();
             assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
           } finally {
             await runtime.dispose();
@@ -1069,7 +1069,7 @@ describe("demo server tests", () => {
         const page = await browser.newPage();
         try {
           const runtime = await client.createRuntime({
-            playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
           });
 
           try {
@@ -1117,7 +1117,7 @@ describe("demo server tests", () => {
               });
             `);
 
-            const results = await runtime.playwright.runTests();
+            const results = await runtime.testEnvironment.runTests();
             assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
           } finally {
             await runtime.dispose();
@@ -1131,7 +1131,7 @@ describe("demo server tests", () => {
         const page = await browser.newPage();
         try {
           const runtime = await client.createRuntime({
-            playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
           });
 
           try {
@@ -1178,7 +1178,7 @@ describe("demo server tests", () => {
               });
             `);
 
-            const results = await runtime.playwright.runTests();
+            const results = await runtime.testEnvironment.runTests();
             assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
           } finally {
             await runtime.dispose();
@@ -1192,7 +1192,7 @@ describe("demo server tests", () => {
         const page = await browser.newPage();
         try {
           const runtime = await client.createRuntime({
-            playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
           });
 
           try {
@@ -1239,7 +1239,7 @@ describe("demo server tests", () => {
               });
             `);
 
-            const results = await runtime.playwright.runTests();
+            const results = await runtime.testEnvironment.runTests();
             assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
           } finally {
             await runtime.dispose();
@@ -1259,7 +1259,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -1291,7 +1291,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
         } finally {
           await runtime.dispose();
@@ -1305,7 +1305,7 @@ describe("demo server tests", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
         });
 
         try {
@@ -1319,7 +1319,7 @@ describe("demo server tests", () => {
             });
           `);
 
-          const results = await runtime.playwright.runTests();
+          const results = await runtime.testEnvironment.runTests();
           assert.strictEqual(results.passed, 1);
         } finally {
           await runtime.dispose();

@@ -65,7 +65,7 @@ describe("playwright bridge", () => {
             method: event.method,
             headers: event.headers,
             postData: event.postData,
-            resourceType: event.resourceType,
+            resourceType: event.resourceType ?? "",
             timestamp: event.timestamp,
           });
         }
@@ -105,7 +105,7 @@ describe("playwright bridge", () => {
           capturedResponses.push({
             url: event.url,
             status: event.status,
-            statusText: event.statusText,
+            statusText: event.statusText ?? "",
             headers: event.headers,
             timestamp: event.timestamp,
           });
@@ -335,7 +335,7 @@ describe("playwright bridge", () => {
         if (event.type === "browserConsoleLog") {
           capturedLogs.push({
             level: event.level,
-            args: event.args,
+            args: event.args as string[],
             timestamp: event.timestamp,
           });
         }
