@@ -159,7 +159,15 @@ Enable test environment to run tests inside the sandbox:
 
 ```typescript
 const runtime = await client.createRuntime({
-  testEnvironment: true,
+  testEnvironment: {
+    onEvent: (event) => {
+      // Receive lifecycle events during test execution
+      if (event.type === "testEnd") {
+        const icon = event.test.status === "pass" ? "✓" : "✗";
+        console.log(`${icon} ${event.test.fullName}`);
+      }
+    },
+  },
 });
 
 await runtime.eval(`
@@ -167,14 +175,37 @@ await runtime.eval(`
     it("adds numbers", () => {
       expect(1 + 1).toBe(2);
     });
+    it.todo("subtract numbers");
   });
 `);
 
+// Check if tests exist before running
+if (await runtime.testEnvironment.hasTests()) {
+  console.log(`Found ${await runtime.testEnvironment.getTestCount()} tests`);
+}
+
 const results = await runtime.testEnvironment.runTests();
-console.log(`${results.passed}/${results.total} passed`);
+console.log(`${results.passed}/${results.total} passed, ${results.todo} todo`);
 
 // Reset for new tests
 await runtime.testEnvironment.reset();
+```
+
+### TestEnvironmentOptions
+
+```typescript
+interface TestEnvironmentOptions {
+  onEvent?: (event: TestEvent) => void;
+  testTimeout?: number;
+}
+
+type TestEvent =
+  | { type: "runStart"; testCount: number; suiteCount: number }
+  | { type: "suiteStart"; suite: SuiteInfo }
+  | { type: "suiteEnd"; suite: SuiteResult }
+  | { type: "testStart"; test: TestInfo }
+  | { type: "testEnd"; test: TestResult }
+  | { type: "runEnd"; results: RunResults };
 ```
 
 ## Playwright Integration
@@ -308,7 +339,9 @@ interface RemoteConsoleHandle {
 }
 
 interface RemoteTestEnvironmentHandle {
-  runTests(timeout?: number): Promise<TestResults>;
+  runTests(timeout?: number): Promise<RunResults>;
+  hasTests(): Promise<boolean>;
+  getTestCount(): Promise<number>;
   reset(): Promise<void>;
 }
 

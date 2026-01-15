@@ -48,7 +48,7 @@ describe("playwright bridge", () => {
     assert.strictEqual(results.passed, 1);
     assert.strictEqual(results.failed, 0);
     assert.strictEqual(results.total, 1);
-    assert.strictEqual(results.results[0]?.passed, true);
+    assert.strictEqual(results.tests[0]?.status, "pass");
 
     handle.dispose();
   });
@@ -173,8 +173,8 @@ describe("playwright bridge", () => {
     const results = await runTests(context);
     assert.strictEqual(results.passed, 0);
     assert.strictEqual(results.failed, 1);
-    assert.strictEqual(results.results[0]?.passed, false);
-    assert.ok(results.results[0]?.error?.includes("Wrong Title"));
+    assert.strictEqual(results.tests[0]?.status, "fail");
+    assert.ok(results.tests[0]?.error?.message?.includes("Wrong Title"));
 
     handle.dispose();
   });

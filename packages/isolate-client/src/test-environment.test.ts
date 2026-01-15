@@ -768,10 +768,10 @@ describe("playwright feature", () => {
 
           const results = await runtime.testEnvironment.runTests();
           if (results.failed > 0) {
-            const failedTest = results.results.find((r: { passed: boolean }) => !r.passed);
+            const failedTest = results.tests.find((r) => r.status === "fail");
             console.error("Failed test error:", failedTest?.error);
           }
-          assert.strictEqual(results.passed, 1, `Expected 1 passed, got ${results.passed}. Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Expected 1 passed, got ${results.passed}. Results: ${JSON.stringify(results.tests)}`);
           assert.strictEqual(results.failed, 0);
         } finally {
           await runtime.dispose();
@@ -901,10 +901,10 @@ describe("playwright feature", () => {
           assert.strictEqual(results.passed, 1);
           assert.strictEqual(results.failed, 1);
 
-          const failedTest = results.results.find((r: { passed: boolean }) => !r.passed);
+          const failedTest = results.tests.find((r) => r.status === "fail");
           assert.ok(failedTest);
           assert.ok(failedTest.error);
-          assert.ok(failedTest.error.includes("Expected"));
+          assert.ok(failedTest.error.message?.includes("Expected"));
         } finally {
           await runtime.dispose();
         }

@@ -1,22 +1,100 @@
 import type ivm from "isolated-vm";
 
-export interface TestEnvironmentHandle {
-  dispose(): void;
+// ============================================================
+// Test Environment Options
+// ============================================================
+
+export interface TestEnvironmentOptions {
+  /** Receive test lifecycle events */
+  onEvent?: (event: TestEvent) => void;
+  /** Timeout for individual tests (ms) */
+  testTimeout?: number;
 }
 
-export interface TestResults {
+// ============================================================
+// Event Types (discriminated union)
+// ============================================================
+
+export type TestEvent =
+  | { type: "runStart"; testCount: number; suiteCount: number }
+  | { type: "suiteStart"; suite: SuiteInfo }
+  | { type: "suiteEnd"; suite: SuiteResult }
+  | { type: "testStart"; test: TestInfo }
+  | { type: "testEnd"; test: TestResult }
+  | { type: "runEnd"; results: RunResults };
+
+// ============================================================
+// Suite Types
+// ============================================================
+
+export interface SuiteInfo {
+  name: string;
+  /** Ancestry path: ["outer", "inner"] */
+  path: string[];
+  /** Full display name: "outer > inner" */
+  fullName: string;
+  /** Nesting depth (0 for root-level suites) */
+  depth: number;
+}
+
+export interface SuiteResult extends SuiteInfo {
   passed: number;
   failed: number;
-  total: number;
-  results: TestResult[];
+  skipped: number;
+  todo: number;
+  duration: number;
 }
 
-export interface TestResult {
+// ============================================================
+// Test Types
+// ============================================================
+
+export interface TestInfo {
   name: string;
-  passed: boolean;
-  error?: string;
+  /** Suite ancestry */
+  suitePath: string[];
+  /** Full display name: "suite > test name" */
+  fullName: string;
+}
+
+export interface TestResult extends TestInfo {
+  status: "pass" | "fail" | "skip" | "todo";
   duration: number;
-  skipped?: boolean;
+  error?: TestError;
+}
+
+export interface TestError {
+  message: string;
+  stack?: string;
+  /** For assertion failures */
+  expected?: unknown;
+  actual?: unknown;
+  /** e.g., "toBe", "toEqual", "toContain" */
+  matcherName?: string;
+}
+
+// ============================================================
+// Run Results
+// ============================================================
+
+export interface RunResults {
+  passed: number;
+  failed: number;
+  skipped: number;
+  todo: number;
+  total: number;
+  duration: number;
+  success: boolean;
+  suites: SuiteResult[];
+  tests: TestResult[];
+}
+
+// ============================================================
+// Handle Interface
+// ============================================================
+
+export interface TestEnvironmentHandle {
+  dispose(): void;
 }
 
 const testEnvironmentCode = `
@@ -42,6 +120,33 @@ const testEnvironmentCode = `
   const rootSuite = createSuite('root');
   let currentSuite = rootSuite;
   const suiteStack = [rootSuite];
+
+  // Event callback (set from host)
+  let eventCallback = null;
+
+  function emitEvent(event) {
+    if (eventCallback) {
+      try {
+        eventCallback(JSON.stringify(event));
+      } catch (e) {
+        // Ignore callback errors
+      }
+    }
+  }
+
+  // ============================================================
+  // TestError class for rich error info
+  // ============================================================
+
+  class TestError extends Error {
+    constructor(message, matcherName, expected, actual) {
+      super(message);
+      this.name = 'TestError';
+      this.matcherName = matcherName;
+      this.expected = expected;
+      this.actual = actual;
+    }
+  }
 
   // ============================================================
   // Deep Equality Helper
@@ -142,10 +247,10 @@ const testEnvironmentCode = `
 
   function expect(actual) {
     function createMatchers(negated = false) {
-      const assert = (condition, message) => {
+      const assert = (condition, message, matcherName, expected) => {
         const pass = negated ? !condition : condition;
         if (!pass) {
-          throw new Error(message);
+          throw new TestError(message, matcherName, expected, actual);
         }
       };
 
@@ -155,7 +260,9 @@ const testEnvironmentCode = `
             actual === expected,
             negated
               ? \`Expected \${formatValue(actual)} not to be \${formatValue(expected)}\`
-              : \`Expected \${formatValue(actual)} to be \${formatValue(expected)}\`
+              : \`Expected \${formatValue(actual)} to be \${formatValue(expected)}\`,
+            'toBe',
+            expected
           );
         },
 
@@ -164,7 +271,9 @@ const testEnvironmentCode = `
             deepEqual(actual, expected),
             negated
               ? \`Expected \${formatValue(actual)} not to equal \${formatValue(expected)}\`
-              : \`Expected \${formatValue(actual)} to equal \${formatValue(expected)}\`
+              : \`Expected \${formatValue(actual)} to equal \${formatValue(expected)}\`,
+            'toEqual',
+            expected
           );
         },
 
@@ -173,7 +282,9 @@ const testEnvironmentCode = `
             strictDeepEqual(actual, expected),
             negated
               ? \`Expected \${formatValue(actual)} not to strictly equal \${formatValue(expected)}\`
-              : \`Expected \${formatValue(actual)} to strictly equal \${formatValue(expected)}\`
+              : \`Expected \${formatValue(actual)} to strictly equal \${formatValue(expected)}\`,
+            'toStrictEqual',
+            expected
           );
         },
 
@@ -182,7 +293,9 @@ const testEnvironmentCode = `
             !!actual,
             negated
               ? \`Expected \${formatValue(actual)} not to be truthy\`
-              : \`Expected \${formatValue(actual)} to be truthy\`
+              : \`Expected \${formatValue(actual)} to be truthy\`,
+            'toBeTruthy',
+            true
           );
         },
 
@@ -191,7 +304,9 @@ const testEnvironmentCode = `
             !actual,
             negated
               ? \`Expected \${formatValue(actual)} not to be falsy\`
-              : \`Expected \${formatValue(actual)} to be falsy\`
+              : \`Expected \${formatValue(actual)} to be falsy\`,
+            'toBeFalsy',
+            false
           );
         },
 
@@ -200,7 +315,9 @@ const testEnvironmentCode = `
             actual === null,
             negated
               ? \`Expected \${formatValue(actual)} not to be null\`
-              : \`Expected \${formatValue(actual)} to be null\`
+              : \`Expected \${formatValue(actual)} to be null\`,
+            'toBeNull',
+            null
           );
         },
 
@@ -209,7 +326,9 @@ const testEnvironmentCode = `
             actual === undefined,
             negated
               ? \`Expected \${formatValue(actual)} not to be undefined\`
-              : \`Expected \${formatValue(actual)} to be undefined\`
+              : \`Expected \${formatValue(actual)} to be undefined\`,
+            'toBeUndefined',
+            undefined
           );
         },
 
@@ -218,7 +337,9 @@ const testEnvironmentCode = `
             actual !== undefined,
             negated
               ? \`Expected \${formatValue(actual)} not to be defined\`
-              : \`Expected \${formatValue(actual)} to be defined\`
+              : \`Expected \${formatValue(actual)} to be defined\`,
+            'toBeDefined',
+            'defined'
           );
         },
 
@@ -233,7 +354,9 @@ const testEnvironmentCode = `
             contains,
             negated
               ? \`Expected \${formatValue(actual)} not to contain \${formatValue(item)}\`
-              : \`Expected \${formatValue(actual)} to contain \${formatValue(item)}\`
+              : \`Expected \${formatValue(actual)} to contain \${formatValue(item)}\`,
+            'toContain',
+            item
           );
         },
 
@@ -261,14 +384,18 @@ const testEnvironmentCode = `
               matches,
               negated
                 ? \`Expected function not to throw \${formatValue(expected)}\`
-                : \`Expected function to throw \${formatValue(expected)}, but \${threw ? \`threw: \${error.message}\` : 'did not throw'}\`
+                : \`Expected function to throw \${formatValue(expected)}, but \${threw ? \`threw: \${error.message}\` : 'did not throw'}\`,
+              'toThrow',
+              expected
             );
           } else {
             assert(
               threw,
               negated
                 ? \`Expected function not to throw\`
-                : \`Expected function to throw\`
+                : \`Expected function to throw\`,
+              'toThrow',
+              'any error'
             );
           }
         },
@@ -278,7 +405,9 @@ const testEnvironmentCode = `
             actual instanceof cls,
             negated
               ? \`Expected \${formatValue(actual)} not to be instance of \${cls.name || cls}\`
-              : \`Expected \${formatValue(actual)} to be instance of \${cls.name || cls}\`
+              : \`Expected \${formatValue(actual)} to be instance of \${cls.name || cls}\`,
+            'toBeInstanceOf',
+            cls.name || cls
           );
         },
 
@@ -288,7 +417,9 @@ const testEnvironmentCode = `
             actualLength === length,
             negated
               ? \`Expected length not to be \${length}, but got \${actualLength}\`
-              : \`Expected length to be \${length}, but got \${actualLength}\`
+              : \`Expected length to be \${length}, but got \${actualLength}\`,
+            'toHaveLength',
+            length
           );
         },
 
@@ -303,7 +434,9 @@ const testEnvironmentCode = `
             matches,
             negated
               ? \`Expected \${formatValue(actual)} not to match \${pattern}\`
-              : \`Expected \${formatValue(actual)} to match \${pattern}\`
+              : \`Expected \${formatValue(actual)} to match \${pattern}\`,
+            'toMatch',
+            pattern
           );
         },
 
@@ -316,7 +449,53 @@ const testEnvironmentCode = `
             hasProperty && valueMatches,
             negated
               ? \`Expected \${formatValue(actual)} not to have property \${path}\${arguments.length >= 2 ? \` with value \${formatValue(value)}\` : ''}\`
-              : \`Expected \${formatValue(actual)} to have property \${path}\${arguments.length >= 2 ? \` with value \${formatValue(value)}\` : ''}\`
+              : \`Expected \${formatValue(actual)} to have property \${path}\${arguments.length >= 2 ? \` with value \${formatValue(value)}\` : ''}\`,
+            'toHaveProperty',
+            arguments.length >= 2 ? { path, value } : { path }
+          );
+        },
+
+        toBeGreaterThan(expected) {
+          assert(
+            actual > expected,
+            negated
+              ? \`Expected \${formatValue(actual)} not to be greater than \${formatValue(expected)}\`
+              : \`Expected \${formatValue(actual)} to be greater than \${formatValue(expected)}\`,
+            'toBeGreaterThan',
+            expected
+          );
+        },
+
+        toBeGreaterThanOrEqual(expected) {
+          assert(
+            actual >= expected,
+            negated
+              ? \`Expected \${formatValue(actual)} not to be greater than or equal to \${formatValue(expected)}\`
+              : \`Expected \${formatValue(actual)} to be greater than or equal to \${formatValue(expected)}\`,
+            'toBeGreaterThanOrEqual',
+            expected
+          );
+        },
+
+        toBeLessThan(expected) {
+          assert(
+            actual < expected,
+            negated
+              ? \`Expected \${formatValue(actual)} not to be less than \${formatValue(expected)}\`
+              : \`Expected \${formatValue(actual)} to be less than \${formatValue(expected)}\`,
+            'toBeLessThan',
+            expected
+          );
+        },
+
+        toBeLessThanOrEqual(expected) {
+          assert(
+            actual <= expected,
+            negated
+              ? \`Expected \${formatValue(actual)} not to be less than or equal to \${formatValue(expected)}\`
+              : \`Expected \${formatValue(actual)} to be less than or equal to \${formatValue(expected)}\`,
+            'toBeLessThanOrEqual',
+            expected
           );
         },
       };
@@ -439,7 +618,7 @@ const testEnvironmentCode = `
   }
 
   // ============================================================
-  // Test Runner
+  // Test Runner Helpers
   // ============================================================
 
   function checkForOnly(suite) {
@@ -464,120 +643,273 @@ const testEnvironmentCode = `
     return false;
   }
 
-  async function __runAllTests() {
-    const results = [];
-    const hasOnly = checkForOnly(rootSuite);
+  function countTests(suite, hasOnly) {
+    let count = 0;
+    if (hasOnly && !suiteHasOnly(suite)) return 0;
+    if (suite.skip) return suite.tests.length;
 
-    async function runSuite(suite, parentHooks, namePath) {
+    for (const t of suite.tests) {
+      if (hasOnly && !t.only && !suite.only) continue;
+      count++;
+    }
+    for (const child of suite.children) {
+      count += countTests(child, hasOnly);
+    }
+    return count;
+  }
+
+  function countSuites(suite, hasOnly) {
+    let count = 0;
+    if (hasOnly && !suiteHasOnly(suite)) return 0;
+
+    for (const child of suite.children) {
+      count++;
+      count += countSuites(child, hasOnly);
+    }
+    return count;
+  }
+
+  // ============================================================
+  // Test Runner
+  // ============================================================
+
+  async function __runAllTests() {
+    const testResults = [];
+    const suiteResults = [];
+    const hasOnly = checkForOnly(rootSuite);
+    const runStart = Date.now();
+
+    // Emit runStart
+    const testCount = countTests(rootSuite, hasOnly);
+    const suiteCount = countSuites(rootSuite, hasOnly);
+    emitEvent({ type: 'runStart', testCount, suiteCount });
+
+    async function runSuite(suite, parentHooks, pathArray, depth) {
       // Skip if this suite doesn't have any .only when .only exists elsewhere
       if (hasOnly && !suiteHasOnly(suite)) return;
+
+      const suitePath = [...pathArray];
+      const fullName = suitePath.join(' > ');
+      const suiteInfo = {
+        name: suite.name,
+        path: suitePath.slice(0, -1),
+        fullName,
+        depth,
+      };
+
+      // Emit suiteStart (only for non-root suites)
+      if (suite !== rootSuite) {
+        emitEvent({ type: 'suiteStart', suite: suiteInfo });
+      }
+
+      const suiteStart = Date.now();
+      let suitePassed = 0;
+      let suiteFailed = 0;
+      let suiteSkipped = 0;
+      let suiteTodo = 0;
 
       // Skip if suite is marked as skip
       if (suite.skip) {
         // Mark all tests in this suite as skipped
         for (const t of suite.tests) {
-          results.push({
-            name: namePath ? namePath + ' > ' + t.name : t.name,
-            passed: true,
-            skipped: true,
+          const testFullName = fullName ? fullName + ' > ' + t.name : t.name;
+          const testInfo = {
+            name: t.name,
+            suitePath: suitePath,
+            fullName: testFullName,
+          };
+          emitEvent({ type: 'testStart', test: testInfo });
+
+          const testResult = {
+            name: t.name,
+            suitePath: suitePath,
+            fullName: testFullName,
+            status: 'skip',
             duration: 0,
-          });
+          };
+          testResults.push(testResult);
+          suiteSkipped++;
+
+          emitEvent({ type: 'testEnd', test: testResult });
         }
-        return;
-      }
-
-      // Run beforeAll hooks
-      for (const hook of suite.beforeAll) {
-        await hook();
-      }
-
-      // Run tests
-      for (const t of suite.tests) {
-        const testName = namePath ? namePath + ' > ' + t.name : t.name;
-
-        // Skip if .only is used and this test isn't .only AND the suite doesn't have .only
-        if (hasOnly && !t.only && !suite.only) continue;
-
-        // Skip if test is marked as skip
-        if (t.skip) {
-          results.push({
-            name: testName,
-            passed: true,
-            skipped: true,
-            duration: 0,
-          });
-          continue;
+      } else {
+        // Run beforeAll hooks
+        for (const hook of suite.beforeAll) {
+          await hook();
         }
 
-        // Handle todo tests (no function provided)
-        if (t.todo) {
-          results.push({
-            name: testName,
-            passed: true,
-            skipped: true,
-            duration: 0,
-          });
-          continue;
-        }
+        // Run tests
+        for (const t of suite.tests) {
+          const testFullName = fullName ? fullName + ' > ' + t.name : t.name;
+          const testInfo = {
+            name: t.name,
+            suitePath: suitePath,
+            fullName: testFullName,
+          };
 
-        const start = Date.now();
-        try {
-          // Run all beforeEach hooks (parent first, then current)
-          for (const hook of [...parentHooks.beforeEach, ...suite.beforeEach]) {
-            await hook();
+          // Skip if .only is used and this test isn't .only AND the suite doesn't have .only
+          if (hasOnly && !t.only && !suite.only) continue;
+
+          emitEvent({ type: 'testStart', test: testInfo });
+
+          // Skip if test is marked as skip
+          if (t.skip) {
+            const testResult = {
+              name: t.name,
+              suitePath: suitePath,
+              fullName: testFullName,
+              status: 'skip',
+              duration: 0,
+            };
+            testResults.push(testResult);
+            suiteSkipped++;
+            emitEvent({ type: 'testEnd', test: testResult });
+            continue;
           }
 
-          // Run test
-          await t.fn();
-
-          // Run all afterEach hooks (current first, then parent)
-          for (const hook of [...suite.afterEach, ...parentHooks.afterEach]) {
-            await hook();
+          // Handle todo tests (no function provided)
+          if (t.todo) {
+            const testResult = {
+              name: t.name,
+              suitePath: suitePath,
+              fullName: testFullName,
+              status: 'todo',
+              duration: 0,
+            };
+            testResults.push(testResult);
+            suiteTodo++;
+            emitEvent({ type: 'testEnd', test: testResult });
+            continue;
           }
 
-          results.push({
-            name: testName,
-            passed: true,
-            duration: Date.now() - start,
-          });
-        } catch (err) {
-          results.push({
-            name: testName,
-            passed: false,
-            error: err.message || String(err),
-            duration: Date.now() - start,
-          });
+          const testStart = Date.now();
+          try {
+            // Run all beforeEach hooks (parent first, then current)
+            for (const hook of [...parentHooks.beforeEach, ...suite.beforeEach]) {
+              await hook();
+            }
+
+            // Run test
+            await t.fn();
+
+            // Run all afterEach hooks (current first, then parent)
+            for (const hook of [...suite.afterEach, ...parentHooks.afterEach]) {
+              await hook();
+            }
+
+            const testResult = {
+              name: t.name,
+              suitePath: suitePath,
+              fullName: testFullName,
+              status: 'pass',
+              duration: Date.now() - testStart,
+            };
+            testResults.push(testResult);
+            suitePassed++;
+            emitEvent({ type: 'testEnd', test: testResult });
+          } catch (err) {
+            const testError = {
+              message: err.message || String(err),
+              stack: err.stack,
+            };
+            // If it's a TestError, include matcher info
+            if (err.matcherName !== undefined) {
+              testError.matcherName = err.matcherName;
+              testError.expected = err.expected;
+              testError.actual = err.actual;
+            }
+            const testResult = {
+              name: t.name,
+              suitePath: suitePath,
+              fullName: testFullName,
+              status: 'fail',
+              duration: Date.now() - testStart,
+              error: testError,
+            };
+            testResults.push(testResult);
+            suiteFailed++;
+            emitEvent({ type: 'testEnd', test: testResult });
+          }
+        }
+
+        // Run child suites
+        for (const child of suite.children) {
+          const childPath = [...suitePath, child.name];
+          await runSuite(child, {
+            beforeEach: [...parentHooks.beforeEach, ...suite.beforeEach],
+            afterEach: [...suite.afterEach, ...parentHooks.afterEach],
+          }, childPath, depth + 1);
+        }
+
+        // Run afterAll hooks
+        for (const hook of suite.afterAll) {
+          await hook();
         }
       }
 
-      // Run child suites
-      for (const child of suite.children) {
-        const childPath = namePath ? namePath + ' > ' + child.name : child.name;
-        await runSuite(child, {
-          beforeEach: [...parentHooks.beforeEach, ...suite.beforeEach],
-          afterEach: [...suite.afterEach, ...parentHooks.afterEach],
-        }, childPath);
-      }
-
-      // Run afterAll hooks
-      for (const hook of suite.afterAll) {
-        await hook();
+      // Emit suiteEnd (only for non-root suites)
+      if (suite !== rootSuite) {
+        const suiteResult = {
+          ...suiteInfo,
+          passed: suitePassed,
+          failed: suiteFailed,
+          skipped: suiteSkipped,
+          todo: suiteTodo,
+          duration: Date.now() - suiteStart,
+        };
+        suiteResults.push(suiteResult);
+        emitEvent({ type: 'suiteEnd', suite: suiteResult });
       }
     }
 
-    await runSuite(rootSuite, { beforeEach: [], afterEach: [] }, '');
+    await runSuite(rootSuite, { beforeEach: [], afterEach: [] }, [], -1);
 
-    const passed = results.filter(r => r.passed && !r.skipped).length;
-    const failed = results.filter(r => !r.passed).length;
-    const skipped = results.filter(r => r.skipped).length;
+    const passed = testResults.filter(r => r.status === 'pass').length;
+    const failed = testResults.filter(r => r.status === 'fail').length;
+    const skipped = testResults.filter(r => r.status === 'skip').length;
+    const todo = testResults.filter(r => r.status === 'todo').length;
 
-    return JSON.stringify({
+    const runResults = {
       passed,
       failed,
       skipped,
-      total: results.length,
-      results,
-    });
+      todo,
+      total: testResults.length,
+      duration: Date.now() - runStart,
+      success: failed === 0,
+      suites: suiteResults,
+      tests: testResults,
+    };
+
+    emitEvent({ type: 'runEnd', results: runResults });
+
+    return JSON.stringify(runResults);
+  }
+
+  // ============================================================
+  // Helper Functions
+  // ============================================================
+
+  function __hasTests() {
+    function checkSuite(suite) {
+      if (suite.tests.length > 0) return true;
+      for (const child of suite.children) {
+        if (checkSuite(child)) return true;
+      }
+      return false;
+    }
+    return checkSuite(rootSuite);
+  }
+
+  function __getTestCount() {
+    function countInSuite(suite) {
+      let count = suite.tests.length;
+      for (const child of suite.children) {
+        count += countInSuite(child);
+      }
+      return count;
+    }
+    return countInSuite(rootSuite);
   }
 
   // Reset function to clear state between runs
@@ -591,6 +923,10 @@ const testEnvironmentCode = `
     currentSuite = rootSuite;
     suiteStack.length = 0;
     suiteStack.push(rootSuite);
+  }
+
+  function __setEventCallback(callback) {
+    eventCallback = callback;
   }
 
   // ============================================================
@@ -607,6 +943,9 @@ const testEnvironmentCode = `
   globalThis.afterAll = afterAll;
   globalThis.__runAllTests = __runAllTests;
   globalThis.__resetTestEnvironment = __resetTestEnvironment;
+  globalThis.__hasTests = __hasTests;
+  globalThis.__getTestCount = __getTestCount;
+  globalThis.__setEventCallback = __setEventCallback;
 })();
 `;
 
@@ -619,7 +958,9 @@ const testEnvironmentCode = `
  * - expect matchers
  *
  * @example
- * const handle = await setupTestEnvironment(context);
+ * const handle = await setupTestEnvironment(context, {
+ *   onEvent: (event) => console.log(event),
+ * });
  *
  * await context.eval(`
  *   describe("my tests", () => {
@@ -630,9 +971,32 @@ const testEnvironmentCode = `
  * `);
  */
 export async function setupTestEnvironment(
-  context: ivm.Context
+  context: ivm.Context,
+  options?: TestEnvironmentOptions
 ): Promise<TestEnvironmentHandle> {
   context.evalSync(testEnvironmentCode);
+
+  // Set up event callback if provided
+  if (options?.onEvent) {
+    const eventCallbackRef = new (
+      await import("isolated-vm")
+    ).default.Reference((eventJson: string) => {
+      try {
+        const event = JSON.parse(eventJson);
+        options.onEvent!(event);
+      } catch {
+        // Ignore parse errors
+      }
+    });
+
+    const global = context.global;
+    global.setSync("__eventCallbackRef", eventCallbackRef);
+    context.evalSync(`
+      __setEventCallback((eventJson) => {
+        __eventCallbackRef.applySync(undefined, [eventJson]);
+      });
+    `);
+  }
 
   return {
     dispose() {
@@ -649,7 +1013,21 @@ export async function setupTestEnvironment(
 /**
  * Run tests in the context and return results
  */
-export async function runTests(context: ivm.Context): Promise<TestResults> {
+export async function runTests(context: ivm.Context): Promise<RunResults> {
   const resultJson = await context.eval("__runAllTests()", { promise: true });
   return JSON.parse(resultJson as string);
+}
+
+/**
+ * Check if any tests are registered
+ */
+export function hasTests(context: ivm.Context): boolean {
+  return context.evalSync("__hasTests()") as boolean;
+}
+
+/**
+ * Get the count of registered tests
+ */
+export function getTestCount(context: ivm.Context): number {
+  return context.evalSync("__getTestCount()") as number;
 }

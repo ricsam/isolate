@@ -124,7 +124,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Expected 1 passed. Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Expected 1 passed. Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -164,7 +164,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -224,7 +224,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -287,7 +287,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -326,7 +326,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -422,7 +422,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -476,7 +476,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -534,7 +534,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -602,7 +602,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -655,7 +655,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -714,7 +714,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -764,7 +764,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -819,7 +819,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests(60000);
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }
@@ -881,7 +881,7 @@ describe("demo server tests", () => {
             `);
 
             const results = await runtime.testEnvironment.runTests();
-            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
           } finally {
             await runtime.dispose();
           }
@@ -936,7 +936,7 @@ describe("demo server tests", () => {
             `);
 
             const results = await runtime.testEnvironment.runTests();
-            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
           } finally {
             await runtime.dispose();
           }
@@ -997,7 +997,7 @@ describe("demo server tests", () => {
             `);
 
             const results = await runtime.testEnvironment.runTests();
-            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
           } finally {
             await runtime.dispose();
           }
@@ -1056,7 +1056,7 @@ describe("demo server tests", () => {
             `);
 
             const results = await runtime.testEnvironment.runTests();
-            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
           } finally {
             await runtime.dispose();
           }
@@ -1118,7 +1118,7 @@ describe("demo server tests", () => {
             `);
 
             const results = await runtime.testEnvironment.runTests();
-            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
           } finally {
             await runtime.dispose();
           }
@@ -1179,7 +1179,7 @@ describe("demo server tests", () => {
             `);
 
             const results = await runtime.testEnvironment.runTests();
-            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
           } finally {
             await runtime.dispose();
           }
@@ -1240,7 +1240,7 @@ describe("demo server tests", () => {
             `);
 
             const results = await runtime.testEnvironment.runTests();
-            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+            assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
           } finally {
             await runtime.dispose();
           }
@@ -1292,7 +1292,7 @@ describe("demo server tests", () => {
           `);
 
           const results = await runtime.testEnvironment.runTests();
-          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.results)}`);
+          assert.strictEqual(results.passed, 1, `Results: ${JSON.stringify(results.tests)}`);
         } finally {
           await runtime.dispose();
         }

@@ -38,6 +38,8 @@ export const MessageType = {
   // Client → Daemon: Test environment
   RUN_TESTS: 0x21,
   RESET_TEST_ENV: 0x22,
+  HAS_TESTS: 0x23,
+  GET_TEST_COUNT: 0x24,
 
   // Client → Daemon: Playwright
   RUN_PLAYWRIGHT_TESTS: 0x31,
@@ -64,6 +66,7 @@ export const MessageType = {
 
   // Daemon → Client: Events
   PLAYWRIGHT_EVENT: 0xb0,
+  TEST_EVENT: 0xb1,
 
   // Heartbeat
   PING: 0xf0,
@@ -213,6 +216,18 @@ export interface RuntimeCallbackRegistrations {
 // Client → Daemon Messages
 // ============================================================================
 
+export interface TestEnvironmentCallbackRegistrations {
+  /** Callback for test events */
+  onEvent?: CallbackRegistration;
+}
+
+export interface TestEnvironmentOptionsProtocol {
+  /** Callback registrations for test events */
+  callbacks?: TestEnvironmentCallbackRegistrations;
+  /** Timeout for individual tests (ms) */
+  testTimeout?: number;
+}
+
 export interface CreateRuntimeRequest extends BaseMessage {
   type: typeof MessageType.CREATE_RUNTIME;
   options: {
@@ -221,7 +236,7 @@ export interface CreateRuntimeRequest extends BaseMessage {
     /** Current working directory for path.resolve(). Defaults to "/" */
     cwd?: string;
     /** Enable test environment (describe, it, expect, etc.) */
-    testEnvironment?: boolean;
+    testEnvironment?: boolean | TestEnvironmentOptionsProtocol;
   };
 }
 
@@ -340,6 +355,16 @@ export interface RunTestsRequest extends BaseMessage {
 
 export interface ResetTestEnvRequest extends BaseMessage {
   type: typeof MessageType.RESET_TEST_ENV;
+  isolateId: string;
+}
+
+export interface HasTestsRequest extends BaseMessage {
+  type: typeof MessageType.HAS_TESTS;
+  isolateId: string;
+}
+
+export interface GetTestCountRequest extends BaseMessage {
+  type: typeof MessageType.GET_TEST_COUNT;
   isolateId: string;
 }
 
@@ -479,6 +504,12 @@ export interface PlaywrightEventMessage {
   payload: unknown;
 }
 
+export interface TestEventMessage {
+  type: typeof MessageType.TEST_EVENT;
+  isolateId: string;
+  event: TestEvent;
+}
+
 /**
  * Unified playwright event type for the onEvent callback.
  */
@@ -542,6 +573,8 @@ export type ClientMessage =
   | ConsoleGetGroupDepthRequest
   | RunTestsRequest
   | ResetTestEnvRequest
+  | HasTestsRequest
+  | GetTestCountRequest
   | RunPlaywrightTestsRequest
   | ResetPlaywrightTestsRequest
   | GetCollectedDataRequest
@@ -565,6 +598,7 @@ export type DaemonMessage =
   | StreamClose
   | StreamError
   | PlaywrightEventMessage
+  | TestEventMessage
   | PongMessage;
 
 export type Message = ClientMessage | DaemonMessage;
@@ -717,20 +751,70 @@ export interface DispatchRequestResult {
   response: SerializedResponse;
 }
 
-export interface TestResult {
+// ============================================================================
+// Test Environment Types
+// ============================================================================
+
+export interface SuiteInfo {
   name: string;
-  passed: boolean;
-  error?: string;
-  duration: number;
-  skipped?: boolean;
+  /** Ancestry path: ["outer", "inner"] */
+  path: string[];
+  /** Full display name: "outer > inner" */
+  fullName: string;
+  /** Nesting depth (0 for root-level suites) */
+  depth: number;
 }
+
+export interface SuiteResult extends SuiteInfo {
+  passed: number;
+  failed: number;
+  skipped: number;
+  todo: number;
+  duration: number;
+}
+
+export interface TestInfo {
+  name: string;
+  /** Suite ancestry */
+  suitePath: string[];
+  /** Full display name: "suite > test name" */
+  fullName: string;
+}
+
+export interface TestError {
+  message: string;
+  stack?: string;
+  /** For assertion failures */
+  expected?: unknown;
+  actual?: unknown;
+  /** e.g., "toBe", "toEqual", "toContain" */
+  matcherName?: string;
+}
+
+export interface TestResult extends TestInfo {
+  status: "pass" | "fail" | "skip" | "todo";
+  duration: number;
+  error?: TestError;
+}
+
+export type TestEvent =
+  | { type: "runStart"; testCount: number; suiteCount: number }
+  | { type: "suiteStart"; suite: SuiteInfo }
+  | { type: "suiteEnd"; suite: SuiteResult }
+  | { type: "testStart"; test: TestInfo }
+  | { type: "testEnd"; test: TestResult }
+  | { type: "runEnd"; results: RunTestsResult };
 
 export interface RunTestsResult {
   passed: number;
   failed: number;
   skipped: number;
+  todo: number;
   total: number;
-  results: TestResult[];
+  duration: number;
+  success: boolean;
+  suites: SuiteResult[];
+  tests: TestResult[];
 }
 
 export interface PlaywrightTestResult {

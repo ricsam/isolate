@@ -34,7 +34,7 @@ describe("Test Modifiers", () => {
     // todo tests should be tracked separately
     assert.strictEqual(results.passed, 1);
     // Check if todo is tracked (may need to look at results structure)
-    const todoResult = results.results.find((r: any) => r.name.includes("implement this later"));
+    const todoResult = results.tests.find((r: any) => r.name.includes("implement this later"));
     assert.ok(todoResult, "todo test should be in results");
   });
 
@@ -201,7 +201,7 @@ describe("Error Scenarios", () => {
     const results = await runTests(context);
 
     assert.strictEqual(results.failed, 1);
-    assert.ok(results.results[0]!.error?.includes("intentional error"));
+    assert.ok(results.tests[0]!.error?.message?.includes("intentional error"));
   });
 
   test("assertion error includes expected and actual values", async () => {
@@ -216,9 +216,9 @@ describe("Error Scenarios", () => {
     const results = await runTests(context);
 
     assert.strictEqual(results.failed, 1);
-    const error = results.results[0]!.error;
-    assert.ok(error?.includes("42"), "Error should mention actual value");
-    assert.ok(error?.includes("100"), "Error should mention expected value");
+    const error = results.tests[0]!.error;
+    assert.ok(error?.message?.includes("42"), "Error should mention actual value");
+    assert.ok(error?.message?.includes("100"), "Error should mention expected value");
   });
 
   test("toEqual assertion error shows both values", async () => {
@@ -233,7 +233,7 @@ describe("Error Scenarios", () => {
     const results = await runTests(context);
 
     assert.strictEqual(results.failed, 1);
-    assert.ok(results.results[0]!.error);
+    assert.ok(results.tests[0]!.error);
   });
 
   test("multiple test failures are all captured", async () => {
@@ -291,8 +291,8 @@ describe("Basic Test Execution", () => {
 
     assert.strictEqual(results.passed, 2);
     assert.strictEqual(results.failed, 0);
-    assert.ok(results.results.some((r: any) => r.name.includes("should add numbers")));
-    assert.ok(results.results.some((r: any) => r.name.includes("should multiply numbers")));
+    assert.ok(results.tests.some((r: any) => r.name.includes("should add numbers")));
+    assert.ok(results.tests.some((r: any) => r.name.includes("should multiply numbers")));
   });
 
   test("SPEC example: with all hooks", async () => {

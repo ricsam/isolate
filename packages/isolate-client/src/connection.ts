@@ -22,6 +22,11 @@ import {
   type SerializedResponse,
   type RunTestsRequest,
   type RunTestsResult,
+  type HasTestsRequest,
+  type GetTestCountRequest,
+  type TestEnvironmentCallbackRegistrations,
+  type TestEnvironmentOptionsProtocol,
+  type TestEventMessage,
   type GetCollectedDataRequest,
   type CollectedData,
   type ResetTestEnvRequest,
@@ -62,6 +67,7 @@ import type {
   EvalOptions,
   UpgradeRequest,
   WebSocketCommand,
+  TestEnvironmentOptions,
 } from "./types.ts";
 
 const DEFAULT_TIMEOUT = 30000;
@@ -422,6 +428,35 @@ async function createRuntime(
     };
   }
 
+  // Test environment callback registration
+  let testEnvironmentOption: boolean | TestEnvironmentOptionsProtocol | undefined;
+  if (options.testEnvironment) {
+    if (typeof options.testEnvironment === "object") {
+      const testEnvOptions = options.testEnvironment;
+      const testEnvCallbacks: TestEnvironmentCallbackRegistrations = {};
+
+      if (testEnvOptions.onEvent) {
+        const userOnEvent = testEnvOptions.onEvent;
+        const onEventCallbackId = registerEventCallback(state, (eventJson: unknown) => {
+          const event = JSON.parse(eventJson as string);
+          userOnEvent(event);
+        });
+        testEnvCallbacks.onEvent = {
+          callbackId: onEventCallbackId,
+          name: "testEnvironment.onEvent",
+          async: false,
+        };
+      }
+
+      testEnvironmentOption = {
+        callbacks: testEnvCallbacks,
+        testTimeout: testEnvOptions.testTimeout,
+      };
+    } else {
+      testEnvironmentOption = true;
+    }
+  }
+
   const requestId = state.nextRequestId++;
   const request: CreateRuntimeRequest = {
     type: MessageType.CREATE_RUNTIME,
@@ -430,7 +465,7 @@ async function createRuntime(
       memoryLimit: options.memoryLimit,
       cwd: options.cwd,
       callbacks,
-      testEnvironment: options.testEnvironment,
+      testEnvironment: testEnvironmentOption,
     },
   };
 
@@ -623,6 +658,32 @@ async function createRuntime(
         timeout,
       };
       return sendRequest<RunTestsResult>(state, req, timeout ?? DEFAULT_TIMEOUT);
+    },
+
+    async hasTests(): Promise<boolean> {
+      if (!testEnvironmentEnabled) {
+        throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
+      }
+      const reqId = state.nextRequestId++;
+      const req: HasTestsRequest = {
+        type: MessageType.HAS_TESTS,
+        requestId: reqId,
+        isolateId,
+      };
+      return sendRequest<boolean>(state, req);
+    },
+
+    async getTestCount(): Promise<number> {
+      if (!testEnvironmentEnabled) {
+        throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
+      }
+      const reqId = state.nextRequestId++;
+      const req: GetTestCountRequest = {
+        type: MessageType.GET_TEST_COUNT,
+        requestId: reqId,
+        isolateId,
+      };
+      return sendRequest<number>(state, req);
     },
 
     async reset(): Promise<void> {

@@ -16,7 +16,15 @@ The easiest way to use this package is through `@ricsam/isolate-runtime`:
 import { createRuntime } from "@ricsam/isolate-runtime";
 
 const runtime = await createRuntime({
-  testEnvironment: true,
+  testEnvironment: {
+    onEvent: (event) => {
+      // Receive lifecycle events during test execution
+      if (event.type === "testEnd") {
+        const icon = event.test.status === "pass" ? "✓" : "✗";
+        console.log(`${icon} ${event.test.fullName}`);
+      }
+    },
+  },
 });
 
 await runtime.eval(`
@@ -24,11 +32,17 @@ await runtime.eval(`
     it("adds numbers", () => {
       expect(1 + 1).toBe(2);
     });
+    it.todo("subtract numbers");
   });
 `);
 
 const results = await runtime.testEnvironment.runTests();
-console.log(`${results.passed}/${results.total} passed`);
+console.log(`${results.passed}/${results.total} passed, ${results.todo} todo`);
+
+// Check if tests exist before running
+if (runtime.testEnvironment.hasTests()) {
+  console.log(`Found ${runtime.testEnvironment.getTestCount()} tests`);
+}
 ```
 
 ## Low-level Usage (Direct ivm)
@@ -95,34 +109,102 @@ expect([1, 2]).not.toContain(3);
 ## Running Tests from Host
 
 ```typescript
-import { setupTestEnvironment, runTests } from "@ricsam/isolate-test-environment";
+import { setupTestEnvironment, runTests, hasTests, getTestCount } from "@ricsam/isolate-test-environment";
 
-// Setup test environment
-const handle = await setupTestEnvironment(context);
+// Setup test environment with optional event callback
+const handle = await setupTestEnvironment(context, {
+  onEvent: (event) => {
+    switch (event.type) {
+      case "runStart":
+        console.log(`Running ${event.testCount} tests in ${event.suiteCount} suites`);
+        break;
+      case "testEnd":
+        console.log(`${event.test.status}: ${event.test.fullName}`);
+        break;
+    }
+  },
+});
 
 // Load test code
 await context.eval(userProvidedTestCode, { promise: true });
+
+// Check if any tests were registered
+if (hasTests(context)) {
+  console.log(`Found ${getTestCount(context)} tests`);
+}
 
 // Run all registered tests
 const results = await runTests(context);
 console.log(`${results.passed}/${results.total} passed`);
 
-// Results structure:
-// {
-//   passed: number,
-//   failed: number,
-//   skipped: number,
-//   total: number,
-//   results: Array<{
-//     name: string,
-//     passed: boolean,
-//     error?: string,
-//     duration: number,
-//     skipped?: boolean
-//   }>
-// }
-
 handle.dispose();
+```
+
+## Types
+
+### RunResults
+
+```typescript
+interface RunResults {
+  passed: number;
+  failed: number;
+  skipped: number;
+  todo: number;
+  total: number;
+  duration: number;
+  success: boolean;        // true if no failures
+  suites: SuiteResult[];   // suite-level results
+  tests: TestResult[];     // individual test results
+}
+```
+
+### TestResult
+
+```typescript
+interface TestResult {
+  name: string;
+  suitePath: string[];     // suite ancestry
+  fullName: string;        // "suite > nested > test name"
+  status: "pass" | "fail" | "skip" | "todo";
+  duration: number;
+  error?: TestError;
+}
+
+interface TestError {
+  message: string;
+  stack?: string;
+  expected?: unknown;      // for assertion failures
+  actual?: unknown;
+  matcherName?: string;    // e.g., "toBe", "toEqual"
+}
+```
+
+### SuiteResult
+
+```typescript
+interface SuiteResult {
+  name: string;
+  path: string[];          // ancestry path
+  fullName: string;        // "outer > inner"
+  depth: number;           // nesting level (0 for root)
+  passed: number;
+  failed: number;
+  skipped: number;
+  todo: number;
+  duration: number;
+}
+```
+
+### TestEvent
+
+```typescript
+type TestEvent =
+  | { type: "runStart"; testCount: number; suiteCount: number }
+  | { type: "suiteStart"; suite: SuiteInfo }
+  | { type: "suiteEnd"; suite: SuiteResult }
+  | { type: "testStart"; test: TestInfo }
+  | { type: "testEnd"; test: TestResult }
+  | { type: "runEnd"; results: RunResults };
 ```
 
 ## License

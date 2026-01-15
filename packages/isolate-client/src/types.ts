@@ -5,14 +5,24 @@
 import type {
   RunTestsResult,
   TestResult as ProtocolTestResult,
+  TestInfo as ProtocolTestInfo,
+  TestError as ProtocolTestError,
+  TestEvent as ProtocolTestEvent,
+  SuiteInfo as ProtocolSuiteInfo,
+  SuiteResult as ProtocolSuiteResult,
   CollectedData as ProtocolCollectedData,
   ConsoleEntry as ProtocolConsoleEntry,
   PlaywrightEvent as ProtocolPlaywrightEvent,
 } from "@ricsam/isolate-protocol";
 
 // Re-export test result types
-export type TestResults = RunTestsResult;
+export type RunResults = RunTestsResult;
 export type TestResult = ProtocolTestResult;
+export type TestInfo = ProtocolTestInfo;
+export type TestError = ProtocolTestError;
+export type TestEvent = ProtocolTestEvent;
+export type SuiteInfo = ProtocolSuiteInfo;
+export type SuiteResult = ProtocolSuiteResult;
 export type CollectedData = ProtocolCollectedData;
 export type ConsoleEntry = ProtocolConsoleEntry;
 export type PlaywrightEvent = ProtocolPlaywrightEvent;
@@ -44,6 +54,16 @@ export interface DaemonConnection {
 }
 
 /**
+ * Test environment options for createRuntime.
+ */
+export interface TestEnvironmentOptions {
+  /** Receive test lifecycle events */
+  onEvent?: (event: TestEvent) => void;
+  /** Timeout for individual tests (ms) */
+  testTimeout?: number;
+}
+
+/**
  * Options for creating a runtime.
  */
 export interface RuntimeOptions {
@@ -62,7 +82,7 @@ export interface RuntimeOptions {
   /** Current working directory for path.resolve(). Defaults to "/" */
   cwd?: string;
   /** Enable test environment (describe, it, expect, etc.) */
-  testEnvironment?: boolean;
+  testEnvironment?: boolean | TestEnvironmentOptions;
   /** Playwright options - user provides page */
   playwright?: PlaywrightOptions;
 }
@@ -269,7 +289,11 @@ export interface RemoteRuntime {
  */
 export interface RemoteTestEnvironmentHandle {
   /** Run all registered tests and return results */
-  runTests(timeout?: number): Promise<TestResults>;
+  runTests(timeout?: number): Promise<RunResults>;
+  /** Check if any tests are registered */
+  hasTests(): Promise<boolean>;
+  /** Get count of registered tests */
+  getTestCount(): Promise<number>;
   /** Reset test environment state */
   reset(): Promise<void>;
 }

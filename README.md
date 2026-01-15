@@ -327,7 +327,11 @@ interface ConsoleHandle {
 
 interface TestEnvironmentHandle {
   /** Run all registered tests */
-  runTests(timeout?: number): Promise<TestResults>;
+  runTests(timeout?: number): Promise<RunResults>;
+  /** Check if any tests have been registered */
+  hasTests(): boolean;
+  /** Get the number of registered tests */
+  getTestCount(): number;
   /** Reset test environment state */
   reset(): void;
 }
@@ -375,7 +379,7 @@ interface RuntimeOptions {
   cwd?: string;
 
   /** Enable test environment (describe, it, expect, etc.) */
-  testEnvironment?: boolean;
+  testEnvironment?: boolean | TestEnvironmentOptions;
 
   /** Playwright options - user provides page object */
   playwright?: PlaywrightOptions;
@@ -628,7 +632,15 @@ Run tests inside the sandbox by enabling `testEnvironment` in options:
 
 ```typescript
 const runtime = await createRuntime({
-  testEnvironment: true,
+  testEnvironment: {
+    onEvent: (event) => {
+      // Receive lifecycle events during test execution
+      if (event.type === "testEnd") {
+        const icon = event.test.status === "pass" ? "✓" : "✗";
+        console.log(`${icon} ${event.test.fullName}`);
+      }
+    },
+  },
 });
 
 await runtime.eval(`
@@ -641,14 +653,50 @@ await runtime.eval(`
       const result = await Promise.resolve(42);
       expect(result).toBe(42);
     });
+
+    it.todo("subtract numbers");
   });
 `);
 
+// Check if tests exist before running
+if (runtime.testEnvironment.hasTests()) {
+  console.log(`Found ${runtime.testEnvironment.getTestCount()} tests`);
+}
+
 const results = await runtime.testEnvironment.runTests();
-console.log(`${results.passed}/${results.total} passed`);
+console.log(`${results.passed}/${results.total} passed, ${results.todo} todo`);
 
 // Reset test environment for new tests
 runtime.testEnvironment.reset();
+```
+
+### TestEnvironmentOptions
+
+```typescript
+interface TestEnvironmentOptions {
+  onEvent?: (event: TestEvent) => void;
+  testTimeout?: number;
+}
+
+type TestEvent =
+  | { type: "runStart"; testCount: number; suiteCount: number }
+  | { type: "suiteStart"; suite: SuiteInfo }
+  | { type: "suiteEnd"; suite: SuiteResult }
+  | { type: "testStart"; test: TestInfo }
+  | { type: "testEnd"; test: TestResult }
+  | { type: "runEnd"; results: RunResults };
+
+interface RunResults {
+  passed: number;
+  failed: number;
+  skipped: number;
+  todo: number;
+  total: number;
+  duration: number;
+  success: boolean;
+  suites: SuiteResult[];
+  tests: TestResult[];
+}
 ```
 
 ## Playwright Integration

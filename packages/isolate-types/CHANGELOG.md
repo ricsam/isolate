@@ -1,5 +1,11 @@
 # @ricsam/isolate-types
 
+## 0.1.5
+
+### Patch Changes
+
+- new API
+
 ## 0.1.4
 
 ### Patch Changes

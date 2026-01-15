@@ -10,6 +10,8 @@ import { setupFs } from "@ricsam/isolate-fs";
 import {
   setupTestEnvironment,
   runTests as runTestsInContext,
+  hasTests as hasTestsInContext,
+  getTestCount as getTestCountInContext,
 } from "@ricsam/isolate-test-environment";
 import { setupPlaywright } from "@ricsam/isolate-playwright";
 
@@ -21,7 +23,17 @@ import type { EncodingHandle } from "@ricsam/isolate-encoding";
 import type { TimersHandle } from "@ricsam/isolate-timers";
 import type { PathHandle } from "@ricsam/isolate-path";
 import type { CryptoHandle } from "@ricsam/isolate-crypto";
-import type { TestEnvironmentHandle, TestResults } from "@ricsam/isolate-test-environment";
+import type {
+  TestEnvironmentHandle,
+  RunResults,
+  TestEnvironmentOptions,
+  TestEvent,
+  SuiteInfo,
+  SuiteResult,
+  TestInfo,
+  TestResult,
+  TestError,
+} from "@ricsam/isolate-test-environment";
 import type {
   PlaywrightHandle,
   NetworkRequestInfo,
@@ -74,7 +86,7 @@ export interface RuntimeOptions {
   /** Current working directory for path.resolve(). Defaults to "/" */
   cwd?: string;
   /** Enable test environment (describe, it, expect, etc.) */
-  testEnvironment?: boolean;
+  testEnvironment?: boolean | TestEnvironmentOptions;
   /** Playwright options - user provides page object */
   playwright?: PlaywrightOptions;
 }
@@ -147,7 +159,11 @@ export interface RuntimeConsoleHandle {
  */
 export interface RuntimeTestEnvironmentHandle {
   /** Run all registered tests */
-  runTests(timeout?: number): Promise<TestResults>;
+  runTests(timeout?: number): Promise<RunResults>;
+  /** Check if any tests are registered */
+  hasTests(): boolean;
+  /** Get count of registered tests */
+  getTestCount(): number;
   /** Reset test state */
   reset(): void;
 }
@@ -436,7 +452,9 @@ export async function createRuntime(
 
   // Setup test environment (if enabled)
   if (opts.testEnvironment) {
-    state.handles.testEnvironment = await setupTestEnvironment(context);
+    const testEnvOptions: TestEnvironmentOptions | undefined =
+      typeof opts.testEnvironment === "object" ? opts.testEnvironment : undefined;
+    state.handles.testEnvironment = await setupTestEnvironment(context, testEnvOptions);
   }
 
   // Setup playwright (if page provided) - AFTER test environment so expect can be extended
@@ -558,12 +576,24 @@ export async function createRuntime(
 
   // Create test environment handle wrapper
   const testEnvironmentHandle: RuntimeTestEnvironmentHandle = {
-    async runTests(_timeout?: number): Promise<TestResults> {
+    async runTests(_timeout?: number): Promise<RunResults> {
       if (!state.handles.testEnvironment) {
         throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
       }
       // Note: timeout parameter reserved for future use
       return runTestsInContext(state.context);
+    },
+    hasTests(): boolean {
+      if (!state.handles.testEnvironment) {
+        throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
+      }
+      return hasTestsInContext(state.context);
+    },
+    getTestCount(): number {
+      if (!state.handles.testEnvironment) {
+        throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
+      }
+      return getTestCountInContext(state.context);
     },
     reset() {
       state.handles.testEnvironment?.dispose();
@@ -664,8 +694,18 @@ export type { PathHandle, PathOptions } from "@ricsam/isolate-path";
 export { setupTimers } from "@ricsam/isolate-timers";
 export type { TimersHandle } from "@ricsam/isolate-timers";
 
-export { setupTestEnvironment, runTests } from "@ricsam/isolate-test-environment";
-export type { TestEnvironmentHandle, TestResults, TestResult } from "@ricsam/isolate-test-environment";
+export { setupTestEnvironment, runTests, hasTests, getTestCount } from "@ricsam/isolate-test-environment";
+export type {
+  TestEnvironmentHandle,
+  TestEnvironmentOptions,
+  RunResults,
+  TestResult,
+  TestInfo,
+  TestError,
+  TestEvent,
+  SuiteInfo,
+  SuiteResult,
+} from "@ricsam/isolate-test-environment";
 
 export { setupPlaywright, createPlaywrightHandler } from "@ricsam/isolate-playwright";
 export type {

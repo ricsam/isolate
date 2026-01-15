@@ -261,9 +261,9 @@ describe("isolate-client integration", () => {
       assert.strictEqual(results.total, 2);
 
       // Check error message
-      const failedTest = results.results.find((r: { passed: boolean }) => !r.passed);
+      const failedTest = results.tests.find((r) => r.status === "fail");
       assert.ok(failedTest);
-      assert.ok(failedTest.error?.includes("Expected"));
+      assert.ok(failedTest.error?.message?.includes("Expected"));
     } finally {
       await runtime.dispose();
     }
@@ -465,7 +465,7 @@ describe("isolate-client integration", () => {
       assert.strictEqual(results.total, 2);
 
       // Check error message is present
-      const failedTest = results.results.find((t: { passed: boolean }) => !t.passed);
+      const failedTest = results.tests.find((t) => t.status === "fail");
       assert.ok(failedTest);
       assert.ok(failedTest.error);
     } finally {

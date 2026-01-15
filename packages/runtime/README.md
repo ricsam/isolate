@@ -90,7 +90,9 @@ interface RuntimeConsoleHandle {
 }
 
 interface RuntimeTestEnvironmentHandle {
-  runTests(timeout?: number): Promise<TestResults>;
+  runTests(timeout?: number): Promise<RunResults>;
+  hasTests(): boolean;
+  getTestCount(): number;
   reset(): void;
 }
 
@@ -112,7 +114,7 @@ interface RuntimeOptions {
   customFunctions?: CustomFunctions;
   cwd?: string;
   /** Enable test environment (describe, it, expect) */
-  testEnvironment?: boolean;
+  testEnvironment?: boolean | TestEnvironmentOptions;
   /** Playwright options - user provides page object */
   playwright?: PlaywrightOptions;
 }
@@ -184,7 +186,15 @@ Enable test environment to run tests inside the sandbox:
 import { createRuntime } from "@ricsam/isolate-runtime";
 
 const runtime = await createRuntime({
-  testEnvironment: true,
+  testEnvironment: {
+    onEvent: (event) => {
+      // Receive lifecycle events during test execution
+      if (event.type === "testEnd") {
+        const icon = event.test.status === "pass" ? "✓" : "✗";
+        console.log(`${icon} ${event.test.fullName}`);
+      }
+    },
+  },
 });
 
 await runtime.eval(`
@@ -192,14 +202,37 @@ await runtime.eval(`
     it("adds numbers", () => {
       expect(1 + 1).toBe(2);
     });
+    it.todo("subtract numbers");
   });
 `);
 
+// Check if tests exist before running
+if (runtime.testEnvironment.hasTests()) {
+  console.log(`Found ${runtime.testEnvironment.getTestCount()} tests`);
+}
+
 const results = await runtime.testEnvironment.runTests();
-console.log(`${results.passed}/${results.total} passed`);
+console.log(`${results.passed}/${results.total} passed, ${results.todo} todo`);
 
 // Reset for new tests
 runtime.testEnvironment.reset();
+```
+
+### TestEnvironmentOptions
+
+```typescript
+interface TestEnvironmentOptions {
+  onEvent?: (event: TestEvent) => void;
+  testTimeout?: number;
+}
+
+type TestEvent =
+  | { type: "runStart"; testCount: number; suiteCount: number }
+  | { type: "suiteStart"; suite: SuiteInfo }
+  | { type: "suiteEnd"; suite: SuiteResult }
+  | { type: "testStart"; test: TestInfo }
+  | { type: "testEnd"; test: TestResult }
+  | { type: "runEnd"; results: RunResults };
 ```
 
 ## Playwright Integration

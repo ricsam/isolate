@@ -1,5 +1,13 @@
 # @ricsam/isolate-path
 
+## 0.1.5
+
+### Patch Changes
+
+- new API
+- Updated dependencies
+  - @ricsam/isolate-core@0.1.5
+
 ## 0.1.4
 
 ### Patch Changes

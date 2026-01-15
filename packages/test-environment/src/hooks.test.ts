@@ -191,7 +191,7 @@ describe("test hooks", () => {
       const results = await runTests(context);
       assert.strictEqual(results.passed, 1);
       assert.strictEqual(results.failed, 0);
-      assert.strictEqual(results.results.filter((r: any) => r.skipped).length, 1);
+      assert.strictEqual(results.tests.filter((r: any) => r.status === "skip").length, 1);
     });
   });
 
@@ -241,7 +241,7 @@ describe("test hooks", () => {
       const results = await runTests(context);
       assert.strictEqual(results.passed, 1);
       assert.strictEqual(results.failed, 0);
-      assert.strictEqual(results.results.filter((r: any) => r.skipped).length, 2);
+      assert.strictEqual(results.tests.filter((r: any) => r.status === "skip").length, 2);
     });
   });
 
@@ -297,7 +297,7 @@ describe("test hooks", () => {
       const results = await runTests(context);
       assert.strictEqual(results.passed, 1);
       assert.strictEqual(results.failed, 0);
-      assert.strictEqual(results.results.filter((r: any) => r.skipped).length, 1);
+      assert.strictEqual(results.tests.filter((r: any) => r.status === "skip").length, 1);
     });
   });
 });

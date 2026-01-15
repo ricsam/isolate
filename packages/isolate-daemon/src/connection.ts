@@ -20,6 +20,8 @@ import {
   type CallbackResponseMsg,
   type CallbackInvoke,
   type RunTestsRequest,
+  type HasTestsRequest,
+  type GetTestCountRequest,
   type RunPlaywrightTestsRequest,
   type ResetPlaywrightTestsRequest,
   type GetCollectedDataRequest,
@@ -47,6 +49,8 @@ import { createCallbackFileSystemHandler } from "./callback-fs-handler.ts";
 import {
   setupTestEnvironment,
   runTests as runTestsInContext,
+  hasTests as hasTestsInContext,
+  getTestCount as getTestCountInContext,
 } from "@ricsam/isolate-test-environment";
 import {
   setupPlaywright,
@@ -301,6 +305,18 @@ async function handleMessage(
       );
       break;
 
+    case MessageType.HAS_TESTS:
+      await handleHasTests(message as HasTestsRequest, connection, state);
+      break;
+
+    case MessageType.GET_TEST_COUNT:
+      await handleGetTestCount(
+        message as GetTestCountRequest,
+        connection,
+        state
+      );
+      break;
+
     case MessageType.RUN_PLAYWRIGHT_TESTS:
       await handleRunPlaywrightTests(
         message as RunPlaywrightTestsRequest,
@@ -473,8 +489,36 @@ async function handleCreateRuntime(
 
     // Setup test environment if requested
     if (message.options.testEnvironment) {
-      await setupTestEnvironment(runtime.context);
+      const testEnvOption = message.options.testEnvironment;
+      const testEnvOptions = typeof testEnvOption === "object" ? testEnvOption : undefined;
+
+      // Create event callback if provided
+      const onEventCallback = testEnvOptions?.callbacks?.onEvent;
+
+      await setupTestEnvironment(runtime.context, {
+        onEvent: onEventCallback
+          ? (event) => {
+              // Forward event to client callback
+              const promise = invokeClientCallback(
+                connection,
+                onEventCallback.callbackId,
+                [JSON.stringify(event)]
+              ).catch(() => {});
+              pendingCallbacks.push(promise);
+            }
+          : undefined,
+        testTimeout: testEnvOptions?.testTimeout,
+      });
+
       instance.testEnvironmentEnabled = true;
+
+      // Store callback registration
+      if (onEventCallback) {
+        instance.callbacks.set(onEventCallback.callbackId, {
+          ...onEventCallback,
+          name: "testEnvironment.onEvent",
+        });
+      }
     }
 
     // Setup playwright if callbacks are provided (client owns the browser)
@@ -1512,6 +1556,100 @@ async function handleResetTestEnv(
     // Reset test environment state
     await instance.runtime.context.eval("__resetTestEnvironment()", { promise: true });
     sendOk(connection.socket, message.requestId);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle HAS_TESTS message.
+ */
+async function handleHasTests(
+  message: HasTestsRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  if (!instance.testEnvironmentEnabled) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      "Test environment not enabled. Set testEnvironment: true in createRuntime options."
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    const result = hasTestsInContext(instance.runtime.context);
+    sendOk(connection.socket, message.requestId, result);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle GET_TEST_COUNT message.
+ */
+async function handleGetTestCount(
+  message: GetTestCountRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  if (!instance.testEnvironmentEnabled) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      "Test environment not enabled. Set testEnvironment: true in createRuntime options."
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    const result = getTestCountInContext(instance.runtime.context);
+    sendOk(connection.socket, message.requestId, result);
   } catch (err) {
     const error = err as Error;
     sendError(
