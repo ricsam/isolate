@@ -14,7 +14,6 @@ import {
   type DisposeRuntimeRequest,
   type EvalRequest,
   type DispatchRequestRequest,
-  type TickRequest,
   type CallbackInvoke,
   type CallbackResponseMsg,
   type CallbackRegistration,
@@ -31,18 +30,39 @@ import {
   type PlaywrightTestResult,
   type CollectedData,
   type PlaywrightEvent,
+  type WsOpenRequest,
+  type WsMessageRequest,
+  type WsCloseRequest,
+  type FetchGetUpgradeRequestRequest,
+  type FetchHasServeHandlerRequest,
+  type FetchHasActiveConnectionsRequest,
+  type FetchWsErrorRequest,
+  type TimersClearAllRequest,
+  type ConsoleResetRequest,
+  type ConsoleGetTimersRequest,
+  type ConsoleGetCountersRequest,
+  type ConsoleGetGroupDepthRequest,
 } from "@ricsam/isolate-protocol";
 import type {
   ConnectOptions,
   DaemonConnection,
   RuntimeOptions,
   RemoteRuntime,
+  RemoteFetchHandle,
+  RemoteTimersHandle,
+  RemoteConsoleHandle,
   DispatchOptions,
   ConsoleCallbacks,
   FetchCallback,
   FileSystemCallbacks,
   PlaywrightSetupOptions,
   PlaywrightEventHandler,
+  ModuleLoaderCallback,
+  CustomFunctions,
+  CustomFunctionDefinition,
+  EvalOptions,
+  UpgradeRequest,
+  WebSocketCommand,
 } from "./types.ts";
 
 const DEFAULT_TIMEOUT = 30000;
@@ -323,12 +343,24 @@ async function createRuntime(
     callbacks.fs = registerFsCallbacks(state, options.fs);
   }
 
+  if (options.moduleLoader) {
+    callbacks.moduleLoader = registerModuleLoaderCallback(
+      state,
+      options.moduleLoader
+    );
+  }
+
+  if (options.customFunctions) {
+    callbacks.custom = registerCustomFunctions(state, options.customFunctions);
+  }
+
   const requestId = state.nextRequestId++;
   const request: CreateRuntimeRequest = {
     type: MessageType.CREATE_RUNTIME,
     requestId,
     options: {
       memoryLimit: options.memoryLimit,
+      cwd: options.cwd,
       callbacks,
     },
   };
@@ -336,52 +368,203 @@ async function createRuntime(
   const result = await sendRequest<CreateRuntimeResult>(state, request);
   const isolateId = result.isolateId;
 
+  // WebSocket command callbacks
+  const wsCommandCallbacks: Set<(cmd: WebSocketCommand) => void> = new Set();
+
+  // Create fetch handle
+  const fetchHandle: RemoteFetchHandle = {
+    async dispatchRequest(req: Request, opts?: DispatchOptions) {
+      const reqId = state.nextRequestId++;
+      const serialized = await serializeRequest(req);
+      const request: DispatchRequestRequest = {
+        type: MessageType.DISPATCH_REQUEST,
+        requestId: reqId,
+        isolateId,
+        request: serialized,
+        options: opts,
+      };
+      const res = await sendRequest<{ response: SerializedResponse }>(
+        state,
+        request,
+        opts?.timeout ?? DEFAULT_TIMEOUT
+      );
+      return deserializeResponse(res.response);
+    },
+
+    async getUpgradeRequest(): Promise<UpgradeRequest | null> {
+      const reqId = state.nextRequestId++;
+      const req: FetchGetUpgradeRequestRequest = {
+        type: MessageType.FETCH_GET_UPGRADE_REQUEST,
+        requestId: reqId,
+        isolateId,
+      };
+      return sendRequest<UpgradeRequest | null>(state, req);
+    },
+
+    async dispatchWebSocketOpen(connectionId: string): Promise<void> {
+      const reqId = state.nextRequestId++;
+      const req: WsOpenRequest = {
+        type: MessageType.WS_OPEN,
+        requestId: reqId,
+        isolateId,
+        connectionId,
+      };
+      await sendRequest(state, req);
+    },
+
+    async dispatchWebSocketMessage(connectionId: string, message: string | ArrayBuffer): Promise<void> {
+      const reqId = state.nextRequestId++;
+      const data = message instanceof ArrayBuffer ? new Uint8Array(message) : message;
+      const req: WsMessageRequest = {
+        type: MessageType.WS_MESSAGE,
+        requestId: reqId,
+        isolateId,
+        connectionId,
+        data,
+      };
+      await sendRequest(state, req);
+    },
+
+    async dispatchWebSocketClose(connectionId: string, code: number, reason: string): Promise<void> {
+      const reqId = state.nextRequestId++;
+      const req: WsCloseRequest = {
+        type: MessageType.WS_CLOSE,
+        requestId: reqId,
+        isolateId,
+        connectionId,
+        code,
+        reason,
+      };
+      await sendRequest(state, req);
+    },
+
+    async dispatchWebSocketError(connectionId: string, error: Error): Promise<void> {
+      const reqId = state.nextRequestId++;
+      const req: FetchWsErrorRequest = {
+        type: MessageType.FETCH_WS_ERROR,
+        requestId: reqId,
+        isolateId,
+        connectionId,
+        error: error.message,
+      };
+      await sendRequest(state, req);
+    },
+
+    onWebSocketCommand(callback: (cmd: WebSocketCommand) => void): () => void {
+      wsCommandCallbacks.add(callback);
+      return () => {
+        wsCommandCallbacks.delete(callback);
+      };
+    },
+
+    async hasServeHandler(): Promise<boolean> {
+      const reqId = state.nextRequestId++;
+      const req: FetchHasServeHandlerRequest = {
+        type: MessageType.FETCH_HAS_SERVE_HANDLER,
+        requestId: reqId,
+        isolateId,
+      };
+      return sendRequest<boolean>(state, req);
+    },
+
+    async hasActiveConnections(): Promise<boolean> {
+      const reqId = state.nextRequestId++;
+      const req: FetchHasActiveConnectionsRequest = {
+        type: MessageType.FETCH_HAS_ACTIVE_CONNECTIONS,
+        requestId: reqId,
+        isolateId,
+      };
+      return sendRequest<boolean>(state, req);
+    },
+  };
+
+  // Create timers handle
+  const timersHandle: RemoteTimersHandle = {
+    async clearAll(): Promise<void> {
+      const reqId = state.nextRequestId++;
+      const req: TimersClearAllRequest = {
+        type: MessageType.TIMERS_CLEAR_ALL,
+        requestId: reqId,
+        isolateId,
+      };
+      await sendRequest(state, req);
+    },
+  };
+
+  // Create console handle
+  const consoleHandle: RemoteConsoleHandle = {
+    async reset(): Promise<void> {
+      const reqId = state.nextRequestId++;
+      const req: ConsoleResetRequest = {
+        type: MessageType.CONSOLE_RESET,
+        requestId: reqId,
+        isolateId,
+      };
+      await sendRequest(state, req);
+    },
+
+    async getTimers(): Promise<Map<string, number>> {
+      const reqId = state.nextRequestId++;
+      const req: ConsoleGetTimersRequest = {
+        type: MessageType.CONSOLE_GET_TIMERS,
+        requestId: reqId,
+        isolateId,
+      };
+      const result = await sendRequest<Record<string, number>>(state, req);
+      return new Map(Object.entries(result));
+    },
+
+    async getCounters(): Promise<Map<string, number>> {
+      const reqId = state.nextRequestId++;
+      const req: ConsoleGetCountersRequest = {
+        type: MessageType.CONSOLE_GET_COUNTERS,
+        requestId: reqId,
+        isolateId,
+      };
+      const result = await sendRequest<Record<string, number>>(state, req);
+      return new Map(Object.entries(result));
+    },
+
+    async getGroupDepth(): Promise<number> {
+      const reqId = state.nextRequestId++;
+      const req: ConsoleGetGroupDepthRequest = {
+        type: MessageType.CONSOLE_GET_GROUP_DEPTH,
+        requestId: reqId,
+        isolateId,
+      };
+      return sendRequest<number>(state, req);
+    },
+  };
+
   return {
+    id: isolateId,
     isolateId,
 
-    eval: async (code: string, filename?: string) => {
+    // Module handles
+    fetch: fetchHandle,
+    timers: timersHandle,
+    console: consoleHandle,
+
+    eval: async (
+      code: string,
+      filenameOrOptions?: string | EvalOptions
+    ): Promise<void> => {
       const reqId = state.nextRequestId++;
+      // Support both new signature (filename string) and old signature (EvalOptions)
+      const filename =
+        typeof filenameOrOptions === "string"
+          ? filenameOrOptions
+          : filenameOrOptions?.filename;
       const req: EvalRequest = {
         type: MessageType.EVAL,
         requestId: reqId,
         isolateId,
         code,
         filename,
+        module: true, // Always use module mode
       };
-      const res = await sendRequest<{ value: unknown }>(state, req);
-      return res.value;
-    },
-
-    dispatchRequest: async (
-      request: Request,
-      dispatchOptions?: DispatchOptions
-    ) => {
-      const reqId = state.nextRequestId++;
-      const serialized = await serializeRequest(request);
-      const req: DispatchRequestRequest = {
-        type: MessageType.DISPATCH_REQUEST,
-        requestId: reqId,
-        isolateId,
-        request: serialized,
-        options: dispatchOptions,
-      };
-      const res = await sendRequest<{ response: SerializedResponse }>(
-        state,
-        req,
-        dispatchOptions?.timeout ?? DEFAULT_TIMEOUT
-      );
-      return deserializeResponse(res.response);
-    },
-
-    tick: async (ms?: number) => {
-      const reqId = state.nextRequestId++;
-      const req: TickRequest = {
-        type: MessageType.TICK,
-        requestId: reqId,
-        isolateId,
-        ms,
-      };
-      await sendRequest(state, req);
+      await sendRequest<{ value: unknown }>(state, req);
+      // Module evaluation returns void - don't return the value
     },
 
     setupTestEnvironment: async () => {
@@ -485,20 +668,13 @@ function registerConsoleCallbacks(
 ): Record<string, CallbackRegistration> {
   const registrations: Record<string, CallbackRegistration> = {};
 
-  const register = (name: string, fn: (...args: unknown[]) => void) => {
+  if (callbacks.onEntry) {
     const callbackId = state.nextCallbackId++;
-    state.callbacks.set(callbackId, (_level: unknown, ...args: unknown[]) => {
-      fn(...args);
+    state.callbacks.set(callbackId, (entry: unknown) => {
+      callbacks.onEntry!(entry as Parameters<typeof callbacks.onEntry>[0]);
     });
-    registrations[name] = { callbackId, name, async: false };
-  };
-
-  if (callbacks.log) register("log", callbacks.log);
-  if (callbacks.warn) register("warn", callbacks.warn);
-  if (callbacks.error) register("error", callbacks.error);
-  if (callbacks.info) register("info", callbacks.info);
-  if (callbacks.debug) register("debug", callbacks.debug);
-  if (callbacks.dir) register("dir", callbacks.dir);
+    registrations.onEntry = { callbackId, name: "onEntry", async: false };
+  }
 
   return registrations;
 }
@@ -613,6 +789,53 @@ function registerFsCallbacks(
       await callbacks.rename!(from as string, to as string);
     });
     registrations.rename = { callbackId, name: "rename", async: true };
+  }
+
+  return registrations;
+}
+
+/**
+ * Register module loader callback.
+ */
+function registerModuleLoaderCallback(
+  state: ConnectionState,
+  callback: ModuleLoaderCallback
+): CallbackRegistration {
+  const callbackId = state.nextCallbackId++;
+
+  state.callbacks.set(callbackId, async (moduleName: unknown) => {
+    return callback(moduleName as string);
+  });
+
+  return { callbackId, name: "moduleLoader", async: true };
+}
+
+/**
+ * Register custom function callbacks.
+ */
+function registerCustomFunctions(
+  state: ConnectionState,
+  customFunctions: CustomFunctions
+): Record<string, CallbackRegistration> {
+  const registrations: Record<string, CallbackRegistration> = {};
+
+  for (const [name, fnOrDef] of Object.entries(customFunctions)) {
+    // Normalize to definition format
+    const def: CustomFunctionDefinition =
+      typeof fnOrDef === "function" ? { fn: fnOrDef, async: true } : fnOrDef;
+
+    const callbackId = state.nextCallbackId++;
+
+    // Register the callback
+    state.callbacks.set(callbackId, async (...args: unknown[]) => {
+      return def.fn(...args);
+    });
+
+    registrations[name] = {
+      callbackId,
+      name,
+      async: def.async !== false, // Default to async
+    };
   }
 
   return registrations;

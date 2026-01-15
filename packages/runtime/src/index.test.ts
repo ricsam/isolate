@@ -1,157 +1,97 @@
 import { test, describe } from "node:test";
 import assert from "node:assert";
-import { createRuntime, type RuntimeHandle } from "./index.ts";
+import {
+  createRuntime,
+  simpleConsoleHandler,
+  type RuntimeHandle,
+  type ConsoleEntry,
+} from "./index.ts";
 
 describe("@ricsam/isolate-runtime", () => {
-  describe("createRuntime", () => {
-    test("creates runtime with default options", async () => {
+  describe("createRuntime (new unified API)", () => {
+    test("creates runtime with id", async () => {
       const runtime = await createRuntime();
       try {
-        assert(runtime.isolate, "isolate should be defined");
-        assert(runtime.context, "context should be defined");
-        assert(typeof runtime.tick === "function", "tick should be a function");
+        assert(runtime.id, "runtime should have an id");
+        assert.match(
+          runtime.id,
+          /^[0-9a-f-]{36}$/,
+          "id should be a valid UUID"
+        );
+        assert(typeof runtime.eval === "function", "eval should be a function");
         assert(
           typeof runtime.dispose === "function",
           "dispose should be a function"
         );
+        assert.ok(runtime.fetch, "runtime.fetch should exist");
+        assert.ok(runtime.timers, "runtime.timers should exist");
+        assert.ok(runtime.console, "runtime.console should exist");
       } finally {
-        runtime.dispose();
+        await runtime.dispose();
       }
     });
 
-    test("runtime has all globals defined", async () => {
+    test("eval executes code as ES module", async () => {
+      let logValue: string | null = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0] as string;
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`console.log("hello from module");`);
+        assert.strictEqual(logValue, "hello from module");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("eval supports top-level await", async () => {
+      let logValue: string | null = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0] as string;
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          const result = await Promise.resolve("async result");
+          console.log(result);
+        `);
+        assert.strictEqual(logValue, "async result");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("eval returns void (modules don't return values)", async () => {
       const runtime = await createRuntime();
       try {
-        const result = await runtime.context.eval(`
-          JSON.stringify({
-            hasFetch: typeof fetch === 'function',
-            hasConsole: typeof console === 'object',
-            hasCrypto: typeof crypto === 'object',
-            hasSetTimeout: typeof setTimeout === 'function',
-            hasSetInterval: typeof setInterval === 'function',
-            hasClearTimeout: typeof clearTimeout === 'function',
-            hasClearInterval: typeof clearInterval === 'function',
-            hasPath: typeof path === 'object',
-            hasTextEncoder: typeof TextEncoder === 'function',
-            hasTextDecoder: typeof TextDecoder === 'function',
-            hasBlob: typeof Blob === 'function',
-            hasFile: typeof File === 'function',
-            hasURL: typeof URL === 'function',
-            hasURLSearchParams: typeof URLSearchParams === 'function',
-            hasHeaders: typeof Headers === 'function',
-            hasRequest: typeof Request === 'function',
-            hasResponse: typeof Response === 'function',
-            hasFormData: typeof FormData === 'function',
-            hasAbortController: typeof AbortController === 'function',
-            hasAbortSignal: typeof AbortSignal === 'function',
-            hasReadableStream: typeof ReadableStream === 'function',
-            hasBtoa: typeof btoa === 'function',
-            hasAtob: typeof atob === 'function',
-          })
-        `);
-        const globals = JSON.parse(result as string);
-
-        assert.strictEqual(globals.hasFetch, true, "fetch should be defined");
-        assert.strictEqual(
-          globals.hasConsole,
-          true,
-          "console should be defined"
-        );
-        assert.strictEqual(globals.hasCrypto, true, "crypto should be defined");
-        assert.strictEqual(
-          globals.hasSetTimeout,
-          true,
-          "setTimeout should be defined"
-        );
-        assert.strictEqual(
-          globals.hasSetInterval,
-          true,
-          "setInterval should be defined"
-        );
-        assert.strictEqual(
-          globals.hasClearTimeout,
-          true,
-          "clearTimeout should be defined"
-        );
-        assert.strictEqual(
-          globals.hasClearInterval,
-          true,
-          "clearInterval should be defined"
-        );
-        assert.strictEqual(globals.hasPath, true, "path should be defined");
-        assert.strictEqual(
-          globals.hasTextEncoder,
-          true,
-          "TextEncoder should be defined"
-        );
-        assert.strictEqual(
-          globals.hasTextDecoder,
-          true,
-          "TextDecoder should be defined"
-        );
-        assert.strictEqual(globals.hasBlob, true, "Blob should be defined");
-        assert.strictEqual(globals.hasFile, true, "File should be defined");
-        assert.strictEqual(globals.hasURL, true, "URL should be defined");
-        assert.strictEqual(
-          globals.hasURLSearchParams,
-          true,
-          "URLSearchParams should be defined"
-        );
-        assert.strictEqual(
-          globals.hasHeaders,
-          true,
-          "Headers should be defined"
-        );
-        assert.strictEqual(
-          globals.hasRequest,
-          true,
-          "Request should be defined"
-        );
-        assert.strictEqual(
-          globals.hasResponse,
-          true,
-          "Response should be defined"
-        );
-        assert.strictEqual(
-          globals.hasFormData,
-          true,
-          "FormData should be defined"
-        );
-        assert.strictEqual(
-          globals.hasAbortController,
-          true,
-          "AbortController should be defined"
-        );
-        assert.strictEqual(
-          globals.hasAbortSignal,
-          true,
-          "AbortSignal should be defined"
-        );
-        assert.strictEqual(
-          globals.hasReadableStream,
-          true,
-          "ReadableStream should be defined"
-        );
-        assert.strictEqual(globals.hasBtoa, true, "btoa should be defined");
-        assert.strictEqual(globals.hasAtob, true, "atob should be defined");
+        const result = await runtime.eval(`1 + 1`);
+        assert.strictEqual(result, undefined, "eval should return undefined");
       } finally {
-        runtime.dispose();
+        await runtime.dispose();
       }
     });
 
-    test("dispose cleans up resources", async () => {
+    test("dispose is async", async () => {
       const runtime = await createRuntime();
-      runtime.dispose();
-
-      // After dispose, the isolate should be disposed
-      // Attempting to use it should throw
-      assert.throws(
-        () => {
-          runtime.isolate.createContextSync();
-        },
-        /disposed/i,
-        "isolate should be disposed"
+      const disposeResult = runtime.dispose();
+      assert(
+        disposeResult instanceof Promise,
+        "dispose should return a Promise"
       );
+      await disposeResult;
     });
 
     test("accepts memory limit option", async () => {
@@ -159,199 +99,400 @@ describe("@ricsam/isolate-runtime", () => {
         memoryLimit: 128,
       });
       try {
-        assert(runtime.isolate, "isolate should be created with memory limit");
+        assert(runtime.id, "runtime should be created with memory limit");
       } finally {
-        runtime.dispose();
+        await runtime.dispose();
+      }
+    });
+  });
+
+  describe("moduleLoader", () => {
+    test("module imports work with moduleLoader", async () => {
+      let logValue: unknown = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0];
+            }
+          },
+        },
+        moduleLoader: async (moduleName) => {
+          if (moduleName === "@/utils") {
+            return `
+              export function add(a, b) {
+                return a + b;
+              }
+              export function multiply(a, b) {
+                return a * b;
+              }
+            `;
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          import { add, multiply } from "@/utils";
+          console.log(add(2, 3));
+        `);
+        assert.strictEqual(logValue, 5);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("nested module imports work", async () => {
+      let logValue: unknown = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0];
+            }
+          },
+        },
+        moduleLoader: async (moduleName) => {
+          if (moduleName === "@/math") {
+            return `
+              import { constant } from "@/constants";
+              export function addWithConstant(x) {
+                return x + constant;
+              }
+            `;
+          }
+          if (moduleName === "@/constants") {
+            return `export const constant = 10;`;
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          import { addWithConstant } from "@/math";
+          console.log(addWithConstant(5));
+        `);
+        assert.strictEqual(logValue, 15);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("module cache prevents duplicate loads", async () => {
+      let loadCount = 0;
+      const runtime = await createRuntime({
+        moduleLoader: async (moduleName) => {
+          if (moduleName === "@/counter") {
+            loadCount++;
+            return `export const count = ${loadCount};`;
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        // Import the same module twice
+        await runtime.eval(`
+          import { count as count1 } from "@/counter";
+          globalThis.count1 = count1;
+        `);
+        await runtime.eval(`
+          import { count as count2 } from "@/counter";
+          globalThis.count2 = count2;
+        `);
+
+        // Module should only be loaded once due to caching
+        assert.strictEqual(loadCount, 1, "module should only be loaded once");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+  });
+
+  describe("customFunctions", () => {
+    test("custom functions are callable from isolate", async () => {
+      let logValue: unknown = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0];
+            }
+          },
+        },
+        customFunctions: {
+          addNumbers: {
+            fn: async (a: unknown, b: unknown) => {
+              return (a as number) + (b as number);
+            },
+            async: true,
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          const result = await addNumbers(10, 20);
+          console.log(result);
+        `);
+        assert.strictEqual(logValue, 30);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("custom functions can be sync", async () => {
+      let logValue: unknown = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0];
+            }
+          },
+        },
+        customFunctions: {
+          getConfig: {
+            fn: () => ({ key: "value" }),
+            async: false,
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          const config = getConfig();
+          console.log(config.key);
+        `);
+        assert.strictEqual(logValue, "value");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("custom function errors propagate", async () => {
+      const runtime = await createRuntime({
+        customFunctions: {
+          throwError: {
+            fn: async () => {
+              throw new Error("Custom error message");
+            },
+            async: true,
+          },
+        },
+      });
+
+      try {
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`
+              await throwError();
+            `);
+          },
+          /Custom error message/,
+          "error should propagate from custom function"
+        );
+      } finally {
+        await runtime.dispose();
       }
     });
   });
 
   describe("console integration", () => {
     test("console.log is captured", async () => {
-      const logs: Array<{ level: string; args: unknown[] }> = [];
+      const entries: ConsoleEntry[] = [];
 
       const runtime = await createRuntime({
         console: {
-          onLog: (level, ...args) => {
-            logs.push({ level, args });
-          },
+          onEntry: (entry) => entries.push(entry),
         },
       });
 
       try {
-        await runtime.context.eval(`
+        await runtime.eval(`
           console.log("hello", "world");
           console.warn("warning message");
           console.error("error message");
         `);
 
-        assert.strictEqual(logs.length, 3, "should have captured 3 logs");
-        assert.strictEqual(logs[0].level, "log");
-        assert.deepStrictEqual(logs[0].args, ["hello", "world"]);
-        assert.strictEqual(logs[1].level, "warn");
-        assert.deepStrictEqual(logs[1].args, ["warning message"]);
-        assert.strictEqual(logs[2].level, "error");
-        assert.deepStrictEqual(logs[2].args, ["error message"]);
+        const outputEntries = entries.filter((e) => e.type === "output");
+        assert.strictEqual(outputEntries.length, 3, "should have captured 3 logs");
+
+        const logEntry = outputEntries[0] as { type: "output"; level: string; args: unknown[] };
+        assert.strictEqual(logEntry.level, "log");
+        assert.deepStrictEqual(logEntry.args, ["hello", "world"]);
+
+        const warnEntry = outputEntries[1] as { type: "output"; level: string; args: unknown[] };
+        assert.strictEqual(warnEntry.level, "warn");
+        assert.deepStrictEqual(warnEntry.args, ["warning message"]);
+
+        const errorEntry = outputEntries[2] as { type: "output"; level: string; args: unknown[] };
+        assert.strictEqual(errorEntry.level, "error");
+        assert.deepStrictEqual(errorEntry.args, ["error message"]);
       } finally {
-        runtime.dispose();
+        await runtime.dispose();
+      }
+    });
+
+    test("simpleConsoleHandler routes to level callbacks", async () => {
+      const logs: unknown[][] = [];
+      const warns: unknown[][] = [];
+      const errors: unknown[][] = [];
+
+      const runtime = await createRuntime({
+        console: simpleConsoleHandler({
+          log: (...args) => logs.push(args),
+          warn: (...args) => warns.push(args),
+          error: (...args) => errors.push(args),
+        }),
+      });
+
+      try {
+        await runtime.eval(`
+          console.log("log message", 1);
+          console.warn("warn message", 2);
+          console.error("error message", 3);
+        `);
+
+        assert.deepStrictEqual(logs, [["log message", 1]]);
+        assert.deepStrictEqual(warns, [["warn message", 2]]);
+        assert.deepStrictEqual(errors, [["error message", 3]]);
+      } finally {
+        await runtime.dispose();
       }
     });
   });
 
   describe("fetch integration", () => {
-    test("fetch calls onFetch handler", async () => {
-      let capturedRequest: Request | null = null;
+    test("fetch calls handler", async () => {
+      let capturedUrl: string | null = null;
+      let logValue: unknown = null;
 
       const runtime = await createRuntime({
-        fetch: {
-          onFetch: async (request) => {
-            capturedRequest = request;
-            return new Response(JSON.stringify({ message: "mocked" }), {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            });
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0];
+            }
+          },
+        },
+        fetch: async (request) => {
+          capturedUrl = request.url;
+          return new Response(JSON.stringify({ message: "mocked" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          const response = await fetch("https://example.com/api");
+          const data = await response.json();
+          console.log(data.message);
+        `);
+
+        assert.strictEqual(logValue, "mocked");
+        assert.strictEqual(capturedUrl, "https://example.com/api");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+  });
+
+  describe("serve and dispatchRequest", () => {
+    test("fetch.dispatchRequest works with serve handler", async () => {
+      const runtime = await createRuntime();
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch(request) {
+              const url = new URL(request.url);
+              return Response.json({ path: url.pathname });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/api/test")
+        );
+
+        assert.strictEqual(response.status, 200);
+        const body = await response.json();
+        assert.deepStrictEqual(body, { path: "/api/test" });
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("fetch.dispatchRequest handles async serve handlers", async () => {
+      let logValue: unknown = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0];
+            }
           },
         },
       });
 
       try {
-        const result = await runtime.context.eval(
-          `
-          (async () => {
-            const response = await fetch("https://example.com/api", {
-              method: "POST",
-              headers: { "X-Custom": "header" },
-              body: "test body"
-            });
-            return JSON.stringify({
-              status: response.status,
-              body: await response.json()
-            });
-          })()
-        `,
-          { promise: true }
+        await runtime.eval(`
+          serve({
+            async fetch(request) {
+              console.log("handling request");
+              await Promise.resolve();
+              return new Response("async response");
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/")
         );
 
-        const data = JSON.parse(result as string);
-        assert.strictEqual(data.status, 200);
-        assert.deepStrictEqual(data.body, { message: "mocked" });
-
-        // Verify the request was captured correctly
-        assert(capturedRequest, "request should be captured");
-        assert.strictEqual(capturedRequest!.url, "https://example.com/api");
-        assert.strictEqual(capturedRequest!.method, "POST");
-        assert.strictEqual(capturedRequest!.headers.get("X-Custom"), "header");
+        assert.strictEqual(logValue, "handling request");
+        assert.strictEqual(await response.text(), "async response");
       } finally {
-        runtime.dispose();
+        await runtime.dispose();
       }
     });
   });
 
   describe("timers integration", () => {
-    test("setTimeout works with tick()", async () => {
-      const runtime = await createRuntime();
+    test("setTimeout fires automatically with real time", async () => {
+      let logValue: unknown = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0];
+            }
+          },
+        },
+      });
 
       try {
-        // Set up a timeout that modifies a global variable
-        await runtime.context.eval(`
+        await runtime.eval(`
           globalThis.timerFired = false;
-          globalThis.timerValue = 0;
           setTimeout(() => {
             globalThis.timerFired = true;
-            globalThis.timerValue = 42;
-          }, 100);
+            console.log("timer fired");
+          }, 20);
         `);
 
-        // Before tick, timer should not have fired
-        let result = await runtime.context.eval(`globalThis.timerFired`);
-        assert.strictEqual(result, false, "timer should not fire before tick");
+        // Timer should not have fired immediately
+        assert.strictEqual(logValue, null);
 
-        // Tick forward 50ms - still not enough
-        await runtime.tick(50);
-        result = await runtime.context.eval(`globalThis.timerFired`);
-        assert.strictEqual(result, false, "timer should not fire at 50ms");
-
-        // Tick forward another 50ms (total 100ms) - now it should fire
-        await runtime.tick(50);
-        result = await runtime.context.eval(`globalThis.timerFired`);
-        assert.strictEqual(result, true, "timer should fire at 100ms");
-
-        result = await runtime.context.eval(`globalThis.timerValue`);
-        assert.strictEqual(result, 42, "timer should have set value");
+        // Wait for real time to pass
+        await new Promise((r) => setTimeout(r, 50));
+        assert.strictEqual(logValue, "timer fired");
       } finally {
-        runtime.dispose();
-      }
-    });
-
-    test("setInterval works with tick()", async () => {
-      const runtime = await createRuntime();
-
-      try {
-        await runtime.context.eval(`
-          globalThis.intervalCount = 0;
-          setInterval(() => {
-            globalThis.intervalCount++;
-          }, 100);
-        `);
-
-        // Tick incrementally - interval fires at each 100ms boundary
-        await runtime.tick(100); // t=100ms, first fire
-        let count = await runtime.context.eval(`globalThis.intervalCount`);
-        assert.strictEqual(count, 1, "interval should fire once at 100ms");
-
-        await runtime.tick(100); // t=200ms, second fire
-        count = await runtime.context.eval(`globalThis.intervalCount`);
-        assert.strictEqual(count, 2, "interval should fire twice at 200ms");
-      } finally {
-        runtime.dispose();
-      }
-    });
-  });
-
-  describe("crypto integration", () => {
-    test("crypto.randomUUID generates valid UUIDs", async () => {
-      const runtime = await createRuntime();
-
-      try {
-        const uuid = (await runtime.context.eval(
-          `crypto.randomUUID()`
-        )) as string;
-        assert.match(
-          uuid,
-          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-          "should generate valid UUID v4"
-        );
-      } finally {
-        runtime.dispose();
-      }
-    });
-  });
-
-  describe("path integration", () => {
-    test("path.join works correctly", async () => {
-      const runtime = await createRuntime();
-
-      try {
-        const result = await runtime.context.eval(`path.join('a', 'b', 'c')`);
-        assert.strictEqual(result, "a/b/c");
-      } finally {
-        runtime.dispose();
-      }
-    });
-  });
-
-  describe("encoding integration", () => {
-    test("btoa and atob work correctly", async () => {
-      const runtime = await createRuntime();
-
-      try {
-        const encoded = await runtime.context.eval(`btoa('hello')`);
-        assert.strictEqual(encoded, "aGVsbG8=");
-
-        const decoded = await runtime.context.eval(`atob('aGVsbG8=')`);
-        assert.strictEqual(decoded, "hello");
-      } finally {
-        runtime.dispose();
+        await runtime.dispose();
       }
     });
   });
@@ -361,142 +502,344 @@ describe("@ricsam/isolate-runtime", () => {
       const runtime = await createRuntime();
 
       // Create some resources
-      await runtime.context.eval(`
+      await runtime.eval(`
         const blob = new Blob(["test"]);
         const url = new URL("https://example.com");
-        setTimeout(() => {}, 1000);
       `);
 
       // Dispose should not throw
-      assert.doesNotThrow(() => {
-        runtime.dispose();
-      }, "dispose should not throw");
+      await runtime.dispose();
 
-      // After dispose, attempting to use the context should fail
+      // After dispose, attempting to use the runtime should fail
       await assert.rejects(
         async () => {
-          await runtime.context.eval(`1 + 1`);
+          await runtime.eval(`1 + 1`);
         },
         /released|disposed/i,
-        "context should be released after dispose"
+        "runtime should be disposed"
       );
     });
   });
 
-  describe("fs integration", () => {
-    test("getDirectory works when handler provided", async () => {
-      const files = new Map<
-        string,
-        { data: Uint8Array; lastModified: number; type: string }
-      >();
-      const directories = new Set<string>(["/"]); // Root directory exists
-
-      const createHandler = () => ({
-        async getFileHandle(path: string, options?: { create?: boolean }) {
-          if (!files.has(path) && !options?.create) {
-            throw new Error("[NotFoundError]File not found");
-          }
-          if (!files.has(path) && options?.create) {
-            files.set(path, {
-              data: new Uint8Array(0),
-              lastModified: Date.now(),
-              type: "",
-            });
-          }
-        },
-        async getDirectoryHandle(path: string, options?: { create?: boolean }) {
-          if (!directories.has(path) && !options?.create) {
-            throw new Error("[NotFoundError]Directory not found");
-          }
-          if (options?.create) {
-            directories.add(path);
-          }
-        },
-        async removeEntry(path: string) {
-          files.delete(path);
-          directories.delete(path);
-        },
-        async readDirectory(path: string) {
-          const entries: Array<{ name: string; kind: "file" | "directory" }> =
-            [];
-          for (const filePath of files.keys()) {
-            const dir = filePath.substring(0, filePath.lastIndexOf("/")) || "/";
-            if (dir === path) {
-              entries.push({
-                name: filePath.substring(filePath.lastIndexOf("/") + 1),
-                kind: "file",
-              });
-            }
-          }
-          for (const dirPath of directories) {
-            if (dirPath !== path && dirPath.startsWith(path)) {
-              const relativePath = dirPath.substring(path.length);
-              const parts = relativePath.split("/").filter(Boolean);
-              if (parts.length === 1) {
-                entries.push({ name: parts[0], kind: "directory" });
-              }
-            }
-          }
-          return entries;
-        },
-        async readFile(path: string) {
-          const file = files.get(path);
-          if (!file) {
-            throw new Error("[NotFoundError]File not found");
-          }
-          return {
-            data: file.data,
-            size: file.data.length,
-            lastModified: file.lastModified,
-            type: file.type,
-          };
-        },
-        async writeFile(path: string, data: Uint8Array) {
-          const existing = files.get(path);
-          files.set(path, {
-            data,
-            lastModified: Date.now(),
-            type: existing?.type ?? "",
-          });
-        },
-        async truncateFile(path: string, size: number) {
-          const file = files.get(path);
-          if (file) {
-            file.data = file.data.slice(0, size);
-          }
-        },
-        async getFileMetadata(path: string) {
-          const file = files.get(path);
-          if (!file) {
-            throw new Error("[NotFoundError]File not found");
-          }
-          return {
-            size: file.data.length,
-            lastModified: file.lastModified,
-            type: file.type,
-          };
-        },
+  describe("handle-based API", () => {
+    describe("runtime.fetch handle", () => {
+      test("fetch handle exists on runtime", async () => {
+        const runtime = await createRuntime();
+        try {
+          assert.ok(runtime.fetch, "runtime.fetch should exist");
+          assert.strictEqual(typeof runtime.fetch.dispatchRequest, "function");
+          assert.strictEqual(typeof runtime.fetch.hasServeHandler, "function");
+          assert.strictEqual(typeof runtime.fetch.hasActiveConnections, "function");
+          assert.strictEqual(typeof runtime.fetch.getUpgradeRequest, "function");
+          assert.strictEqual(typeof runtime.fetch.dispatchWebSocketOpen, "function");
+          assert.strictEqual(typeof runtime.fetch.dispatchWebSocketMessage, "function");
+          assert.strictEqual(typeof runtime.fetch.dispatchWebSocketClose, "function");
+          assert.strictEqual(typeof runtime.fetch.dispatchWebSocketError, "function");
+          assert.strictEqual(typeof runtime.fetch.onWebSocketCommand, "function");
+        } finally {
+          await runtime.dispose();
+        }
       });
 
+      test("fetch.dispatchRequest works with serve handler", async () => {
+        const runtime = await createRuntime();
+        try {
+          await runtime.eval(`
+            serve({
+              fetch(request) {
+                const url = new URL(request.url);
+                return Response.json({ path: url.pathname });
+              }
+            });
+          `);
+
+          const response = await runtime.fetch.dispatchRequest(
+            new Request("http://localhost/api/test")
+          );
+
+          assert.strictEqual(response.status, 200);
+          const body = await response.json();
+          assert.deepStrictEqual(body, { path: "/api/test" });
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("fetch.hasServeHandler returns false when no serve() called", async () => {
+        const runtime = await createRuntime();
+        try {
+          assert.strictEqual(runtime.fetch.hasServeHandler(), false);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("fetch.hasServeHandler returns true after serve() called", async () => {
+        const runtime = await createRuntime();
+        try {
+          await runtime.eval(`
+            serve({
+              fetch(request) {
+                return new Response("hello");
+              }
+            });
+          `);
+          assert.strictEqual(runtime.fetch.hasServeHandler(), true);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("fetch.hasActiveConnections returns false when no connections", async () => {
+        const runtime = await createRuntime();
+        try {
+          assert.strictEqual(runtime.fetch.hasActiveConnections(), false);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("fetch.getUpgradeRequest returns null when no upgrade pending", async () => {
+        const runtime = await createRuntime();
+        try {
+          assert.strictEqual(runtime.fetch.getUpgradeRequest(), null);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
+
+    describe("runtime.timers handle", () => {
+      test("timers handle exists on runtime", async () => {
+        const runtime = await createRuntime();
+        try {
+          assert.ok(runtime.timers, "runtime.timers should exist");
+          assert.strictEqual(typeof runtime.timers.clearAll, "function");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("timers fire automatically with real time", async () => {
+        let logValue: unknown = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.args[0];
+              }
+            },
+          },
+        });
+
+        try {
+          await runtime.eval(`
+            setTimeout(() => {
+              console.log("timer fired");
+            }, 20);
+          `);
+
+          // Timer should not have fired immediately
+          assert.strictEqual(logValue, null);
+
+          // Wait for real time to pass
+          await new Promise((r) => setTimeout(r, 50));
+          assert.strictEqual(logValue, "timer fired");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("timers.clearAll clears all pending timers", async () => {
+        let logValue: unknown = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.args[0];
+              }
+            },
+          },
+        });
+
+        try {
+          await runtime.eval(`
+            setTimeout(() => {
+              console.log("timer1");
+            }, 30);
+            setTimeout(() => {
+              console.log("timer2");
+            }, 40);
+            setInterval(() => {
+              console.log("interval");
+            }, 20);
+          `);
+
+          // Clear all timers
+          runtime.timers.clearAll();
+
+          // Wait past all scheduled times
+          await new Promise((r) => setTimeout(r, 80));
+
+          // No timers should have fired
+          assert.strictEqual(logValue, null);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+    });
+
+    describe("runtime.console handle", () => {
+      test("console handle exists on runtime", async () => {
+        const runtime = await createRuntime();
+        try {
+          assert.ok(runtime.console, "runtime.console should exist");
+          assert.strictEqual(typeof runtime.console.reset, "function");
+          assert.strictEqual(typeof runtime.console.getTimers, "function");
+          assert.strictEqual(typeof runtime.console.getCounters, "function");
+          assert.strictEqual(typeof runtime.console.getGroupDepth, "function");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("console.getCounters returns counter state", async () => {
+        const runtime = await createRuntime();
+
+        try {
+          await runtime.eval(`
+            console.count("foo");
+            console.count("foo");
+            console.count("bar");
+          `);
+
+          const counters = runtime.console.getCounters();
+          assert.ok(counters instanceof Map);
+          assert.strictEqual(counters.get("foo"), 2);
+          assert.strictEqual(counters.get("bar"), 1);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("console.getTimers returns timer state", async () => {
+        const runtime = await createRuntime();
+
+        try {
+          await runtime.eval(`
+            console.time("myTimer");
+          `);
+
+          const timers = runtime.console.getTimers();
+          assert.ok(timers instanceof Map);
+          assert.ok(timers.has("myTimer"));
+          assert.strictEqual(typeof timers.get("myTimer"), "number");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("console.getGroupDepth returns group nesting depth", async () => {
+        const runtime = await createRuntime();
+
+        try {
+          assert.strictEqual(runtime.console.getGroupDepth(), 0);
+
+          await runtime.eval(`
+            console.group("level1");
+          `);
+          assert.strictEqual(runtime.console.getGroupDepth(), 1);
+
+          await runtime.eval(`
+            console.group("level2");
+          `);
+          assert.strictEqual(runtime.console.getGroupDepth(), 2);
+
+          await runtime.eval(`
+            console.groupEnd();
+          `);
+          assert.strictEqual(runtime.console.getGroupDepth(), 1);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("console.reset clears all console state", async () => {
+        const runtime = await createRuntime();
+
+        try {
+          await runtime.eval(`
+            console.count("counter");
+            console.time("timer");
+            console.group("group");
+          `);
+
+          // Verify state exists
+          assert.strictEqual(runtime.console.getCounters().size, 1);
+          assert.strictEqual(runtime.console.getTimers().size, 1);
+          assert.strictEqual(runtime.console.getGroupDepth(), 1);
+
+          // Reset
+          runtime.console.reset();
+
+          // Verify state is cleared
+          assert.strictEqual(runtime.console.getCounters().size, 0);
+          assert.strictEqual(runtime.console.getTimers().size, 0);
+          assert.strictEqual(runtime.console.getGroupDepth(), 0);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
+
+  });
+
+  describe("cwd option", () => {
+    test("cwd option configures path.resolve working directory", async () => {
+      let logValue: string | null = null;
       const runtime = await createRuntime({
-        fs: {
-          getDirectory: async () => createHandler(),
+        cwd: "/home/user/project",
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0] as string;
+            }
+          },
         },
       });
 
       try {
-        const result = await runtime.context.eval(
-          `
-          (async () => {
-            const root = await getDirectory("/");
-            return root.kind;
-          })()
-        `,
-          { promise: true }
-        );
-        assert.strictEqual(result, "directory");
+        await runtime.eval(`
+          const resolved = path.resolve("src/file.ts");
+          console.log(resolved);
+        `);
+        assert.strictEqual(logValue, "/home/user/project/src/file.ts");
       } finally {
-        runtime.dispose();
+        await runtime.dispose();
+      }
+    });
+
+    test("default cwd is /", async () => {
+      let logValue: string | null = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0] as string;
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          const resolved = path.resolve("foo/bar");
+          console.log(resolved);
+        `);
+        assert.strictEqual(logValue, "/foo/bar");
+      } finally {
+        await runtime.dispose();
       }
     });
   });

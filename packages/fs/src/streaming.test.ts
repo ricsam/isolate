@@ -19,7 +19,7 @@ describe("Streaming Integration Tests", () => {
 
   afterEach(async () => {
     if (runtime) {
-      runtime.dispose();
+      await runtime.dispose();
       runtime = undefined;
     }
   });
@@ -57,20 +57,18 @@ describe("Streaming Integration Tests", () => {
         async writeFile(path, data) {
           writeCalls.push({ data: new Uint8Array(data), timestamp: Date.now() });
         },
-        async truncate() {},
-        async isSameEntry() {
-          return false;
+        async truncateFile() {},
+        async getFileMetadata() {
+          return { size: 0, lastModified: Date.now(), type: "application/octet-stream" };
         },
       };
 
       runtime = await createRuntime({
-        console: { onLog: () => {} },
         fs: { getDirectory: async () => mockHandler },
       });
 
       // Set up a server that reads request body chunk-by-chunk and writes to filesystem
-      await runtime.context.eval(
-        `
+      await runtime.eval(`
         serve({
           async fetch(request) {
             const root = await getDirectory("/");
@@ -94,9 +92,7 @@ describe("Streaming Integration Tests", () => {
             return Response.json({ totalBytes, chunkCount });
           }
         });
-        `,
-        { promise: true }
-      );
+      `);
 
       // Create a streaming request with multiple chunks
       const numChunks = 5;
@@ -123,9 +119,7 @@ describe("Streaming Integration Tests", () => {
         duplex: "half",
       });
 
-      const response = await runtime.fetch.dispatchRequest(request, {
-        tick: () => runtime!.tick(),
-      });
+      const response = await runtime.fetch.dispatchRequest(request);
 
       const result = (await response.json()) as {
         totalBytes: number;
@@ -181,19 +175,17 @@ describe("Streaming Integration Tests", () => {
           // Simulate write completing (memory released)
           currentMemory -= data.length;
         },
-        async truncate() {},
-        async isSameEntry() {
-          return false;
+        async truncateFile() {},
+        async getFileMetadata() {
+          return { size: 0, lastModified: Date.now(), type: "application/octet-stream" };
         },
       };
 
       runtime = await createRuntime({
-        console: { onLog: () => {} },
         fs: { getDirectory: async () => mockHandler },
       });
 
-      await runtime.context.eval(
-        `
+      await runtime.eval(`
         serve({
           async fetch(request) {
             const root = await getDirectory("/");
@@ -210,9 +202,7 @@ describe("Streaming Integration Tests", () => {
             return new Response("OK");
           }
         });
-        `,
-        { promise: true }
-      );
+      `);
 
       // Stream 1MB in 64KB chunks
       const totalSize = 1024 * 1024;
@@ -238,9 +228,7 @@ describe("Streaming Integration Tests", () => {
         duplex: "half",
       });
 
-      await runtime.fetch.dispatchRequest(request, {
-        tick: () => runtime!.tick(),
-      });
+      await runtime.fetch.dispatchRequest(request);
 
       // Should have multiple write calls (streaming behavior)
       const expectedChunks = Math.ceil(totalSize / chunkSize);
@@ -293,19 +281,17 @@ describe("Streaming Integration Tests", () => {
           };
         },
         async writeFile() {},
-        async truncate() {},
-        async isSameEntry() {
-          return false;
+        async truncateFile() {},
+        async getFileMetadata() {
+          return { size: 0, lastModified: Date.now(), type: "application/octet-stream" };
         },
       };
 
       runtime = await createRuntime({
-        console: { onLog: () => {} },
         fs: { getDirectory: async () => mockHandler },
       });
 
-      await runtime.context.eval(
-        `
+      await runtime.eval(`
         serve({
           async fetch(request) {
             const root = await getDirectory("/");
@@ -316,14 +302,10 @@ describe("Streaming Integration Tests", () => {
             return new Response(file);
           }
         });
-        `,
-        { promise: true }
-      );
+      `);
 
       const request = new Request("http://test/download");
-      const response = await runtime.fetch.dispatchRequest(request, {
-        tick: () => runtime!.tick(),
-      });
+      const response = await runtime.fetch.dispatchRequest(request);
 
       // Read response body chunk-by-chunk to verify streaming
       const reader = response.body!.getReader();
@@ -376,19 +358,17 @@ describe("Streaming Integration Tests", () => {
           };
         },
         async writeFile() {},
-        async truncate() {},
-        async isSameEntry() {
-          return false;
+        async truncateFile() {},
+        async getFileMetadata() {
+          return { size: 0, lastModified: Date.now(), type: "application/octet-stream" };
         },
       };
 
       runtime = await createRuntime({
-        console: { onLog: () => {} },
         fs: { getDirectory: async () => mockHandler },
       });
 
-      await runtime.context.eval(
-        `
+      await runtime.eval(`
         serve({
           async fetch(request) {
             const root = await getDirectory("/");
@@ -401,14 +381,10 @@ describe("Streaming Integration Tests", () => {
             });
           }
         });
-        `,
-        { promise: true }
-      );
+      `);
 
       const request = new Request("http://test/file");
-      const response = await runtime.fetch.dispatchRequest(request, {
-        tick: () => runtime!.tick(),
-      });
+      const response = await runtime.fetch.dispatchRequest(request);
 
       // Read first chunk only
       const reader = response.body!.getReader();
@@ -442,46 +418,47 @@ describe("Streaming Integration Tests", () => {
           };
         },
         async writeFile() {},
-        async truncate() {},
-        async isSameEntry() {
-          return false;
+        async truncateFile() {},
+        async getFileMetadata() {
+          return { size: 0, lastModified: Date.now(), type: "application/octet-stream" };
         },
       };
 
+      let result: unknown;
       runtime = await createRuntime({
-        console: { onLog: () => {} },
         fs: { getDirectory: async () => mockHandler },
+        customFunctions: {
+          returnResult: {
+            fn: (value: unknown) => { result = value; },
+            async: false,
+          },
+        },
       });
 
-      const result = await runtime.context.eval(
-        `
-        (async () => {
-          const root = await getDirectory("/");
-          const fileHandle = await root.getFileHandle("test.bin");
-          const file = await fileHandle.getFile();
+      await runtime.eval(`
+        const root = await getDirectory("/");
+        const fileHandle = await root.getFileHandle("test.bin");
+        const file = await fileHandle.getFile();
 
-          // WHATWG File.stream() should return a ReadableStream
-          const stream = file.stream();
-          const reader = stream.getReader();
+        // WHATWG File.stream() should return a ReadableStream
+        const stream = file.stream();
+        const reader = stream.getReader();
 
-          const chunks = [];
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            chunks.push(Array.from(value));
-          }
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(Array.from(value));
+        }
 
-          return JSON.stringify({
-            isReadableStream: stream instanceof ReadableStream,
-            chunkCount: chunks.length,
-            totalBytes: chunks.reduce((sum, c) => sum + c.length, 0)
-          });
-        })()
-        `,
-        { promise: true }
-      );
+        returnResult({
+          isReadableStream: stream instanceof ReadableStream,
+          chunkCount: chunks.length,
+          totalBytes: chunks.reduce((sum, c) => sum + c.length, 0)
+        });
+      `);
 
-      const parsed = JSON.parse(result as string);
+      const parsed = result as { isReadableStream: boolean; chunkCount: number; totalBytes: number };
       assert.strictEqual(parsed.isReadableStream, true, "file.stream() should return ReadableStream");
       assert.strictEqual(parsed.totalBytes, fileData.length);
     });
@@ -509,34 +486,28 @@ describe("Streaming Integration Tests", () => {
         async writeFile(path, data) {
           writeCalls.push({ data: new Uint8Array(data) });
         },
-        async truncate() {},
-        async isSameEntry() {
-          return false;
+        async truncateFile() {},
+        async getFileMetadata() {
+          return { size: 0, lastModified: Date.now(), type: "application/octet-stream" };
         },
       };
 
       runtime = await createRuntime({
-        console: { onLog: () => {} },
         fs: { getDirectory: async () => mockHandler },
       });
 
-      await runtime.context.eval(
-        `
-        (async () => {
-          const root = await getDirectory("/");
-          const fileHandle = await root.getFileHandle("chunked.bin", { create: true });
-          const writable = await fileHandle.createWritable();
+      await runtime.eval(`
+        const root = await getDirectory("/");
+        const fileHandle = await root.getFileHandle("chunked.bin", { create: true });
+        const writable = await fileHandle.createWritable();
 
-          // Write multiple chunks - each should trigger a separate writeFile call
-          await writable.write(new Uint8Array([1, 2, 3]));
-          await writable.write(new Uint8Array([4, 5, 6]));
-          await writable.write(new Uint8Array([7, 8, 9]));
+        // Write multiple chunks - each should trigger a separate writeFile call
+        await writable.write(new Uint8Array([1, 2, 3]));
+        await writable.write(new Uint8Array([4, 5, 6]));
+        await writable.write(new Uint8Array([7, 8, 9]));
 
-          await writable.close();
-        })()
-        `,
-        { promise: true }
-      );
+        await writable.close();
+      `);
 
       // Each write() should result in a separate writeFile call (streaming)
       assert.strictEqual(
@@ -572,56 +543,50 @@ describe("Streaming Integration Tests", () => {
         async writeFile(path, data) {
           writeCalls.push({ data: new Uint8Array(data) });
         },
-        async truncate() {},
-        async isSameEntry() {
-          return false;
+        async truncateFile() {},
+        async getFileMetadata() {
+          return { size: 0, lastModified: Date.now(), type: "application/octet-stream" };
         },
       };
 
       runtime = await createRuntime({
-        console: { onLog: () => {} },
         fs: { getDirectory: async () => mockHandler },
       });
 
-      await runtime.context.eval(
-        `
-        (async () => {
-          const root = await getDirectory("/");
-          const fileHandle = await root.getFileHandle("piped.bin", { create: true });
-          const writable = await fileHandle.createWritable();
+      await runtime.eval(`
+        const root = await getDirectory("/");
+        const fileHandle = await root.getFileHandle("piped.bin", { create: true });
+        const writable = await fileHandle.createWritable();
 
-          // Create a ReadableStream with multiple chunks
-          let chunkIndex = 0;
-          const chunks = [
-            new Uint8Array([1, 2]),
-            new Uint8Array([3, 4]),
-            new Uint8Array([5, 6]),
-          ];
+        // Create a ReadableStream with multiple chunks
+        let chunkIndex = 0;
+        const chunks = [
+          new Uint8Array([1, 2]),
+          new Uint8Array([3, 4]),
+          new Uint8Array([5, 6]),
+        ];
 
-          const readable = new ReadableStream({
-            pull(controller) {
-              if (chunkIndex < chunks.length) {
-                controller.enqueue(chunks[chunkIndex]);
-                chunkIndex++;
-              } else {
-                controller.close();
-              }
+        const readable = new ReadableStream({
+          pull(controller) {
+            if (chunkIndex < chunks.length) {
+              controller.enqueue(chunks[chunkIndex]);
+              chunkIndex++;
+            } else {
+              controller.close();
             }
-          });
-
-          // Pipe should stream chunks one by one
-          const reader = readable.getReader();
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            await writable.write(value);
           }
+        });
 
-          await writable.close();
-        })()
-        `,
-        { promise: true }
-      );
+        // Pipe should stream chunks one by one
+        const reader = readable.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          await writable.write(value);
+        }
+
+        await writable.close();
+      `);
 
       // Each chunk from the stream should result in a separate writeFile call
       assert.strictEqual(

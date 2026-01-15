@@ -4,6 +4,7 @@
 
 import type { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
+import ivm from "isolated-vm";
 import {
   createFrameParser,
   buildFrame,
@@ -16,7 +17,6 @@ import {
   type DisposeRuntimeRequest,
   type EvalRequest,
   type DispatchRequestRequest,
-  type TickRequest,
   type CallbackResponseMsg,
   type CallbackInvoke,
   type SetupTestEnvRequest,
@@ -27,6 +27,20 @@ import {
   type GetCollectedDataRequest,
   type PlaywrightEvent,
   type FsCallbackRegistrations,
+  type CustomFunctionRegistrations,
+  type CallbackRegistration,
+  type WsOpenRequest,
+  type WsMessageRequest,
+  type WsCloseRequest,
+  type FetchGetUpgradeRequestRequest,
+  type FetchHasServeHandlerRequest,
+  type FetchHasActiveConnectionsRequest,
+  type FetchWsErrorRequest,
+  type TimersClearAllRequest,
+  type ConsoleResetRequest,
+  type ConsoleGetTimersRequest,
+  type ConsoleGetCountersRequest,
+  type ConsoleGetGroupDepthRequest,
 } from "@ricsam/isolate-protocol";
 import { createCallbackFileSystemHandler } from "./callback-fs-handler.ts";
 import {
@@ -39,7 +53,10 @@ import {
   resetPlaywrightTests,
 } from "@ricsam/isolate-playwright";
 import { chromium, firefox, webkit } from "playwright";
-import { createRuntime, type RuntimeHandle } from "@ricsam/isolate-runtime";
+import {
+  createInternalRuntime,
+  type InternalRuntimeHandle,
+} from "@ricsam/isolate-runtime/internal";
 import type {
   DaemonState,
   ConnectionState,
@@ -194,12 +211,86 @@ async function handleMessage(
       );
       break;
 
-    case MessageType.TICK:
-      await handleTick(message as TickRequest, connection, state);
-      break;
-
     case MessageType.CALLBACK_RESPONSE:
       handleCallbackResponse(message as CallbackResponseMsg, connection);
+      break;
+
+    // WebSocket operations
+    case MessageType.WS_OPEN:
+      await handleWsOpen(message as WsOpenRequest, connection, state);
+      break;
+
+    case MessageType.WS_MESSAGE:
+      await handleWsMessage(message as WsMessageRequest, connection, state);
+      break;
+
+    case MessageType.WS_CLOSE:
+      await handleWsClose(message as WsCloseRequest, connection, state);
+      break;
+
+    // Handle operations
+    case MessageType.FETCH_GET_UPGRADE_REQUEST:
+      await handleFetchGetUpgradeRequest(
+        message as FetchGetUpgradeRequestRequest,
+        connection,
+        state
+      );
+      break;
+
+    case MessageType.FETCH_HAS_SERVE_HANDLER:
+      await handleFetchHasServeHandler(
+        message as FetchHasServeHandlerRequest,
+        connection,
+        state
+      );
+      break;
+
+    case MessageType.FETCH_HAS_ACTIVE_CONNECTIONS:
+      await handleFetchHasActiveConnections(
+        message as FetchHasActiveConnectionsRequest,
+        connection,
+        state
+      );
+      break;
+
+    case MessageType.FETCH_WS_ERROR:
+      await handleFetchWsError(message as FetchWsErrorRequest, connection, state);
+      break;
+
+    case MessageType.TIMERS_CLEAR_ALL:
+      await handleTimersClearAll(
+        message as TimersClearAllRequest,
+        connection,
+        state
+      );
+      break;
+
+    case MessageType.CONSOLE_RESET:
+      await handleConsoleReset(message as ConsoleResetRequest, connection, state);
+      break;
+
+    case MessageType.CONSOLE_GET_TIMERS:
+      await handleConsoleGetTimers(
+        message as ConsoleGetTimersRequest,
+        connection,
+        state
+      );
+      break;
+
+    case MessageType.CONSOLE_GET_COUNTERS:
+      await handleConsoleGetCounters(
+        message as ConsoleGetCountersRequest,
+        connection,
+        state
+      );
+      break;
+
+    case MessageType.CONSOLE_GET_GROUP_DEPTH:
+      await handleConsoleGetGroupDepth(
+        message as ConsoleGetGroupDepthRequest,
+        connection,
+        state
+      );
       break;
 
     case MessageType.SETUP_TEST_ENV:
@@ -286,28 +377,20 @@ async function handleCreateRuntime(
     const consoleCallbacks = message.options.callbacks?.console;
     const fetchCallback = message.options.callbacks?.fetch;
     const fsCallbacks = message.options.callbacks?.fs;
+    const moduleLoaderCallback = message.options.callbacks?.moduleLoader;
+    const customCallbacks = message.options.callbacks?.custom;
 
-    const runtime = await createRuntime({
+    const runtime = await createInternalRuntime({
       memoryLimit: message.options.memoryLimit ?? state.options.defaultMemoryLimit,
-      console: consoleCallbacks
+      cwd: message.options.cwd,
+      console: consoleCallbacks?.onEntry
         ? {
-            onLog: async (level, ...args) => {
-              // Route to the appropriate callback based on level
-              const levelCallback = (consoleCallbacks as Record<string, { callbackId: number } | undefined>)[level];
-              if (levelCallback) {
-                await invokeClientCallback(
-                  connection,
-                  levelCallback.callbackId,
-                  [level, ...args]
-                );
-              } else if (consoleCallbacks.log) {
-                // Fallback to log callback if specific level callback not registered
-                await invokeClientCallback(
-                  connection,
-                  consoleCallbacks.log.callbackId,
-                  [level, ...args]
-                );
-              }
+            onEntry: async (entry) => {
+              await invokeClientCallback(
+                connection,
+                consoleCallbacks.onEntry!.callbackId,
+                [entry]
+              );
             },
           }
         : undefined,
@@ -347,19 +430,39 @@ async function handleCreateRuntime(
       lastActivity: Date.now(),
     };
 
+    // Setup module loader
+    if (moduleLoaderCallback) {
+      instance.moduleLoaderCallbackId = moduleLoaderCallback.callbackId;
+      instance.moduleCache = new Map();
+    }
+
+    // Setup custom functions as globals in the isolate
+    if (customCallbacks) {
+      await setupCustomFunctions(runtime.context, customCallbacks, connection);
+    }
+
     // Store callback registrations
-    if (consoleCallbacks) {
-      for (const [name, reg] of Object.entries(consoleCallbacks)) {
-        if (reg) {
-          instance.callbacks.set(reg.callbackId, { ...reg, name });
-        }
-      }
+    if (consoleCallbacks?.onEntry) {
+      instance.callbacks.set(consoleCallbacks.onEntry.callbackId, {
+        ...consoleCallbacks.onEntry,
+        name: "onEntry",
+      });
     }
     if (fetchCallback) {
       instance.callbacks.set(fetchCallback.callbackId, fetchCallback);
     }
     if (fsCallbacks) {
       for (const [name, reg] of Object.entries(fsCallbacks)) {
+        if (reg) {
+          instance.callbacks.set(reg.callbackId, { ...reg, name });
+        }
+      }
+    }
+    if (moduleLoaderCallback) {
+      instance.callbacks.set(moduleLoaderCallback.callbackId, moduleLoaderCallback);
+    }
+    if (customCallbacks) {
+      for (const [name, reg] of Object.entries(customCallbacks)) {
         if (reg) {
           instance.callbacks.set(reg.callbackId, { ...reg, name });
         }
@@ -465,10 +568,29 @@ async function handleEval(
   instance.lastActivity = Date.now();
 
   try {
-    const result = instance.runtime.context.evalSync(message.code, {
-      filename: message.filename,
+    // Always use module mode - supports top-level await and ES module syntax
+    const mod = await instance.runtime.isolate.compileModule(message.code, {
+      filename: message.filename ?? "<eval>",
     });
-    sendOk(connection.socket, message.requestId, { value: result });
+
+    // Instantiate with module resolver if available
+    if (instance.moduleLoaderCallbackId) {
+      const resolver = createModuleResolver(instance, connection);
+      await mod.instantiate(instance.runtime.context, resolver);
+    } else {
+      // No module loader - instantiate with a resolver that always throws
+      await mod.instantiate(instance.runtime.context, (specifier) => {
+        throw new Error(
+          `No module loader registered. Cannot import: ${specifier}`
+        );
+      });
+    }
+
+    // Evaluate the module
+    await mod.evaluate();
+
+    // Return undefined for module evaluation
+    sendOk(connection.socket, message.requestId, { value: undefined });
   } catch (err) {
     const error = err as Error;
     sendError(
@@ -512,12 +634,7 @@ async function handleDispatchRequest(
     });
 
     // Dispatch to isolate
-    // Note: Pass tick function for streaming response support
-    const response = await instance.runtime.fetch.dispatchRequest(request, {
-      tick: async () => {
-        await instance.runtime.tick();
-      },
-    });
+    const response = await instance.runtime.fetch.dispatchRequest(request);
 
     // Serialize the response
     const serialized = await serializeResponse(response);
@@ -534,11 +651,15 @@ async function handleDispatchRequest(
   }
 }
 
+// ============================================================================
+// WebSocket Operation Handlers
+// ============================================================================
+
 /**
- * Handle TICK message.
+ * Handle WS_OPEN message.
  */
-async function handleTick(
-  message: TickRequest,
+async function handleWsOpen(
+  message: WsOpenRequest,
   connection: ConnectionState,
   state: DaemonState
 ): Promise<void> {
@@ -557,8 +678,425 @@ async function handleTick(
   instance.lastActivity = Date.now();
 
   try {
-    instance.runtime.tick(message.ms);
+    instance.runtime.fetch.dispatchWebSocketOpen(message.connectionId);
     sendOk(connection.socket, message.requestId);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle WS_MESSAGE message.
+ */
+async function handleWsMessage(
+  message: WsMessageRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    // Convert Uint8Array to ArrayBuffer if needed
+    const data = message.data instanceof Uint8Array
+      ? message.data.buffer.slice(message.data.byteOffset, message.data.byteOffset + message.data.byteLength) as ArrayBuffer
+      : message.data;
+    instance.runtime.fetch.dispatchWebSocketMessage(message.connectionId, data);
+    sendOk(connection.socket, message.requestId);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle WS_CLOSE message.
+ */
+async function handleWsClose(
+  message: WsCloseRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    instance.runtime.fetch.dispatchWebSocketClose(message.connectionId, message.code, message.reason);
+    sendOk(connection.socket, message.requestId);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+// ============================================================================
+// Handle Operation Handlers
+// ============================================================================
+
+/**
+ * Handle FETCH_GET_UPGRADE_REQUEST message.
+ */
+async function handleFetchGetUpgradeRequest(
+  message: FetchGetUpgradeRequestRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    const upgradeRequest = instance.runtime.fetch.getUpgradeRequest();
+    sendOk(connection.socket, message.requestId, upgradeRequest);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle FETCH_HAS_SERVE_HANDLER message.
+ */
+async function handleFetchHasServeHandler(
+  message: FetchHasServeHandlerRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    const hasHandler = instance.runtime.fetch.hasServeHandler();
+    sendOk(connection.socket, message.requestId, hasHandler);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle FETCH_HAS_ACTIVE_CONNECTIONS message.
+ */
+async function handleFetchHasActiveConnections(
+  message: FetchHasActiveConnectionsRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    const hasConnections = instance.runtime.fetch.hasActiveConnections();
+    sendOk(connection.socket, message.requestId, hasConnections);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle FETCH_WS_ERROR message.
+ */
+async function handleFetchWsError(
+  message: FetchWsErrorRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    instance.runtime.fetch.dispatchWebSocketError(message.connectionId, new Error(message.error));
+    sendOk(connection.socket, message.requestId);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle TIMERS_CLEAR_ALL message.
+ */
+async function handleTimersClearAll(
+  message: TimersClearAllRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    instance.runtime.timers.clearAll();
+    sendOk(connection.socket, message.requestId);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle CONSOLE_RESET message.
+ */
+async function handleConsoleReset(
+  message: ConsoleResetRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    instance.runtime.console.reset();
+    sendOk(connection.socket, message.requestId);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle CONSOLE_GET_TIMERS message.
+ */
+async function handleConsoleGetTimers(
+  message: ConsoleGetTimersRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    const timers = instance.runtime.console.getTimers();
+    // Convert Map to object for serialization
+    sendOk(connection.socket, message.requestId, Object.fromEntries(timers));
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle CONSOLE_GET_COUNTERS message.
+ */
+async function handleConsoleGetCounters(
+  message: ConsoleGetCountersRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    const counters = instance.runtime.console.getCounters();
+    // Convert Map to object for serialization
+    sendOk(connection.socket, message.requestId, Object.fromEntries(counters));
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+/**
+ * Handle CONSOLE_GET_GROUP_DEPTH message.
+ */
+async function handleConsoleGetGroupDepth(
+  message: ConsoleGetGroupDepthRequest,
+  connection: ConnectionState,
+  state: DaemonState
+): Promise<void> {
+  const instance = state.isolates.get(message.isolateId);
+
+  if (!instance) {
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.ISOLATE_NOT_FOUND,
+      `Isolate not found: ${message.isolateId}`
+    );
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+
+  try {
+    const depth = instance.runtime.console.getGroupDepth();
+    sendOk(connection.socket, message.requestId, depth);
   } catch (err) {
     const error = err as Error;
     sendError(
@@ -637,6 +1175,122 @@ async function invokeClientCallback(
 
     sendMessage(connection.socket, invoke);
   });
+}
+
+/**
+ * Setup custom functions as globals in the isolate context.
+ * Each function invokes the client callback when called.
+ * Results are JSON serialized/deserialized to ensure proper transfer across isolate boundary.
+ *
+ * Custom functions return Promises that resolve when the host callback completes.
+ * Users should use `await` when calling these functions.
+ */
+async function setupCustomFunctions(
+  context: ivm.Context,
+  customCallbacks: CustomFunctionRegistrations,
+  connection: ConnectionState
+): Promise<void> {
+  const global = context.global;
+
+  // Reference that invokes the callback and returns the result
+  // Uses applySyncPromise which works in async contexts (serve handlers, etc.)
+  const invokeCallbackRef = new ivm.Reference(
+    async (callbackId: number, argsJson: string) => {
+      const args = JSON.parse(argsJson);
+      try {
+        const result = await invokeClientCallback(connection, callbackId, args);
+        return JSON.stringify({ ok: true, value: result });
+      } catch (error: unknown) {
+        const err = error as Error;
+        return JSON.stringify({
+          ok: false,
+          error: { message: err.message, name: err.name },
+        });
+      }
+    }
+  );
+
+  global.setSync("__customFn_invoke", invokeCallbackRef);
+
+  // Create wrapper functions for each custom function
+  for (const [name, registration] of Object.entries(customCallbacks)) {
+    if (registration.async === false) {
+      // Sync function: use applySyncPromise (to await the host response) but wrap in regular function
+      // The function blocks until the host responds, but returns the value directly (not a Promise)
+      context.evalSync(`
+        globalThis.${name} = function(...args) {
+          const resultJson = __customFn_invoke.applySyncPromise(
+            undefined,
+            [${registration.callbackId}, JSON.stringify(args)]
+          );
+          const result = JSON.parse(resultJson);
+          if (result.ok) {
+            return result.value;
+          } else {
+            const error = new Error(result.error.message);
+            error.name = result.error.name;
+            throw error;
+          }
+        };
+      `);
+    } else {
+      // Async function: use applySyncPromise and async function wrapper
+      context.evalSync(`
+        globalThis.${name} = async function(...args) {
+          const resultJson = __customFn_invoke.applySyncPromise(
+            undefined,
+            [${registration.callbackId}, JSON.stringify(args)]
+          );
+          const result = JSON.parse(resultJson);
+          if (result.ok) {
+            return result.value;
+          } else {
+            const error = new Error(result.error.message);
+            error.name = result.error.name;
+            throw error;
+          }
+        };
+      `);
+    }
+  }
+}
+
+/**
+ * Create a module resolver function that invokes the client's module loader.
+ */
+function createModuleResolver(
+  instance: IsolateInstance,
+  connection: ConnectionState
+): (specifier: string, referrer: ivm.Module) => Promise<ivm.Module> {
+  return async (specifier: string, _referrer: ivm.Module): Promise<ivm.Module> => {
+    // Check cache first
+    const cached = instance.moduleCache?.get(specifier);
+    if (cached) return cached;
+
+    if (!instance.moduleLoaderCallbackId) {
+      throw new Error(`Module not found: ${specifier}`);
+    }
+
+    // Invoke client callback to get source code
+    const code = (await invokeClientCallback(
+      connection,
+      instance.moduleLoaderCallbackId,
+      [specifier]
+    )) as string;
+
+    // Compile the module
+    const mod = await instance.runtime.isolate.compileModule(code, {
+      filename: specifier,
+    });
+
+    // Instantiate with recursive resolver
+    const resolver = createModuleResolver(instance, connection);
+    await mod.instantiate(instance.runtime.context, resolver);
+
+    // Cache and return
+    instance.moduleCache?.set(specifier, mod);
+    return mod;
+  };
 }
 
 // ============================================================================

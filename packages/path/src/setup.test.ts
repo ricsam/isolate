@@ -360,3 +360,68 @@ describe("@ricsam/isolate-path", () => {
     });
   });
 });
+
+describe("@ricsam/isolate-path cwd option", () => {
+  let isolate: ivm.Isolate;
+  let context: ivm.Context;
+
+  afterEach(() => {
+    context.release();
+    isolate.dispose();
+  });
+
+  test("uses default cwd of / when not specified", async () => {
+    isolate = new ivm.Isolate();
+    context = await isolate.createContext();
+    await setupPath(context);
+
+    const result = context.evalSync(`path.resolve('foo', 'bar')`);
+    assert.strictEqual(result, "/foo/bar");
+  });
+
+  test("uses custom cwd in path.resolve", async () => {
+    isolate = new ivm.Isolate();
+    context = await isolate.createContext();
+    await setupPath(context, { cwd: "/home/user" });
+
+    const result = context.evalSync(`path.resolve('foo', 'bar')`);
+    assert.strictEqual(result, "/home/user/foo/bar");
+  });
+
+  test("custom cwd is used when no absolute path is provided", async () => {
+    isolate = new ivm.Isolate();
+    context = await isolate.createContext();
+    await setupPath(context, { cwd: "/var/app" });
+
+    const result = context.evalSync(`path.resolve('relative')`);
+    assert.strictEqual(result, "/var/app/relative");
+  });
+
+  test("absolute path still takes precedence over cwd", async () => {
+    isolate = new ivm.Isolate();
+    context = await isolate.createContext();
+    await setupPath(context, { cwd: "/home/user" });
+
+    const result = context.evalSync(`path.resolve('/absolute', 'foo')`);
+    assert.strictEqual(result, "/absolute/foo");
+  });
+
+  test("cwd handles paths with special characters", async () => {
+    isolate = new ivm.Isolate();
+    context = await isolate.createContext();
+    await setupPath(context, { cwd: "/path/with spaces/and-dashes" });
+
+    const result = context.evalSync(`path.resolve('file.txt')`);
+    assert.strictEqual(result, "/path/with spaces/and-dashes/file.txt");
+  });
+
+  test("cwd affects path.relative calculations", async () => {
+    isolate = new ivm.Isolate();
+    context = await isolate.createContext();
+    await setupPath(context, { cwd: "/home/user" });
+
+    // path.relative resolves relative paths using cwd
+    const result = context.evalSync(`path.relative('projects', 'documents/file.txt')`);
+    assert.strictEqual(result, "../documents/file.txt");
+  });
+});

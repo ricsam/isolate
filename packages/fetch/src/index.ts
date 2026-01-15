@@ -36,8 +36,7 @@ interface ServeState {
 }
 
 export interface DispatchRequestOptions {
-  /** Tick function to pump isolate timers - required for streaming responses */
-  tick?: () => Promise<void>;
+  // Reserved for future options
 }
 
 export interface FetchHandle {
@@ -2007,10 +2006,8 @@ export async function setupFetch(
 
     async dispatchRequest(
       request: Request,
-      dispatchOptions?: DispatchRequestOptions
+      _dispatchOptions?: DispatchRequestOptions
     ): Promise<Response> {
-      const tick = dispatchOptions?.tick;
-
       // Clean up previous pending upgrade if not consumed
       if (serveState.pendingUpgrade) {
         const oldConnectionId = serveState.pendingUpgrade.connectionId;
@@ -2083,17 +2080,13 @@ export async function setupFetch(
           const responseStreamId = responseState.streamId;
           let streamDone = false;
 
-          // Create native stream that pumps isolate timers while waiting
+          // Create native stream that waits for data from isolate
           const pumpedStream = new ReadableStream<Uint8Array>({
             async pull(controller) {
               if (streamDone) return;
 
-              // Pump isolate timers to allow stream pump to progress
+              // Wait for data to be available
               while (!streamDone) {
-                if (tick) {
-                  await tick();
-                }
-
                 // Check if data is available
                 const state = streamRegistry.get(responseStreamId);
                 if (!state) {

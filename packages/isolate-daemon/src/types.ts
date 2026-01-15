@@ -3,7 +3,8 @@
  */
 
 import type { Socket } from "node:net";
-import type { RuntimeHandle } from "@ricsam/isolate-runtime";
+import type ivm from "isolated-vm";
+import type { InternalRuntimeHandle } from "@ricsam/isolate-runtime/internal";
 import type { CallbackRegistration } from "@ricsam/isolate-protocol";
 import type { Browser, BrowserContext, Page } from "playwright";
 import type { PlaywrightHandle } from "@ricsam/isolate-playwright";
@@ -51,7 +52,7 @@ export interface DaemonStats {
  */
 export interface IsolateInstance {
   isolateId: string;
-  runtime: RuntimeHandle;
+  runtime: InternalRuntimeHandle;
   ownerConnection: Socket;
   callbacks: Map<number, CallbackRegistration>;
   createdAt: number;
@@ -64,6 +65,10 @@ export interface IsolateInstance {
   page?: Page;
   /** Playwright handle for event management (if setup) */
   playwrightHandle?: PlaywrightHandle;
+  /** Module loader callback ID (if registered) */
+  moduleLoaderCallbackId?: number;
+  /** Cache of compiled ES modules */
+  moduleCache?: Map<string, ivm.Module>;
 }
 
 /**

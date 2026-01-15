@@ -36,7 +36,7 @@ describe("Download Streaming Simple", () => {
 
       const response = await fetchHandle.dispatchRequest(
         new Request("http://test/"),
-        { tick: () => timersHandle.tick() }
+        {}
       );
 
       const text = await response.text();
@@ -107,7 +107,7 @@ describe("Download Streaming Simple", () => {
 
       const response = await fetchHandle.dispatchRequest(
         new Request("http://test/"),
-        { tick: () => timersHandle.tick() }
+        {}
       );
 
       const text = await response.text();
@@ -151,7 +151,7 @@ describe("Download Streaming Simple", () => {
 
       const response = await fetchHandle.dispatchRequest(
         new Request("http://test/"),
-        { tick: () => timersHandle.tick() }
+        {}
       );
 
       const text = await response.text();

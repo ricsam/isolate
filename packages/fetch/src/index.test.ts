@@ -149,8 +149,8 @@ describe("@ricsam/isolate-fetch Integration", () => {
 
       assert.strictEqual(receivedMethod, "POST");
       assert.ok(receivedHeaders !== null);
-      assert.strictEqual(receivedHeaders!.get("content-type"), "application/json");
-      assert.strictEqual(receivedHeaders!.get("x-custom"), "value");
+      assert.strictEqual((receivedHeaders as Headers).get("content-type"), "application/json");
+      assert.strictEqual((receivedHeaders as Headers).get("x-custom"), "value");
     });
 
     test("supports abort signal", async () => {

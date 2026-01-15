@@ -328,16 +328,17 @@ describe("createFsTestContext", () => {
 describe("createRuntimeTestContext", () => {
   let ctx: RuntimeTestContext | undefined;
 
-  afterEach(() => {
-    ctx?.dispose();
+  afterEach(async () => {
+    await ctx?.dispose();
     ctx = undefined;
   });
 
   test("creates full runtime context", async () => {
     ctx = await createRuntimeTestContext();
-    assert.ok(ctx.isolate);
-    assert.ok(ctx.context);
-    assert.ok(typeof ctx.tick === "function");
+    assert.ok(typeof ctx.eval === "function");
+    assert.ok(typeof ctx.clearTimers === "function");
+    assert.ok(typeof ctx.dispatchRequest === "function");
+    assert.ok(typeof ctx.dispose === "function");
     assert.ok(Array.isArray(ctx.logs));
     assert.ok(Array.isArray(ctx.fetchCalls));
   });
@@ -345,14 +346,14 @@ describe("createRuntimeTestContext", () => {
   test("captures console logs", async () => {
     ctx = await createRuntimeTestContext();
 
-    ctx.context.evalSync('console.log("test message")');
-    ctx.context.evalSync('console.warn("warning message")');
+    await ctx.eval('console.log("test message")');
+    await ctx.eval('console.warn("warning message")');
 
     assert.strictEqual(ctx.logs.length, 2);
-    assert.strictEqual(ctx.logs[0].level, "log");
-    assert.deepStrictEqual(ctx.logs[0].args, ["test message"]);
-    assert.strictEqual(ctx.logs[1].level, "warn");
-    assert.deepStrictEqual(ctx.logs[1].args, ["warning message"]);
+    assert.strictEqual(ctx.logs[0]!.level, "log");
+    assert.deepStrictEqual(ctx.logs[0]!.args, ["test message"]);
+    assert.strictEqual(ctx.logs[1]!.level, "warn");
+    assert.deepStrictEqual(ctx.logs[1]!.args, ["warning message"]);
   });
 
   test("captures and mocks fetch calls", async () => {
@@ -364,42 +365,40 @@ describe("createRuntimeTestContext", () => {
       headers: { "Content-Type": "application/json" },
     });
 
-    const result = await ctx.context.eval(
-      `
-      (async () => {
-        const response = await fetch("https://api.example.com/data");
-        const json = await response.json();
-        return JSON.stringify({ status: response.status, data: json });
-      })()
-    `,
-      { promise: true }
-    );
-
-    const parsed = JSON.parse(result as string);
-    assert.strictEqual(parsed.status, 200);
-    assert.deepStrictEqual(parsed.data, { data: "test" });
-
-    assert.strictEqual(ctx.fetchCalls.length, 1);
-    assert.strictEqual(ctx.fetchCalls[0].url, "https://api.example.com/data");
-    assert.strictEqual(ctx.fetchCalls[0].method, "GET");
-  });
-
-  test("tick advances timers", async () => {
-    ctx = await createRuntimeTestContext();
-
-    ctx.context.evalSync(`
-      globalThis.timerFired = false;
-      setTimeout(() => { globalThis.timerFired = true; }, 100);
+    await ctx.eval(`
+      const response = await fetch("https://api.example.com/data");
+      const json = await response.json();
+      setResult({ status: response.status, data: json });
     `);
 
-    // Timer should not have fired yet
-    assert.strictEqual(evalCode<boolean>(ctx.context, "timerFired"), false);
+    const result = ctx.getResult<{ status: number; data: { data: string } }>();
+    assert.strictEqual(result?.status, 200);
+    assert.deepStrictEqual(result?.data, { data: "test" });
 
-    // Advance time
-    await ctx.tick(100);
+    assert.strictEqual(ctx.fetchCalls.length, 1);
+    assert.strictEqual(ctx.fetchCalls[0]!.url, "https://api.example.com/data");
+    assert.strictEqual(ctx.fetchCalls[0]!.method, "GET");
+  });
+
+  test("timers fire automatically with real time", async () => {
+    ctx = await createRuntimeTestContext();
+
+    await ctx.eval(`
+      globalThis.timerFired = false;
+      setTimeout(() => { globalThis.timerFired = true; }, 20);
+    `);
+
+    // Timer should not have fired yet - check via setResult
+    await ctx.eval('setResult(globalThis.timerFired)');
+    assert.strictEqual(ctx.getResult<boolean>(), false);
+    ctx.clearResult();
+
+    // Wait for real time to pass
+    await new Promise((r) => setTimeout(r, 50));
 
     // Timer should have fired
-    assert.strictEqual(evalCode<boolean>(ctx.context, "timerFired"), true);
+    await ctx.eval('setResult(globalThis.timerFired)');
+    assert.strictEqual(ctx.getResult<boolean>(), true);
   });
 });
 
@@ -447,10 +446,10 @@ describe("startIntegrationServer", () => {
 
     const requests = server.getRequests();
     assert.strictEqual(requests.length, 1);
-    assert.strictEqual(requests[0].method, "POST");
-    assert.strictEqual(requests[0].path, "/api/endpoint");
-    assert.strictEqual(requests[0].headers["x-custom"], "value");
-    assert.strictEqual(requests[0].body, "request body");
+    assert.strictEqual(requests[0]!.method, "POST");
+    assert.strictEqual(requests[0]!.path, "/api/endpoint");
+    assert.strictEqual(requests[0]!.headers["x-custom"], "value");
+    assert.strictEqual(requests[0]!.body, "request body");
   });
 
   test("clears requests", async () => {

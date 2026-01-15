@@ -1,23 +1,115 @@
 import ivm from "isolated-vm";
 
+/**
+ * Console entry types for structured console output.
+ * Each entry type captures the specific data needed to render like DevTools.
+ */
+export type ConsoleEntry =
+  | {
+      type: "output";
+      level: "log" | "warn" | "error" | "info" | "debug";
+      args: unknown[];
+      groupDepth: number;
+    }
+  | { type: "dir"; value: unknown; groupDepth: number }
+  | { type: "table"; data: unknown; columns?: string[]; groupDepth: number }
+  | { type: "time"; label: string; duration: number; groupDepth: number }
+  | {
+      type: "timeLog";
+      label: string;
+      duration: number;
+      args: unknown[];
+      groupDepth: number;
+    }
+  | { type: "count"; label: string; count: number; groupDepth: number }
+  | { type: "countReset"; label: string; groupDepth: number }
+  | { type: "assert"; args: unknown[]; groupDepth: number }
+  | {
+      type: "group";
+      label: string;
+      collapsed: boolean;
+      groupDepth: number;
+    }
+  | { type: "groupEnd"; groupDepth: number }
+  | { type: "clear" }
+  | { type: "trace"; args: unknown[]; stack: string; groupDepth: number };
+
+/**
+ * Console options with a single structured callback.
+ */
 export interface ConsoleOptions {
-  onLog?: (level: string, ...args: unknown[]) => void;
-  onTime?: (label: string, duration: number) => void;
-  onTimeLog?: (label: string, duration: number, ...args: unknown[]) => void;
-  onCount?: (label: string, count: number) => void;
-  onCountReset?: (label: string) => void;
-  onGroup?: (label: string, collapsed: boolean) => void;
-  onGroupEnd?: () => void;
-  onClear?: () => void;
-  onAssert?: (condition: boolean, ...args: unknown[]) => void;
+  /**
+   * Callback invoked for each console operation.
+   * Receives a structured entry with all data needed to render the output.
+   */
+  onEntry?: (entry: ConsoleEntry) => void;
 }
 
+/**
+ * Console handle for accessing internal state.
+ */
 export interface ConsoleHandle {
   dispose(): void;
   reset(): void;
   getTimers(): Map<string, number>;
   getCounters(): Map<string, number>;
   getGroupDepth(): number;
+}
+
+/**
+ * Simple console callback interface for basic usage.
+ */
+export interface SimpleConsoleCallbacks {
+  log?: (...args: unknown[]) => void;
+  warn?: (...args: unknown[]) => void;
+  error?: (...args: unknown[]) => void;
+  info?: (...args: unknown[]) => void;
+  debug?: (...args: unknown[]) => void;
+}
+
+/**
+ * Helper to create ConsoleOptions from simple callbacks.
+ * Routes log-level outputs to the appropriate callback and handles assertions.
+ *
+ * @example
+ * ```typescript
+ * const runtime = await createRuntime({
+ *   console: simpleConsoleHandler({
+ *     log: (...args) => console.log('[sandbox]', ...args),
+ *     warn: (...args) => console.warn('[sandbox]', ...args),
+ *     error: (...args) => console.error('[sandbox]', ...args),
+ *   })
+ * });
+ * ```
+ */
+export function simpleConsoleHandler(
+  callbacks: SimpleConsoleCallbacks
+): ConsoleOptions {
+  return {
+    onEntry: (entry) => {
+      if (entry.type === "output") {
+        callbacks[entry.level]?.(...entry.args);
+      } else if (entry.type === "assert") {
+        callbacks.error?.("Assertion failed:", ...entry.args);
+      } else if (entry.type === "trace") {
+        callbacks.log?.(...entry.args, "\n" + entry.stack);
+      } else if (entry.type === "dir") {
+        callbacks.log?.(entry.value);
+      } else if (entry.type === "table") {
+        callbacks.log?.(entry.data);
+      } else if (entry.type === "time") {
+        callbacks.log?.(`${entry.label}: ${entry.duration.toFixed(2)}ms`);
+      } else if (entry.type === "timeLog") {
+        callbacks.log?.(
+          `${entry.label}: ${entry.duration.toFixed(2)}ms`,
+          ...entry.args
+        );
+      } else if (entry.type === "count") {
+        callbacks.log?.(`${entry.label}: ${entry.count}`);
+      }
+      // group, groupEnd, groupEnd, countReset, clear are silently ignored
+    },
+  };
 }
 
 /**
@@ -30,7 +122,11 @@ export interface ConsoleHandle {
  *
  * @example
  * const handle = await setupConsole(context, {
- *   onLog: (level, ...args) => console.log(`[${level}]`, ...args)
+ *   onEntry: (entry) => {
+ *     if (entry.type === 'output') {
+ *       console.log(`[${entry.level}]`, ...entry.args);
+ *     }
+ *   }
  * });
  */
 export async function setupConsole(
@@ -46,26 +142,61 @@ export async function setupConsole(
 
   const global = context.global;
 
-  // Log-level methods
-  const logLevels = [
-    "log",
-    "warn",
-    "error",
-    "debug",
-    "info",
-    "trace",
-    "dir",
-    "table",
-  ];
+  // Log-level methods (output type)
+  const logLevels = ["log", "warn", "error", "debug", "info"] as const;
 
   for (const level of logLevels) {
     global.setSync(
       `__console_${level}`,
       new ivm.Callback((...args: unknown[]) => {
-        opts.onLog?.(level, ...args);
+        opts.onEntry?.({
+          type: "output",
+          level,
+          args,
+          groupDepth,
+        });
       })
     );
   }
+
+  // dir method
+  global.setSync(
+    "__console_dir",
+    new ivm.Callback((value: unknown) => {
+      opts.onEntry?.({
+        type: "dir",
+        value,
+        groupDepth,
+      });
+    })
+  );
+
+  // table method
+  global.setSync(
+    "__console_table",
+    new ivm.Callback((data: unknown, columns?: string[]) => {
+      opts.onEntry?.({
+        type: "table",
+        data,
+        columns,
+        groupDepth,
+      });
+    })
+  );
+
+  // trace method (includes stack)
+  global.setSync(
+    "__console_trace",
+    new ivm.Callback((...args: unknown[]) => {
+      const stack = new Error().stack ?? "";
+      opts.onEntry?.({
+        type: "trace",
+        args,
+        stack,
+        groupDepth,
+      });
+    })
+  );
 
   // Timing methods
   global.setSync(
@@ -84,7 +215,12 @@ export async function setupConsole(
       if (start !== undefined) {
         const duration = performance.now() - start;
         timers.delete(l);
-        opts.onTime?.(l, duration);
+        opts.onEntry?.({
+          type: "time",
+          label: l,
+          duration,
+          groupDepth,
+        });
       }
     })
   );
@@ -96,7 +232,13 @@ export async function setupConsole(
       const start = timers.get(l);
       if (start !== undefined) {
         const duration = performance.now() - start;
-        opts.onTimeLog?.(l, duration, ...args);
+        opts.onEntry?.({
+          type: "timeLog",
+          label: l,
+          duration,
+          args,
+          groupDepth,
+        });
       }
     })
   );
@@ -108,7 +250,12 @@ export async function setupConsole(
       const l = label ?? "default";
       const count = (counters.get(l) ?? 0) + 1;
       counters.set(l, count);
-      opts.onCount?.(l, count);
+      opts.onEntry?.({
+        type: "count",
+        label: l,
+        count,
+        groupDepth,
+      });
     })
   );
 
@@ -117,7 +264,11 @@ export async function setupConsole(
     new ivm.Callback((label?: string) => {
       const l = label ?? "default";
       counters.delete(l);
-      opts.onCountReset?.(l);
+      opts.onEntry?.({
+        type: "countReset",
+        label: l,
+        groupDepth,
+      });
     })
   );
 
@@ -126,8 +277,13 @@ export async function setupConsole(
     "__console_group",
     new ivm.Callback((label?: string) => {
       const l = label ?? "default";
+      opts.onEntry?.({
+        type: "group",
+        label: l,
+        collapsed: false,
+        groupDepth,
+      });
       groupDepth++;
-      opts.onGroup?.(l, false);
     })
   );
 
@@ -135,8 +291,13 @@ export async function setupConsole(
     "__console_groupCollapsed",
     new ivm.Callback((label?: string) => {
       const l = label ?? "default";
+      opts.onEntry?.({
+        type: "group",
+        label: l,
+        collapsed: true,
+        groupDepth,
+      });
       groupDepth++;
-      opts.onGroup?.(l, true);
     })
   );
 
@@ -146,7 +307,10 @@ export async function setupConsole(
       if (groupDepth > 0) {
         groupDepth--;
       }
-      opts.onGroupEnd?.();
+      opts.onEntry?.({
+        type: "groupEnd",
+        groupDepth,
+      });
     })
   );
 
@@ -154,7 +318,7 @@ export async function setupConsole(
   global.setSync(
     "__console_clear",
     new ivm.Callback(() => {
-      opts.onClear?.();
+      opts.onEntry?.({ type: "clear" });
     })
   );
 
@@ -162,7 +326,11 @@ export async function setupConsole(
     "__console_assert",
     new ivm.Callback((condition: boolean, ...args: unknown[]) => {
       if (!condition) {
-        opts.onAssert?.(condition, ...args);
+        opts.onEntry?.({
+          type: "assert",
+          args,
+          groupDepth,
+        });
       }
     })
   );

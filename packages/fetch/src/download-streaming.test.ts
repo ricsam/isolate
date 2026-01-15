@@ -53,7 +53,7 @@ describe("Download Streaming", () => {
 
     const response = await fetchHandle.dispatchRequest(
       new Request("http://test/"),
-      { tick: () => timersHandle.tick() }
+      {}
     );
 
     const text = await response.text();
@@ -82,7 +82,7 @@ describe("Download Streaming", () => {
 
     const response = await fetchHandle.dispatchRequest(
       new Request("http://test/"),
-      { tick: () => timersHandle.tick() }
+      {}
     );
 
     const text = await response.text();
@@ -109,7 +109,7 @@ describe("Download Streaming", () => {
 
     const response = await fetchHandle.dispatchRequest(
       new Request("http://test/"),
-      { tick: () => timersHandle.tick() }
+      {}
     );
 
     const text = await response.text();
@@ -139,7 +139,7 @@ describe("Download Streaming", () => {
 
     const response = await fetchHandle.dispatchRequest(
       new Request("http://test/"),
-      { tick: () => timersHandle.tick(50) }  // Advance 50ms to process timers
+      {}
     );
 
     const text = await response.text();
@@ -170,7 +170,7 @@ describe("Download Streaming", () => {
 
     const response = await fetchHandle.dispatchRequest(
       new Request("http://test/"),
-      { tick: () => timersHandle.tick() }
+      {}
     );
 
     assert.strictEqual(response.status, 201);
@@ -201,7 +201,7 @@ describe("Download Streaming", () => {
 
     const response = await fetchHandle.dispatchRequest(
       new Request("http://test/"),
-      { tick: () => timersHandle.tick() }
+      {}
     );
 
     // The first chunk should be readable
@@ -236,7 +236,7 @@ describe("Download Streaming", () => {
 
     const response = await fetchHandle.dispatchRequest(
       new Request("http://test/"),
-      { tick: () => timersHandle.tick() }
+      {}
     );
 
     const reader = response.body!.getReader();

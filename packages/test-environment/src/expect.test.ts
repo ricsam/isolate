@@ -41,7 +41,7 @@ describe("expect matchers", () => {
       const results = await runTests(context);
       assert.strictEqual(results.passed, 0);
       assert.strictEqual(results.failed, 1);
-      assert.ok(results.results[0].error?.includes("Expected 1 to be 2"));
+      assert.ok(results.results[0]!.error?.includes("Expected 1 to be 2"));
     });
   });
 

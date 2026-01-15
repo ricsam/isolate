@@ -69,9 +69,7 @@ describe("Upload Streaming", () => {
       // @ts-expect-error Node.js requires duplex for streaming bodies
       duplex: "half",
     });
-    const response = await fetchHandle.dispatchRequest(request, {
-      tick: () => timersHandle.tick(),
-    });
+    const response = await fetchHandle.dispatchRequest(request);
     assert.strictEqual(await response.text(), "Received: Hello World Stream!");
   });
 
@@ -105,9 +103,7 @@ describe("Upload Streaming", () => {
       duplex: "half",
     });
 
-    const response = await fetchHandle.dispatchRequest(request, {
-      tick: () => timersHandle.tick(),
-    });
+    const response = await fetchHandle.dispatchRequest(request);
     const json = (await response.json()) as { received: { foo: string; num: number } };
     assert.deepStrictEqual(json.received, { foo: "bar", num: 42 });
   });
@@ -141,9 +137,7 @@ describe("Upload Streaming", () => {
       // @ts-expect-error Node.js requires duplex for streaming bodies
       duplex: "half",
     });
-    const response = await fetchHandle.dispatchRequest(request, {
-      tick: () => timersHandle.tick(),
-    });
+    const response = await fetchHandle.dispatchRequest(request);
     assert.strictEqual(await response.text(), "Length: 10");
   });
 
@@ -187,9 +181,7 @@ describe("Upload Streaming", () => {
       // @ts-expect-error Node.js requires duplex for streaming bodies
       duplex: "half",
     });
-    const response = await fetchHandle.dispatchRequest(request, {
-      tick: () => timersHandle.tick(),
-    });
+    const response = await fetchHandle.dispatchRequest(request);
     assert.strictEqual(
       await response.text(),
       "isStream: true, text: chunk0chunk1chunk2"
@@ -228,9 +220,7 @@ describe("Upload Streaming", () => {
       // @ts-expect-error Node.js requires duplex for streaming bodies
       duplex: "half",
     });
-    const response = await fetchHandle.dispatchRequest(request, {
-      tick: () => timersHandle.tick(),
-    });
+    const response = await fetchHandle.dispatchRequest(request);
     assert.strictEqual(await response.text(), "Bytes: 1048576");
   });
 
@@ -273,9 +263,7 @@ describe("Upload Streaming", () => {
       // @ts-expect-error Node.js requires duplex for streaming bodies
       duplex: "half",
     });
-    const response = await fetchHandle.dispatchRequest(request, {
-      tick: () => timersHandle.tick(),
-    });
+    const response = await fetchHandle.dispatchRequest(request);
     const result = (await response.json()) as { chunkCount: number; totalBytes: number };
     assert.strictEqual(result.chunkCount, 10);
     assert.strictEqual(result.totalBytes, 10);
@@ -303,9 +291,7 @@ describe("Upload Streaming", () => {
       // @ts-expect-error Node.js requires duplex for streaming bodies
       duplex: "half",
     });
-    const response = await fetchHandle.dispatchRequest(request, {
-      tick: () => timersHandle.tick(),
-    });
+    const response = await fetchHandle.dispatchRequest(request);
     assert.strictEqual(await response.text(), "Empty: true");
   });
 
@@ -344,9 +330,7 @@ describe("Upload Streaming", () => {
       // @ts-expect-error Node.js requires duplex for streaming bodies
       duplex: "half",
     });
-    const response = await fetchHandle.dispatchRequest(request, {
-      tick: () => timersHandle.tick(),
-    });
+    const response = await fetchHandle.dispatchRequest(request);
     const result = (await response.json()) as { length: number; sum: number };
     assert.strictEqual(result.length, 5);
     // 0x00 + 0xff + 0x80 + 0x01 + 0xfe = 0 + 255 + 128 + 1 + 254 = 638

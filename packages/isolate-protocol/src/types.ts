@@ -18,12 +18,22 @@ export const MessageType = {
   DISPOSE_RUNTIME: 0x02,
   EVAL: 0x03,
   DISPATCH_REQUEST: 0x04,
-  TICK: 0x05,
 
   // Client → Daemon: WebSocket operations
   WS_OPEN: 0x10,
   WS_MESSAGE: 0x11,
   WS_CLOSE: 0x12,
+
+  // Client → Daemon: Handle operations
+  FETCH_GET_UPGRADE_REQUEST: 0x13,
+  FETCH_HAS_SERVE_HANDLER: 0x14,
+  FETCH_HAS_ACTIVE_CONNECTIONS: 0x15,
+  FETCH_WS_ERROR: 0x16,
+  TIMERS_CLEAR_ALL: 0x17,
+  CONSOLE_RESET: 0x18,
+  CONSOLE_GET_TIMERS: 0x19,
+  CONSOLE_GET_COUNTERS: 0x1a,
+  CONSOLE_GET_GROUP_DEPTH: 0x1b,
 
   // Client → Daemon: Test environment
   SETUP_TEST_ENV: 0x20,
@@ -120,12 +130,7 @@ export interface CallbackRegistration {
 }
 
 export interface ConsoleCallbackRegistrations {
-  log?: CallbackRegistration;
-  warn?: CallbackRegistration;
-  error?: CallbackRegistration;
-  info?: CallbackRegistration;
-  debug?: CallbackRegistration;
-  dir?: CallbackRegistration;
+  onEntry?: CallbackRegistration;
 }
 
 export interface FsCallbackRegistrations {
@@ -139,10 +144,16 @@ export interface FsCallbackRegistrations {
   rename?: CallbackRegistration;
 }
 
+export interface CustomFunctionRegistrations {
+  [name: string]: CallbackRegistration;
+}
+
 export interface RuntimeCallbackRegistrations {
   console?: ConsoleCallbackRegistrations;
   fetch?: CallbackRegistration;
   fs?: FsCallbackRegistrations;
+  moduleLoader?: CallbackRegistration;
+  custom?: CustomFunctionRegistrations;
 }
 
 // ============================================================================
@@ -154,6 +165,8 @@ export interface CreateRuntimeRequest extends BaseMessage {
   options: {
     memoryLimit?: number;
     callbacks?: RuntimeCallbackRegistrations;
+    /** Current working directory for path.resolve(). Defaults to "/" */
+    cwd?: string;
   };
 }
 
@@ -167,6 +180,11 @@ export interface EvalRequest extends BaseMessage {
   isolateId: string;
   code: string;
   filename?: string;
+  /**
+   * @deprecated Always uses module mode now. This field is ignored.
+   * All code is evaluated as ES modules with support for top-level await.
+   */
+  module?: boolean;
 }
 
 export interface SerializedRequest {
@@ -186,12 +204,6 @@ export interface DispatchRequestRequest extends BaseMessage {
   options?: {
     timeout?: number;
   };
-}
-
-export interface TickRequest extends BaseMessage {
-  type: typeof MessageType.TICK;
-  isolateId: string;
-  ms?: number;
 }
 
 // WebSocket messages
@@ -214,6 +226,54 @@ export interface WsCloseRequest extends BaseMessage {
   connectionId: string;
   code: number;
   reason: string;
+}
+
+// Handle operation messages
+export interface FetchGetUpgradeRequestRequest extends BaseMessage {
+  type: typeof MessageType.FETCH_GET_UPGRADE_REQUEST;
+  isolateId: string;
+}
+
+export interface FetchHasServeHandlerRequest extends BaseMessage {
+  type: typeof MessageType.FETCH_HAS_SERVE_HANDLER;
+  isolateId: string;
+}
+
+export interface FetchHasActiveConnectionsRequest extends BaseMessage {
+  type: typeof MessageType.FETCH_HAS_ACTIVE_CONNECTIONS;
+  isolateId: string;
+}
+
+export interface FetchWsErrorRequest extends BaseMessage {
+  type: typeof MessageType.FETCH_WS_ERROR;
+  isolateId: string;
+  connectionId: string;
+  error: string;
+}
+
+export interface TimersClearAllRequest extends BaseMessage {
+  type: typeof MessageType.TIMERS_CLEAR_ALL;
+  isolateId: string;
+}
+
+export interface ConsoleResetRequest extends BaseMessage {
+  type: typeof MessageType.CONSOLE_RESET;
+  isolateId: string;
+}
+
+export interface ConsoleGetTimersRequest extends BaseMessage {
+  type: typeof MessageType.CONSOLE_GET_TIMERS;
+  isolateId: string;
+}
+
+export interface ConsoleGetCountersRequest extends BaseMessage {
+  type: typeof MessageType.CONSOLE_GET_COUNTERS;
+  isolateId: string;
+}
+
+export interface ConsoleGetGroupDepthRequest extends BaseMessage {
+  type: typeof MessageType.CONSOLE_GET_GROUP_DEPTH;
+  isolateId: string;
 }
 
 // Test environment messages
@@ -390,10 +450,18 @@ export type ClientMessage =
   | DisposeRuntimeRequest
   | EvalRequest
   | DispatchRequestRequest
-  | TickRequest
   | WsOpenRequest
   | WsMessageRequest
   | WsCloseRequest
+  | FetchGetUpgradeRequestRequest
+  | FetchHasServeHandlerRequest
+  | FetchHasActiveConnectionsRequest
+  | FetchWsErrorRequest
+  | TimersClearAllRequest
+  | ConsoleResetRequest
+  | ConsoleGetTimersRequest
+  | ConsoleGetCountersRequest
+  | ConsoleGetGroupDepthRequest
   | SetupTestEnvRequest
   | RunTestsRequest
   | SetupPlaywrightRequest
@@ -422,6 +490,131 @@ export type DaemonMessage =
   | PongMessage;
 
 export type Message = ClientMessage | DaemonMessage;
+
+// ============================================================================
+// Shared Types (used by both isolate-runtime and isolate-client)
+// ============================================================================
+
+/**
+ * Module loader callback type.
+ * Called when the isolate imports a module dynamically.
+ * Returns the JavaScript source code for the module.
+ */
+export type ModuleLoaderCallback = (
+  moduleName: string
+) => string | Promise<string>;
+
+/**
+ * A custom function that can be called from within the isolate.
+ */
+export type CustomFunction = (...args: unknown[]) => unknown | Promise<unknown>;
+
+/**
+ * Custom function definition with metadata.
+ * Requires explicit `async` property to be clear about function behavior.
+ */
+export interface CustomFunctionDefinition {
+  /** The function implementation */
+  fn: CustomFunction;
+  /** Whether the function is async (returns a Promise) */
+  async: boolean;
+}
+
+/**
+ * Custom functions to register in the runtime.
+ * Each function must be defined with explicit async property.
+ *
+ * @example
+ * ```typescript
+ * customFunctions: {
+ *   // Async function
+ *   hashPassword: {
+ *     fn: async (password) => bcrypt.hash(password, 10),
+ *     async: true,
+ *   },
+ *   // Sync function
+ *   getConfig: {
+ *     fn: () => ({ environment: "production" }),
+ *     async: false,
+ *   },
+ * }
+ * ```
+ */
+export type CustomFunctions = Record<string, CustomFunctionDefinition>;
+
+/**
+ * Console entry types for structured console output.
+ * Each entry type captures the specific data needed to render like DevTools.
+ */
+export type ConsoleEntry =
+  | {
+      type: "output";
+      level: "log" | "warn" | "error" | "info" | "debug";
+      args: unknown[];
+      groupDepth: number;
+    }
+  | { type: "dir"; value: unknown; groupDepth: number }
+  | { type: "table"; data: unknown; columns?: string[]; groupDepth: number }
+  | { type: "time"; label: string; duration: number; groupDepth: number }
+  | {
+      type: "timeLog";
+      label: string;
+      duration: number;
+      args: unknown[];
+      groupDepth: number;
+    }
+  | { type: "count"; label: string; count: number; groupDepth: number }
+  | { type: "countReset"; label: string; groupDepth: number }
+  | { type: "assert"; args: unknown[]; groupDepth: number }
+  | {
+      type: "group";
+      label: string;
+      collapsed: boolean;
+      groupDepth: number;
+    }
+  | { type: "groupEnd"; groupDepth: number }
+  | { type: "clear" }
+  | { type: "trace"; args: unknown[]; stack: string; groupDepth: number };
+
+/**
+ * Console callback handlers with single structured callback.
+ */
+export interface ConsoleCallbacks {
+  /**
+   * Callback invoked for each console operation.
+   * Receives a structured entry with all data needed to render the output.
+   */
+  onEntry?: (entry: ConsoleEntry) => void;
+}
+
+/**
+ * Fetch callback type.
+ */
+export type FetchCallback = (request: Request) => Response | Promise<Response>;
+
+/**
+ * File system callback handlers.
+ */
+export interface FileSystemCallbacks {
+  readFile?: (path: string) => Promise<ArrayBuffer>;
+  writeFile?: (path: string, data: ArrayBuffer) => Promise<void>;
+  unlink?: (path: string) => Promise<void>;
+  readdir?: (path: string) => Promise<string[]>;
+  mkdir?: (path: string, options?: { recursive?: boolean }) => Promise<void>;
+  rmdir?: (path: string) => Promise<void>;
+  stat?: (
+    path: string
+  ) => Promise<{ isFile: boolean; isDirectory: boolean; size: number }>;
+  rename?: (from: string, to: string) => Promise<void>;
+}
+
+/**
+ * Options for dispatching a request.
+ */
+export interface DispatchOptions {
+  /** Request timeout in ms */
+  timeout?: number;
+}
 
 // ============================================================================
 // Result Types (for responses)

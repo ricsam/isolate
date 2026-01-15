@@ -2,6 +2,10 @@ import path from 'node:path';
 import { $, Glob } from 'bun';
 import { TYPE_DEFINITIONS } from '../packages/isolate-types/src/isolate-types.ts';
 
+if (!process.env.CI) {
+  throw new Error('This script is only meant to be run in CI');
+}
+
 // Packages to build (in dependency order: core first, then new packages, then fetch/fs, then runtime, then test-environment, then standalone packages, then daemon/client)
 const PACKAGES = [
   'core',
@@ -34,26 +38,6 @@ const ISOLATE_TYPE_MAPPING: Record<string, keyof typeof TYPE_DEFINITIONS | undef
   'timers': 'timers',
 };
 
-// Extract package-specific README section from main README
-const extractReadmeSection = (readme: string, packageName: string): string | null => {
-  const beginMarker = `<!-- BEGIN:${packageName} -->`;
-  const endMarker = `<!-- END:${packageName} -->`;
-
-  const beginIndex = readme.indexOf(beginMarker);
-  const endIndex = readme.indexOf(endMarker);
-
-  if (beginIndex === -1 || endIndex === -1) {
-    return null;
-  }
-
-  const content = readme.slice(beginIndex + beginMarker.length, endIndex).trim();
-
-  // Convert ### to # for package README (make it the main heading)
-  const withFixedHeading = content.replace(/^### /, '# ');
-
-  return withFixedHeading;
-};
-
 interface RootMetadata {
   author: string;
   license: string;
@@ -73,7 +57,7 @@ const getNpmPackageName = (packageName: string): string => {
   return `@ricsam/isolate-${packageName}`;
 };
 
-const buildPackage = async (packageName: string, rootMetadata: RootMetadata, readme: string) => {
+const buildPackage = async (packageName: string, rootMetadata: RootMetadata) => {
   const packageDir = path.join(__dirname, '..', 'packages', packageName);
   const npmPackageName = getNpmPackageName(packageName);
   console.log(`\n📦 Building ${npmPackageName}...`);
@@ -372,15 +356,6 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata, rea
 
   console.log(`  ✅ package.json updated for publishing`);
 
-  // Extract and write package-specific README
-  const packageReadme = extractReadmeSection(readme, packageName);
-  if (packageReadme) {
-    await Bun.write(path.join(packageDir, 'README.md'), packageReadme);
-    console.log(`  ✅ README.md generated`);
-  } else {
-    console.log(`  ⚠️ No README section found for ${packageName}`);
-  }
-
   console.log(`✨ Finished building ${npmPackageName} v${version}`);
 };
 
@@ -401,12 +376,9 @@ const main = async () => {
     description: rootPackageJson.description,
   };
 
-  // Load README.md for extracting package-specific docs
-  const readme = await Bun.file(path.join(__dirname, '..', 'README.md')).text();
-
   for (const pkg of PACKAGES) {
     try {
-      await buildPackage(pkg, rootMetadata, readme);
+      await buildPackage(pkg, rootMetadata);
     } catch (error) {
       console.error(`❌ Failed to build ${getNpmPackageName(pkg)}:`, error);
       process.exit(1);

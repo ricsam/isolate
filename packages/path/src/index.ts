@@ -1,10 +1,19 @@
 import type ivm from "isolated-vm";
 
+export interface PathOptions {
+  /** Current working directory for path.resolve(). Defaults to "/" */
+  cwd?: string;
+}
+
 export interface PathHandle {
   dispose(): void;
 }
 
-const pathCode = `
+/**
+ * Generate the path module code with optional cwd configuration.
+ */
+function generatePathCode(cwd: string): string {
+  return `
 (function() {
   const sep = '/';
   const delimiter = ':';
@@ -252,8 +261,8 @@ const pathCode = `
           throw new TypeError('Path must be a string. Received ' + typeof path);
         }
       } else {
-        // Use '/' as the cwd since we don't have access to actual cwd in isolate
-        path = '/';
+        // Use configured cwd
+        path = ${JSON.stringify(cwd)};
       }
 
       if (path.length === 0) {
@@ -451,6 +460,7 @@ const pathCode = `
   globalThis.path = pathModule;
 })();
 `;
+}
 
 /**
  * Setup path utilities in an isolated-vm context
@@ -459,13 +469,19 @@ const pathCode = `
  * Uses POSIX-style paths only (always uses '/' as separator)
  *
  * @example
- * const handle = await setupPath(context);
+ * const handle = await setupPath(context, { cwd: "/home/user" });
  * await context.eval(\`
  *   const joined = path.join("/foo", "bar", "baz");
  *   const dir = path.dirname("/foo/bar/baz.txt");
+ *   const resolved = path.resolve("relative"); // Uses configured cwd
  * \`);
  */
-export async function setupPath(context: ivm.Context): Promise<PathHandle> {
+export async function setupPath(
+  context: ivm.Context,
+  options?: PathOptions
+): Promise<PathHandle> {
+  const cwd = options?.cwd ?? "/";
+  const pathCode = generatePathCode(cwd);
   context.evalSync(pathCode);
   return {
     dispose() {

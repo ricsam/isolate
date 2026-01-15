@@ -14,1194 +14,144 @@ A WHATWG-compliant JavaScript sandbox built on [isolated-vm](https://github.com/
 - **Encoding** - `atob()` and `btoa()` for Base64 encoding/decoding
 - **Path** - Node.js-compatible path utilities (`path.join`, `path.resolve`, etc.)
 - **Timers** - `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`
-- **Test Environment** - `describe()`, `it()`, `expect()` for running tests in sandboxed V8 with customizable result handlers
+- **ES Modules** - Top-level await, dynamic imports with custom module loader
+- **Custom Functions** - Call host functions directly from isolate code
+- **Test Environment** - `describe()`, `it()`, `expect()` for running tests in sandboxed V8
 - **Playwright Bridge** - Run Playwright browser tests with untrusted code in a V8 sandbox
 
 ## Installation
 
 ```bash
+# For direct usage in Node.js
 npm add @ricsam/isolate-runtime isolated-vm
-```
 
-Or install individual packages:
-
-```bash
-npm add @ricsam/isolate-core             # Streams, Blob, File, URL
-npm add @ricsam/isolate-fetch            # Fetch API, HTTP server
-npm add @ricsam/isolate-fs               # File System API
-npm add @ricsam/isolate-console          # Console API
-npm add @ricsam/isolate-crypto           # Web Crypto API
-npm add @ricsam/isolate-encoding         # Base64 encoding (atob, btoa)
-npm add @ricsam/isolate-path             # Path utilities
-npm add @ricsam/isolate-timers           # Timer APIs
-npm add @ricsam/isolate-test-environment # Test primitives (describe, it, expect)
-npm add @ricsam/isolate-test-utils       # Testing utilities
-npm add @ricsam/isolate-types            # Types and type utils
-npm add @ricsam/isolate-playwright       # Playwright browser testing bridge
-npm add @ricsam/isolate-protocol         # Binary protocol for daemon communication
-npm add @ricsam/isolate-daemon           # Node.js daemon server
-npm add @ricsam/isolate-client           # Client for Bun/Deno/Node.js
+# For daemon/client architecture (works with Bun, Deno, Node.js)
+npm add @ricsam/isolate-daemon  # Server (Node.js only)
+npm add @ricsam/isolate-client  # Client (any runtime)
 ```
 
 ## Quick Start
 
+### Local Runtime (Node.js)
+
 ```typescript
 import { createRuntime } from "@ricsam/isolate-runtime";
 
 const runtime = await createRuntime({
-  memoryLimit: 128, // 128 MB limit
+  memoryLimit: 128,
   console: {
-    onLog: (level, ...args) => console.log(`[sandbox ${level}]`, ...args),
-  },
-  fetch: {
-    onFetch: async (request) => fetch(request), // Proxy to host
-  },
-  fs: {
-    // Return a FileSystemHandler for the given directory path
-    getDirectory: async (path) => createNodeFileSystemHandler(`./data${path}`),
-  },
-});
-
-// Run sandboxed code
-await runtime.context.eval(`
-  serve({
-    async fetch(request) {
-      const url = new URL(request.url);
-
-      if (url.pathname === "/api/files") {
-        const root = await getDirectory("/data");
-        const entries = [];
-        for await (const [name] of root.entries()) {
-          entries.push(name);
-        }
-        return Response.json(entries);
+    onEntry: (entry) => {
+      if (entry.type === "output") {
+        console.log(`[sandbox:${entry.level}]`, ...entry.args);
       }
-
-      return new Response("Hello from V8 sandbox!");
-    }
-  });
-`, { promise: true });
-
-// Process any pending timers
-await runtime.tick();
-
-// Cleanup
-runtime.dispose();
-```
-
-## Packages
-
-<!-- BEGIN:core -->
-### @ricsam/isolate-core
-
-Core utilities and Web Streams API.
-
-```typescript
-import { setupCore } from "@ricsam/isolate-core";
-
-const handle = await setupCore(context);
-```
-
-**Injected Globals:**
-- `ReadableStream`, `WritableStream`, `TransformStream`
-- `ReadableStreamDefaultReader`, `WritableStreamDefaultWriter`
-- `Blob`, `File`
-- `URL`, `URLSearchParams`
-- `DOMException`
-- `AbortController`, `AbortSignal`
-- `TextEncoder`, `TextDecoder`
-
-**Usage in Isolate:**
-
-```javascript
-// Streams
-const stream = new ReadableStream({
-  start(controller) {
-    controller.enqueue("chunk1");
-    controller.enqueue("chunk2");
-    controller.close();
-  }
-});
-
-const reader = stream.getReader();
-const { value, done } = await reader.read();
-
-// Blob
-const blob = new Blob(["hello", " ", "world"], { type: "text/plain" });
-const text = await blob.text(); // "hello world"
-
-// File
-const file = new File(["content"], "file.txt", { type: "text/plain" });
-console.log(file.name); // "file.txt"
-```
-<!-- END:core -->
-
----
-
-<!-- BEGIN:console -->
-### @ricsam/isolate-console
-
-Console API with logging, timing, counting, and grouping.
-
-```typescript
-import { setupConsole } from "@ricsam/isolate-console";
-
-const handle = await setupConsole(context, {
-  onLog: (level, ...args) => {
-    console.log(`[${level}]`, ...args);
-  },
-  onTime: (label, duration) => {
-    console.log(`${label}: ${duration}ms`);
-  },
-  onCount: (label, count) => {
-    console.log(`${label}: ${count}`);
-  },
-});
-```
-
-**Injected Globals:**
-- `console.log`, `console.warn`, `console.error`, `console.debug`, `console.info`
-- `console.trace`, `console.dir`, `console.table`
-- `console.time`, `console.timeEnd`, `console.timeLog`
-- `console.count`, `console.countReset`
-- `console.group`, `console.groupCollapsed`, `console.groupEnd`
-- `console.assert`, `console.clear`
-
-**Usage in Isolate:**
-
-```javascript
-// Basic logging
-console.log("Hello", { name: "World" });
-console.warn("Warning message");
-console.error("Error occurred");
-
-// Timing
-console.time("operation");
-// ... do work ...
-console.timeLog("operation", "checkpoint");
-// ... more work ...
-console.timeEnd("operation"); // Logs: "operation: 123ms"
-
-// Counting
-console.count("clicks");     // clicks: 1
-console.count("clicks");     // clicks: 2
-console.countReset("clicks");
-console.count("clicks");     // clicks: 1
-
-// Grouping
-console.group("User Info");
-console.log("Name: John");
-console.log("Age: 30");
-console.groupEnd();
-```
-
-**Event Handlers:**
-
-| Handler | Description |
-|---------|-------------|
-| `onLog` | Called for log, warn, error, debug, info, trace, dir, table |
-| `onTime` | Called when `console.timeEnd` completes a timer |
-| `onTimeLog` | Called when `console.timeLog` logs without ending |
-| `onCount` | Called when `console.count` increments |
-| `onCountReset` | Called when `console.countReset` resets a counter |
-| `onGroup` | Called when `console.group` or `groupCollapsed` is invoked |
-| `onGroupEnd` | Called when `console.groupEnd` is invoked |
-| `onAssert` | Called when `console.assert` fails |
-| `onClear` | Called when `console.clear` is invoked |
-<!-- END:console -->
-
----
-
-<!-- BEGIN:crypto -->
-### @ricsam/isolate-crypto
-
-Web Crypto API implementation providing cryptographic operations.
-
-```typescript
-import { setupCrypto } from "@ricsam/isolate-crypto";
-
-const handle = await setupCrypto(context);
-```
-
-**Injected Globals:**
-- `crypto.getRandomValues(array)` - Fill a TypedArray with random bytes
-- `crypto.randomUUID()` - Generate a random UUID v4
-- `crypto.subtle` - SubtleCrypto interface for cryptographic operations
-
-**Usage in Isolate:**
-
-```javascript
-// Generate random bytes
-const bytes = new Uint8Array(16);
-crypto.getRandomValues(bytes);
-
-// Generate UUID
-const uuid = crypto.randomUUID();
-console.log(uuid); // "550e8400-e29b-41d4-a716-446655440000"
-
-// Hash data with SHA-256
-const data = new TextEncoder().encode("Hello, World!");
-const hash = await crypto.subtle.digest("SHA-256", data);
-
-// Generate encryption key
-const key = await crypto.subtle.generateKey(
-  { name: "AES-GCM", length: 256 },
-  true,
-  ["encrypt", "decrypt"]
-);
-
-// Encrypt data
-const iv = crypto.getRandomValues(new Uint8Array(12));
-const encrypted = await crypto.subtle.encrypt(
-  { name: "AES-GCM", iv },
-  key,
-  data
-);
-
-// Decrypt data
-const decrypted = await crypto.subtle.decrypt(
-  { name: "AES-GCM", iv },
-  key,
-  encrypted
-);
-```
-
-#### SubtleCrypto Methods
-
-| Method | Description |
-|--------|-------------|
-| `digest` | Generate hash (SHA-256, SHA-384, SHA-512) |
-| `generateKey` | Generate symmetric or asymmetric keys |
-| `sign` / `verify` | Sign and verify data (HMAC, ECDSA) |
-| `encrypt` / `decrypt` | Encrypt and decrypt data (AES-GCM, AES-CBC) |
-| `importKey` / `exportKey` | Import/export keys (raw, jwk, pkcs8, spki) |
-| `deriveBits` / `deriveKey` | Derive keys (PBKDF2, ECDH) |
-| `wrapKey` / `unwrapKey` | Wrap/unwrap keys for secure transport |
-
-**See also:** [MDN Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API)
-<!-- END:crypto -->
-
----
-
-<!-- BEGIN:encoding -->
-### @ricsam/isolate-encoding
-
-Base64 encoding and decoding via `atob` and `btoa`.
-
-```typescript
-import { setupEncoding } from "@ricsam/isolate-encoding";
-
-const handle = await setupEncoding(context);
-```
-
-**Injected Globals:**
-- `atob(encodedData)` - Decode a Base64-encoded string
-- `btoa(stringToEncode)` - Encode a string to Base64
-
-**Usage in Isolate:**
-
-```javascript
-// Encode string to Base64
-const encoded = btoa("Hello, World!");
-console.log(encoded); // "SGVsbG8sIFdvcmxkIQ=="
-
-// Decode Base64 to string
-const decoded = atob("SGVsbG8sIFdvcmxkIQ==");
-console.log(decoded); // "Hello, World!"
-
-// Common use case: encoding JSON for transport
-const data = { user: "john", token: "abc123" };
-const base64Data = btoa(JSON.stringify(data));
-
-// Decode it back
-const originalData = JSON.parse(atob(base64Data));
-```
-
-**Error Handling:**
-
-```javascript
-// btoa throws for characters outside Latin1 range (0-255)
-try {
-  btoa("Hello 世界"); // Throws DOMException
-} catch (e) {
-  console.error("Cannot encode non-Latin1 characters");
-}
-
-// atob throws for invalid Base64
-try {
-  atob("not valid base64!!!");
-} catch (e) {
-  console.error("Invalid Base64 string");
-}
-```
-<!-- END:encoding -->
-
----
-
-<!-- BEGIN:path -->
-### @ricsam/isolate-path
-
-Node.js-compatible path utilities for POSIX paths.
-
-```typescript
-import { setupPath } from "@ricsam/isolate-path";
-
-const handle = await setupPath(context);
-```
-
-**Injected Globals:**
-- `path.join(...paths)` - Join path segments
-- `path.resolve(...paths)` - Resolve to absolute path (uses `/` as base)
-- `path.normalize(path)` - Normalize a path
-- `path.basename(path, ext?)` - Get file name
-- `path.dirname(path)` - Get directory name
-- `path.extname(path)` - Get file extension
-- `path.isAbsolute(path)` - Check if path is absolute
-- `path.parse(path)` - Parse into components
-- `path.format(obj)` - Format from components
-- `path.relative(from, to)` - Get relative path
-- `path.sep` - Path separator (`/`)
-- `path.delimiter` - Path delimiter (`:`)
-- `path.posix` - Alias to `path` (POSIX-only implementation)
-
-**Usage in Isolate:**
-
-```javascript
-// Join paths
-path.join('/foo', 'bar', 'baz'); // "/foo/bar/baz"
-path.join('foo', 'bar', '..', 'baz'); // "foo/baz"
-
-// Resolve to absolute
-path.resolve('foo/bar'); // "/foo/bar"
-path.resolve('/foo', 'bar'); // "/foo/bar"
-
-// Parse and format
-const parsed = path.parse('/foo/bar/baz.txt');
-// { root: "/", dir: "/foo/bar", base: "baz.txt", ext: ".txt", name: "baz" }
-
-path.format({ dir: '/foo/bar', base: 'baz.txt' }); // "/foo/bar/baz.txt"
-
-// Other utilities
-path.basename('/foo/bar/baz.txt'); // "baz.txt"
-path.dirname('/foo/bar/baz.txt'); // "/foo/bar"
-path.extname('file.tar.gz'); // ".gz"
-path.isAbsolute('/foo'); // true
-```
-<!-- END:path -->
-
----
-
-<!-- BEGIN:timers -->
-### @ricsam/isolate-timers
-
-Timer APIs with host-controlled execution.
-
-```typescript
-import { setupTimers } from "@ricsam/isolate-timers";
-
-const handle = await setupTimers(context);
-
-// Process pending timers (call this in your event loop)
-await handle.tick(100); // Advance 100ms
-```
-
-**Injected Globals:**
-- `setTimeout(callback, ms, ...args)` - Schedule delayed execution
-- `setInterval(callback, ms, ...args)` - Schedule repeated execution
-- `clearTimeout(id)` - Cancel a timeout
-- `clearInterval(id)` - Cancel an interval
-
-**Usage in Isolate:**
-
-```javascript
-// One-shot timer
-const timeoutId = setTimeout(() => {
-  console.log("Fired after 1 second!");
-}, 1000);
-
-// Repeating timer
-let count = 0;
-const intervalId = setInterval(() => {
-  count++;
-  console.log("Tick", count);
-  if (count >= 5) {
-    clearInterval(intervalId);
-  }
-}, 100);
-
-// Cancel a timer
-clearTimeout(timeoutId);
-```
-
-**Host Integration:**
-
-Timers don't fire automatically - you must call `handle.tick()` to advance time:
-
-```typescript
-// In your event loop
-while (hasPendingWork) {
-  await handle.tick(16); // ~60fps tick rate
-  // ... other work
-}
-```
-<!-- END:timers -->
-
----
-
-<!-- BEGIN:fetch -->
-### @ricsam/isolate-fetch
-
-Fetch API and HTTP server handler.
-
-```typescript
-import { setupFetch } from "@ricsam/isolate-fetch";
-
-const handle = await setupFetch(context, {
-  onFetch: async (request) => {
-    // Handle outbound fetch() calls from the isolate
-    console.log(`Fetching: ${request.url}`);
-    return fetch(request);
-  },
-});
-```
-
-**Injected Globals:**
-- `fetch`, `Request`, `Response`, `Headers`
-- `FormData`, `AbortController`, `AbortSignal`
-- `serve` (HTTP server handler)
-
-**Usage in Isolate:**
-
-```javascript
-// Outbound fetch
-const response = await fetch("https://api.example.com/data");
-const data = await response.json();
-
-// Request/Response
-const request = new Request("https://example.com", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ name: "test" }),
-});
-
-const response = new Response(JSON.stringify({ ok: true }), {
-  status: 200,
-  headers: { "Content-Type": "application/json" },
-});
-
-// Static methods
-Response.json({ message: "hello" });
-Response.redirect("https://example.com", 302);
-
-// AbortController
-const controller = new AbortController();
-setTimeout(() => controller.abort(), 5000);
-await fetch(url, { signal: controller.signal });
-
-// FormData
-const formData = new FormData();
-formData.append("name", "John");
-formData.append("file", new File(["content"], "file.txt"));
-```
-
-#### HTTP Server
-
-Register a server handler in the isolate and dispatch requests from the host:
-
-```typescript
-// In isolate
-await context.eval(`
-  serve({
-    fetch(request, server) {
-      const url = new URL(request.url);
-
-      if (url.pathname === "/ws") {
-        if (server.upgrade(request, { data: { userId: "123" } })) {
-          return new Response(null, { status: 101 });
-        }
-      }
-
-      return Response.json({ path: url.pathname });
     },
-    websocket: {
-      open(ws) {
-        console.log("Connected:", ws.data.userId);
-      },
-      message(ws, message) {
-        ws.send("Echo: " + message);
-      },
-      close(ws, code, reason) {
-        console.log("Closed:", code, reason);
-      }
-    }
-  });
-`, { promise: true });
-
-// From host - dispatch HTTP request
-const response = await handle.dispatchRequest(
-  new Request("http://localhost/api/users")
-);
-```
-<!-- END:fetch -->
-
----
-
-<!-- BEGIN:fs -->
-### @ricsam/isolate-fs
-
-File System Access API (OPFS-compatible).
-
-```typescript
-import { setupFs } from "@ricsam/isolate-fs";
-
-const handle = await setupFs(context, {
-  // Return a FileSystemHandler for the given directory path
-  getDirectory: async (path) => {
-    // Validate path access
-    if (!path.startsWith("/allowed")) {
-      throw new Error("Access denied");
-    }
-    return createNodeFileSystemHandler(`./sandbox${path}`);
-  },
-});
-```
-
-**Injected Globals:**
-- `getDirectory(path)` - Entry point for file system access
-- `FileSystemDirectoryHandle`, `FileSystemFileHandle`
-- `FileSystemWritableFileStream`
-
-**Usage in Isolate:**
-
-```javascript
-// Get directory handle
-const root = await getDirectory("/data");
-
-// Read a file
-const fileHandle = await root.getFileHandle("config.json");
-const file = await fileHandle.getFile();
-const text = await file.text();
-const config = JSON.parse(text);
-
-// Write a file
-const outputHandle = await root.getFileHandle("output.txt", { create: true });
-const writable = await outputHandle.createWritable();
-await writable.write("Hello, World!");
-await writable.close();
-
-// Directory operations
-const subDir = await root.getDirectoryHandle("subdir", { create: true });
-await root.removeEntry("old-file.txt");
-await root.removeEntry("old-dir", { recursive: true });
-
-// Iterate directory
-for await (const [name, handle] of root.entries()) {
-  console.log(name, handle.kind); // "file" or "directory"
-}
-```
-<!-- END:fs -->
-
----
-
-<!-- BEGIN:runtime -->
-### @ricsam/isolate-runtime
-
-Umbrella package that combines all APIs.
-
-```typescript
-import { createRuntime } from "@ricsam/isolate-runtime";
-
-const runtime = await createRuntime({
-  // Memory limit in MB
-  memoryLimit: 128,
-  // Console API
-  console: {
-    onLog: (level, ...args) => console.log(`[${level}]`, ...args),
-  },
-  // Fetch API
-  fetch: {
-    onFetch: async (req) => fetch(req),
-  },
-  // File System API (optional)
-  fs: {
-    getDirectory: async (path) => createNodeFileSystemHandler(`./data${path}`),
-  },
-});
-
-// The runtime includes:
-// - runtime.isolate: The V8 isolate
-// - runtime.context: The execution context
-// - runtime.tick(): Process pending timers
-// - runtime.dispose(): Clean up all resources
-
-// Run code
-await runtime.context.eval(`
-  console.log("Hello from sandbox!");
-`, { promise: true });
-
-// Process timers
-await runtime.tick(100);
-
-// Cleanup
-runtime.dispose();
-```
-
-**What's Included:**
-- Core (Blob, File, streams, URL, TextEncoder/Decoder)
-- Console
-- Encoding (atob/btoa)
-- Timers (setTimeout, setInterval)
-- Path utilities
-- Crypto (randomUUID, getRandomValues, subtle)
-- Fetch API
-- File System (if handler provided)
-<!-- END:runtime -->
-
----
-
-<!-- BEGIN:test-environment -->
-### @ricsam/isolate-test-environment
-
-Test primitives for running tests in sandboxed V8. Provides a Jest/Vitest-compatible API.
-
-```typescript
-import { setupTestEnvironment, runTests } from "@ricsam/isolate-test-environment";
-
-const handle = await setupTestEnvironment(context);
-```
-
-**Injected Globals:**
-- `describe`, `it`, `test` (with `.skip`, `.only`, `.todo` modifiers)
-- `beforeAll`, `afterAll`, `beforeEach`, `afterEach`
-- `expect` with matchers and `.not` modifier
-
-**Expect Matchers:**
-- `toBe(expected)` - Strict equality (`===`)
-- `toEqual(expected)` - Deep equality
-- `toStrictEqual(expected)` - Strict deep equality (includes prototype checks)
-- `toBeTruthy()`, `toBeFalsy()`
-- `toBeNull()`, `toBeUndefined()`, `toBeDefined()`
-- `toContain(item)` - Array/string includes
-- `toThrow(expected?)` - Function throws
-- `toBeInstanceOf(cls)` - Instance check
-- `toHaveLength(length)` - Array/string length
-- `toMatch(pattern)` - String/regex match
-- `toHaveProperty(path, value?)` - Object property check
-
-**Usage in Isolate:**
-
-```javascript
-describe("Math operations", () => {
-  beforeEach(() => {
-    // setup before each test
-  });
-
-  it("should add numbers", () => {
-    expect(1 + 1).toBe(2);
-  });
-
-  it("should multiply numbers", async () => {
-    await Promise.resolve();
-    expect(2 * 3).toEqual(6);
-  });
-
-  describe("edge cases", () => {
-    it.skip("should handle infinity", () => {
-      expect(1 / 0).toBe(Infinity);
-    });
-
-    it.todo("should handle NaN");
-  });
-});
-
-// Negation with .not
-expect(1).not.toBe(2);
-expect([1, 2]).not.toContain(3);
-```
-
-**Running tests from host:**
-
-```typescript
-import { setupTestEnvironment, runTests } from "@ricsam/isolate-test-environment";
-
-// Setup test environment
-const handle = await setupTestEnvironment(context);
-
-// Load test code
-await context.eval(userProvidedTestCode, { promise: true });
-
-// Run all registered tests
-const results = await runTests(context);
-console.log(`${results.passed}/${results.total} passed`);
-
-// Results structure:
-// {
-//   passed: number,
-//   failed: number,
-//   skipped: number,
-//   total: number,
-//   results: Array<{
-//     name: string,
-//     passed: boolean,
-//     error?: string,
-//     duration: number,
-//     skipped?: boolean
-//   }>
-// }
-
-handle.dispose();
-```
-<!-- END:test-environment -->
-
----
-
-<!-- BEGIN:playwright -->
-### @ricsam/isolate-playwright
-
-Playwright bridge for running browser tests in a V8 sandbox. Execute untrusted Playwright test code against a real browser page while keeping the test logic isolated.
-
-```typescript
-import ivm from "isolated-vm";
-import { chromium } from "playwright";
-import { setupPlaywright, runPlaywrightTests } from "@ricsam/isolate-playwright";
-
-// Create browser and page
-const browser = await chromium.launch();
-const page = await browser.newPage();
-
-// Create isolate and context
-const isolate = new ivm.Isolate();
-const context = await isolate.createContext();
-
-// Setup playwright bridge
-const handle = await setupPlaywright(context, {
-  page,
-  timeout: 30000,
-  baseUrl: "https://example.com",
-  onNetworkRequest: (info) => console.log("Request:", info.url),
-  onNetworkResponse: (info) => console.log("Response:", info.status),
-  onConsoleLog: (level, ...args) => console.log(`[${level}]`, ...args),
-});
-
-// Load and run untrusted test code
-await context.eval(`
-  test("homepage loads correctly", async () => {
-    await page.goto("/");
-    const heading = page.getByRole("heading", { name: "Example Domain" });
-    await expect(heading).toBeVisible();
-  });
-
-  test("can interact with elements", async () => {
-    const link = page.locator("a");
-    await expect(link).toBeVisible();
-    const text = await link.textContent();
-    expect(text).toContain("More information");
-  });
-`);
-
-// Run tests and get results
-const results = await runPlaywrightTests(context);
-console.log(`${results.passed}/${results.total} tests passed`);
-
-// Cleanup
-handle.dispose();
-context.release();
-isolate.dispose();
-await browser.close();
-```
-
-**Injected Globals (in isolate):**
-- `page` - Page object with navigation and locator methods
-- `test(name, fn)` - Register a test
-- `expect(actual)` - Assertion helper for locators and primitives
-- `Locator` - Locator class for element interactions
-
-**Page Methods:**
-- `page.goto(url, options?)` - Navigate to URL
-- `page.reload()` - Reload page
-- `page.url()` - Get current URL (sync)
-- `page.title()` - Get page title
-- `page.content()` - Get page HTML
-- `page.waitForSelector(selector, options?)` - Wait for element
-- `page.waitForTimeout(ms)` - Wait for milliseconds
-- `page.waitForLoadState(state?)` - Wait for load state
-- `page.evaluate(script)` - Evaluate JS in browser context
-- `page.locator(selector)` - Get locator by CSS selector
-- `page.getByRole(role, options?)` - Get locator by ARIA role
-- `page.getByText(text)` - Get locator by text content
-- `page.getByLabel(label)` - Get locator by label
-- `page.getByPlaceholder(text)` - Get locator by placeholder
-- `page.getByTestId(id)` - Get locator by test ID
-
-**Locator Methods:**
-- `click()`, `dblclick()`, `hover()`, `focus()`
-- `fill(text)`, `type(text)`, `clear()`, `press(key)`
-- `check()`, `uncheck()`, `selectOption(value)`
-- `textContent()`, `inputValue()`
-- `isVisible()`, `isEnabled()`, `isChecked()`, `count()`
-
-**Expect Matchers (for Locators):**
-- `toBeVisible()`, `toBeEnabled()`, `toBeChecked()`
-- `toContainText(text)`, `toHaveValue(value)`
-- All matchers support `.not` modifier
-
-**Expect Matchers (for Primitives):**
-- `toBe(expected)`, `toEqual(expected)`
-- `toBeTruthy()`, `toBeFalsy()`
-- `toContain(item)`
-
-**Handle Methods:**
-- `dispose()` - Clean up event listeners
-- `getConsoleLogs()` - Get captured browser console logs
-- `getNetworkRequests()` - Get captured network requests
-- `getNetworkResponses()` - Get captured network responses
-- `clearCollected()` - Clear all collected data
-
-**Test Results:**
-
-```typescript
-interface PlaywrightExecutionResult {
-  passed: number;
-  failed: number;
-  total: number;
-  results: Array<{
-    name: string;
-    passed: boolean;
-    error?: string;
-    duration: number;
-  }>;
-}
-```
-<!-- END:playwright -->
-
----
-
-<!-- BEGIN:isolate-protocol -->
-### @ricsam/isolate-protocol
-
-Binary protocol for daemon-client communication. Uses MessagePack for efficient serialization with a simple frame format.
-
-```bash
-npm add @ricsam/isolate-protocol
-```
-
-**Frame Format:**
-
-```
-┌──────────┬──────────┬─────────────────┐
-│ Length   │ Type     │ Payload         │
-│ (4 bytes)│ (1 byte) │ (MessagePack)   │
-└──────────┴──────────┴─────────────────┘
-```
-
-**Features:**
-- MessagePack serialization (5-10x faster than JSON)
-- Request/response correlation via request IDs
-- Bidirectional callbacks for console, fetch, and fs operations
-- Streaming support for large request/response bodies
-- Event streaming for Playwright console logs and network activity
-
-**Usage:**
-
-```typescript
-import {
-  createFrameParser,
-  buildFrame,
-  MessageType,
-  type CreateRuntimeRequest,
-  type ResponseOk,
-} from "@ricsam/isolate-protocol";
-
-// Build a frame to send
-const request: CreateRuntimeRequest = {
-  type: MessageType.CREATE_RUNTIME,
-  requestId: 1,
-  options: { memoryLimit: 128 },
-};
-const frame = buildFrame(request);
-
-// Parse incoming frames
-const parser = createFrameParser();
-for (const { message } of parser.feed(data)) {
-  if (message.type === MessageType.RESPONSE_OK) {
-    console.log("Response:", (message as ResponseOk).data);
-  }
-}
-```
-<!-- END:isolate-protocol -->
-
----
-
-<!-- BEGIN:isolate-daemon -->
-### @ricsam/isolate-daemon
-
-Node.js daemon server that manages isolated-vm runtimes via Unix socket or TCP. Allows non-Node.js runtimes (Bun, Deno, etc.) to use isolated-vm through IPC.
-
-```bash
-npm add @ricsam/isolate-daemon
-```
-
-**Features:**
-- Unix domain socket and TCP transport
-- Multiple concurrent connections
-- Runtime lifecycle management (create, dispose)
-- Bidirectional callback bridging (console, fetch, fs)
-- Test environment and Playwright integration
-- Connection-scoped resource cleanup
-
-**Starting the Daemon:**
-
-```typescript
-import { startDaemon } from "@ricsam/isolate-daemon";
-
-const daemon = await startDaemon({
-  socketPath: "/tmp/isolate-daemon.sock", // Unix socket
-  // Or TCP: host: "127.0.0.1", port: 47891
-  maxIsolates: 100,
-  defaultMemoryLimit: 128,
-});
-
-console.log(`Daemon listening on ${daemon.socketPath}`);
-
-// Get stats
-const stats = daemon.getStats();
-console.log(`Active isolates: ${stats.activeIsolates}`);
-
-// Graceful shutdown
-await daemon.close();
-```
-
-**CLI Usage:**
-
-```bash
-# Start daemon on default socket
-npx isolate-daemon
-
-# Custom socket path
-npx isolate-daemon --socket /var/run/isolate.sock
-
-# TCP mode
-npx isolate-daemon --host 127.0.0.1 --port 47891
-```
-<!-- END:isolate-daemon -->
-
----
-
-<!-- BEGIN:isolate-client -->
-### @ricsam/isolate-client
-
-Client library for connecting to the isolate daemon. Works with **any JavaScript runtime** (Node.js, Bun, Deno) since it only requires standard socket APIs.
-
-```bash
-npm add @ricsam/isolate-client
-```
-
-**Features:**
-- Connect via Unix socket or TCP
-- Create and manage remote runtimes
-- Execute code in isolated V8 contexts
-- Dispatch HTTP requests to isolate handlers
-- Bidirectional callbacks (console, fetch, fs)
-- Test environment and Playwright support
-
-**Basic Usage:**
-
-```typescript
-import { connect } from "@ricsam/isolate-client";
-
-// Connect to daemon
-const client = await connect({
-  socket: "/tmp/isolate-daemon.sock",
-  // Or TCP: host: "127.0.0.1", port: 47891
-});
-
-// Create a runtime with callbacks
-const runtime = await client.createRuntime({
-  memoryLimit: 128,
-  console: {
-    log: (...args) => console.log("[isolate]", ...args),
-    error: (...args) => console.error("[isolate]", ...args),
   },
   fetch: async (request) => fetch(request),
-  fs: {
-    readFile: async (path) => Bun.file(path).arrayBuffer(),
-    writeFile: async (path, data) => Bun.write(path, data),
-    stat: async (path) => {
-      const stat = await Bun.file(path).stat();
-      return { isFile: true, isDirectory: false, size: stat.size };
-    },
-  },
 });
 
-// Execute code
-await runtime.eval(`console.log("Hello from isolate!")`);
+// Run code as ES module (supports top-level await)
+await runtime.eval(`
+  const response = await fetch("https://api.example.com/data");
+  const data = await response.json();
+  console.log("Got data:", data);
+`);
 
-// Set up HTTP handler and dispatch requests
+// Set up HTTP server handler
 await runtime.eval(`
   serve({
     fetch(request) {
-      return Response.json({ message: "Hello!" });
+      const url = new URL(request.url);
+      return Response.json({ path: url.pathname });
     }
   });
 `);
 
-const response = await runtime.dispatchRequest(
-  new Request("http://localhost/api")
+// Dispatch requests to the handler
+const response = await runtime.fetch.dispatchRequest(
+  new Request("http://localhost/api/users")
 );
-console.log(await response.json()); // { message: "Hello!" }
+console.log(await response.json()); // { path: "/api/users" }
+
+// Timers fire automatically with real time
+// Clear all pending timers if needed
+runtime.timers.clearAll();
 
 // Cleanup
 await runtime.dispose();
-await client.close();
 ```
 
-**Test Environment:**
+### Module Loader
+
+Provide custom ES modules for dependency injection:
 
 ```typescript
-// Setup test framework in isolate
-await runtime.setupTestEnvironment();
-
-// Define tests
-await runtime.eval(`
-  describe("math", () => {
-    it("adds numbers", () => {
-      expect(1 + 1).toBe(2);
-    });
-  });
-`);
-
-// Run tests
-const results = await runtime.runTests();
-console.log(`${results.passed}/${results.total} passed`);
-```
-
-**Playwright Integration:**
-
-```typescript
-// Setup Playwright (daemon launches browser)
-await runtime.setupPlaywright({
-  browserType: "chromium",
-  headless: true,
-  onConsoleLog: (log) => console.log("[browser]", log),
-});
-
-// Define browser tests
-await runtime.eval(`
-  test("homepage loads", async () => {
-    await page.goto("https://example.com");
-    await expect(page.getByText("Example Domain")).toBeVisible();
-  });
-`);
-
-// Run tests
-const results = await runtime.runPlaywrightTests();
-console.log(`${results.passed}/${results.total} passed`);
-
-// Get collected data
-const data = await runtime.getCollectedData();
-console.log("Console logs:", data.consoleLogs);
-console.log("Network requests:", data.networkRequests);
-```
-<!-- END:isolate-client -->
-
----
-
-<!-- BEGIN:isolate-types -->
-### @ricsam/isolate-types
-
-Type definitions and type-checking utilities for isolate user code.
-
-```bash
-npm add @ricsam/isolate-types
-```
-
-#### Type Checking Isolate Code
-
-Validate TypeScript/JavaScript code that will run inside the isolate before execution using `ts-morph`:
-
-```typescript
-import { typecheckIsolateCode } from "@ricsam/isolate-types";
-
-const result = typecheckIsolateCode(`
-  serve({
-    fetch(request, server) {
-      const url = new URL(request.url);
-
-      if (url.pathname === "/ws") {
-        server.upgrade(request, { data: { userId: 123 } });
-        return new Response(null, { status: 101 });
-      }
-
-      return Response.json({ message: "Hello!" });
-    },
-    websocket: {
-      message(ws, message) {
-        ws.send("Echo: " + message);
-      }
+const runtime = await createRuntime({
+  moduleLoader: async (moduleName) => {
+    if (moduleName === "@/db") {
+      return `
+        export async function getUser(id) {
+          const response = await fetch("/api/users/" + id);
+          return response.json();
+        }
+      `;
     }
-  });
-`, { include: ["core", "fetch"] });
-
-if (!result.success) {
-  console.error("Type errors found:");
-  for (const error of result.errors) {
-    console.error(`  Line ${error.line}: ${error.message}`);
-  }
-}
-```
-
-**Options:**
-
-| Option | Description |
-|--------|-------------|
-| `include` | Which package types to include: `"core"`, `"fetch"`, `"fs"`, `"console"`, `"encoding"`, `"timers"`, `"testEnvironment"` (default: `["core", "fetch", "fs"]`) |
-| `compilerOptions` | Additional TypeScript compiler options |
-| `libraryTypes` | External library type definitions for import resolution (for validating user imports) |
-
-**Using with tests:**
-
-```typescript
-import { describe, expect, test } from "node:test";
-import { typecheckIsolateCode } from "@ricsam/isolate-types";
-
-describe("Isolate code validation", () => {
-  test("server code is type-safe", () => {
-    const result = typecheckIsolateCode(userProvidedCode, {
-      include: ["fetch"]
-    });
-    expect(result.success).toBe(true);
-  });
+    if (moduleName === "@/config") {
+      return `export const API_URL = "https://api.example.com";`;
+    }
+    throw new Error(`Unknown module: ${moduleName}`);
+  },
+  console: {
+    onEntry: (entry) => {
+      if (entry.type === "output") console.log(...entry.args);
+    },
+  },
+  fetch: async (req) => fetch(req),
 });
+
+await runtime.eval(`
+  import { getUser } from "@/db";
+  import { API_URL } from "@/config";
+
+  const user = await getUser("123");
+  console.log("User:", user, "from", API_URL);
+`);
 ```
 
-#### Type Definition Strings
+### Custom Functions
 
-The type definitions are exported as strings for custom use cases:
+Expose host functions to the isolate:
 
 ```typescript
-import {
-  CORE_TYPES,      // ReadableStream, Blob, File, URL, etc.
-  CONSOLE_TYPES,   // console.log, console.time, etc.
-  CRYPTO_TYPES,    // crypto.subtle, CryptoKey, etc.
-  ENCODING_TYPES,  // atob, btoa
-  FETCH_TYPES,     // fetch, Request, Response, serve, etc.
-  FS_TYPES,        // getDirectory, FileSystemHandle, etc.
-  PATH_TYPES,      // path.join, path.resolve, etc.
-  TEST_ENV_TYPES,  // describe, it, expect, etc.
-  TIMERS_TYPES,    // setTimeout, setInterval, etc.
-  TYPE_DEFINITIONS // All types as { core, fetch, fs, ... }
-} from "@ricsam/isolate-types";
+import bcrypt from "bcrypt";
+import z from 'zod';
 
-// Use with your own ts-morph project
-project.createSourceFile("isolate-globals.d.ts", FETCH_TYPES);
+const runtime = await createRuntime({
+  customFunctions: {
+    // Async function
+    hashPassword: {
+      fn: async (password: unknown) => {
+        return bcrypt.hash(z.string().parse(password), 10);
+      },
+      async: true,
+    },
+    // Sync function
+    getConfig: {
+      fn: () => ({ environment: "production" }),
+      async: false,
+    },
+  },
+});
+
+await runtime.eval(`
+  const hash = await hashPassword("secret123");
+  const config = getConfig();
+  console.log(hash, config.environment);
+`);
 ```
-<!-- END:isolate-types -->
 
-## Using from Other Runtimes (Bun, Deno)
+## Daemon/Client Architecture
 
-The `isolated-vm` package only works in Node.js, but you can use the daemon/client architecture to run isolated code from **any JavaScript runtime**.
-
-### Architecture Overview
+The `isolated-vm` package only works in Node.js. Use the daemon/client architecture to run isolated code from **any JavaScript runtime** (Bun, Deno, etc.).
 
 ```
 ┌─────────────────┐         Unix Socket          ┌─────────────────────┐
@@ -1220,243 +170,501 @@ The `isolated-vm` package only works in Node.js, but you can use the daemon/clie
 
 ### Step 1: Start the Daemon (Node.js)
 
-Start the daemon process using Node.js:
-
 ```bash
-# Install the daemon
-npm add @ricsam/isolate-daemon
-
-# Start via CLI
+# Via CLI
 npx isolate-daemon --socket /tmp/isolate.sock
 
 # Or programmatically
-node -e "
-  import('@ricsam/isolate-daemon').then(({ startDaemon }) => {
-    startDaemon({ socketPath: '/tmp/isolate.sock' });
-  });
-"
+import { startDaemon } from "@ricsam/isolate-daemon";
+
+const daemon = await startDaemon({
+  socketPath: "/tmp/isolate.sock",
+  maxIsolates: 100,
+  defaultMemoryLimit: 128,
+});
 ```
 
-### Step 2: Connect from host
+### Step 2: Connect from Any Runtime
 
 ```typescript
-// bun-app.ts
+// Works in Bun, Deno, or Node.js
 import { connect } from "@ricsam/isolate-client";
 
 const client = await connect({ socket: "/tmp/isolate.sock" });
 
 const runtime = await client.createRuntime({
+  memoryLimit: 128,
   console: {
-    log: (...args) => console.log("[isolate]", ...args),
+    onEntry: (entry) => {
+      if (entry.type === "output") {
+        console.log("[isolate]", ...entry.args);
+      }
+    },
   },
-  fetch: async (request) => fetch(request), // Bun's native fetch
+  fetch: async (request) => fetch(request),
   fs: {
     readFile: async (path) => Bun.file(path).arrayBuffer(),
     writeFile: async (path, data) => Bun.write(path, data),
-    readdir: async (path) => {
-      const entries = [];
-      for await (const entry of new Bun.Glob("*").scan({ cwd: path })) {
-        entries.push(entry);
-      }
-      return entries;
-    },
-    stat: async (path) => {
-      const file = Bun.file(path);
-      const stat = await file.stat();
-      return {
-        isFile: stat.isFile,
-        isDirectory: stat.isDirectory,
-        size: stat.size,
-      };
-    },
   },
 });
 
-// Execute sandboxed code
+// Same unified API as local runtime
+await runtime.eval(`
+  console.log("Hello from isolate!");
+  const response = await fetch("https://api.example.com");
+  console.log(await response.json());
+`);
+
+// HTTP server
 await runtime.eval(`
   serve({
-    async fetch(request) {
-      // This fetch() is proxied through Bun's native fetch
-      const data = await fetch("https://api.example.com/data");
-      return Response.json(await data.json());
+    fetch(request) {
+      return Response.json({ message: "Hello!" });
     }
   });
 `);
 
-// Handle requests
-const server = Bun.serve({
-  port: 3000,
-  fetch: (request) => runtime.dispatchRequest(request),
-});
+const response = await runtime.fetch.dispatchRequest(
+  new Request("http://localhost/api")
+);
 
-console.log(`Bun server running at http://localhost:${server.port}`);
+// Timers fire automatically with real time
+await runtime.timers.clearAll();
+
+await runtime.dispose();
+await client.close();
 ```
 
-Run with:
-```bash
-bun run bun-app.ts
-```
-
-### Benefits of the Daemon Architecture
-
-| Benefit | Description |
-|---------|-------------|
-| **Runtime Agnostic** | Use isolated-vm from Bun, Deno, or any runtime with socket support |
-| **Performance** | Unix sockets are 2-3x faster than TCP; MessagePack is 5-10x faster than JSON |
-| **Resource Sharing** | Single daemon serves multiple client connections efficiently |
-| **Native APIs** | Callbacks run in your runtime, so you get native fetch, file system, etc. |
-| **Isolation** | V8 isolate provides true process-level sandboxing |
-
-### Running Tests from Bun/Deno
+### Module Loader and Custom Functions (Remote)
 
 ```typescript
-// Run Jest-style tests in the sandbox
+const runtime = await client.createRuntime({
+  moduleLoader: async (moduleName) => {
+    if (moduleName === "@/auth") {
+      return `
+        export async function login(email, password) {
+          const hash = await hashPassword(password);
+          return { email, hash };
+        }
+      `;
+    }
+    throw new Error(`Unknown module: ${moduleName}`);
+  },
+  customFunctions: {
+    hashPassword: {
+      fn: async (pw) => Bun.password.hash(pw),
+      async: true,
+    },
+    queryDatabase: {
+      fn: async (sql) => db.query(sql),
+      async: true,
+    },
+  },
+});
+
+await runtime.eval(`
+  import { login } from "@/auth";
+  const result = await login("user@example.com", "password");
+  console.log(result);
+`);
+```
+
+## Runtime Interface
+
+Both `@ricsam/isolate-runtime` (local) and `@ricsam/isolate-client` (remote) provide the same unified interface:
+
+```typescript
+interface Runtime {
+  readonly id: string;
+
+  // Execute code as ES module (supports top-level await)
+  eval(code: string, filename?: string): Promise<void>;
+
+  // Release all resources
+  dispose(): Promise<void>;
+
+  // Module handles
+  readonly fetch: FetchHandle;
+  readonly timers: TimersHandle;
+  readonly console: ConsoleHandle;
+}
+
+interface FetchHandle {
+  /** Dispatch HTTP request to serve() handler */
+  dispatchRequest(request: Request, options?: { timeout?: number }): Promise<Response>;
+  /** Check if serve() has been called */
+  hasServeHandler(): boolean;
+  /** Check if there are active WebSocket connections */
+  hasActiveConnections(): boolean;
+
+  // WebSocket methods
+  /** Check if isolate requested WebSocket upgrade */
+  getUpgradeRequest(): UpgradeRequest | null;
+  /** Dispatch WebSocket open event to isolate */
+  dispatchWebSocketOpen(connectionId: string): void;
+  /** Dispatch WebSocket message event to isolate */
+  dispatchWebSocketMessage(connectionId: string, message: string | ArrayBuffer): void;
+  /** Dispatch WebSocket close event to isolate */
+  dispatchWebSocketClose(connectionId: string, code: number, reason: string): void;
+  /** Dispatch WebSocket error event to isolate */
+  dispatchWebSocketError(connectionId: string, error: Error): void;
+  /** Register callback for WebSocket commands from isolate */
+  onWebSocketCommand(callback: (cmd: WebSocketCommand) => void): () => void;
+}
+
+interface UpgradeRequest {
+  requested: true;
+  connectionId: string;
+}
+
+interface WebSocketCommand {
+  type: "message" | "close";
+  connectionId: string;
+  data?: string | ArrayBuffer;
+  code?: number;
+  reason?: string;
+}
+
+interface TimersHandle {
+  clearAll(): void;
+}
+
+interface ConsoleHandle {
+  reset(): void;
+  getTimers(): Map<string, number>;
+  getCounters(): Map<string, number>;
+  getGroupDepth(): number;
+}
+```
+
+## RuntimeOptions
+
+Configuration options for creating a runtime:
+
+```typescript
+interface RuntimeOptions {
+  /** Memory limit in MB for the V8 isolate heap */
+  memoryLimit?: number;
+
+  /** Console callback handlers - receive console.* calls from the isolate */
+  console?: ConsoleCallbacks;
+
+  /** Fetch callback - handles all fetch() calls from the isolate */
+  fetch?: FetchCallback;
+
+  /** File system callbacks - handles OPFS-style file operations */
+  fs?: FileSystemCallbacks;
+
+  /** Module loader - resolves dynamic imports to source code */
+  moduleLoader?: ModuleLoaderCallback;
+
+  /** Custom functions - expose host functions to the isolate */
+  customFunctions?: CustomFunctions;
+
+  /** Current working directory for path.resolve(). Defaults to "/" */
+  cwd?: string;
+}
+```
+
+### Console Callbacks
+
+Handle console output from the isolate using a single structured callback:
+
+```typescript
+interface ConsoleCallbacks {
+  onEntry?: (entry: ConsoleEntry) => void;
+}
+
+type ConsoleEntry =
+  | { type: "output"; level: "log" | "warn" | "error" | "info" | "debug"; args: unknown[]; groupDepth: number }
+  | { type: "dir"; value: unknown; groupDepth: number }
+  | { type: "table"; data: unknown; columns?: string[]; groupDepth: number }
+  | { type: "time"; label: string; duration: number; groupDepth: number }
+  | { type: "timeLog"; label: string; duration: number; args: unknown[]; groupDepth: number }
+  | { type: "count"; label: string; count: number; groupDepth: number }
+  | { type: "countReset"; label: string; groupDepth: number }
+  | { type: "assert"; args: unknown[]; groupDepth: number }
+  | { type: "group"; label: string; collapsed: boolean; groupDepth: number }
+  | { type: "groupEnd"; groupDepth: number }
+  | { type: "clear" }
+  | { type: "trace"; args: unknown[]; stack: string; groupDepth: number };
+```
+
+For simple logging, use the `simpleConsoleHandler` helper:
+
+```typescript
+import { simpleConsoleHandler } from "@ricsam/isolate-runtime";
+
+const runtime = await createRuntime({
+  console: simpleConsoleHandler({
+    log: (...args) => console.log("[sandbox]", ...args),
+    error: (...args) => console.error("[sandbox]", ...args),
+  }),
+});
+```
+
+### Fetch Callback
+
+Handle all `fetch()` calls. Without this callback, fetch is unavailable in the isolate:
+
+```typescript
+type FetchCallback = (request: Request) => Response | Promise<Response>;
+```
+
+### File System Callbacks
+
+Handle file system operations (used by the OPFS-compatible API inside the isolate):
+
+```typescript
+interface FileSystemCallbacks {
+  readFile?: (path: string) => Promise<ArrayBuffer>;
+  writeFile?: (path: string, data: ArrayBuffer) => Promise<void>;
+  unlink?: (path: string) => Promise<void>;
+  readdir?: (path: string) => Promise<string[]>;
+  mkdir?: (path: string, options?: { recursive?: boolean }) => Promise<void>;
+  rmdir?: (path: string) => Promise<void>;
+  stat?: (path: string) => Promise<{ isFile: boolean; isDirectory: boolean; size: number }>;
+  rename?: (from: string, to: string) => Promise<void>;
+}
+```
+
+### Module Loader Callback
+
+Resolve dynamic imports to JavaScript source code:
+
+```typescript
+type ModuleLoaderCallback = (moduleName: string) => string | Promise<string>;
+```
+
+### Custom Functions
+
+Expose host functions that can be called directly from isolate code:
+
+```typescript
+type CustomFunctions = Record<string, CustomFunction | CustomFunctionDefinition>;
+
+type CustomFunction = (...args: unknown[]) => unknown | Promise<unknown>;
+
+interface CustomFunctionDefinition {
+  /** The function implementation */
+  fn: CustomFunction;
+  /** Whether the function is async (defaults to true for safety) */
+  async?: boolean;
+}
+```
+
+Example with both sync and async functions:
+
+```typescript
+const runtime = await createRuntime({
+  customFunctions: {
+    // Async function (returns Promise)
+    hashPassword: {
+      fn: async (password) => bcrypt.hash(password, 10),
+      async: true,
+    },
+    // Sync function (returns value directly)
+    getConfig: {
+      fn: () => ({ env: "production" }),
+      async: false,
+    },
+    // Shorthand: function directly (treated as async)
+    queryDb: async (sql) => db.query(sql),
+  },
+});
+```
+
+## Type Checking Untrusted Code
+
+The `@ricsam/isolate-types` package provides utilities to typecheck code before running it in the sandbox:
+
+```bash
+npm add @ricsam/isolate-types
+```
+
+### Basic Usage
+
+```typescript
+import { typecheckIsolateCode, formatTypecheckErrors } from "@ricsam/isolate-types";
+
+const userCode = `
+  serve({
+    fetch(request, server) {
+      return new Response("Hello!");
+    }
+  });
+`;
+
+const result = typecheckIsolateCode(userCode, {
+  include: ["core", "fetch"],
+});
+
+if (!result.success) {
+  console.error(formatTypecheckErrors(result));
+  // usercode.ts:3:12 (TS2345): Argument of type '...' is not assignable...
+}
+```
+
+### TypecheckOptions
+
+```typescript
+interface TypecheckOptions {
+  /**
+   * Which isolate global types to include.
+   * @default ["core", "fetch", "fs"]
+   */
+  include?: Array<
+    | "core"        // ReadableStream, Blob, File, URL, etc.
+    | "fetch"       // fetch(), Request, Response, Headers, serve()
+    | "fs"          // getDirectory(), FileSystemDirectoryHandle, etc.
+    | "console"     // console.log, console.error, etc.
+    | "encoding"    // atob(), btoa()
+    | "timers"      // setTimeout, setInterval, etc.
+    | "testEnvironment" // describe(), it(), expect()
+  >;
+
+  /**
+   * Library type definitions to inject for import resolution.
+   * Allows typechecking code that imports external modules.
+   */
+  libraryTypes?: Record<string, LibraryTypes>;
+
+  /**
+   * Additional TypeScript compiler options.
+   */
+  compilerOptions?: Partial<ts.CompilerOptions>;
+}
+```
+
+### TypecheckResult
+
+```typescript
+interface TypecheckResult {
+  /** Whether the code passed type checking */
+  success: boolean;
+  /** Array of type errors found */
+  errors: TypecheckError[];
+}
+
+interface TypecheckError {
+  /** The error message from TypeScript */
+  message: string;
+  /** Line number (1-indexed) */
+  line?: number;
+  /** Column number (1-indexed) */
+  column?: number;
+  /** TypeScript error code */
+  code?: number;
+}
+```
+
+### Using TYPE_DEFINITIONS Directly
+
+For advanced use cases (e.g., custom ts-morph setups), you can access the raw type definition strings:
+
+```typescript
+import { TYPE_DEFINITIONS } from "@ricsam/isolate-types";
+
+// Available type definition keys:
+// - TYPE_DEFINITIONS.core
+// - TYPE_DEFINITIONS.console
+// - TYPE_DEFINITIONS.crypto
+// - TYPE_DEFINITIONS.encoding
+// - TYPE_DEFINITIONS.fetch
+// - TYPE_DEFINITIONS.fs
+// - TYPE_DEFINITIONS.path
+// - TYPE_DEFINITIONS.testEnvironment
+// - TYPE_DEFINITIONS.timers
+
+// Use with ts-morph
+import { Project } from "ts-morph";
+
+const project = new Project({ useInMemoryFileSystem: true });
+project.createSourceFile("isolate-fetch.d.ts", TYPE_DEFINITIONS.fetch);
+project.createSourceFile("isolate-core.d.ts", TYPE_DEFINITIONS.core);
+project.createSourceFile("usercode.ts", userCode);
+
+const diagnostics = project.getPreEmitDiagnostics();
+```
+
+## Test Environment
+
+Run tests inside the sandbox:
+
+```typescript
 await runtime.setupTestEnvironment();
 
 await runtime.eval(`
-  describe("API integration", () => {
-    it("fetches data correctly", async () => {
-      const response = await fetch("https://api.example.com/users");
-      const users = await response.json();
-      expect(users).toHaveLength(10);
+  describe("math", () => {
+    it("adds numbers", () => {
+      expect(1 + 1).toBe(2);
+    });
+
+    it("handles async", async () => {
+      const result = await Promise.resolve(42);
+      expect(result).toBe(42);
     });
   });
 `);
 
 const results = await runtime.runTests();
-console.log(`Tests: ${results.passed} passed, ${results.failed} failed`);
+console.log(`${results.passed}/${results.total} passed`);
 ```
 
-### Running Playwright Tests from Bun/Deno
+## Playwright Integration
+
+Run browser tests with untrusted code:
 
 ```typescript
-// Browser tests run in the daemon's Node.js process
 await runtime.setupPlaywright({
   browserType: "chromium",
   headless: true,
 });
 
 await runtime.eval(`
-  test("login flow", async () => {
-    await page.goto("https://app.example.com/login");
-    await page.getByLabel("Email").fill("test@example.com");
-    await page.getByLabel("Password").fill("password123");
-    await page.getByRole("button", { name: "Sign In" }).click();
-    await expect(page.getByText("Dashboard")).toBeVisible();
+  test("homepage loads", async () => {
+    await page.goto("https://example.com");
+    await expect(page.getByText("Example Domain")).toBeVisible();
   });
 `);
 
 const results = await runtime.runPlaywrightTests();
 ```
 
-## Architecture
+## Packages
 
-### Package Dependency Graph
-
-```
-@ricsam/isolate-runtime
-├── @ricsam/isolate-fetch
-│   └── @ricsam/isolate-core
-├── @ricsam/isolate-fs
-│   └── @ricsam/isolate-core
-├── @ricsam/isolate-console
-│   └── @ricsam/isolate-core
-├── @ricsam/isolate-crypto
-│   └── @ricsam/isolate-core
-├── @ricsam/isolate-encoding
-│   └── @ricsam/isolate-core
-├── @ricsam/isolate-path
-│   └── @ricsam/isolate-core
-├── @ricsam/isolate-timers
-│   └── @ricsam/isolate-core
-└── @ricsam/isolate-core
-
-@ricsam/isolate-test-environment
-└── @ricsam/isolate-core
-
-@ricsam/isolate-playwright (standalone - requires playwright)
-
-@ricsam/isolate-daemon
-├── @ricsam/isolate-protocol
-├── @ricsam/isolate-runtime
-├── @ricsam/isolate-fs
-├── @ricsam/isolate-test-environment
-└── @ricsam/isolate-playwright
-
-@ricsam/isolate-client
-└── @ricsam/isolate-protocol
-
-@ricsam/isolate-protocol (standalone - msgpack-lite)
-
-@ricsam/isolate-types (no dependencies)
-```
-
-### Design Principles
-
-1. **V8-based Isolation** - True process-level isolation using V8 isolates with memory limits
-2. **WHATWG APIs** - Mirror browser/Deno/Bun APIs where possible
-3. **Host-Controlled** - The host environment controls all I/O; sandbox code cannot escape
-4. **Handler-Based** - Customizable behavior via handler callbacks for maximum flexibility
-5. **Minimal Surface** - Each package does one thing well
-6. **Composable** - Packages can be used independently or together
-7. **Type-Safe** - Full TypeScript support with strict types
-
-### Handle Lifecycle
-
-All handles must be properly disposed to prevent resource leaks:
-
-```typescript
-const runtime = await createRuntime(options);
-
-try {
-  // Use the runtime...
-  await runtime.context.eval(script, { promise: true });
-} finally {
-  runtime.dispose();
-}
-```
-
-### Async Operations
-
-V8 isolates support native promises. Use `{ promise: true }` for async code:
-
-```typescript
-// Async code execution
-await runtime.context.eval(`
-  (async () => {
-    const response = await fetch("https://api.example.com");
-    return response.json();
-  })()
-`, { promise: true });
-
-// Don't forget to tick timers if using setTimeout/setInterval
-await runtime.tick(100);
-```
+| Package | Description |
+|---------|-------------|
+| [@ricsam/isolate-runtime](./packages/runtime) | Complete runtime with all APIs (Node.js) |
+| [@ricsam/isolate-daemon](./packages/isolate-daemon) | Daemon server for IPC-based isolation |
+| [@ricsam/isolate-client](./packages/isolate-client) | Client for any JavaScript runtime |
+| [@ricsam/isolate-protocol](./packages/isolate-protocol) | Binary protocol for daemon communication |
+| [@ricsam/isolate-core](./packages/core) | Core utilities (Blob, File, streams, URL) |
+| [@ricsam/isolate-fetch](./packages/fetch) | Fetch API and HTTP server |
+| [@ricsam/isolate-fs](./packages/fs) | File System Access API |
+| [@ricsam/isolate-console](./packages/console) | Console API |
+| [@ricsam/isolate-crypto](./packages/crypto) | Web Crypto API |
+| [@ricsam/isolate-encoding](./packages/encoding) | Base64 encoding (atob, btoa) |
+| [@ricsam/isolate-path](./packages/path) | Path utilities |
+| [@ricsam/isolate-timers](./packages/timers) | Timer APIs |
+| [@ricsam/isolate-test-environment](./packages/test-environment) | Test primitives (describe, it, expect) |
+| [@ricsam/isolate-playwright](./packages/playwright) | Playwright browser testing bridge |
+| [@ricsam/isolate-types](./packages/isolate-types) | Type definitions and type checking |
+| [@ricsam/isolate-test-utils](./packages/test-utils) | Testing utilities |
 
 ## Security
 
 - **True V8 Isolation** - Code runs in a separate V8 isolate with its own heap
-- **No automatic network access** - `onFetch` must be explicitly provided
-- **File system isolation** - `getDirectory` handler controls all path access
+- **No automatic network access** - `fetch` callback must be explicitly provided
+- **File system isolation** - `fs` callbacks control all path access
 - **Memory limits** - Configure maximum heap size per isolate
 - **No Node.js APIs** - Sandbox has no access to `require`, `process`, `fs`, etc.
-
-```typescript
-const runtime = await createRuntime({
-  memoryLimit: 128, // 128 MB limit - isolate is killed if exceeded
-});
-```
 
 ## Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Run tests
 npm test
-
-# Type check
 npm run typecheck
 ```
 

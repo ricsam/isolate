@@ -18,9 +18,11 @@ describe("Debug Delayed Streaming", () => {
 
     const logs: string[] = [];
     await setupConsole(context, {
-      onLog: (level, ...args) => {
-        logs.push(`[${level}] ${args.join(' ')}`);
-        console.log(`[ISOLATE] ${args.join(' ')}`);
+      onEntry: (entry) => {
+        if (entry.type === "output") {
+          logs.push(`[${entry.level}] ${entry.args.join(' ')}`);
+          console.log(`[ISOLATE] ${entry.args.join(' ')}`);
+        }
       }
     });
 
@@ -63,13 +65,7 @@ describe("Debug Delayed Streaming", () => {
 
       console.log('Calling dispatchRequest');
       const response = await fetchHandle.dispatchRequest(
-        new Request("http://test/"),
-        {
-          tick: async () => {
-            // Advance virtual time by 50ms each tick to process timers
-            await timersHandle.tick(50);
-          }
-        }
+        new Request("http://test/")
       );
 
       console.log('Got response, status:', response.status);

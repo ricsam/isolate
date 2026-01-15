@@ -203,9 +203,9 @@ describe("WebSocket", () => {
     fetchHandle.dispatchWebSocketOpen(upgrade!.connectionId);
 
     assert.strictEqual(commands.length, 1);
-    assert.strictEqual(commands[0].type, "message");
-    assert.strictEqual(commands[0].connectionId, upgrade!.connectionId);
-    assert.strictEqual(commands[0].data, "Welcome!");
+    assert.strictEqual(commands[0]!.type, "message");
+    assert.strictEqual(commands[0]!.connectionId, upgrade!.connectionId);
+    assert.strictEqual(commands[0]!.data, "Welcome!");
   });
 
   test("ws.close() triggers onWebSocketCommand with close message", async () => {
@@ -233,10 +233,10 @@ describe("WebSocket", () => {
     fetchHandle.dispatchWebSocketOpen(upgrade!.connectionId);
 
     assert.strictEqual(commands.length, 1);
-    assert.strictEqual(commands[0].type, "close");
-    assert.strictEqual(commands[0].connectionId, upgrade!.connectionId);
-    assert.strictEqual(commands[0].code, 1000);
-    assert.strictEqual(commands[0].reason, "Goodbye");
+    assert.strictEqual(commands[0]!.type, "close");
+    assert.strictEqual(commands[0]!.connectionId, upgrade!.connectionId);
+    assert.strictEqual(commands[0]!.code, 1000);
+    assert.strictEqual(commands[0]!.reason, "Goodbye");
   });
 
   test("WebSocket echo server roundtrip", async () => {

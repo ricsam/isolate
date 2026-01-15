@@ -18,9 +18,11 @@ describe("Debug Streaming", () => {
 
     const logs: string[] = [];
     await setupConsole(context, {
-      onLog: (level, ...args) => {
-        logs.push(`[${level}] ${args.join(' ')}`);
-        console.log(`[ISOLATE] ${args.join(' ')}`);
+      onEntry: (entry) => {
+        if (entry.type === "output") {
+          logs.push(`[${entry.level}] ${entry.args.join(' ')}`);
+          console.log(`[ISOLATE] ${entry.args.join(' ')}`);
+        }
       }
     });
 
@@ -59,8 +61,7 @@ describe("Debug Streaming", () => {
 
       console.log('Calling dispatchRequest');
       const response = await fetchHandle.dispatchRequest(
-        new Request("http://test/"),
-        { tick: () => timersHandle.tick() }
+        new Request("http://test/")
       );
 
       console.log('Got response, status:', response.status);
