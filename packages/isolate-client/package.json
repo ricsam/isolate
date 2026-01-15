@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-playwright": "workspace:*",
+    "@ricsam/isolate-playwright": "*",
     "@ricsam/isolate-protocol": "*"
   },
   "devDependencies": {

@@ -27,9 +27,9 @@
     "@ricsam/isolate-fetch": "*",
     "@ricsam/isolate-fs": "*",
     "@ricsam/isolate-path": "*",
-    "@ricsam/isolate-playwright": "workspace:*",
-    "@ricsam/isolate-protocol": "workspace:*",
-    "@ricsam/isolate-test-environment": "workspace:*",
+    "@ricsam/isolate-playwright": "*",
+    "@ricsam/isolate-protocol": "*",
+    "@ricsam/isolate-test-environment": "*",
     "@ricsam/isolate-timers": "*",
     "isolated-vm": "^6"
   },
