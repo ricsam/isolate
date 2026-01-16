@@ -205,6 +205,42 @@ describe("isolate-client integration", () => {
     assert.ok(stats.activeConnections >= 1);
   });
 
+  // maxExecutionMs timeout tests
+  it("should timeout on infinite loop with maxExecutionMs", async () => {
+    const runtime = await client.createRuntime();
+    try {
+      await assert.rejects(
+        async () => {
+          await runtime.eval(`while(true) {}`, { maxExecutionMs: 100 });
+        },
+        /Script execution timed out/,
+        "should throw timeout error"
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("should complete when code finishes within maxExecutionMs", async () => {
+    const logs: unknown[] = [];
+    const runtime = await client.createRuntime({
+      console: {
+        onEntry: (entry) => {
+          if (entry.type === "output" && entry.level === "log") {
+            logs.push(entry.args[0]);
+          }
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`console.log("fast code");`, { maxExecutionMs: 5000 });
+      assert.strictEqual(logs[0], "fast code");
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   // Test Environment Integration Tests
   it("should setup test environment and run tests", async () => {
     const runtime = await client.createRuntime({
@@ -728,7 +764,7 @@ describe("isolate-client integration", () => {
             calls.push({ name: "hashPassword", args: [password] });
             return `hashed:${password}`;
           },
-          async: true,
+          type: 'async',
         },
         queryDatabase: {
           fn: async (...args) => {
@@ -739,7 +775,7 @@ describe("isolate-client integration", () => {
               { id: 2, name: "Bob" },
             ];
           },
-          async: true,
+          type: 'async',
         },
       },
     });
@@ -790,11 +826,11 @@ describe("isolate-client integration", () => {
       customFunctions: {
         getConfig: {
           fn: () => ({ apiKey: "sk-test", environment: "testing" }),
-          async: false,
+          type: 'sync',
         },
         formatDate: {
           fn: (...args) => new Date(args[0] as number).toISOString(),
-          async: false,
+          type: 'sync',
         },
       },
     });
@@ -833,7 +869,7 @@ describe("isolate-client integration", () => {
           fn: async () => {
             throw new Error("Custom function error");
           },
-          async: true,
+          type: 'async',
         },
       },
     });
@@ -869,12 +905,12 @@ describe("isolate-client integration", () => {
       customFunctions: {
         sum: {
           fn: async (...args) => (args as number[]).reduce((a, b) => a + b, 0),
-          async: true,
+          type: 'async',
         },
         concat: {
           fn: async (...args) =>
             (args[0] as string) + (args[1] as string) + (args[2] as string),
-          async: true,
+          type: 'async',
         },
       },
     });
@@ -925,7 +961,7 @@ describe("isolate-client integration", () => {
             calls.push(`greet:${name}`);
             return `Hello, ${name}!`;
           },
-          async: true,
+          type: 'async',
         },
         add: {
           fn: async (...args) => {
@@ -934,7 +970,7 @@ describe("isolate-client integration", () => {
             calls.push(`add:${a}+${b}`);
             return a + b;
           },
-          async: true,
+          type: 'async',
         },
       },
     });
@@ -976,7 +1012,7 @@ describe("isolate-client integration", () => {
             calls.push(`greet:${name}`);
             return `Hello, ${name}!`;
           },
-          async: false,
+          type: 'sync',
         },
         add: {
           fn: (...args) => {
@@ -985,7 +1021,7 @@ describe("isolate-client integration", () => {
             calls.push(`add:${a}+${b}`);
             return a + b;
           },
-          async: false,
+          type: 'sync',
         },
       },
     });
@@ -1173,7 +1209,7 @@ describe("isolate-client integration", () => {
             }
             return users;
           },
-          async: true,
+          type: 'async',
         },
       },
     });
@@ -1864,6 +1900,154 @@ describe("isolate-client integration", () => {
           );
           assert.ok(echoMsg, "Should receive echoed message");
           assert.strictEqual(echoMsg?.connectionId, connectionId);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
+
+    describe("async iterator custom functions", () => {
+      it("should yield values from async iterator through client/daemon", async () => {
+        const runtime = await client.createRuntime({
+          customFunctions: {
+            countUp: {
+              fn: async function* (max: number) {
+                for (let i = 0; i < max; i++) yield i;
+              },
+              type: 'asyncIterator',
+            },
+          },
+        });
+
+        try {
+          await runtime.eval(`
+            serve({
+              fetch: async (request) => {
+                const arr = [];
+                for await (const n of countUp(3)) arr.push(n);
+                return new Response(JSON.stringify(arr), {
+                  headers: { "Content-Type": "application/json" }
+                });
+              }
+            });
+          `);
+
+          const response = await runtime.fetch.dispatchRequest(
+            new Request("http://localhost/test")
+          );
+          const result = await response.json();
+
+          assert.deepStrictEqual(result, [0, 1, 2]);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      it("should cleanup async iterator on break through client/daemon", async () => {
+        let cleaned = false;
+        const runtime = await client.createRuntime({
+          customFunctions: {
+            infinite: {
+              fn: async function* () {
+                try {
+                  while (true) yield 1;
+                } finally {
+                  cleaned = true;
+                }
+              },
+              type: 'asyncIterator',
+            },
+          },
+        });
+
+        try {
+          await runtime.eval(`
+            serve({
+              fetch: async (request) => {
+                for await (const n of infinite()) break;
+                return new Response("done");
+              }
+            });
+          `);
+
+          const response = await runtime.fetch.dispatchRequest(
+            new Request("http://localhost/test")
+          );
+          assert.strictEqual(response.status, 200);
+          assert.strictEqual(cleaned, true);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      it("should propagate async iterator errors through client/daemon", async () => {
+        const runtime = await client.createRuntime({
+          customFunctions: {
+            failing: {
+              fn: async function* () {
+                yield 1;
+                throw new Error("Stream failed");
+              },
+              type: 'asyncIterator',
+            },
+          },
+        });
+
+        try {
+          await runtime.eval(`
+            serve({
+              fetch: async (request) => {
+                try {
+                  for await (const n of failing()) {}
+                  return new Response("should not reach");
+                } catch (err) {
+                  return new Response(err.message, { status: 500 });
+                }
+              }
+            });
+          `);
+
+          const response = await runtime.fetch.dispatchRequest(
+            new Request("http://localhost/test")
+          );
+          const errorMessage = await response.text();
+
+          assert.strictEqual(response.status, 500);
+          assert.ok(errorMessage.includes("Stream failed"));
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      it("should work with async iterator in direct eval context", async () => {
+        const logs: unknown[] = [];
+
+        const runtime = await client.createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logs.push(entry.args);
+              }
+            },
+          },
+          customFunctions: {
+            countUp: {
+              fn: async function* (max: number) {
+                for (let i = 0; i < max; i++) yield i;
+              },
+              type: 'asyncIterator',
+            },
+          },
+        });
+
+        try {
+          await runtime.eval(`
+            const arr = [];
+            for await (const n of countUp(3)) arr.push(n);
+            console.log(arr);
+          `);
+
+          assert.deepStrictEqual(logs[0], [[0, 1, 2]]);
         } finally {
           await runtime.dispose();
         }

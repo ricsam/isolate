@@ -124,13 +124,16 @@ export interface BaseMessage {
 // Callback Registration
 // ============================================================================
 
+/** Custom function type indicator */
+export type CustomFunctionType = 'sync' | 'async' | 'asyncIterator';
+
 export interface CallbackRegistration {
   /** Unique ID for this callback */
   callbackId: number;
   /** Callback name (e.g., "log", "warn", "fetch") */
   name: string;
-  /** Whether callback returns a Promise */
-  async: boolean;
+  /** Function type: sync, async, or asyncIterator */
+  type: CustomFunctionType;
 }
 
 export interface ConsoleCallbackRegistrations {
@@ -251,6 +254,8 @@ export interface EvalRequest extends BaseMessage {
   isolateId: string;
   code: string;
   filename?: string;
+  /** Maximum execution time in milliseconds. If exceeded, throws a timeout error. */
+  maxExecutionMs?: number;
   /**
    * @deprecated Always uses module mode now. This field is ignored.
    * All code is evaluated as ES modules with support for top-level await.
@@ -636,32 +641,46 @@ export type ModuleLoaderCallback = (
 export type CustomFunction = (...args: unknown[]) => unknown | Promise<unknown>;
 
 /**
+ * An async generator function that can be consumed in the isolate via for await...of.
+ */
+export type CustomAsyncGeneratorFunction = (...args: unknown[]) => AsyncGenerator<unknown, unknown, unknown>;
+
+/**
  * Custom function definition with metadata.
- * Requires explicit `async` property to be clear about function behavior.
+ * Requires explicit `type` property to indicate function behavior.
  */
 export interface CustomFunctionDefinition {
   /** The function implementation */
-  fn: CustomFunction;
-  /** Whether the function is async (returns a Promise) */
-  async: boolean;
+  fn: CustomFunction | CustomAsyncGeneratorFunction;
+  /** Function type: 'sync', 'async', or 'asyncIterator' */
+  type: CustomFunctionType;
 }
 
 /**
  * Custom functions to register in the runtime.
- * Each function must be defined with explicit async property.
+ * Each function must be defined with explicit type property.
  *
  * @example
  * ```typescript
  * customFunctions: {
- *   // Async function
- *   hashPassword: {
- *     fn: async (password) => bcrypt.hash(password, 10),
- *     async: true,
- *   },
  *   // Sync function
  *   getConfig: {
  *     fn: () => ({ environment: "production" }),
- *     async: false,
+ *     type: 'sync',
+ *   },
+ *   // Async function
+ *   hashPassword: {
+ *     fn: async (password) => bcrypt.hash(password, 10),
+ *     type: 'async',
+ *   },
+ *   // Async iterator function
+ *   streamData: {
+ *     fn: async function* (options) {
+ *       for await (const chunk of someStream) {
+ *         yield chunk;
+ *       }
+ *     },
+ *     type: 'asyncIterator',
  *   },
  * }
  * ```

@@ -48,6 +48,7 @@ import type {
   ModuleLoaderCallback,
   CustomFunctionDefinition,
   CustomFunctions,
+  CustomAsyncGeneratorFunction,
   DispatchOptions,
 } from "@ricsam/isolate-protocol";
 
@@ -189,13 +190,23 @@ export interface CollectedData {
 }
 
 /**
+ * Options for eval() method.
+ */
+export interface EvalOptions {
+  /** Filename for stack traces */
+  filename?: string;
+  /** Maximum execution time in milliseconds. If exceeded, throws a timeout error. */
+  maxExecutionMs?: number;
+}
+
+/**
  * Runtime handle - the main interface for interacting with the isolate.
  */
 export interface RuntimeHandle {
   /** Unique runtime identifier */
   readonly id: string;
   /** Execute code as ES module (supports top-level await) */
-  eval(code: string, filename?: string): Promise<void>;
+  eval(code: string, filenameOrOptions?: string | EvalOptions): Promise<void>;
   /** Dispose all resources */
   dispose(): Promise<void>;
 
@@ -235,6 +246,14 @@ interface RuntimeState {
   >;
 }
 
+// Iterator session tracking for async iterator custom functions
+interface IteratorSession {
+  iterator: AsyncGenerator<unknown, unknown, unknown>;
+}
+
+const iteratorSessions = new Map<number, IteratorSession>();
+let nextIteratorId = 1;
+
 /**
  * Setup custom functions as globals in the isolate context.
  * Each function directly calls the host callback when invoked.
@@ -257,7 +276,7 @@ async function setupCustomFunctions(
       }
       const args = JSON.parse(argsJson) as unknown[];
       try {
-        const result = def.async ? await def.fn(...args) : def.fn(...args);
+        const result = def.type === 'async' ? await def.fn(...args) : def.fn(...args);
         return JSON.stringify({ ok: true, value: result });
       } catch (error: unknown) {
         const err = error as Error;
@@ -271,11 +290,123 @@ async function setupCustomFunctions(
 
   global.setSync("__customFn_invoke", invokeCallbackRef);
 
+  // Iterator start: creates iterator, stores in session, returns iteratorId
+  const iterStartRef = new ivm.Reference(
+    async (name: string, argsJson: string): Promise<string> => {
+      const def = customFunctions[name];
+      if (!def || def.type !== 'asyncIterator') {
+        return JSON.stringify({
+          ok: false,
+          error: { message: `Async iterator function '${name}' not found`, name: "Error" },
+        });
+      }
+      try {
+        const args = JSON.parse(argsJson) as unknown[];
+        const fn = def.fn as CustomAsyncGeneratorFunction;
+        const iterator = fn(...args);
+        const iteratorId = nextIteratorId++;
+        iteratorSessions.set(iteratorId, { iterator });
+        return JSON.stringify({ ok: true, iteratorId });
+      } catch (error: unknown) {
+        const err = error as Error;
+        return JSON.stringify({
+          ok: false,
+          error: { message: err.message, name: err.name },
+        });
+      }
+    }
+  );
+
+  global.setSync("__iter_start", iterStartRef);
+
+  // Iterator next: calls iterator.next(), returns {done, value}
+  const iterNextRef = new ivm.Reference(
+    async (iteratorId: number): Promise<string> => {
+      const session = iteratorSessions.get(iteratorId);
+      if (!session) {
+        return JSON.stringify({
+          ok: false,
+          error: { message: `Iterator session ${iteratorId} not found`, name: "Error" },
+        });
+      }
+      try {
+        const result = await session.iterator.next();
+        if (result.done) {
+          iteratorSessions.delete(iteratorId);
+        }
+        return JSON.stringify({ ok: true, done: result.done, value: result.value });
+      } catch (error: unknown) {
+        const err = error as Error;
+        iteratorSessions.delete(iteratorId);
+        return JSON.stringify({
+          ok: false,
+          error: { message: err.message, name: err.name },
+        });
+      }
+    }
+  );
+
+  global.setSync("__iter_next", iterNextRef);
+
+  // Iterator return: calls iterator.return(), cleans up session
+  const iterReturnRef = new ivm.Reference(
+    async (iteratorId: number, valueJson: string): Promise<string> => {
+      const session = iteratorSessions.get(iteratorId);
+      if (!session) {
+        return JSON.stringify({ ok: true, done: true, value: undefined });
+      }
+      try {
+        const value = valueJson ? JSON.parse(valueJson) : undefined;
+        const result = await session.iterator.return?.(value);
+        iteratorSessions.delete(iteratorId);
+        return JSON.stringify({ ok: true, done: true, value: result?.value });
+      } catch (error: unknown) {
+        const err = error as Error;
+        iteratorSessions.delete(iteratorId);
+        return JSON.stringify({
+          ok: false,
+          error: { message: err.message, name: err.name },
+        });
+      }
+    }
+  );
+
+  global.setSync("__iter_return", iterReturnRef);
+
+  // Iterator throw: calls iterator.throw(), cleans up session
+  const iterThrowRef = new ivm.Reference(
+    async (iteratorId: number, errorJson: string): Promise<string> => {
+      const session = iteratorSessions.get(iteratorId);
+      if (!session) {
+        return JSON.stringify({
+          ok: false,
+          error: { message: `Iterator session ${iteratorId} not found`, name: "Error" },
+        });
+      }
+      try {
+        const errorData = JSON.parse(errorJson) as { message: string; name: string };
+        const error = Object.assign(new Error(errorData.message), { name: errorData.name });
+        const result = await session.iterator.throw?.(error);
+        iteratorSessions.delete(iteratorId);
+        return JSON.stringify({ ok: true, done: result?.done ?? true, value: result?.value });
+      } catch (error: unknown) {
+        const err = error as Error;
+        iteratorSessions.delete(iteratorId);
+        return JSON.stringify({
+          ok: false,
+          error: { message: err.message, name: err.name },
+        });
+      }
+    }
+  );
+
+  global.setSync("__iter_throw", iterThrowRef);
+
   // Create wrapper functions for each custom function
   for (const name of Object.keys(customFunctions)) {
     const def = customFunctions[name]!;
 
-    if (def.async) {
+    if (def.type === 'async') {
       // Async function: use applySyncPromise and async function wrapper
       context.evalSync(`
         globalThis.${name} = async function(...args) {
@@ -293,7 +424,7 @@ async function setupCustomFunctions(
           }
         };
       `);
-    } else {
+    } else if (def.type === 'sync') {
       // Sync function: use applySyncPromise (to await the host) but wrap in regular function
       // The function blocks until the host responds, but returns the value directly (not a Promise)
       context.evalSync(`
@@ -310,6 +441,38 @@ async function setupCustomFunctions(
             error.name = result.error.name;
             throw error;
           }
+        };
+      `);
+    } else if (def.type === 'asyncIterator') {
+      // Async iterator function: returns an async iterable object
+      context.evalSync(`
+        globalThis.${name} = function(...args) {
+          const startResult = JSON.parse(__iter_start.applySyncPromise(undefined, ["${name}", JSON.stringify(args)]));
+          if (!startResult.ok) {
+            throw Object.assign(new Error(startResult.error.message), { name: startResult.error.name });
+          }
+          const iteratorId = startResult.iteratorId;
+          return {
+            [Symbol.asyncIterator]() { return this; },
+            async next() {
+              const result = JSON.parse(__iter_next.applySyncPromise(undefined, [iteratorId]));
+              if (!result.ok) {
+                throw Object.assign(new Error(result.error.message), { name: result.error.name });
+              }
+              return { done: result.done, value: result.value };
+            },
+            async return(v) {
+              const result = JSON.parse(__iter_return.applySyncPromise(undefined, [iteratorId, JSON.stringify(v)]));
+              return { done: true, value: result.value };
+            },
+            async throw(e) {
+              const result = JSON.parse(__iter_throw.applySyncPromise(undefined, [iteratorId, JSON.stringify({ message: e.message, name: e.name })]));
+              if (!result.ok) {
+                throw Object.assign(new Error(result.error.message), { name: result.error.name });
+              }
+              return { done: result.done, value: result.value };
+            }
+          };
         };
       `);
     }
@@ -627,18 +790,23 @@ export async function createRuntime(
     testEnvironment: testEnvironmentHandle,
     playwright: playwrightHandle,
 
-    async eval(code: string, filename?: string): Promise<void> {
+    async eval(code: string, filenameOrOptions?: string | EvalOptions): Promise<void> {
+      // Parse options
+      const options = typeof filenameOrOptions === 'string'
+        ? { filename: filenameOrOptions }
+        : filenameOrOptions;
+
       // Compile as ES module
       const mod = await state.isolate.compileModule(code, {
-        filename: filename ?? "<eval>",
+        filename: options?.filename ?? "<eval>",
       });
 
       // Instantiate with module resolver
       const resolver = createModuleResolver(state);
       await mod.instantiate(state.context, resolver);
 
-      // Evaluate the module
-      await mod.evaluate();
+      // Evaluate the module with optional timeout
+      await mod.evaluate(options?.maxExecutionMs ? { timeout: options.maxExecutionMs } : undefined);
     },
 
     async dispose(): Promise<void> {

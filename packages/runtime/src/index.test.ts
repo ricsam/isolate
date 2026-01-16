@@ -227,7 +227,7 @@ describe("@ricsam/isolate-runtime", () => {
             fn: async (a: unknown, b: unknown) => {
               return (a as number) + (b as number);
             },
-            async: true,
+            type: 'async',
           },
         },
       });
@@ -256,7 +256,7 @@ describe("@ricsam/isolate-runtime", () => {
         customFunctions: {
           getConfig: {
             fn: () => ({ key: "value" }),
-            async: false,
+            type: 'sync',
           },
         },
       });
@@ -279,7 +279,7 @@ describe("@ricsam/isolate-runtime", () => {
             fn: async () => {
               throw new Error("Custom error message");
             },
-            async: true,
+            type: 'async',
           },
         },
       });
@@ -293,6 +293,87 @@ describe("@ricsam/isolate-runtime", () => {
           },
           /Custom error message/,
           "error should propagate from custom function"
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("async iterator yields values", async () => {
+      let logValue: unknown = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0];
+            }
+          },
+        },
+        customFunctions: {
+          countUp: {
+            fn: async function* (max: unknown) {
+              for (let i = 0; i < (max as number); i++) yield i;
+            },
+            type: 'asyncIterator',
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          const arr = [];
+          for await (const n of countUp(3)) arr.push(n);
+          console.log(arr);
+        `);
+        assert.deepStrictEqual(logValue, [0, 1, 2]);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("async iterator cleanup on break", async () => {
+      let cleaned = false;
+      const runtime = await createRuntime({
+        customFunctions: {
+          infinite: {
+            fn: async function* () {
+              try { while (true) yield 1; }
+              finally { cleaned = true; }
+            },
+            type: 'asyncIterator',
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`for await (const n of infinite()) break;`);
+        assert.strictEqual(cleaned, true);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("async iterator error propagation", async () => {
+      const runtime = await createRuntime({
+        customFunctions: {
+          failing: {
+            fn: async function* () {
+              yield 1;
+              throw new Error("Stream failed");
+            },
+            type: 'asyncIterator',
+          },
+        },
+      });
+
+      try {
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`
+              for await (const n of failing()) {}
+            `);
+          },
+          /Stream failed/
         );
       } finally {
         await runtime.dispose();
@@ -793,6 +874,77 @@ describe("@ricsam/isolate-runtime", () => {
       });
     });
 
+  });
+
+  describe("maxExecutionMs timeout", () => {
+    test("throws timeout error on infinite loop", async () => {
+      const runtime = await createRuntime();
+      try {
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`while(true) {}`, { maxExecutionMs: 100 });
+          },
+          /Script execution timed out/,
+          "should throw timeout error"
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("completes when code finishes within timeout", async () => {
+      let logValue: unknown = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.args[0];
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`console.log("fast code");`, { maxExecutionMs: 5000 });
+        assert.strictEqual(logValue, "fast code");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("supports filename in options object", async () => {
+      const runtime = await createRuntime();
+      try {
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`throw new Error("test")`, { filename: "test-file.js" });
+          },
+          (err: Error) => {
+            assert.ok(err.stack?.includes("test-file.js"), "stack should contain filename");
+            return true;
+          }
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("backward compatible with string filename argument", async () => {
+      const runtime = await createRuntime();
+      try {
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`throw new Error("test")`, "compat-file.js");
+          },
+          (err: Error) => {
+            assert.ok(err.stack?.includes("compat-file.js"), "stack should contain filename");
+            return true;
+          }
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
   });
 
   describe("cwd option", () => {

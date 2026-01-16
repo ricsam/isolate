@@ -156,18 +156,33 @@ await runtime.eval(`
 
 ## Custom Functions
 
-Expose host functions to the isolate:
+Expose host functions to the isolate. Each function must specify its `type`:
+
+- `'sync'` - Synchronous function, returns value directly
+- `'async'` - Asynchronous function, returns a Promise
+- `'asyncIterator'` - Async generator, yields values via `for await...of`
 
 ```typescript
 const runtime = await createRuntime({
   customFunctions: {
+    // Async function
     hashPassword: {
       fn: async (password) => bcrypt.hash(password, 10),
-      async: true,
+      type: 'async',
     },
+    // Sync function
     getConfig: {
       fn: () => ({ env: "production" }),
-      async: false,
+      type: 'sync',
+    },
+    // Async iterator (generator)
+    streamData: {
+      fn: async function* (count: number) {
+        for (let i = 0; i < count; i++) {
+          yield { chunk: i, timestamp: Date.now() };
+        }
+      },
+      type: 'asyncIterator',
     },
   },
 });
@@ -175,6 +190,11 @@ const runtime = await createRuntime({
 await runtime.eval(`
   const hash = await hashPassword("secret");
   const config = getConfig();  // sync function, no await needed
+
+  // Consume async iterator
+  for await (const data of streamData(5)) {
+    console.log(data.chunk);  // 0, 1, 2, 3, 4
+  }
 `);
 ```
 

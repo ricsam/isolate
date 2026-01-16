@@ -1,5 +1,14 @@
 # @ricsam/isolate-daemon
 
+## 0.1.3
+
+### Patch Changes
+
+- add eval timeout and async iterator for custom functions
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.3
+  - @ricsam/isolate-runtime@0.1.6
+
 ## 0.1.2
 
 ### Patch Changes

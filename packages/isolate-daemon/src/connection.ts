@@ -736,8 +736,9 @@ async function handleEval(
       });
     }
 
-    // Evaluate the module
-    await mod.evaluate();
+    // Evaluate the module with optional timeout
+    const timeout = message.maxExecutionMs;
+    await mod.evaluate(timeout ? { timeout } : undefined);
 
     // Wait for all pending callbacks (e.g., console.log) to complete
     // This ensures the client receives all callbacks before eval resolves
@@ -748,10 +749,12 @@ async function handleEval(
     sendOk(connection.socket, message.requestId, { value: undefined });
   } catch (err) {
     const error = err as Error;
+    // Check if this is a timeout error from isolated-vm
+    const isTimeoutError = error.message?.includes('Script execution timed out');
     sendError(
       connection.socket,
       message.requestId,
-      ErrorCode.SCRIPT_ERROR,
+      isTimeoutError ? ErrorCode.ISOLATE_TIMEOUT : ErrorCode.SCRIPT_ERROR,
       error.message,
       { name: error.name, stack: error.stack }
     );
@@ -1428,7 +1431,12 @@ async function setupCustomFunctions(
 
   // Create wrapper functions for each custom function
   for (const [name, registration] of Object.entries(customCallbacks)) {
-    if (registration.async === false) {
+    // Skip companion callbacks (name:start, name:next, etc.) - they are used internally by asyncIterator
+    if (name.includes(':')) {
+      continue;
+    }
+
+    if (registration.type === 'sync') {
       // Sync function: use applySyncPromise (to await the host response) but wrap in regular function
       // The function blocks until the host responds, but returns the value directly (not a Promise)
       context.evalSync(`
@@ -1447,7 +1455,72 @@ async function setupCustomFunctions(
           }
         };
       `);
-    } else {
+    } else if (registration.type === 'asyncIterator') {
+      // AsyncIterator function: look up companion callbacks and create async iterator wrapper
+      const startReg = customCallbacks[`${name}:start`];
+      const nextReg = customCallbacks[`${name}:next`];
+      const returnReg = customCallbacks[`${name}:return`];
+      const throwReg = customCallbacks[`${name}:throw`];
+
+      if (!startReg || !nextReg || !returnReg || !throwReg) {
+        throw new Error(`Missing companion callbacks for asyncIterator function "${name}"`);
+      }
+
+      context.evalSync(`
+        globalThis.${name} = function(...args) {
+          // Start the iterator and get the iteratorId
+          const startResultJson = __customFn_invoke.applySyncPromise(
+            undefined,
+            [${startReg.callbackId}, JSON.stringify(args)]
+          );
+          const startResult = JSON.parse(startResultJson);
+          if (!startResult.ok) {
+            const error = new Error(startResult.error.message);
+            error.name = startResult.error.name;
+            throw error;
+          }
+          const iteratorId = startResult.value.iteratorId;
+
+          return {
+            [Symbol.asyncIterator]() { return this; },
+            async next() {
+              const resultJson = __customFn_invoke.applySyncPromise(
+                undefined,
+                [${nextReg.callbackId}, JSON.stringify([iteratorId])]
+              );
+              const result = JSON.parse(resultJson);
+              if (!result.ok) {
+                const error = new Error(result.error.message);
+                error.name = result.error.name;
+                throw error;
+              }
+              return { done: result.value.done, value: result.value.value };
+            },
+            async return(v) {
+              const resultJson = __customFn_invoke.applySyncPromise(
+                undefined,
+                [${returnReg.callbackId}, JSON.stringify([iteratorId, v])]
+              );
+              const result = JSON.parse(resultJson);
+              return { done: true, value: result.ok ? result.value : undefined };
+            },
+            async throw(e) {
+              const resultJson = __customFn_invoke.applySyncPromise(
+                undefined,
+                [${throwReg.callbackId}, JSON.stringify([iteratorId, { message: e?.message, name: e?.name }])]
+              );
+              const result = JSON.parse(resultJson);
+              if (!result.ok) {
+                const error = new Error(result.error.message);
+                error.name = result.error.name;
+                throw error;
+              }
+              return { done: result.value.done, value: result.value.value };
+            }
+          };
+        };
+      `);
+    } else if (registration.type === 'async') {
       // Async function: use applySyncPromise and async function wrapper
       context.evalSync(`
         globalThis.${name} = async function(...args) {

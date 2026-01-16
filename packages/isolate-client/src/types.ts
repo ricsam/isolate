@@ -13,6 +13,7 @@ import type {
   CollectedData as ProtocolCollectedData,
   ConsoleEntry as ProtocolConsoleEntry,
   PlaywrightEvent as ProtocolPlaywrightEvent,
+  CustomFunctionType,
 } from "@ricsam/isolate-protocol";
 
 // Re-export test result types
@@ -141,19 +142,26 @@ export interface FileSystemCallbacks {
  */
 export type ModuleLoaderCallback = (moduleName: string) => string | Promise<string>;
 
+export type { CustomFunctionType };
+
 /**
  * A custom function that can be called from within the isolate.
  */
 export type CustomFunction = (...args: unknown[]) => unknown | Promise<unknown>;
 
 /**
+ * An async generator function that can be consumed in the isolate via for await...of.
+ */
+export type CustomAsyncGeneratorFunction = (...args: unknown[]) => AsyncGenerator<unknown, unknown, unknown>;
+
+/**
  * Custom function definition with metadata.
  */
 export interface CustomFunctionDefinition {
   /** The function implementation */
-  fn: CustomFunction;
-  /** Whether the function is async (defaults to true for safety) */
-  async?: boolean;
+  fn: CustomFunction | CustomAsyncGeneratorFunction;
+  /** Function type: 'sync', 'async', or 'asyncIterator' */
+  type: CustomFunctionType;
 }
 
 /**
@@ -162,11 +170,13 @@ export interface CustomFunctionDefinition {
 export type CustomFunctions = Record<string, CustomFunctionDefinition>;
 
 /**
- * @deprecated Use the simplified eval signature instead: eval(code: string, filename?: string)
+ * Options for eval() method.
  */
 export interface EvalOptions {
   /** Filename for stack traces */
   filename?: string;
+  /** Maximum execution time in milliseconds. If exceeded, throws a timeout error. */
+  maxExecutionMs?: number;
   /**
    * @deprecated Always uses module mode now. This option is ignored.
    */

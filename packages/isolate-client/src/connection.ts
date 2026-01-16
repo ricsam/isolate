@@ -628,7 +628,7 @@ async function createRuntime(
         testEnvCallbacks.onEvent = {
           callbackId: onEventCallbackId,
           name: "testEnvironment.onEvent",
-          async: false,
+          type: 'sync',
         };
       }
 
@@ -955,16 +955,17 @@ async function createRuntime(
     ): Promise<void> => {
       const reqId = state.nextRequestId++;
       // Support both new signature (filename string) and old signature (EvalOptions)
-      const filename =
+      const options =
         typeof filenameOrOptions === "string"
-          ? filenameOrOptions
-          : filenameOrOptions?.filename;
+          ? { filename: filenameOrOptions }
+          : filenameOrOptions;
       const req: EvalRequest = {
         type: MessageType.EVAL,
         requestId: reqId,
         isolateId,
         code,
-        filename,
+        filename: options?.filename,
+        maxExecutionMs: options?.maxExecutionMs,
         module: true, // Always use module mode
       };
       await sendRequest<{ value: unknown }>(state, req);
@@ -1015,7 +1016,7 @@ function registerConsoleCallbacks(
     state.callbacks.set(callbackId, (entry: unknown) => {
       callbacks.onEntry!(entry as Parameters<typeof callbacks.onEntry>[0]);
     });
-    registrations.onEntry = { callbackId, name: "onEntry", async: false };
+    registrations.onEntry = { callbackId, name: "onEntry", type: 'sync' };
   }
 
   return registrations;
@@ -1036,7 +1037,7 @@ function registerFetchCallback(
     return serializeResponse(response);
   });
 
-  return { callbackId, name: "fetch", async: true };
+  return { callbackId, name: "fetch", type: 'async' };
 }
 
 /**
@@ -1056,7 +1057,7 @@ function registerFsCallbacks(
       // Convert ArrayBuffer to Uint8Array for serialization
       return new Uint8Array(result);
     });
-    registrations.readFile = { callbackId, name: "readFile", async: true };
+    registrations.readFile = { callbackId, name: "readFile", type: 'async' };
   }
 
   // writeFile: (path: string, data: ArrayBuffer) => Promise<void>
@@ -1076,7 +1077,7 @@ function registerFsCallbacks(
       }
       await callbacks.writeFile!(path as string, buffer);
     });
-    registrations.writeFile = { callbackId, name: "writeFile", async: true };
+    registrations.writeFile = { callbackId, name: "writeFile", type: 'async' };
   }
 
   // unlink: (path: string) => Promise<void>
@@ -1085,7 +1086,7 @@ function registerFsCallbacks(
     state.callbacks.set(callbackId, async (path: unknown) => {
       await callbacks.unlink!(path as string);
     });
-    registrations.unlink = { callbackId, name: "unlink", async: true };
+    registrations.unlink = { callbackId, name: "unlink", type: 'async' };
   }
 
   // readdir: (path: string) => Promise<string[]>
@@ -1094,7 +1095,7 @@ function registerFsCallbacks(
     state.callbacks.set(callbackId, async (path: unknown) => {
       return callbacks.readdir!(path as string);
     });
-    registrations.readdir = { callbackId, name: "readdir", async: true };
+    registrations.readdir = { callbackId, name: "readdir", type: 'async' };
   }
 
   // mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>
@@ -1103,7 +1104,7 @@ function registerFsCallbacks(
     state.callbacks.set(callbackId, async (path: unknown, options: unknown) => {
       await callbacks.mkdir!(path as string, options as { recursive?: boolean });
     });
-    registrations.mkdir = { callbackId, name: "mkdir", async: true };
+    registrations.mkdir = { callbackId, name: "mkdir", type: 'async' };
   }
 
   // rmdir: (path: string) => Promise<void>
@@ -1112,7 +1113,7 @@ function registerFsCallbacks(
     state.callbacks.set(callbackId, async (path: unknown) => {
       await callbacks.rmdir!(path as string);
     });
-    registrations.rmdir = { callbackId, name: "rmdir", async: true };
+    registrations.rmdir = { callbackId, name: "rmdir", type: 'async' };
   }
 
   // stat: (path: string) => Promise<{ isFile: boolean; isDirectory: boolean; size: number }>
@@ -1121,7 +1122,7 @@ function registerFsCallbacks(
     state.callbacks.set(callbackId, async (path: unknown) => {
       return callbacks.stat!(path as string);
     });
-    registrations.stat = { callbackId, name: "stat", async: true };
+    registrations.stat = { callbackId, name: "stat", type: 'async' };
   }
 
   // rename: (from: string, to: string) => Promise<void>
@@ -1130,7 +1131,7 @@ function registerFsCallbacks(
     state.callbacks.set(callbackId, async (from: unknown, to: unknown) => {
       await callbacks.rename!(from as string, to as string);
     });
-    registrations.rename = { callbackId, name: "rename", async: true };
+    registrations.rename = { callbackId, name: "rename", type: 'async' };
   }
 
   return registrations;
@@ -1149,8 +1150,16 @@ function registerModuleLoaderCallback(
     return callback(moduleName as string);
   });
 
-  return { callbackId, name: "moduleLoader", async: true };
+  return { callbackId, name: "moduleLoader", type: 'async' };
 }
+
+// Iterator session tracking for async iterator custom functions on the client side
+interface ClientIteratorSession {
+  iterator: AsyncGenerator<unknown, unknown, unknown>;
+}
+
+const clientIteratorSessions = new Map<number, ClientIteratorSession>();
+let nextClientIteratorId = 1;
 
 /**
  * Register custom function callbacks.
@@ -1162,19 +1171,105 @@ function registerCustomFunctions(
   const registrations: Record<string, CallbackRegistration> = {};
 
   for (const [name, def] of Object.entries(customFunctions)) {
+    if (def.type === 'asyncIterator') {
+      // For async iterators, we need to register 4 callbacks:
+      // start, next, return, throw
 
-    const callbackId = state.nextCallbackId++;
+      // Start callback: creates iterator, returns iteratorId
+      const startCallbackId = state.nextCallbackId++;
+      state.callbacks.set(startCallbackId, async (...args: unknown[]) => {
+        try {
+          const fn = def.fn as (...args: unknown[]) => AsyncGenerator<unknown, unknown, unknown>;
+          const iterator = fn(...args);
+          const iteratorId = nextClientIteratorId++;
+          clientIteratorSessions.set(iteratorId, { iterator });
+          return { iteratorId };
+        } catch (error: unknown) {
+          throw error;
+        }
+      });
 
-    // Register the callback
-    state.callbacks.set(callbackId, async (...args: unknown[]) => {
-      return def.fn(...args);
-    });
+      // Next callback: calls iterator.next()
+      const nextCallbackId = state.nextCallbackId++;
+      state.callbacks.set(nextCallbackId, async (iteratorId: unknown) => {
+        const session = clientIteratorSessions.get(iteratorId as number);
+        if (!session) {
+          throw new Error(`Iterator session ${iteratorId} not found`);
+        }
+        try {
+          const result = await session.iterator.next();
+          if (result.done) {
+            clientIteratorSessions.delete(iteratorId as number);
+          }
+          return { done: result.done, value: result.value };
+        } catch (error: unknown) {
+          clientIteratorSessions.delete(iteratorId as number);
+          throw error;
+        }
+      });
 
-    registrations[name] = {
-      callbackId,
-      name,
-      async: def.async !== false, // Default to async
-    };
+      // Return callback: calls iterator.return()
+      const returnCallbackId = state.nextCallbackId++;
+      state.callbacks.set(returnCallbackId, async (iteratorId: unknown, value: unknown) => {
+        const session = clientIteratorSessions.get(iteratorId as number);
+        if (!session) {
+          return { done: true, value: undefined };
+        }
+        try {
+          const result = await session.iterator.return?.(value);
+          clientIteratorSessions.delete(iteratorId as number);
+          return { done: true, value: result?.value };
+        } catch (error: unknown) {
+          clientIteratorSessions.delete(iteratorId as number);
+          throw error;
+        }
+      });
+
+      // Throw callback: calls iterator.throw()
+      const throwCallbackId = state.nextCallbackId++;
+      state.callbacks.set(throwCallbackId, async (iteratorId: unknown, errorData: unknown) => {
+        const session = clientIteratorSessions.get(iteratorId as number);
+        if (!session) {
+          throw new Error(`Iterator session ${iteratorId} not found`);
+        }
+        try {
+          const errInfo = errorData as { message: string; name: string };
+          const error = Object.assign(new Error(errInfo.message), { name: errInfo.name });
+          const result = await session.iterator.throw?.(error);
+          clientIteratorSessions.delete(iteratorId as number);
+          return { done: result?.done ?? true, value: result?.value };
+        } catch (error: unknown) {
+          clientIteratorSessions.delete(iteratorId as number);
+          throw error;
+        }
+      });
+
+      // Register with special naming convention for iterator callbacks
+      registrations[`${name}:start`] = { callbackId: startCallbackId, name: `${name}:start`, type: 'async' };
+      registrations[`${name}:next`] = { callbackId: nextCallbackId, name: `${name}:next`, type: 'async' };
+      registrations[`${name}:return`] = { callbackId: returnCallbackId, name: `${name}:return`, type: 'async' };
+      registrations[`${name}:throw`] = { callbackId: throwCallbackId, name: `${name}:throw`, type: 'async' };
+
+      // Also register the main entry with asyncIterator type so daemon knows this is an iterator
+      registrations[name] = {
+        callbackId: startCallbackId,
+        name,
+        type: 'asyncIterator',
+      };
+    } else {
+      const callbackId = state.nextCallbackId++;
+
+      // Register the callback
+      state.callbacks.set(callbackId, async (...args: unknown[]) => {
+        return def.fn(...args);
+      });
+
+      registrations[name] = {
+        callbackId,
+        name,
+        type: def.type,
+      };
+    }
   }
 
   return registrations;

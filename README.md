@@ -119,7 +119,11 @@ await runtime.eval(`
 
 ### Custom Functions
 
-Expose host functions to the isolate:
+Expose host functions to the isolate. Each function must specify its `type`:
+
+- `'sync'` - Synchronous function, returns value directly
+- `'async'` - Asynchronous function, returns a Promise
+- `'asyncIterator'` - Async generator, yields values via `for await...of`
 
 ```typescript
 import bcrypt from "bcrypt";
@@ -132,12 +136,21 @@ const runtime = await createRuntime({
       fn: async (password: unknown) => {
         return bcrypt.hash(z.string().parse(password), 10);
       },
-      async: true,
+      type: 'async',
     },
     // Sync function
     getConfig: {
       fn: () => ({ environment: "production" }),
-      async: false,
+      type: 'sync',
+    },
+    // Async iterator (generator)
+    streamData: {
+      fn: async function* (count: number) {
+        for (let i = 0; i < count; i++) {
+          yield { chunk: i, timestamp: Date.now() };
+        }
+      },
+      type: 'asyncIterator',
     },
   },
 });
@@ -146,6 +159,11 @@ await runtime.eval(`
   const hash = await hashPassword("secret123");
   const config = getConfig();
   console.log(hash, config.environment);
+
+  // Consume async iterator
+  for await (const data of streamData(5)) {
+    console.log(data.chunk);  // 0, 1, 2, 3, 4
+  }
 `);
 ```
 
@@ -253,11 +271,11 @@ const runtime = await client.createRuntime({
   customFunctions: {
     hashPassword: {
       fn: async (pw) => Bun.password.hash(pw),
-      async: true,
+      type: 'async',
     },
     queryDatabase: {
       fn: async (sql) => db.query(sql),
-      async: true,
+      type: 'async',
     },
   },
 });
@@ -483,16 +501,18 @@ Expose host functions that can be called directly from isolate code:
 type CustomFunctions = Record<string, CustomFunctionDefinition>;
 
 type CustomFunction = (...args: unknown[]) => unknown | Promise<unknown>;
+type CustomAsyncGeneratorFunction = (...args: unknown[]) => AsyncGenerator<unknown, unknown, unknown>;
+type CustomFunctionType = 'sync' | 'async' | 'asyncIterator';
 
 interface CustomFunctionDefinition {
   /** The function implementation */
-  fn: CustomFunction;
-  /** Whether the function is async (defaults to true for safety) */
-  async?: boolean;
+  fn: CustomFunction | CustomAsyncGeneratorFunction;
+  /** The function type (required) */
+  type: CustomFunctionType;
 }
 ```
 
-Example with both sync and async functions:
+Example with sync, async, and async iterator functions:
 
 ```typescript
 const runtime = await createRuntime({
@@ -500,12 +520,19 @@ const runtime = await createRuntime({
     // Async function (returns Promise)
     hashPassword: {
       fn: async (password) => bcrypt.hash(password, 10),
-      async: true,
+      type: 'async',
     },
     // Sync function (returns value directly)
     getConfig: {
       fn: () => ({ env: "production" }),
-      async: false,
+      type: 'sync',
+    },
+    // Async iterator (yields values)
+    streamData: {
+      fn: async function* (count: number) {
+        for (let i = 0; i < count; i++) yield i;
+      },
+      type: 'asyncIterator',
     },
   },
 });
