@@ -13,7 +13,8 @@
   "scripts": {
     "bench": "node --experimental-strip-types src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "echo 'No tests'"
+    "test": "echo 'No tests'",
+    "build": "tsc"
   },
   "dependencies": {
     "@ricsam/isolate-runtime": "*",
