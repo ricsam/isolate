@@ -15,7 +15,7 @@ describe("crypto.subtle", () => {
   // that need to be fixed in a follow-up.
 
   describe("digest()", () => {
-    test.skip("SHA-256 digest produces correct hash", async () => {
+    test("SHA-256 digest produces correct hash", async () => {
       const isolate = new ivm.Isolate();
       const context = await isolate.createContext();
 
@@ -48,7 +48,7 @@ describe("crypto.subtle", () => {
       }
     });
 
-    test.skip("SHA-384 digest works", async () => {
+    test("SHA-384 digest works", async () => {
       const isolate = new ivm.Isolate();
       const context = await isolate.createContext();
 
@@ -75,7 +75,7 @@ describe("crypto.subtle", () => {
       }
     });
 
-    test.skip("SHA-512 digest works", async () => {
+    test("SHA-512 digest works", async () => {
       const isolate = new ivm.Isolate();
       const context = await isolate.createContext();
 
@@ -151,7 +151,7 @@ describe("crypto.subtle", () => {
   });
 
   describe("sign() and verify()", () => {
-    test.skip("sign() produces valid signature that verify() accepts", async () => {
+    test("sign() produces valid signature that verify() accepts", async () => {
       const isolate = new ivm.Isolate();
       const context = await isolate.createContext();
 
@@ -195,7 +195,7 @@ describe("crypto.subtle", () => {
       }
     });
 
-    test.skip("verify() rejects tampered data", async () => {
+    test("verify() rejects tampered data", async () => {
       const isolate = new ivm.Isolate();
       const context = await isolate.createContext();
 
@@ -238,7 +238,7 @@ describe("crypto.subtle", () => {
   });
 
   describe("deriveBits()", () => {
-    test.skip("deriveBits() with PBKDF2 produces correct length", async () => {
+    test("deriveBits() with PBKDF2 produces correct length", async () => {
       const isolate = new ivm.Isolate();
       const context = await isolate.createContext();
 
@@ -286,7 +286,7 @@ describe("crypto.subtle", () => {
   });
 
   describe("deriveKey()", () => {
-    test.skip("deriveKey() with PBKDF2 produces usable key", async () => {
+    test("deriveKey() with PBKDF2 produces usable key", async () => {
       const isolate = new ivm.Isolate();
       const context = await isolate.createContext();
 

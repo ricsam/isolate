@@ -18,6 +18,25 @@ function getKeyMapForContext(context: ivm.Context): Map<number, crypto.webcrypto
   return map;
 }
 
+function deserializeAlgorithm(algorithm: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(algorithm)) {
+    if (value && typeof value === 'object' && !Array.isArray(value) &&
+        Object.keys(value).every(k => /^\d+$/.test(k))) {
+      // Convert {"0": n, "1": m, ...} back to Uint8Array
+      const length = Object.keys(value).length;
+      const arr = new Uint8Array(length);
+      for (let i = 0; i < length; i++) {
+        arr[i] = (value as Record<string, number>)[String(i)] ?? 0;
+      }
+      result[key] = arr;
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 /**
  * Setup Web Crypto API in an isolated-vm context
  *
@@ -124,7 +143,7 @@ export async function setupCrypto(
           cryptoKey,
           data
         );
-        return Array.from(new Uint8Array(signature));
+        return JSON.stringify(Array.from(new Uint8Array(signature)));
       } catch (err) {
         if (err instanceof Error) {
           throw new Error(`[${err.name}]${err.message}`);
@@ -177,7 +196,7 @@ export async function setupCrypto(
 
       try {
         const hash = await crypto.webcrypto.subtle.digest(algorithm, data);
-        return Array.from(new Uint8Array(hash));
+        return JSON.stringify(Array.from(new Uint8Array(hash)));
       } catch (err) {
         if (err instanceof Error) {
           throw new Error(`[${err.name}]${err.message}`);
@@ -191,7 +210,7 @@ export async function setupCrypto(
   // crypto.subtle.deriveBits - async reference
   const deriveBitsRef = new ivm.Reference(
     async (algorithmJson: string, keyId: number, length: number) => {
-      const algorithm = JSON.parse(algorithmJson);
+      const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
 
       const cryptoKey = keyMap.get(keyId);
       if (!cryptoKey) {
@@ -200,11 +219,11 @@ export async function setupCrypto(
 
       try {
         const bits = await crypto.webcrypto.subtle.deriveBits(
-          algorithm,
+          algorithm as unknown as crypto.webcrypto.EcdhKeyDeriveParams | crypto.webcrypto.HkdfParams | crypto.webcrypto.Pbkdf2Params,
           cryptoKey,
           length
         );
-        return Array.from(new Uint8Array(bits));
+        return JSON.stringify(Array.from(new Uint8Array(bits)));
       } catch (err) {
         if (err instanceof Error) {
           throw new Error(`[${err.name}]${err.message}`);
@@ -224,7 +243,7 @@ export async function setupCrypto(
       extractable: boolean,
       keyUsagesJson: string
     ) => {
-      const algorithm = JSON.parse(algorithmJson);
+      const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
       const derivedKeyAlgorithm = JSON.parse(derivedKeyAlgorithmJson);
       const keyUsages = JSON.parse(keyUsagesJson) as crypto.webcrypto.KeyUsage[];
 
@@ -235,7 +254,7 @@ export async function setupCrypto(
 
       try {
         const derivedKey = await crypto.webcrypto.subtle.deriveKey(
-          algorithm,
+          algorithm as unknown as crypto.webcrypto.EcdhKeyDeriveParams | crypto.webcrypto.HkdfParams | crypto.webcrypto.Pbkdf2Params,
           baseKey,
           derivedKeyAlgorithm,
           extractable,
@@ -413,11 +432,12 @@ export async function setupCrypto(
             throw new TypeError('Key must be a CryptoKey');
           }
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const signatureBytes = __crypto_subtle_sign_ref.applySyncPromise(undefined, [
+          const signatureBytesJson = __crypto_subtle_sign_ref.applySyncPromise(undefined, [
             JSON.stringify(normalizedAlgo),
             key._getKeyId(),
             JSON.stringify(toByteArray(data))
           ]);
+          const signatureBytes = JSON.parse(signatureBytesJson);
           return new Uint8Array(signatureBytes).buffer;
         } catch (err) {
           throw __decodeError(err);
@@ -444,10 +464,11 @@ export async function setupCrypto(
       async digest(algorithm, data) {
         try {
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const hashBytes = __crypto_subtle_digest_ref.applySyncPromise(undefined, [
+          const hashBytesJson = __crypto_subtle_digest_ref.applySyncPromise(undefined, [
             JSON.stringify(normalizedAlgo),
             JSON.stringify(toByteArray(data))
           ]);
+          const hashBytes = JSON.parse(hashBytesJson);
           return new Uint8Array(hashBytes).buffer;
         } catch (err) {
           throw __decodeError(err);
@@ -460,11 +481,12 @@ export async function setupCrypto(
             throw new TypeError('Key must be a CryptoKey');
           }
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const bitsBytes = __crypto_subtle_deriveBits_ref.applySyncPromise(undefined, [
+          const bitsBytesJson = __crypto_subtle_deriveBits_ref.applySyncPromise(undefined, [
             JSON.stringify(normalizedAlgo),
             baseKey._getKeyId(),
             length
           ]);
+          const bitsBytes = JSON.parse(bitsBytesJson);
           return new Uint8Array(bitsBytes).buffer;
         } catch (err) {
           throw __decodeError(err);
