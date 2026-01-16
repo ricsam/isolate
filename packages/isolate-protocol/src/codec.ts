@@ -684,7 +684,7 @@ function createExtensionCodec(): ExtensionCodec {
       const result: PromiseRef = { __type: "PromiseRef", promiseId: decoded.promiseId as number };
       // Restore callback ID fields if present
       if ("__resolveCallbackId" in decoded) {
-        (result as Record<string, unknown>).__resolveCallbackId = decoded.__resolveCallbackId;
+        (result as unknown as Record<string, unknown>).__resolveCallbackId = decoded.__resolveCallbackId;
       }
       return result;
     },
@@ -719,10 +719,10 @@ function createExtensionCodec(): ExtensionCodec {
       const result: AsyncIteratorRef = { __type: "AsyncIteratorRef", iteratorId: decoded.iteratorId as number };
       // Restore callback ID fields if present
       if ("__nextCallbackId" in decoded) {
-        (result as Record<string, unknown>).__nextCallbackId = decoded.__nextCallbackId;
+        (result as unknown as Record<string, unknown>).__nextCallbackId = decoded.__nextCallbackId;
       }
       if ("__returnCallbackId" in decoded) {
-        (result as Record<string, unknown>).__returnCallbackId = decoded.__returnCallbackId;
+        (result as unknown as Record<string, unknown>).__returnCallbackId = decoded.__returnCallbackId;
       }
       return result;
     },

@@ -1304,7 +1304,8 @@ function registerCustomFunctions(
           if (isPromiseRef(value)) {
             // Create a resolve callback
             const resolveCallbackId = state.nextCallbackId++;
-            state.callbacks.set(resolveCallbackId, async (promiseId: number) => {
+            state.callbacks.set(resolveCallbackId, async (...args: unknown[]) => {
+              const promiseId = args[0] as number;
               const promise = returnedPromiseRegistry.get(promiseId);
               if (!promise) {
                 throw new Error(`Promise ${promiseId} not found`);
@@ -1326,7 +1327,8 @@ function registerCustomFunctions(
           if (isAsyncIteratorRef(value)) {
             // Create next callback
             const nextCallbackId = state.nextCallbackId++;
-            state.callbacks.set(nextCallbackId, async (iteratorId: number) => {
+            state.callbacks.set(nextCallbackId, async (...args: unknown[]) => {
+              const iteratorId = args[0] as number;
               const iterator = returnedIteratorRegistry.get(iteratorId);
               if (!iterator) {
                 throw new Error(`Iterator ${iteratorId} not found`);
@@ -1345,7 +1347,9 @@ function registerCustomFunctions(
 
             // Create return callback
             const returnCallbackId = state.nextCallbackId++;
-            state.callbacks.set(returnCallbackId, async (iteratorId: number, returnValue?: unknown) => {
+            state.callbacks.set(returnCallbackId, async (...args: unknown[]) => {
+              const iteratorId = args[0] as number;
+              const returnValue = args[1];
               const iterator = returnedIteratorRegistry.get(iteratorId);
               returnedIteratorRegistry.delete(iteratorId);
               if (!iterator || !iterator.return) {

@@ -547,7 +547,7 @@ describe("marshalling integration", () => {
       const runtime = await client.createRuntime({
         customFunctions: {
           getMultiplier: {
-            fn: (factor: number) => (x: number) => x * factor,
+            fn: ((factor: number) => (x: number) => x * factor) as (...args: unknown[]) => unknown,
             type: "sync",
           },
           receiveResult: {
@@ -581,7 +581,7 @@ describe("marshalling integration", () => {
       const runtime = await client.createRuntime({
         customFunctions: {
           createAdder: {
-            fn: (base: number) => (x: number) => (y: number) => base + x + y,
+            fn: ((base: number) => (x: number) => (y: number) => base + x + y) as (...args: unknown[]) => unknown,
             type: "sync",
           },
           receiveResult: {
@@ -613,9 +613,9 @@ describe("marshalling integration", () => {
       const runtime = await client.createRuntime({
         customFunctions: {
           getAsyncFetcher: {
-            fn: (prefix: string) => async (id: number) => {
+            fn: ((prefix: string) => async (id: number) => {
               return `${prefix}-${id}`;
-            },
+            }) as (...args: unknown[]) => unknown,
             type: "sync",
           },
           receiveResult: {
