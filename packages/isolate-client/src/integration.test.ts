@@ -1911,8 +1911,8 @@ describe("isolate-client integration", () => {
         const runtime = await client.createRuntime({
           customFunctions: {
             countUp: {
-              fn: async function* (max: number) {
-                for (let i = 0; i < max; i++) yield i;
+              fn: async function* (max: unknown) {
+                for (let i = 0; i < (max as number); i++) yield i;
               },
               type: 'asyncIterator',
             },
@@ -2032,8 +2032,8 @@ describe("isolate-client integration", () => {
           },
           customFunctions: {
             countUp: {
-              fn: async function* (max: number) {
-                for (let i = 0; i < max; i++) yield i;
+              fn: async function* (max: unknown) {
+                for (let i = 0; i < (max as number); i++) yield i;
               },
               type: 'asyncIterator',
             },

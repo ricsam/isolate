@@ -430,7 +430,7 @@ describe("Streaming Integration Tests", () => {
         customFunctions: {
           returnResult: {
             fn: (value: unknown) => { result = value; },
-            async: false,
+            type: 'sync',
           },
         },
       });

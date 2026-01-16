@@ -122,7 +122,7 @@ export async function createRuntimeTestContext(
         fn: (value: unknown) => {
           storedResult = value;
         },
-        async: false,
+        type: 'sync',
       },
     },
   });
