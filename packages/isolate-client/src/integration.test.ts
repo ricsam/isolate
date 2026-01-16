@@ -1280,4 +1280,1040 @@ describe("isolate-client integration", () => {
       await runtime.dispose();
     }
   });
+
+  // ReadableStream Async Iteration Tests
+  // These tests reproduce an issue where ReadableStream async iteration doesn't yield
+  // values when the stream wraps an AsyncIterator from the host.
+  describe("ReadableStream async iteration", () => {
+    it("should iterate over ReadableStream with for-await-of", async () => {
+      const logs: unknown[] = [];
+
+      const runtime = await client.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.args);
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Create a simple ReadableStream
+              const stream = new ReadableStream({
+                start(controller) {
+                  controller.enqueue("chunk1");
+                  controller.enqueue("chunk2");
+                  controller.enqueue("chunk3");
+                  controller.close();
+                }
+              });
+
+              // Iterate using for-await-of
+              const chunks = [];
+              for await (const chunk of stream) {
+                chunks.push(chunk);
+              }
+
+              return new Response(JSON.stringify(chunks), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const chunks = await response.json();
+
+        assert.deepStrictEqual(chunks, ["chunk1", "chunk2", "chunk3"]);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should iterate over ReadableStream wrapping async generator", async () => {
+      const runtime = await client.createRuntime();
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Simulate an async generator (like what the AI SDK does internally)
+              async function* asyncGenerator() {
+                yield "hello";
+                yield " ";
+                yield "world";
+              }
+
+              // Create a ReadableStream that wraps the async generator
+              const stream = new ReadableStream({
+                async start(controller) {
+                  for await (const chunk of asyncGenerator()) {
+                    controller.enqueue(chunk);
+                  }
+                  controller.close();
+                }
+              });
+
+              // Iterate over the wrapped stream
+              const chunks = [];
+              for await (const chunk of stream) {
+                chunks.push(chunk);
+              }
+
+              return new Response(JSON.stringify(chunks), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const chunks = await response.json();
+
+        assert.deepStrictEqual(chunks, ["hello", " ", "world"]);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should iterate over ReadableStream wrapping host AsyncIterator", async () => {
+      // This reproduces the AI SDK pattern where:
+      // 1. Host provides an AsyncIterator via custom function
+      // 2. Isolate creates a ReadableStream that consumes this iterator
+      // 3. User code tries to iterate over the wrapped stream
+
+      let chunkIndex = 0;
+      const testChunks = [
+        { type: "text", value: "Hello" },
+        { type: "text", value: " " },
+        { type: "text", value: "World" },
+        { type: "done" },
+      ];
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          getStreamIterator: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              for (const chunk of testChunks) {
+                yield chunk;
+              }
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Create a ReadableStream that wraps the host's AsyncIterator
+              // This is exactly what the AI SDK provider does
+              const stream = new ReadableStream({
+                async start(controller) {
+                  const iterator = getStreamIterator();
+                  for await (const chunk of iterator) {
+                    if (chunk.type === "done") {
+                      controller.close();
+                    } else {
+                      controller.enqueue(chunk.value);
+                    }
+                  }
+                }
+              });
+
+              // Now try to iterate over this wrapped stream
+              const chunks = [];
+              for await (const chunk of stream) {
+                chunks.push(chunk);
+              }
+
+              return new Response(JSON.stringify(chunks), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const chunks = await response.json();
+
+        assert.deepStrictEqual(chunks, ["Hello", " ", "World"]);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should read from wrapped stream using getReader()", async () => {
+      // Alternative iteration pattern using reader.read()
+
+      const testChunks = ["chunk1", "chunk2", "chunk3"];
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          getAsyncChunks: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              for (const chunk of testChunks) {
+                yield chunk;
+              }
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Create wrapped stream
+              const stream = new ReadableStream({
+                async start(controller) {
+                  for await (const chunk of getAsyncChunks()) {
+                    controller.enqueue(chunk);
+                  }
+                  controller.close();
+                }
+              });
+
+              // Read using getReader() instead of for-await
+              const reader = stream.getReader();
+              const chunks = [];
+
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+              }
+
+              return new Response(JSON.stringify(chunks), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const chunks = await response.json();
+
+        assert.deepStrictEqual(chunks, ["chunk1", "chunk2", "chunk3"]);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle TransformStream wrapping ReadableStream", async () => {
+      // This simulates what the AI SDK does internally:
+      // 1. Provider returns a ReadableStream
+      // 2. AI SDK creates a TransformStream to transform chunks
+      // 3. Pipes the provider stream through the TransformStream
+      // 4. Returns the readable side of the TransformStream
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          getSourceChunks: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              yield { type: "delta", text: "Hello" };
+              yield { type: "delta", text: " " };
+              yield { type: "delta", text: "World" };
+              yield { type: "finish" };
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Create source stream (like AI SDK provider's doStream)
+              const sourceStream = new ReadableStream({
+                async start(controller) {
+                  for await (const chunk of getSourceChunks()) {
+                    controller.enqueue(chunk);
+                    if (chunk.type === "finish") {
+                      controller.close();
+                    }
+                  }
+                }
+              });
+
+              // Create a TransformStream (like AI SDK's internal transformation)
+              const transformStream = new TransformStream({
+                transform(chunk, controller) {
+                  if (chunk.type === "delta") {
+                    controller.enqueue(chunk.text);
+                  }
+                  // Ignore finish chunks in output
+                }
+              });
+
+              // Pipe source through transform
+              const transformedStream = sourceStream.pipeThrough(transformStream);
+
+              // Try to iterate over the transformed stream
+              const chunks = [];
+              for await (const chunk of transformedStream) {
+                chunks.push(chunk);
+              }
+
+              return new Response(JSON.stringify(chunks), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const chunks = await response.json();
+
+        assert.deepStrictEqual(chunks, ["Hello", " ", "World"]);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle identity TransformStream (no transform function)", async () => {
+      // This tests the AI SDK's createAsyncIterableStream pattern:
+      // source.pipeThrough(new TransformStream<T, T>())
+      // An identity TransformStream with no transform function should pass chunks through unchanged
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          getChunks: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              yield "chunk1";
+              yield "chunk2";
+              yield "chunk3";
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Create source stream
+              const sourceStream = new ReadableStream({
+                async start(controller) {
+                  for await (const chunk of getChunks()) {
+                    controller.enqueue(chunk);
+                  }
+                  controller.close();
+                }
+              });
+
+              // Pipe through IDENTITY TransformStream (no transform function)
+              // This is what createAsyncIterableStream does
+              const identityStream = sourceStream.pipeThrough(new TransformStream());
+
+              // Iterate and collect chunks
+              const chunks = [];
+              for await (const chunk of identityStream) {
+                chunks.push(chunk);
+              }
+
+              return new Response(JSON.stringify(chunks), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const chunks = await response.json();
+
+        // Should pass through all chunks unchanged
+        assert.deepStrictEqual(chunks, ["chunk1", "chunk2", "chunk3"]);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle nested stream wrapping (AI SDK pattern)", async () => {
+      // This is the full AI SDK pattern:
+      // 1. Host AsyncIterator → ReadableStream (provider level)
+      // 2. That stream → TransformStream (SDK level)
+      // 3. Iterate over final stream (user level)
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          hostStreamIterator: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              yield { type: "start" };
+              yield { type: "text-delta", delta: "Hi" };
+              yield { type: "text-delta", delta: "!" };
+              yield { type: "finish", reason: "stop" };
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Layer 1: Wrap host iterator in ReadableStream (like ai-sdk-provider)
+              const providerStream = new ReadableStream({
+                async start(controller) {
+                  for await (const chunk of hostStreamIterator()) {
+                    controller.enqueue(chunk);
+                    if (chunk.type === "finish") {
+                      controller.close();
+                    }
+                  }
+                }
+              });
+
+              // Layer 2: Transform stream (like AI SDK's textStream)
+              const textTransform = new TransformStream({
+                transform(chunk, controller) {
+                  if (chunk.type === "text-delta") {
+                    controller.enqueue(chunk.delta);
+                  }
+                }
+              });
+
+              const textStream = providerStream.pipeThrough(textTransform);
+
+              // Layer 3: User iterates over textStream
+              let text = "";
+              for await (const chunk of textStream) {
+                text += chunk;
+              }
+
+              return new Response(JSON.stringify({ text }), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const result = await response.json();
+
+        assert.deepStrictEqual(result, { text: "Hi!" });
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle tee'd streams (multiple consumers)", async () => {
+      // AI SDK provides multiple stream properties (textStream, fullStream, etc.)
+      // which may internally tee the source stream
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          getChunks: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              yield "A";
+              yield "B";
+              yield "C";
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Create source stream
+              const source = new ReadableStream({
+                async start(controller) {
+                  for await (const chunk of getChunks()) {
+                    controller.enqueue(chunk);
+                  }
+                  controller.close();
+                }
+              });
+
+              // Tee the stream
+              const [stream1, stream2] = source.tee();
+
+              // Consume both streams
+              const chunks1 = [];
+              const chunks2 = [];
+
+              // Read stream1
+              for await (const chunk of stream1) {
+                chunks1.push(chunk);
+              }
+
+              // Read stream2
+              for await (const chunk of stream2) {
+                chunks2.push(chunk);
+              }
+
+              return new Response(JSON.stringify({ chunks1, chunks2 }), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const result = await response.json();
+
+        assert.deepStrictEqual(result.chunks1, ["A", "B", "C"]);
+        assert.deepStrictEqual(result.chunks2, ["A", "B", "C"]);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle lazy stream with background consumption", async () => {
+      // AI SDK pattern: streamText() returns immediately, provider stream
+      // starts consuming in background, user accesses textStream later
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          getSlowChunks: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              yield { type: "delta", text: "Hello" };
+              // Simulate delay between chunks
+              await new Promise(r => setTimeout(r, 10));
+              yield { type: "delta", text: " World" };
+              yield { type: "done" };
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Simulate AI SDK's streamText result object
+              function createStreamResult() {
+                let resolveText;
+                const textPromise = new Promise(r => { resolveText = r; });
+                let fullText = "";
+
+                // Source stream from provider
+                const providerStream = new ReadableStream({
+                  async start(controller) {
+                    for await (const chunk of getSlowChunks()) {
+                      controller.enqueue(chunk);
+                      if (chunk.type === "delta") {
+                        fullText += chunk.text;
+                      }
+                      if (chunk.type === "done") {
+                        controller.close();
+                        resolveText(fullText);
+                      }
+                    }
+                  }
+                });
+
+                // Transform to text stream (lazy - created on access)
+                let _textStream;
+                const getTextStream = () => {
+                  if (!_textStream) {
+                    _textStream = providerStream.pipeThrough(new TransformStream({
+                      transform(chunk, controller) {
+                        if (chunk.type === "delta") {
+                          controller.enqueue(chunk.text);
+                        }
+                      }
+                    }));
+                  }
+                  return _textStream;
+                };
+
+                return {
+                  get textStream() { return getTextStream(); },
+                  get text() { return textPromise; },
+                };
+              }
+
+              const result = createStreamResult();
+
+              // Access textStream and iterate
+              const chunks = [];
+              for await (const chunk of result.textStream) {
+                chunks.push(chunk);
+              }
+
+              return new Response(JSON.stringify({ chunks, text: await result.text }), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const result = await response.json();
+
+        assert.deepStrictEqual(result.chunks, ["Hello", " World"]);
+        assert.strictEqual(result.text, "Hello World");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle concurrent stream consumption with Promise.all", async () => {
+      // Test consuming stream while also awaiting the text promise
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          streamChunks: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              yield "X";
+              yield "Y";
+              yield "Z";
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              let fullText = "";
+              let resolveText;
+              const textPromise = new Promise(r => { resolveText = r; });
+
+              const source = new ReadableStream({
+                async start(controller) {
+                  for await (const chunk of streamChunks()) {
+                    controller.enqueue(chunk);
+                    fullText += chunk;
+                  }
+                  controller.close();
+                  resolveText(fullText);
+                }
+              });
+
+              // Consume stream and await text concurrently
+              const streamChunksResult = [];
+              const streamPromise = (async () => {
+                for await (const chunk of source) {
+                  streamChunksResult.push(chunk);
+                }
+                return streamChunksResult;
+              })();
+
+              const [chunks, text] = await Promise.all([streamPromise, textPromise]);
+
+              return new Response(JSON.stringify({ chunks, text }), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const result = await response.json();
+
+        assert.deepStrictEqual(result.chunks, ["X", "Y", "Z"]);
+        assert.strictEqual(result.text, "XYZ");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle stream where start() returns before iteration begins", async () => {
+      // This tests the case where the ReadableStream constructor returns
+      // before the async start() callback completes - the consumer starts
+      // iterating while data is still being enqueued
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          delayedChunks: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              await new Promise(r => setTimeout(r, 50));
+              yield "delayed1";
+              await new Promise(r => setTimeout(r, 50));
+              yield "delayed2";
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              const stream = new ReadableStream({
+                async start(controller) {
+                  // This runs asynchronously after constructor returns
+                  for await (const chunk of delayedChunks()) {
+                    controller.enqueue(chunk);
+                  }
+                  controller.close();
+                }
+              });
+
+              // Stream is returned immediately, iteration starts while
+              // start() is still running
+              const chunks = [];
+              for await (const chunk of stream) {
+                chunks.push(chunk);
+              }
+
+              return new Response(JSON.stringify(chunks), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const chunks = await response.json();
+
+        assert.deepStrictEqual(chunks, ["delayed1", "delayed2"]);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle AI SDK streamText() exact pattern", async () => {
+      // This test replicates the EXACT pattern used by AI SDK's streamText():
+      // 1. Provider's doStream() creates a ReadableStream wrapping host AsyncIterator
+      // 2. AI SDK creates a result object with lazy textStream property
+      // 3. User iterates over result.textStream
+      // 4. result.text promise resolves when stream completes
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          __aiSdkStream: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              yield { type: "text-delta", textDelta: "Hello" };
+              yield { type: "text-delta", textDelta: " " };
+              yield { type: "text-delta", textDelta: "World" };
+              yield { type: "finish", finishReason: "stop", usage: { promptTokens: 10, completionTokens: 5 } };
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // === PROVIDER LAYER (ai-sdk-provider.ts) ===
+              // This is what streamAsync() does in the provider
+              function createProviderStream(options) {
+                return new ReadableStream({
+                  async start(controller) {
+                    controller.enqueue({ type: "stream-start", warnings: [] });
+                    let textStarted = false;
+
+                    for await (const chunk of __aiSdkStream(options)) {
+                      if (chunk.type === "text-delta") {
+                        if (!textStarted) {
+                          controller.enqueue({ type: "text-start", id: "msg1" });
+                          textStarted = true;
+                        }
+                        controller.enqueue({
+                          type: "text-delta",
+                          id: "msg1",
+                          delta: chunk.textDelta,
+                        });
+                      } else if (chunk.type === "finish") {
+                        if (textStarted) {
+                          controller.enqueue({ type: "text-end", id: "msg1" });
+                        }
+                        controller.enqueue({
+                          type: "finish",
+                          finishReason: chunk.finishReason,
+                          usage: chunk.usage,
+                        });
+                        controller.close();
+                      }
+                    }
+                  },
+                });
+              }
+
+              // === AI SDK LAYER (streamText internals) ===
+              // This simulates what AI SDK does with the provider stream
+              function streamText(options) {
+                const providerStream = createProviderStream(options);
+
+                // AI SDK creates internal state
+                let fullText = "";
+                let usage = null;
+                let resolveText;
+                let resolveUsage;
+                const textPromise = new Promise(r => { resolveText = r; });
+                const usagePromise = new Promise(r => { resolveUsage = r; });
+
+                // AI SDK tees the stream for multiple consumers
+                const [internalStream, userStream] = providerStream.tee();
+
+                // AI SDK consumes one branch internally
+                (async () => {
+                  for await (const chunk of internalStream) {
+                    if (chunk.type === "text-delta") {
+                      fullText += chunk.delta;
+                    } else if (chunk.type === "finish") {
+                      usage = chunk.usage;
+                      resolveText(fullText);
+                      resolveUsage(usage);
+                    }
+                  }
+                })();
+
+                // AI SDK creates textStream by transforming user stream
+                let _textStream;
+                const getTextStream = () => {
+                  if (!_textStream) {
+                    _textStream = userStream.pipeThrough(new TransformStream({
+                      transform(chunk, controller) {
+                        if (chunk.type === "text-delta") {
+                          controller.enqueue(chunk.delta);
+                        }
+                      }
+                    }));
+                  }
+                  return _textStream;
+                };
+
+                return {
+                  get textStream() { return getTextStream(); },
+                  get text() { return textPromise; },
+                  get usage() { return usagePromise; },
+                };
+              }
+
+              // === USER LAYER (chat-stream.ts) ===
+              const result = streamText({});
+
+              // User iterates over textStream
+              const chunks = [];
+              for await (const chunk of result.textStream) {
+                chunks.push(chunk);
+              }
+
+              // Wait for final values
+              const text = await result.text;
+              const usage = await result.usage;
+
+              return new Response(JSON.stringify({ chunks, text, usage }), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const result = await response.json();
+
+        assert.deepStrictEqual(result.chunks, ["Hello", " ", "World"]);
+        assert.strictEqual(result.text, "Hello World");
+        assert.deepStrictEqual(result.usage, { promptTokens: 10, completionTokens: 5 });
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle reader.cancel() on locked stream", async () => {
+      // Test that reader.cancel() works even when stream is locked
+      // (the stream's cancel() should reject when locked, but reader's cancel() should work)
+
+      const runtime = await client.createRuntime();
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Create a simple stream with finite data
+              const stream = new ReadableStream({
+                start(controller) {
+                  controller.enqueue("chunk1");
+                  controller.enqueue("chunk2");
+                  controller.enqueue("chunk3");
+                  // Don't close - leave it open so cancel has something to do
+                }
+              });
+
+              const reader = stream.getReader();
+
+              // Read one chunk
+              const { value: firstChunk } = await reader.read();
+
+              // Try to cancel via reader - this should NOT throw
+              // "Cannot cancel a stream that has a reader"
+              let cancelError = null;
+              try {
+                await reader.cancel('done reading');
+              } catch (e) {
+                cancelError = e.message;
+              }
+
+              // Also test that stream.cancel() DOES throw when locked
+              const stream2 = new ReadableStream({
+                start(controller) {
+                  controller.enqueue("data");
+                }
+              });
+              const reader2 = stream2.getReader();
+              let streamCancelError = null;
+              try {
+                await stream2.cancel('test');
+              } catch (e) {
+                streamCancelError = e.message;
+              }
+              reader2.releaseLock();
+
+              return new Response(JSON.stringify({
+                firstChunk,
+                readerCancelWorked: cancelError === null,
+                readerCancelError: cancelError,
+                streamCancelRejected: streamCancelError !== null,
+                streamCancelError: streamCancelError
+              }), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const result = await response.json();
+
+        // reader.cancel() should work (no error)
+        assert.strictEqual(result.firstChunk, "chunk1");
+        assert.strictEqual(result.readerCancelWorked, true);
+        assert.strictEqual(result.readerCancelError, null);
+        // stream.cancel() should reject when locked
+        assert.strictEqual(result.streamCancelRejected, true);
+        assert.ok(result.streamCancelError.includes("Cannot cancel a stream that has a reader"));
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle tee + pipeThrough with concurrent iteration", async () => {
+      // Test the specific pattern: tee a stream, pipe one branch through transform,
+      // iterate over both concurrently (one internal, one user-facing)
+
+      const runtime = await client.createRuntime({
+        customFunctions: {
+          getStreamParts: {
+            type: "asyncIterator" as const,
+            fn: async function* () {
+              yield { type: "start" };
+              yield { type: "data", value: 1 };
+              yield { type: "data", value: 2 };
+              yield { type: "data", value: 3 };
+              yield { type: "end" };
+            },
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch: async (request) => {
+              // Create source stream
+              const source = new ReadableStream({
+                async start(controller) {
+                  for await (const chunk of getStreamParts()) {
+                    controller.enqueue(chunk);
+                    if (chunk.type === "end") {
+                      controller.close();
+                    }
+                  }
+                }
+              });
+
+              // Tee the stream
+              const [stream1, stream2] = source.tee();
+
+              // Transform stream2 to only get values
+              const transformedStream = stream2.pipeThrough(new TransformStream({
+                transform(chunk, controller) {
+                  if (chunk.type === "data") {
+                    controller.enqueue(chunk.value);
+                  }
+                }
+              }));
+
+              // Start consuming stream1 in background (internal consumption)
+              let internalComplete = false;
+              const internalChunks = [];
+              const internalPromise = (async () => {
+                for await (const chunk of stream1) {
+                  internalChunks.push(chunk);
+                }
+                internalComplete = true;
+              })();
+
+              // Iterate over transformed stream (user consumption)
+              const userChunks = [];
+              for await (const chunk of transformedStream) {
+                userChunks.push(chunk);
+              }
+
+              // Wait for internal consumption
+              await internalPromise;
+
+              return new Response(JSON.stringify({
+                userChunks,
+                internalChunks,
+                internalComplete
+              }), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/test")
+        );
+        const result = await response.json();
+
+        assert.deepStrictEqual(result.userChunks, [1, 2, 3]);
+        assert.strictEqual(result.internalChunks.length, 5); // start, data, data, data, end
+        assert.strictEqual(result.internalComplete, true);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+  });
 });

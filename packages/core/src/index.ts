@@ -2201,6 +2201,11 @@ async function injectStreams(
         const startPromise = Promise.resolve(underlyingSource.start(controller));
         startPromise.then(() => {
           controller.started = true;
+          // If pulls were queued while starting, process them now
+          if (controller.pullAgain) {
+            controller.pullAgain = false;
+            this._pull();
+          }
         }).catch((e) => {
           controller.error(e);
         });
@@ -2218,7 +2223,17 @@ async function injectStreams(
       if (this.#reader) {
         return Promise.reject(new TypeError('Cannot cancel a stream that has a reader'));
       }
+      return this._cancelInternal(reason);
+    }
+
+    // Internal cancel method - used by reader.cancel() which is allowed even when locked
+    _cancelInternal(reason) {
       this.#state = 'closed';
+      // Resolve any pending reads with done: true
+      if (this.#reader && this.#reader._pendingRead) {
+        this.#reader._pendingRead.resolve({ value: undefined, done: true });
+        this.#reader._pendingRead = null;
+      }
       return Promise.resolve(this.#underlyingSource?.cancel?.(reason));
     }
 
@@ -2260,8 +2275,6 @@ async function injectStreams(
 
     tee() {
       const reader = this.getReader();
-      const branch1Queue = new SimpleQueue();
-      const branch2Queue = new SimpleQueue();
       let reading = false;
       let canceled1 = false;
       let canceled2 = false;
@@ -2282,8 +2295,9 @@ async function injectStreams(
             return;
           }
 
-          if (!canceled1) branch1Queue.enqueue(value);
-          if (!canceled2) branch2Queue.enqueue(value);
+          // Enqueue directly to controllers (not to unused queues)
+          if (!canceled1) branch1Controller.enqueue(value);
+          if (!canceled2) branch2Controller.enqueue(value);
         } catch (e) {
           if (!canceled1) branch1Controller.error(e);
           if (!canceled2) branch2Controller.error(e);
@@ -2364,7 +2378,12 @@ async function injectStreams(
 
     _pull() {
       const controller = this.#controller;
-      if (!controller.started || controller.pulling) return;
+      // If not started yet, queue the pull request to run when started
+      if (!controller.started) {
+        controller.pullAgain = true;
+        return;
+      }
+      if (controller.pulling) return;
       controller.pulling = true;
 
       Promise.resolve(this.#underlyingSource?.pull?.(controller))
@@ -2467,7 +2486,8 @@ async function injectStreams(
       if (!this.#stream) {
         return Promise.reject(new TypeError('Reader has been released'));
       }
-      return this.#stream.cancel(reason);
+      // Use internal cancel - reader is allowed to cancel even when stream is locked
+      return this.#stream._cancelInternal(reason);
     }
 
     releaseLock() {
@@ -2727,7 +2747,12 @@ async function injectStreams(
           return transformer.start?.(transformerController);
         },
         write(chunk) {
-          return transformer.transform?.(chunk, transformerController);
+          // If no transform function is provided, act as identity transform
+          if (transformer.transform) {
+            return transformer.transform(chunk, transformerController);
+          } else {
+            transformerController.enqueue(chunk);
+          }
         },
         close() {
           const result = transformer.flush?.(transformerController);
