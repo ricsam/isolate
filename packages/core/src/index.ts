@@ -967,6 +967,11 @@ export async function setupCore(
     await injectStreams(context, stateMap);
   }
 
+  // Inject TextEncoderStream/TextDecoderStream (requires both textEncoding and streams)
+  if (opts.textEncoding && opts.streams) {
+    await injectTextEncodingStreams(context);
+  }
+
   return {
     dispose() {
       cleanupUnmarshaledHandles(context);
@@ -1114,6 +1119,145 @@ async function injectTextEncoding(context: ivm.Context): Promise<void> {
 
   globalThis.TextEncoder = TextEncoder;
   globalThis.TextDecoder = TextDecoder;
+})();
+`;
+
+  context.evalSync(code);
+}
+
+// ============================================================================
+// TextEncoderStream / TextDecoderStream Implementation
+// (Must be called AFTER streams are injected since they extend TransformStream)
+// ============================================================================
+
+async function injectTextEncodingStreams(context: ivm.Context): Promise<void> {
+  const code = `
+(function() {
+  class TextEncoderStream extends TransformStream {
+    constructor() {
+      const encoder = new TextEncoder();
+      let pendingHighSurrogate = null;
+
+      super({
+        transform(chunk, controller) {
+          let text = String(chunk);
+
+          // Handle pending high surrogate from previous chunk
+          if (pendingHighSurrogate !== null) {
+            text = pendingHighSurrogate + text;
+            pendingHighSurrogate = null;
+          }
+
+          // Check if chunk ends with a high surrogate (incomplete pair)
+          const lastChar = text.charCodeAt(text.length - 1);
+          if (lastChar >= 0xD800 && lastChar <= 0xDBFF) {
+            pendingHighSurrogate = text.slice(-1);
+            text = text.slice(0, -1);
+          }
+
+          if (text.length > 0) {
+            controller.enqueue(encoder.encode(text));
+          }
+        },
+        flush(controller) {
+          // If there's a pending high surrogate without a low surrogate, encode as replacement
+          if (pendingHighSurrogate !== null) {
+            controller.enqueue(encoder.encode('\uFFFD'));
+          }
+        }
+      });
+    }
+
+    get encoding() { return 'utf-8'; }
+  }
+
+  class TextDecoderStream extends TransformStream {
+    #encoding = 'utf-8';
+    #fatal;
+    #ignoreBOM;
+
+    constructor(encoding = 'utf-8', options = {}) {
+      const normalizedEncoding = String(encoding).toLowerCase().trim();
+      if (normalizedEncoding !== 'utf-8' && normalizedEncoding !== 'utf8') {
+        throw new RangeError('TextDecoderStream only supports UTF-8 encoding');
+      }
+
+      const fatal = Boolean(options.fatal);
+      const ignoreBOM = Boolean(options.ignoreBOM);
+      const decoder = new TextDecoder(encoding, { fatal, ignoreBOM });
+      let buffer = new Uint8Array(0);
+
+      super({
+        transform(chunk, controller) {
+          // Combine with any leftover bytes from previous chunk
+          let bytes;
+          if (chunk instanceof ArrayBuffer) {
+            bytes = new Uint8Array(chunk);
+          } else if (ArrayBuffer.isView(chunk)) {
+            bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+          } else {
+            throw new TypeError('Input must be ArrayBuffer or ArrayBufferView');
+          }
+
+          if (buffer.length > 0) {
+            const combined = new Uint8Array(buffer.length + bytes.length);
+            combined.set(buffer);
+            combined.set(bytes, buffer.length);
+            bytes = combined;
+            buffer = new Uint8Array(0);
+          }
+
+          // Find the last complete UTF-8 sequence
+          let validEnd = bytes.length;
+          for (let i = bytes.length - 1; i >= Math.max(0, bytes.length - 4); i--) {
+            const byte = bytes[i];
+            if ((byte & 0xC0) !== 0x80) { // Start of a multi-byte sequence or ASCII
+              const expectedLength = byte < 0x80 ? 1 :
+                                     (byte & 0xE0) === 0xC0 ? 2 :
+                                     (byte & 0xF0) === 0xE0 ? 3 :
+                                     (byte & 0xF8) === 0xF0 ? 4 : 1;
+              if (i + expectedLength > bytes.length) {
+                validEnd = i;
+              }
+              break;
+            }
+          }
+
+          // Save incomplete sequence for next chunk
+          if (validEnd < bytes.length) {
+            buffer = bytes.slice(validEnd);
+            bytes = bytes.slice(0, validEnd);
+          }
+
+          if (bytes.length > 0) {
+            const text = decoder.decode(bytes, { stream: true });
+            if (text.length > 0) {
+              controller.enqueue(text);
+            }
+          }
+        },
+        flush(controller) {
+          // Decode any remaining bytes
+          if (buffer.length > 0) {
+            const text = decoder.decode(buffer);
+            if (text.length > 0) {
+              controller.enqueue(text);
+            }
+          }
+        }
+      });
+
+      this.#fatal = fatal;
+      this.#ignoreBOM = ignoreBOM;
+    }
+
+    get encoding() { return this.#encoding; }
+    get fatal() { return this.#fatal; }
+    get ignoreBOM() { return this.#ignoreBOM; }
+  }
+
+  globalThis.TextEncoderStream = TextEncoderStream;
+  globalThis.TextDecoderStream = TextDecoderStream;
 })();
 `;
 
