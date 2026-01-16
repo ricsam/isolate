@@ -328,13 +328,51 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata) => 
   publishPackageJson.main = './dist/cjs/index.cjs';
   publishPackageJson.module = './dist/mjs/index.mjs';
   publishPackageJson.types = './dist/types/index.d.ts';
-  publishPackageJson.exports = {
-    '.': {
-      types: './dist/types/index.d.ts',
-      require: './dist/cjs/index.cjs',
-      import: './dist/mjs/index.mjs',
-    },
-  };
+
+  // Transform exports from source package.json
+  function transformExports(originalExports: Record<string, unknown>): Record<string, unknown> {
+    const transformed: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(originalExports)) {
+      if (typeof value === 'object' && value !== null) {
+        const exportEntry = value as Record<string, string>;
+        const importPath = exportEntry.import || exportEntry.default;
+
+        if (importPath && importPath.startsWith('./src/') && importPath.endsWith('.ts')) {
+          // Transform ./src/foo/bar.ts -> appropriate dist paths
+          const relativePath = importPath.replace('./src/', '').replace('.ts', '');
+          transformed[key] = {
+            types: `./dist/types/${relativePath}.d.ts`,
+            require: `./dist/cjs/${relativePath}.cjs`,
+            import: `./dist/mjs/${relativePath}.mjs`,
+          };
+        }
+      } else if (typeof value === 'string' && value.startsWith('./src/') && value.endsWith('.ts')) {
+        // Simple string export
+        const relativePath = value.replace('./src/', '').replace('.ts', '');
+        transformed[key] = {
+          types: `./dist/types/${relativePath}.d.ts`,
+          require: `./dist/cjs/${relativePath}.cjs`,
+          import: `./dist/mjs/${relativePath}.mjs`,
+        };
+      }
+    }
+
+    return transformed;
+  }
+
+  // Use transformed exports from package.json if available, otherwise default to index
+  if (packageJson.exports && Object.keys(packageJson.exports).length > 0) {
+    publishPackageJson.exports = transformExports(packageJson.exports);
+  } else {
+    publishPackageJson.exports = {
+      '.': {
+        types: './dist/types/index.d.ts',
+        require: './dist/cjs/index.cjs',
+        import: './dist/mjs/index.mjs',
+      },
+    };
+  }
 
   // Add isolate types export if this package has type definitions
   if (ISOLATE_TYPE_MAPPING[packageName]) {

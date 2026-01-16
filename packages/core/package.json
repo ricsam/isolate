@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@ricsam/isolate-test-utils": "*",
+    "@ricsam/isolate-timers": "*",
     "@types/node": "^24",
     "typescript": "^5"
   },

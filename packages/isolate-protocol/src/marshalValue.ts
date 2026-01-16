@@ -352,12 +352,13 @@ export async function marshalValue(
         if (typeof value === "string") {
           entries.push([key, value]);
         } else {
-          // File/Blob
-          const data = Array.from(new Uint8Array(await value.arrayBuffer()));
+          // File/Blob - cast to File for type safety
+          const file = value as File;
+          const data = Array.from(new Uint8Array(await file.arrayBuffer()));
           const fileRef = createFileRef(
-            value instanceof File ? value.name : "",
-            value.type,
-            value instanceof File ? value.lastModified : Date.now(),
+            file.name ?? "",
+            file.type,
+            file.lastModified ?? Date.now(),
             data
           );
           entries.push([key, fileRef]);

@@ -26,12 +26,13 @@
   ],
   "workspaces": [
     "packages/*",
-    "demo"
+    "demo",
+    "bun-demo"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
     "build:npm": "bun scripts/build.ts",
-    "test": "npm test --workspaces",
+    "test": "node --test '**/*.test.ts' --test-reporter spec --test-reporter-destination stdout",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

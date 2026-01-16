@@ -59,7 +59,7 @@ import {
   marshalValue,
   type MarshalContext,
 } from "@ricsam/isolate-protocol";
-import { createPlaywrightHandler, type PlaywrightCallback } from "@ricsam/isolate-playwright";
+import { createPlaywrightHandler, type PlaywrightCallback } from "@ricsam/isolate-playwright/client";
 import type {
   ConnectOptions,
   DaemonConnection,

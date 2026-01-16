@@ -1552,6 +1552,12 @@ function setupRequest(
     }
 
     get body() {
+      // Per WHATWG Fetch spec: GET/HEAD requests cannot have a body
+      const method = __Request_get_method(this.#instanceId);
+      if (method === 'GET' || method === 'HEAD') {
+        return null;
+      }
+
       // Return cached body if available
       if (this.#cachedBody !== null) {
         return this.#cachedBody;
@@ -1563,12 +1569,15 @@ function setupRequest(
         return this.#cachedBody;
       }
 
-      // Create stream from buffered body
-      const newStreamId = __Stream_create();
+      // Check if there's any buffered body data
       const buffer = __Request_arrayBuffer(this.#instanceId);
-      if (buffer.byteLength > 0) {
-        __Stream_push(newStreamId, Array.from(new Uint8Array(buffer)));
+      if (buffer.byteLength === 0) {
+        return null;  // Return null per WHATWG Fetch spec for empty body
       }
+
+      // Create stream from non-empty buffered body
+      const newStreamId = __Stream_create();
+      __Stream_push(newStreamId, Array.from(new Uint8Array(buffer)));
       __Stream_close(newStreamId);
 
       this.#cachedBody = HostBackedReadableStream._fromStreamId(newStreamId);
@@ -2022,10 +2031,12 @@ export async function setupFetch(
       }
 
       // Setup streaming for request body
+      // Per WHATWG Fetch spec, GET/HEAD requests cannot have bodies
       let requestStreamId: number | null = null;
       let streamCleanup: (() => Promise<void>) | null = null;
+      const canHaveBody = !['GET', 'HEAD'].includes(request.method.toUpperCase());
 
-      if (request.body) {
+      if (canHaveBody && request.body) {
         // Create a stream in the registry for the request body
         requestStreamId = streamRegistry.create();
 

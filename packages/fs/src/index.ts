@@ -888,6 +888,68 @@ function setupFileSystemWritableFileStream(
     get locked() {
       return __FileSystemWritableFileStream_get_locked(this._getInstanceId());
     }
+
+    getWriter() {
+      const stream = this;
+      let released = false;
+      let closedResolve;
+      let closedReject;
+      const closedPromise = new Promise((resolve, reject) => {
+        closedResolve = resolve;
+        closedReject = reject;
+      });
+
+      return {
+        get closed() {
+          return closedPromise;
+        },
+        get desiredSize() {
+          return 1;
+        },
+        get ready() {
+          return Promise.resolve();
+        },
+        write(chunk) {
+          if (released) {
+            return Promise.reject(new TypeError('Writer has been released'));
+          }
+          try {
+            stream.write(chunk);
+            return Promise.resolve();
+          } catch (err) {
+            return Promise.reject(err);
+          }
+        },
+        close() {
+          if (released) {
+            return Promise.reject(new TypeError('Writer has been released'));
+          }
+          try {
+            stream.close();
+            closedResolve();
+            return Promise.resolve();
+          } catch (err) {
+            closedReject(err);
+            return Promise.reject(err);
+          }
+        },
+        abort(reason) {
+          if (released) {
+            return Promise.reject(new TypeError('Writer has been released'));
+          }
+          try {
+            stream.abort(reason);
+            closedReject(reason || new Error('Stream aborted'));
+            return Promise.resolve();
+          } catch (err) {
+            return Promise.reject(err);
+          }
+        },
+        releaseLock() {
+          released = true;
+        }
+      };
+    }
   }
 
   globalThis.FileSystemWritableFileStream = FileSystemWritableFileStream;

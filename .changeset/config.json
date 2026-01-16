@@ -9,6 +9,7 @@
   "updateInternalDependencies": "patch",
   "ignore": [
     "@ricsam/isolate-demo",
-    "@ricsam/isolate-benchmarks"
+    "@ricsam/isolate-benchmarks",
+    "@ricsam/isolate-bun-demo"
   ]
 }
