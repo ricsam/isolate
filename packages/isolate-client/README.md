@@ -149,6 +149,20 @@ await runtime.eval(`
 `);
 ```
 
+### Supported Data Types
+
+Custom function arguments and return values support:
+
+- **Primitives**: `string`, `number`, `boolean`, `null`, `undefined`, `bigint`
+- **Web APIs**: `Request`, `Response`, `File`, `Blob`, `FormData`, `Headers`, `URL`
+- **Binary**: `Uint8Array`, `ArrayBuffer`
+- **Containers**: Arrays, plain objects (nested)
+- **Advanced**: `Date`, `RegExp`, `Promise` (nested), `AsyncIterator` (nested), `Function` (returned)
+
+**Unsupported**: Custom class instances, `Symbol`, circular references
+
+See the [full documentation](#custom-functions) for advanced usage examples including nested promises and returned functions.
+
 ## File System Callbacks
 
 ```typescript

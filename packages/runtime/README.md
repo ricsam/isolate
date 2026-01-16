@@ -198,6 +198,54 @@ await runtime.eval(`
 `);
 ```
 
+### Supported Data Types
+
+Custom function arguments and return values support the following types:
+
+| Category | Types |
+|----------|-------|
+| **Primitives** | `string`, `number`, `boolean`, `null`, `undefined`, `bigint` |
+| **Complex** | `Date`, `RegExp`, `URL`, `Headers` |
+| **Binary** | `Uint8Array`, `ArrayBuffer` |
+| **Web API** | `Request`, `Response`, `File`, `Blob`, `FormData` |
+| **Containers** | Arrays, plain objects (nested) |
+| **Async** | `Promise` (nested), `AsyncIterator` (nested), `Function` (returned) |
+
+**Advanced return types:**
+
+```typescript
+const runtime = await createRuntime({
+  customFunctions: {
+    // Return a function - callable from isolate
+    getMultiplier: {
+      fn: (factor: number) => (x: number) => x * factor,
+      type: 'sync',
+    },
+    // Return nested promises - awaitable from isolate
+    fetchBoth: {
+      fn: () => ({
+        users: fetch('/api/users').then(r => r.json()),
+        posts: fetch('/api/posts').then(r => r.json()),
+      }),
+      type: 'sync',
+    },
+  },
+});
+
+await runtime.eval(`
+  const double = getMultiplier(2);
+  console.log(double(5)); // 10
+
+  const { users, posts } = fetchBoth();
+  console.log(await users, await posts);
+`);
+```
+
+**Unsupported types:**
+- Custom class instances (use plain objects instead)
+- `Symbol`
+- Circular references
+
 ## Test Environment
 
 Enable test environment to run tests inside the sandbox:

@@ -167,6 +167,65 @@ await runtime.eval(`
 `);
 ```
 
+### Supported Data Types
+
+Custom function arguments and return values support the following types:
+
+| Category | Types |
+|----------|-------|
+| **Primitives** | `string`, `number`, `boolean`, `null`, `undefined`, `bigint` |
+| **Complex** | `Date`, `RegExp`, `URL`, `Headers` |
+| **Binary** | `Uint8Array`, `ArrayBuffer` |
+| **Web API** | `Request`, `Response`, `File`, `Blob`, `FormData` |
+| **Containers** | Arrays, plain objects (nested) |
+| **Async** | `Promise` (nested), `AsyncIterator` (nested), `Function` (returned) |
+
+**Advanced return types:**
+
+```typescript
+const runtime = await createRuntime({
+  customFunctions: {
+    // Return a function - callable from isolate
+    getMultiplier: {
+      fn: (factor: number) => (x: number) => x * factor,
+      type: 'sync',
+    },
+    // Return nested promises - awaitable from isolate
+    fetchBoth: {
+      fn: () => ({
+        users: fetch('/api/users').then(r => r.json()),
+        posts: fetch('/api/posts').then(r => r.json()),
+      }),
+      type: 'sync',
+    },
+    // Return nested async iterators
+    getStreams: {
+      fn: () => ({
+        numbers: (async function* () { yield 1; yield 2; })(),
+        letters: (async function* () { yield 'a'; yield 'b'; })(),
+      }),
+      type: 'sync',
+    },
+  },
+});
+
+await runtime.eval(`
+  const double = getMultiplier(2);
+  console.log(double(5)); // 10
+
+  const { users, posts } = fetchBoth();
+  console.log(await users, await posts);
+
+  const streams = getStreams();
+  for await (const n of streams.numbers) console.log(n);
+`);
+```
+
+**Unsupported types:**
+- Custom class instances (use plain objects instead)
+- `Symbol`
+- Circular references
+
 ## Daemon/Client Architecture
 
 The `isolated-vm` package only works in Node.js. Use the daemon/client architecture to run isolated code from **any JavaScript runtime** (Bun, Deno, etc.).
