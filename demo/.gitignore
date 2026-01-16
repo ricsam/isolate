@@ -44,6 +44,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 /.e2e-logs/
 
 /demo-data/uploads/*
+!/demo-data/uploads/test-image.png
 
 # Auto-generated library types (rebuild with: bun run build:library-types)
 /src/library-types.ts
