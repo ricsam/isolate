@@ -21,6 +21,15 @@ export const HEADER_SIZE = 5;
 /** Maximum frame size (10MB) */
 export const MAX_FRAME_SIZE = 10 * 1024 * 1024;
 
+/** Threshold above which bodies should be streamed (1MB) */
+export const STREAM_THRESHOLD = 1 * 1024 * 1024;
+
+/** Default chunk size for streaming (256KB) */
+export const STREAM_CHUNK_SIZE = 256 * 1024;
+
+/** Default credit for backpressure (1MB) */
+export const STREAM_DEFAULT_CREDIT = 1 * 1024 * 1024;
+
 // ============================================================================
 // Frame Building
 // ============================================================================

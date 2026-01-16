@@ -2182,25 +2182,29 @@ export async function setupFetch(
     },
 
     dispatchWebSocketOpen(connectionId: string): void {
-      // Check if websocket.open handler exists - required for connection tracking
-      const hasOpenHandler = context.evalSync(`!!globalThis.__serveOptions__?.websocket?.open`);
-      if (!hasOpenHandler) {
-        // Delete from registry and return - connection NOT tracked
-        context.evalSync(`globalThis.__upgradeRegistry__.delete("${connectionId}")`);
-        return;
-      }
-
       // Store connection (data stays in isolate registry)
       serveState.activeConnections.set(connectionId, { connectionId });
 
-      // Create ServerWebSocket and call open handler
+      // Check if websocket.open handler exists
+      const hasOpenHandler = context.evalSync(`!!globalThis.__serveOptions__?.websocket?.open`);
+
+      // Create ServerWebSocket instance (always needed for message/close handlers)
       context.evalSync(`
         (function() {
           const ws = new __ServerWebSocket__("${connectionId}");
           globalThis.__activeWs_${connectionId}__ = ws;
-          __serveOptions__.websocket.open(ws);
         })()
       `);
+
+      // Call open handler if it exists
+      if (hasOpenHandler) {
+        context.evalSync(`
+          (function() {
+            const ws = globalThis.__activeWs_${connectionId}__;
+            __serveOptions__.websocket.open(ws);
+          })()
+        `);
+      }
 
       // Clear pending upgrade after successful open
       if (serveState.pendingUpgrade?.connectionId === connectionId) {

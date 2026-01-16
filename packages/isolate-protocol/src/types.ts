@@ -67,6 +67,7 @@ export const MessageType = {
   // Daemon → Client: Events
   PLAYWRIGHT_EVENT: 0xb0,
   TEST_EVENT: 0xb1,
+  WS_COMMAND: 0xb2,
 
   // Heartbeat
   PING: 0xf0,
@@ -510,6 +511,18 @@ export interface TestEventMessage {
   event: TestEvent;
 }
 
+export interface WsCommandMessage {
+  type: typeof MessageType.WS_COMMAND;
+  isolateId: string;
+  command: {
+    type: "message" | "close";
+    connectionId: string;
+    data?: string | Uint8Array;
+    code?: number;
+    reason?: string;
+  };
+}
+
 /**
  * Unified playwright event type for the onEvent callback.
  */
@@ -599,6 +612,7 @@ export type DaemonMessage =
   | StreamError
   | PlaywrightEventMessage
   | TestEventMessage
+  | WsCommandMessage
   | PongMessage;
 
 export type Message = ClientMessage | DaemonMessage;

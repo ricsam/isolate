@@ -1559,5 +1559,315 @@ describe("isolate-client integration", () => {
         }
       });
     });
+
+    describe("streaming support", () => {
+      it("should stream large request bodies (>1MB)", async () => {
+        const runtime = await client.createRuntime();
+        try {
+          await runtime.eval(`
+            serve({
+              async fetch(request) {
+                const body = await request.arrayBuffer();
+                return Response.json({
+                  size: body.byteLength,
+                  // Return first and last few bytes to verify integrity
+                  first: Array.from(new Uint8Array(body.slice(0, 4))),
+                  last: Array.from(new Uint8Array(body.slice(-4)))
+                });
+              }
+            });
+          `);
+
+          // Create a 2MB body (above STREAM_THRESHOLD of 1MB)
+          const bodySize = 2 * 1024 * 1024;
+          const body = new Uint8Array(bodySize);
+          // Fill with pattern: index mod 256
+          for (let i = 0; i < bodySize; i++) {
+            body[i] = i % 256;
+          }
+
+          const response = await runtime.fetch.dispatchRequest(
+            new Request("http://localhost/upload", {
+              method: "POST",
+              body: body,
+              headers: { "Content-Length": String(bodySize) },
+            })
+          );
+
+          assert.strictEqual(response.status, 200);
+          const result = await response.json();
+          assert.strictEqual(result.size, bodySize);
+          assert.deepStrictEqual(result.first, [0, 1, 2, 3]);
+          // Last 4 bytes of 2MB: (2*1024*1024 - 4) % 256 = 252, 253, 254, 255
+          assert.deepStrictEqual(result.last, [252, 253, 254, 255]);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      it("should stream large response bodies (>1MB)", async () => {
+        const runtime = await client.createRuntime();
+        try {
+          await runtime.eval(`
+            serve({
+              fetch(request) {
+                // Create a 2MB response body
+                const size = 2 * 1024 * 1024;
+                const body = new Uint8Array(size);
+                for (let i = 0; i < size; i++) {
+                  body[i] = i % 256;
+                }
+                return new Response(body, {
+                  headers: { "Content-Type": "application/octet-stream" }
+                });
+              }
+            });
+          `);
+
+          const response = await runtime.fetch.dispatchRequest(
+            new Request("http://localhost/download")
+          );
+
+          assert.strictEqual(response.status, 200);
+          const body = new Uint8Array(await response.arrayBuffer());
+
+          const expectedSize = 2 * 1024 * 1024;
+          assert.strictEqual(body.length, expectedSize);
+
+          // Verify pattern integrity
+          assert.strictEqual(body[0], 0);
+          assert.strictEqual(body[1], 1);
+          assert.strictEqual(body[255], 255);
+          assert.strictEqual(body[256], 0); // wraps around
+          assert.strictEqual(body[body.length - 1], 255);
+          assert.strictEqual(body[body.length - 2], 254);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      it("should handle small bodies without streaming", async () => {
+        const runtime = await client.createRuntime();
+        try {
+          await runtime.eval(`
+            serve({
+              async fetch(request) {
+                const body = await request.text();
+                return new Response("Echo: " + body);
+              }
+            });
+          `);
+
+          // Small body (under 1MB threshold)
+          const smallBody = "Hello, World!";
+          const response = await runtime.fetch.dispatchRequest(
+            new Request("http://localhost/echo", {
+              method: "POST",
+              body: smallBody,
+            })
+          );
+
+          assert.strictEqual(response.status, 200);
+          const result = await response.text();
+          assert.strictEqual(result, "Echo: Hello, World!");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
+
+    describe("WebSocket command push", () => {
+      it("should receive ws.send() commands from isolate", async () => {
+        const receivedCommands: { type: string; connectionId: string; data?: unknown }[] = [];
+
+        const runtime = await client.createRuntime();
+        try {
+          // Register WebSocket command callback
+          runtime.fetch.onWebSocketCommand((cmd) => {
+            receivedCommands.push({
+              type: cmd.type,
+              connectionId: cmd.connectionId,
+              data: cmd.data,
+            });
+          });
+
+          // Set up serve handler with websocket handlers
+          await runtime.eval(`
+            serve({
+              fetch(request, server) {
+                const upgrade = request.headers.get("Upgrade");
+                if (upgrade === "websocket") {
+                  server.upgrade(request);
+                  return new Response(null, { status: 101 });
+                }
+                return new Response("Not a WebSocket request", { status: 400 });
+              },
+              websocket: {
+                open(ws) {
+                  // Send a message when connection opens
+                  ws.send("hello from isolate");
+                },
+                message(ws, message) {
+                  // Echo messages back
+                  ws.send("echo: " + message);
+                }
+              }
+            });
+          `);
+
+          // Dispatch a WebSocket upgrade request
+          await runtime.fetch.dispatchRequest(
+            new Request("http://localhost/ws", {
+              headers: { "Upgrade": "websocket" }
+            })
+          );
+
+          // Get the upgrade request info
+          const upgradeRequest = await runtime.fetch.getUpgradeRequest();
+          assert.ok(upgradeRequest, "Should have upgrade request");
+          const connectionId = upgradeRequest!.connectionId;
+
+          // Open the WebSocket connection - this triggers websocket.open(ws)
+          await runtime.fetch.dispatchWebSocketOpen(connectionId);
+
+          // Give time for the message to propagate
+          await new Promise(resolve => setTimeout(resolve, 50));
+
+          // Check that we received the command from the open handler
+          const sendCommand = receivedCommands.find(
+            cmd => cmd.type === "message" && cmd.connectionId === connectionId
+          );
+          assert.ok(sendCommand, "Should receive message command from isolate");
+          assert.strictEqual(sendCommand?.data, "hello from isolate");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      it("should receive ws.close() commands from isolate", async () => {
+        const receivedCommands: { type: string; connectionId: string; code?: number; reason?: string }[] = [];
+
+        const runtime = await client.createRuntime();
+        try {
+          // Register WebSocket command callback
+          runtime.fetch.onWebSocketCommand((cmd) => {
+            receivedCommands.push({
+              type: cmd.type,
+              connectionId: cmd.connectionId,
+              code: cmd.code,
+              reason: cmd.reason,
+            });
+          });
+
+          await runtime.eval(`
+            serve({
+              fetch(request, server) {
+                const upgrade = request.headers.get("Upgrade");
+                if (upgrade === "websocket") {
+                  server.upgrade(request);
+                  return new Response(null, { status: 101 });
+                }
+                return new Response("Not a WebSocket request", { status: 400 });
+              },
+              websocket: {
+                open(ws) {
+                  // Close connection immediately after opening
+                  ws.close(1000, "Normal closure");
+                }
+              }
+            });
+          `);
+
+          // Dispatch upgrade request
+          await runtime.fetch.dispatchRequest(
+            new Request("http://localhost/ws", {
+              headers: { "Upgrade": "websocket" }
+            })
+          );
+
+          const upgradeRequest = await runtime.fetch.getUpgradeRequest();
+          assert.ok(upgradeRequest, "Should have upgrade request");
+          const connectionId = upgradeRequest!.connectionId;
+
+          // Open the WebSocket connection - triggers websocket.open(ws) which calls close
+          await runtime.fetch.dispatchWebSocketOpen(connectionId);
+
+          // Give time for the message to propagate
+          await new Promise(resolve => setTimeout(resolve, 50));
+
+          // Check that we received the close command
+          const closeCommand = receivedCommands.find(
+            cmd => cmd.type === "close" && cmd.connectionId === connectionId
+          );
+          assert.ok(closeCommand, "Should receive close command from isolate");
+          assert.strictEqual(closeCommand?.code, 1000);
+          assert.strictEqual(closeCommand?.reason, "Normal closure");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      it("should echo messages via websocket.message handler", async () => {
+        const receivedCommands: { type: string; connectionId: string; data?: unknown }[] = [];
+
+        const runtime = await client.createRuntime();
+        try {
+          runtime.fetch.onWebSocketCommand((cmd) => {
+            receivedCommands.push({
+              type: cmd.type,
+              connectionId: cmd.connectionId,
+              data: cmd.data,
+            });
+          });
+
+          // Note: open handler is NOT required - message handler works on its own
+          await runtime.eval(`
+            serve({
+              fetch(request, server) {
+                if (request.headers.get("Upgrade") === "websocket") {
+                  server.upgrade(request);
+                  return new Response(null, { status: 101 });
+                }
+                return new Response("Not WebSocket", { status: 400 });
+              },
+              websocket: {
+                message(ws, message) {
+                  // Echo with prefix
+                  ws.send("echo: " + message);
+                }
+              }
+            });
+          `);
+
+          // Setup WebSocket connection
+          await runtime.fetch.dispatchRequest(
+            new Request("http://localhost/ws", {
+              headers: { "Upgrade": "websocket" }
+            })
+          );
+
+          const upgradeRequest = await runtime.fetch.getUpgradeRequest();
+          assert.ok(upgradeRequest);
+          const connectionId = upgradeRequest!.connectionId;
+
+          await runtime.fetch.dispatchWebSocketOpen(connectionId);
+
+          // Send a message to the isolate
+          await runtime.fetch.dispatchWebSocketMessage(connectionId, "test message");
+
+          // Wait for async WS_COMMAND message to be processed
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+          // Verify we received the echo
+          const echoMsg = receivedCommands.find(
+            cmd => cmd.type === "message" && cmd.data === "echo: test message"
+          );
+          assert.ok(echoMsg, "Should receive echoed message");
+          assert.strictEqual(echoMsg?.connectionId, connectionId);
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
   });
 });

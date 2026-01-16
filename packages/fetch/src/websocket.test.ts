@@ -495,20 +495,20 @@ describe("WebSocket", () => {
       assert.strictEqual(typeof data.joinedAt, "number");
     });
 
-    test("close handler requires open handler for connection tracking", async () => {
+    test("close handler works without open handler", async () => {
       context.evalSync(`
         globalThis.closeCalled = false;
+        globalThis.closeCode = null;
         serve({
           fetch(request, server) {
             server.upgrade(request, { data: { test: true } });
             return new Response(null, { status: 101 });
           },
           websocket: {
-            open(ws) {
-              // Must define open handler for connection tracking
-            },
+            // No open handler - close should still work
             close(ws, code, reason) {
               globalThis.closeCalled = true;
+              globalThis.closeCode = code;
             }
           }
         });
@@ -519,8 +519,10 @@ describe("WebSocket", () => {
       fetchHandle.dispatchWebSocketOpen(upgrade!.connectionId);
       fetchHandle.dispatchWebSocketClose(upgrade!.connectionId, 1000, "Normal");
 
-      const result = context.evalSync(`globalThis.closeCalled`);
-      assert.strictEqual(result, true);
+      const closeCalled = context.evalSync(`globalThis.closeCalled`);
+      const closeCode = context.evalSync(`globalThis.closeCode`);
+      assert.strictEqual(closeCalled, true);
+      assert.strictEqual(closeCode, 1000);
     });
 
     test("multiple connections close handlers receive correct data", async () => {

@@ -36,6 +36,9 @@ export {
   getMessageTypeName,
   HEADER_SIZE,
   MAX_FRAME_SIZE,
+  STREAM_THRESHOLD,
+  STREAM_CHUNK_SIZE,
+  STREAM_DEFAULT_CREDIT,
   type ParsedFrame,
   type FrameParser,
 } from "./framing.ts";

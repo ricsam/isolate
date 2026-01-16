@@ -7,6 +7,9 @@ import {
   createFrameParser,
   buildFrame,
   MessageType,
+  STREAM_THRESHOLD,
+  STREAM_CHUNK_SIZE,
+  STREAM_DEFAULT_CREDIT,
   type Message,
   type ResponseOk,
   type ResponseError,
@@ -45,6 +48,14 @@ import {
   type ConsoleGetTimersRequest,
   type ConsoleGetCountersRequest,
   type ConsoleGetGroupDepthRequest,
+  type WsCommandMessage,
+  type ResponseStreamStart,
+  type ResponseStreamChunk,
+  type ResponseStreamEnd,
+  type StreamPush,
+  type StreamPull,
+  type StreamClose,
+  type StreamError,
 } from "@ricsam/isolate-protocol";
 import { createPlaywrightHandler, type PlaywrightCallback } from "@ricsam/isolate-playwright";
 import type {
@@ -71,10 +82,36 @@ import type {
 
 const DEFAULT_TIMEOUT = 30000;
 
+// Track WebSocket command callbacks per isolate for handling WS_COMMAND messages
+const isolateWsCallbacks = new Map<string, Set<(cmd: WebSocketCommand) => void>>();
+
 interface PendingRequest {
   resolve: (data: unknown) => void;
   reject: (error: Error) => void;
   timeoutId?: ReturnType<typeof setTimeout>;
+}
+
+/** Stream receiver for collecting streamed response chunks */
+interface StreamResponseReceiver {
+  streamId: number;
+  requestId: number;
+  metadata?: {
+    status?: number;
+    statusText?: string;
+    headers?: [string, string][];
+  };
+  chunks: Uint8Array[];
+  totalBytes: number;
+}
+
+/** Stream session for tracking upload streams (client sending to daemon) */
+interface StreamUploadSession {
+  streamId: number;
+  requestId: number;
+  state: "active" | "closing" | "closed";
+  bytesTransferred: number;
+  credit: number;
+  creditResolver?: () => void;
 }
 
 interface ConnectionState {
@@ -83,7 +120,12 @@ interface ConnectionState {
   callbacks: Map<number, (...args: unknown[]) => unknown>;
   nextRequestId: number;
   nextCallbackId: number;
+  nextStreamId: number;
   connected: boolean;
+  /** Track streaming responses being received */
+  streamResponses: Map<number, StreamResponseReceiver>;
+  /** Track upload streams (for request body streaming) */
+  uploadStreams: Map<number, StreamUploadSession>;
 }
 
 /**
@@ -98,7 +140,10 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
     callbacks: new Map(),
     nextRequestId: 1,
     nextCallbackId: 1,
+    nextStreamId: 1,
     connected: true,
+    streamResponses: new Map(),
+    uploadStreams: new Map(),
   };
 
   const parser = createFrameParser();
@@ -223,9 +268,139 @@ function handleMessage(message: Message, state: ConnectionState): void {
       // Heartbeat response, ignore
       break;
 
+    case MessageType.WS_COMMAND: {
+      const msg = message as WsCommandMessage;
+      const callbacks = isolateWsCallbacks.get(msg.isolateId);
+      if (callbacks) {
+        const cmd: WebSocketCommand = {
+          type: msg.command.type,
+          connectionId: msg.command.connectionId,
+          data: msg.command.data,
+          code: msg.command.code,
+          reason: msg.command.reason,
+        };
+        for (const cb of callbacks) {
+          cb(cmd);
+        }
+      }
+      break;
+    }
+
+    // Streaming response messages
+    case MessageType.RESPONSE_STREAM_START: {
+      const msg = message as ResponseStreamStart;
+      // Create a receiver to collect chunks
+      const receiver: StreamResponseReceiver = {
+        streamId: msg.streamId,
+        requestId: msg.requestId,
+        metadata: msg.metadata,
+        chunks: [],
+        totalBytes: 0,
+      };
+      state.streamResponses.set(msg.streamId, receiver);
+      // Send initial credit to allow daemon to start sending
+      sendMessage(state.socket, {
+        type: MessageType.STREAM_PULL,
+        streamId: msg.streamId,
+        maxBytes: STREAM_DEFAULT_CREDIT,
+      } as StreamPull);
+      break;
+    }
+
+    case MessageType.RESPONSE_STREAM_CHUNK: {
+      const msg = message as ResponseStreamChunk;
+      const receiver = state.streamResponses.get(msg.streamId);
+      if (receiver) {
+        receiver.chunks.push(msg.chunk);
+        receiver.totalBytes += msg.chunk.length;
+        // Send more credit
+        sendMessage(state.socket, {
+          type: MessageType.STREAM_PULL,
+          streamId: msg.streamId,
+          maxBytes: STREAM_DEFAULT_CREDIT,
+        } as StreamPull);
+      }
+      break;
+    }
+
+    case MessageType.RESPONSE_STREAM_END: {
+      const msg = message as ResponseStreamEnd;
+      const receiver = state.streamResponses.get(msg.streamId);
+      if (receiver) {
+        // Concatenate all chunks
+        const body = concatUint8Arrays(receiver.chunks);
+        // Resolve pending request with the streamed response
+        const pending = state.pendingRequests.get(receiver.requestId);
+        if (pending) {
+          state.pendingRequests.delete(receiver.requestId);
+          if (pending.timeoutId) clearTimeout(pending.timeoutId);
+          pending.resolve({
+            response: {
+              status: receiver.metadata?.status ?? 200,
+              statusText: receiver.metadata?.statusText ?? "OK",
+              headers: receiver.metadata?.headers ?? [],
+              body,
+            },
+          });
+        }
+        state.streamResponses.delete(msg.streamId);
+      }
+      break;
+    }
+
+    case MessageType.STREAM_PULL: {
+      const msg = message as StreamPull;
+      const session = state.uploadStreams.get(msg.streamId);
+      if (session) {
+        session.credit += msg.maxBytes;
+        // Wake up waiting sender if there's a credit resolver
+        if (session.creditResolver) {
+          session.creditResolver();
+          session.creditResolver = undefined;
+        }
+      }
+      break;
+    }
+
+    case MessageType.STREAM_ERROR: {
+      const msg = message as StreamError;
+      // Handle error for upload streams
+      const uploadSession = state.uploadStreams.get(msg.streamId);
+      if (uploadSession) {
+        uploadSession.state = "closed";
+        state.uploadStreams.delete(msg.streamId);
+      }
+      // Handle error for response streams
+      const receiver = state.streamResponses.get(msg.streamId);
+      if (receiver) {
+        const pending = state.pendingRequests.get(receiver.requestId);
+        if (pending) {
+          state.pendingRequests.delete(receiver.requestId);
+          if (pending.timeoutId) clearTimeout(pending.timeoutId);
+          pending.reject(new Error(msg.error));
+        }
+        state.streamResponses.delete(msg.streamId);
+      }
+      break;
+    }
+
     default:
       console.warn(`Unexpected message type: ${message.type}`);
   }
+}
+
+/**
+ * Helper to concatenate Uint8Arrays.
+ */
+function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
+  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const arr of arrays) {
+    result.set(arr, offset);
+    offset += arr.length;
+  }
+  return result;
 }
 
 /**
@@ -471,27 +646,52 @@ async function createRuntime(
   const result = await sendRequest<CreateRuntimeResult>(state, request);
   const isolateId = result.isolateId;
 
-  // WebSocket command callbacks
+  // WebSocket command callbacks - store in module-level Map for WS_COMMAND message handling
   const wsCommandCallbacks: Set<(cmd: WebSocketCommand) => void> = new Set();
+  isolateWsCallbacks.set(isolateId, wsCommandCallbacks);
 
   // Create fetch handle
   const fetchHandle: RemoteFetchHandle = {
     async dispatchRequest(req: Request, opts?: DispatchOptions) {
       const reqId = state.nextRequestId++;
-      const serialized = await serializeRequest(req);
+      const serialized = await serializeRequestWithStreaming(state, req);
+
+      // Extract bodyStream before creating the protocol message (can't be serialized)
+      const { bodyStream, ...serializableRequest } = serialized;
+
       const request: DispatchRequestRequest = {
         type: MessageType.DISPATCH_REQUEST,
         requestId: reqId,
         isolateId,
-        request: serialized,
+        request: serializableRequest,
         options: opts,
       };
-      const res = await sendRequest<{ response: SerializedResponse }>(
-        state,
-        request,
-        opts?.timeout ?? DEFAULT_TIMEOUT
-      );
-      return deserializeResponse(res.response);
+
+      // If streaming body, start sending chunks after request is sent
+      if (serialized.bodyStreamId !== undefined && bodyStream) {
+        const streamId = serialized.bodyStreamId;
+
+        // Send the request first
+        const responsePromise = sendRequest<{ response: SerializedResponse }>(
+          state,
+          request,
+          opts?.timeout ?? DEFAULT_TIMEOUT
+        );
+
+        // Then stream the body
+        await sendBodyStream(state, streamId, bodyStream);
+
+        // Wait for response
+        const res = await responsePromise;
+        return deserializeResponse(res.response);
+      } else {
+        const res = await sendRequest<{ response: SerializedResponse }>(
+          state,
+          request,
+          opts?.timeout ?? DEFAULT_TIMEOUT
+        );
+        return deserializeResponse(res.response);
+      }
     },
 
     async getUpgradeRequest(): Promise<UpgradeRequest | null> {
@@ -762,6 +962,9 @@ async function createRuntime(
     },
 
     dispose: async () => {
+      // Clean up WebSocket callbacks
+      isolateWsCallbacks.delete(isolateId);
+
       const reqId = state.nextRequestId++;
       const req: DisposeRuntimeRequest = {
         type: MessageType.DISPOSE_RUNTIME,
@@ -1037,4 +1240,157 @@ function deserializeResponse(data: SerializedResponse): Response {
     statusText: data.statusText,
     headers: data.headers,
   });
+}
+
+// ============================================================================
+// Streaming Request Serialization
+// ============================================================================
+
+interface SerializedRequestWithStream extends SerializedRequestData {
+  bodyStreamId?: number;
+  bodyStream?: ReadableStream<Uint8Array>;
+}
+
+/**
+ * Serialize a request, using streaming for large bodies.
+ */
+async function serializeRequestWithStreaming(
+  state: ConnectionState,
+  request: Request
+): Promise<SerializedRequestWithStream> {
+  const headers: [string, string][] = [];
+  request.headers.forEach((value, key) => {
+    headers.push([key, value]);
+  });
+
+  let body: Uint8Array | null = null;
+  let bodyStreamId: number | undefined;
+  let bodyStream: ReadableStream<Uint8Array> | undefined;
+
+  if (request.body) {
+    // Check Content-Length header first
+    const contentLength = request.headers.get("content-length");
+    const knownSize = contentLength ? parseInt(contentLength, 10) : null;
+
+    if (knownSize !== null && knownSize > STREAM_THRESHOLD) {
+      // Large body with known size - use streaming
+      bodyStreamId = state.nextStreamId++;
+      bodyStream = request.body;
+    } else {
+      // Small or unknown size - read into memory
+      const clonedRequest = request.clone();
+      try {
+        body = new Uint8Array(await request.arrayBuffer());
+
+        // Check if it ended up being large
+        if (body.length > STREAM_THRESHOLD) {
+          // Use the cloned request's body for streaming
+          bodyStreamId = state.nextStreamId++;
+          bodyStream = clonedRequest.body!;
+          body = null;
+        }
+      } catch {
+        // Failed to read body, try streaming
+        bodyStreamId = state.nextStreamId++;
+        bodyStream = clonedRequest.body!;
+      }
+    }
+  }
+
+  const result: SerializedRequestWithStream = {
+    method: request.method,
+    url: request.url,
+    headers,
+    body,
+  };
+
+  // Only include streaming fields if actually streaming
+  if (bodyStreamId !== undefined) {
+    result.bodyStreamId = bodyStreamId;
+    result.bodyStream = bodyStream;
+  }
+
+  return result;
+}
+
+/**
+ * Wait for credit to become available on an upload stream session.
+ */
+function waitForUploadCredit(session: StreamUploadSession): Promise<void> {
+  return new Promise((resolve) => {
+    session.creditResolver = resolve;
+  });
+}
+
+/**
+ * Send a request body as a stream.
+ */
+async function sendBodyStream(
+  state: ConnectionState,
+  streamId: number,
+  body: ReadableStream<Uint8Array>
+): Promise<void> {
+  // Create upload session for tracking
+  const session: StreamUploadSession = {
+    streamId,
+    requestId: 0,
+    state: "active",
+    bytesTransferred: 0,
+    credit: 0, // Wait for initial credit from daemon
+  };
+  state.uploadStreams.set(streamId, session);
+
+  const reader = body.getReader();
+
+  try {
+    while (true) {
+      if (session.state !== "active") {
+        throw new Error("Stream cancelled");
+      }
+
+      // Wait for credit if needed
+      while (session.credit < STREAM_CHUNK_SIZE && session.state === "active") {
+        await waitForUploadCredit(session);
+      }
+
+      if (session.state !== "active") {
+        throw new Error("Stream cancelled");
+      }
+
+      const { done, value } = await reader.read();
+
+      if (done) {
+        // Send stream close
+        sendMessage(state.socket, {
+          type: MessageType.STREAM_CLOSE,
+          streamId,
+        } as StreamClose);
+        break;
+      }
+
+      // Send chunk(s)
+      for (let offset = 0; offset < value.length; offset += STREAM_CHUNK_SIZE) {
+        const chunk = value.slice(offset, offset + STREAM_CHUNK_SIZE);
+
+        sendMessage(state.socket, {
+          type: MessageType.STREAM_PUSH,
+          streamId,
+          chunk,
+        } as StreamPush);
+
+        session.credit -= chunk.length;
+        session.bytesTransferred += chunk.length;
+      }
+    }
+  } catch (err) {
+    sendMessage(state.socket, {
+      type: MessageType.STREAM_ERROR,
+      streamId,
+      error: (err as Error).message,
+    } as StreamError);
+    throw err;
+  } finally {
+    reader.releaseLock();
+    state.uploadStreams.delete(streamId);
+  }
 }

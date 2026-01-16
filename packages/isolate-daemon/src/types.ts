@@ -78,6 +78,31 @@ export interface PendingRequest {
 }
 
 /**
+ * Stream session for tracking active streams.
+ */
+export interface StreamSession {
+  streamId: number;
+  direction: "upload" | "download";
+  requestId: number;
+  state: "active" | "closing" | "closed";
+  bytesTransferred: number;
+  credit: number;
+  creditResolver?: () => void;
+}
+
+/**
+ * Stream receiver for collecting uploaded stream chunks.
+ */
+export interface StreamReceiver {
+  streamId: number;
+  requestId: number;
+  chunks: Uint8Array[];
+  totalBytes: number;
+  resolve: (body: Uint8Array) => void;
+  reject: (error: Error) => void;
+}
+
+/**
  * Internal state for a client connection.
  */
 export interface ConnectionState {
@@ -88,6 +113,10 @@ export interface ConnectionState {
   nextRequestId: number;
   nextCallbackId: number;
   nextStreamId: number;
+  /** Active download streams (daemon sending to client) */
+  activeStreams: Map<number, StreamSession>;
+  /** Active upload stream receivers (client sending to daemon) */
+  streamReceivers: Map<number, StreamReceiver>;
 }
 
 /**

@@ -10,6 +10,9 @@ import {
   buildFrame,
   MessageType,
   ErrorCode,
+  STREAM_THRESHOLD,
+  STREAM_CHUNK_SIZE,
+  STREAM_DEFAULT_CREDIT,
   type Message,
   type ResponseOk,
   type ResponseError,
@@ -44,6 +47,14 @@ import {
   type ConsoleGetTimersRequest,
   type ConsoleGetCountersRequest,
   type ConsoleGetGroupDepthRequest,
+  type WsCommandMessage,
+  type ResponseStreamStart,
+  type ResponseStreamChunk,
+  type ResponseStreamEnd,
+  type StreamPush,
+  type StreamPull,
+  type StreamClose,
+  type StreamError,
 } from "@ricsam/isolate-protocol";
 import { createCallbackFileSystemHandler } from "./callback-fs-handler.ts";
 import {
@@ -82,6 +93,8 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
     nextRequestId: 1,
     nextCallbackId: 1,
     nextStreamId: 1,
+    activeStreams: new Map(),
+    streamReceivers: new Map(),
   };
 
   state.connections.set(socket, connection);
@@ -353,6 +366,23 @@ async function handleMessage(
       sendMessage(connection.socket, { type: MessageType.PONG });
       break;
 
+    // Stream operations (for request body streaming)
+    case MessageType.STREAM_PUSH:
+      handleStreamPush(message as StreamPush, connection);
+      break;
+
+    case MessageType.STREAM_PULL:
+      handleStreamPull(message as StreamPull, connection);
+      break;
+
+    case MessageType.STREAM_CLOSE:
+      handleStreamClose(message as StreamClose, connection);
+      break;
+
+    case MessageType.STREAM_ERROR:
+      handleStreamError(message as StreamError, connection);
+      break;
+
     default:
       sendError(
         connection.socket,
@@ -576,6 +606,22 @@ async function handleCreateRuntime(
     connection.isolates.add(isolateId);
     state.stats.totalIsolatesCreated++;
 
+    // Forward WebSocket commands from isolate to client
+    instance.runtime.fetch.onWebSocketCommand((cmd) => {
+      const wsCommandMsg: WsCommandMessage = {
+        type: MessageType.WS_COMMAND,
+        isolateId,
+        command: {
+          type: cmd.type,
+          connectionId: cmd.connectionId,
+          data: cmd.data,
+          code: cmd.code,
+          reason: cmd.reason,
+        },
+      };
+      sendMessage(connection.socket, wsCommandMsg);
+    });
+
     sendOk(connection.socket, message.requestId, { isolateId });
   } catch (err) {
     const error = err as Error;
@@ -728,19 +774,50 @@ async function handleDispatchRequest(
   instance.lastActivity = Date.now();
 
   try {
+    // Handle request body (inline or streamed)
+    let requestBody: BodyInit | null = null;
+
+    if (message.request.bodyStreamId !== undefined) {
+      // Streaming body - wait for all chunks to arrive
+      requestBody = await receiveStreamedBody(connection, message.request.bodyStreamId);
+    } else if (message.request.body) {
+      requestBody = message.request.body as unknown as BodyInit;
+    }
+
     // Deserialize the request
     const request = new Request(message.request.url, {
       method: message.request.method,
       headers: message.request.headers,
-      body: message.request.body as any,
+      body: requestBody,
     });
 
     // Dispatch to isolate
     const response = await instance.runtime.fetch.dispatchRequest(request);
 
-    // Serialize the response
-    const serialized = await serializeResponse(response);
-    sendOk(connection.socket, message.requestId, { response: serialized });
+    // Check response size before serializing
+    const contentLength = response.headers.get("content-length");
+    const knownSize = contentLength ? parseInt(contentLength, 10) : null;
+
+    if (knownSize !== null && knownSize > STREAM_THRESHOLD) {
+      // Large response - stream it
+      await sendStreamedResponse(connection, message.requestId, response);
+    } else {
+      // Try inline serialization
+      const clonedResponse = response.clone();
+      try {
+        const serialized = await serializeResponse(response);
+
+        if (serialized.body && serialized.body.length > STREAM_THRESHOLD) {
+          // Ended up being large - stream the clone
+          await sendStreamedResponse(connection, message.requestId, clonedResponse);
+        } else {
+          sendOk(connection.socket, message.requestId, { response: serialized });
+        }
+      } catch {
+        // Likely too large - stream instead
+        await sendStreamedResponse(connection, message.requestId, clonedResponse);
+      }
+    }
   } catch (err) {
     const error = err as Error;
     sendError(
@@ -751,6 +828,34 @@ async function handleDispatchRequest(
       { name: error.name, stack: error.stack }
     );
   }
+}
+
+/**
+ * Receive a streamed body from the client.
+ * Sets up a receiver and waits for all chunks to arrive.
+ */
+function receiveStreamedBody(
+  connection: ConnectionState,
+  streamId: number
+): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const receiver: import("./types.ts").StreamReceiver = {
+      streamId,
+      requestId: 0,
+      chunks: [],
+      totalBytes: 0,
+      resolve,
+      reject,
+    };
+    connection.streamReceivers.set(streamId, receiver);
+
+    // Send initial credit to allow client to start sending
+    sendMessage(connection.socket, {
+      type: MessageType.STREAM_PULL,
+      streamId,
+      maxBytes: STREAM_DEFAULT_CREDIT,
+    } as StreamPull);
+  });
 }
 
 // ============================================================================
@@ -1457,6 +1562,220 @@ function deserializeResponse(data: SerializedResponseData): Response {
     statusText: data.statusText,
     headers: data.headers,
   });
+}
+
+// ============================================================================
+// Stream Handlers
+// ============================================================================
+
+/**
+ * Handle STREAM_PUSH message (client uploading body chunks).
+ */
+function handleStreamPush(message: StreamPush, connection: ConnectionState): void {
+  const receiver = connection.streamReceivers.get(message.streamId);
+  if (!receiver) {
+    sendMessage(connection.socket, {
+      type: MessageType.STREAM_ERROR,
+      streamId: message.streamId,
+      error: "Stream not found",
+    });
+    return;
+  }
+
+  receiver.chunks.push(message.chunk);
+  receiver.totalBytes += message.chunk.length;
+
+  // Send credit back to allow more chunks
+  sendMessage(connection.socket, {
+    type: MessageType.STREAM_PULL,
+    streamId: message.streamId,
+    maxBytes: STREAM_DEFAULT_CREDIT,
+  } as StreamPull);
+}
+
+/**
+ * Handle STREAM_PULL message (client granting credit for response streaming).
+ */
+function handleStreamPull(message: StreamPull, connection: ConnectionState): void {
+  const session = connection.activeStreams.get(message.streamId);
+  if (!session) {
+    return; // Stream may have completed
+  }
+
+  session.credit += message.maxBytes;
+
+  // Wake up waiting sender if there's a credit resolver
+  if (session.creditResolver) {
+    session.creditResolver();
+    session.creditResolver = undefined;
+  }
+}
+
+/**
+ * Handle STREAM_CLOSE message (client signaling end of upload).
+ */
+function handleStreamClose(message: StreamClose, connection: ConnectionState): void {
+  const receiver = connection.streamReceivers.get(message.streamId);
+  if (!receiver) {
+    return;
+  }
+
+  // Concatenate all chunks and resolve
+  const totalLength = receiver.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const body = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of receiver.chunks) {
+    body.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  receiver.resolve(body);
+  connection.streamReceivers.delete(message.streamId);
+}
+
+/**
+ * Handle STREAM_ERROR message (client signaling upload error).
+ */
+function handleStreamError(message: StreamError, connection: ConnectionState): void {
+  const receiver = connection.streamReceivers.get(message.streamId);
+  if (receiver) {
+    receiver.reject(new Error(message.error));
+    connection.streamReceivers.delete(message.streamId);
+  }
+
+  const session = connection.activeStreams.get(message.streamId);
+  if (session) {
+    session.state = "closed";
+    connection.activeStreams.delete(message.streamId);
+  }
+}
+
+/**
+ * Helper to concatenate Uint8Arrays.
+ */
+function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
+  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const arr of arrays) {
+    result.set(arr, offset);
+    offset += arr.length;
+  }
+  return result;
+}
+
+/**
+ * Wait for credit to become available on a stream session.
+ */
+function waitForCredit(session: import("./types.ts").StreamSession): Promise<void> {
+  return new Promise((resolve) => {
+    session.creditResolver = resolve;
+  });
+}
+
+/**
+ * Send a response body as a stream.
+ */
+async function sendStreamedResponse(
+  connection: ConnectionState,
+  requestId: number,
+  response: Response
+): Promise<void> {
+  const streamId = connection.nextStreamId++;
+
+  // Collect headers
+  const headers: [string, string][] = [];
+  response.headers.forEach((value, key) => {
+    headers.push([key, value]);
+  });
+
+  // Send stream start with metadata
+  const startMsg: ResponseStreamStart = {
+    type: MessageType.RESPONSE_STREAM_START,
+    requestId,
+    streamId,
+    metadata: {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    },
+  };
+  sendMessage(connection.socket, startMsg);
+
+  if (!response.body) {
+    // No body, just end
+    const endMsg: ResponseStreamEnd = {
+      type: MessageType.RESPONSE_STREAM_END,
+      requestId,
+      streamId,
+    };
+    sendMessage(connection.socket, endMsg);
+    return;
+  }
+
+  // Create stream session for tracking
+  const session: import("./types.ts").StreamSession = {
+    streamId,
+    direction: "download",
+    requestId,
+    state: "active",
+    bytesTransferred: 0,
+    credit: STREAM_DEFAULT_CREDIT,
+  };
+  connection.activeStreams.set(streamId, session);
+
+  const reader = response.body.getReader();
+
+  try {
+    while (true) {
+      // Check credit (backpressure)
+      while (session.credit < STREAM_CHUNK_SIZE && session.state === "active") {
+        await waitForCredit(session);
+      }
+
+      if (session.state !== "active") {
+        throw new Error("Stream cancelled");
+      }
+
+      const { done, value } = await reader.read();
+
+      if (done) {
+        const endMsg: ResponseStreamEnd = {
+          type: MessageType.RESPONSE_STREAM_END,
+          requestId,
+          streamId,
+        };
+        sendMessage(connection.socket, endMsg);
+        break;
+      }
+
+      // Send chunk(s)
+      for (let offset = 0; offset < value.length; offset += STREAM_CHUNK_SIZE) {
+        const chunk = value.slice(offset, offset + STREAM_CHUNK_SIZE);
+
+        const chunkMsg: ResponseStreamChunk = {
+          type: MessageType.RESPONSE_STREAM_CHUNK,
+          requestId,
+          streamId,
+          chunk,
+        };
+        sendMessage(connection.socket, chunkMsg);
+
+        session.credit -= chunk.length;
+        session.bytesTransferred += chunk.length;
+      }
+    }
+  } catch (err) {
+    const errorMsg: StreamError = {
+      type: MessageType.STREAM_ERROR,
+      streamId,
+      error: (err as Error).message,
+    };
+    sendMessage(connection.socket, errorMsg);
+  } finally {
+    reader.releaseLock();
+    connection.activeStreams.delete(streamId);
+  }
 }
 
 // ============================================================================

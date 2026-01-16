@@ -5,7 +5,7 @@ A WHATWG-compliant JavaScript sandbox built on [isolated-vm](https://github.com/
 ## Features
 
 - **Fetch API** - `fetch()`, `Request`, `Response`, `Headers`, `FormData`, `AbortController`
-- **HTTP Server** - `serve()` with WebSocket support (Bun-compatible API)
+- **HTTP Server** - `serve()` with WebSocket support (Bun-compatible API) - [detailed docs](./packages/fetch/README.md)
 - **File System** - OPFS-compatible API with `FileSystemDirectoryHandle`, `FileSystemFileHandle`
 - **Streams** - `ReadableStream`, `WritableStream`, `TransformStream`
 - **Blob/File** - Full `Blob` and `File` implementations
