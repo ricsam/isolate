@@ -243,10 +243,11 @@ function marshalValue(
     for (const [key, entryValue] of value.entries()) {
       const keyJson = JSON.stringify(key);
 
-      if (entryValue instanceof File) {
-        const nameJson = JSON.stringify(entryValue.name);
-        const typeJson = JSON.stringify(entryValue.type);
-        const lastModifiedJson = JSON.stringify(entryValue.lastModified);
+      if (typeof entryValue !== "string") {
+        const file = entryValue as File;
+        const nameJson = JSON.stringify(file.name);
+        const typeJson = JSON.stringify(file.type);
+        const lastModifiedJson = JSON.stringify(file.lastModified);
         context.evalSync(`
           ${path}.append(${keyJson}, new File([], ${nameJson}, { type: ${typeJson}, lastModified: ${lastModifiedJson} }));
         `);
