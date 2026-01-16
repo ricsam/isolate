@@ -12,7 +12,8 @@
   },
   "scripts": {
     "bench": "node --experimental-strip-types src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "echo 'No tests'"
   },
   "dependencies": {
     "@ricsam/isolate-runtime": "*",
