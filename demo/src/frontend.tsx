@@ -17,14 +17,14 @@ import {
 } from "@tanstack/react-router";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
 
-import { HomePage } from "./pages/HomePage.ts";
-import { APITester } from "./pages/APITester.ts";
-import { FileUploader } from "./pages/FileUploader.ts";
-import { WebSocketTester } from "./pages/WebSocketTester.ts";
-import { ChatPage } from "./pages/ChatPage.ts";
-import { AIPage } from "./pages/AIPage.ts";
-import { LogsPage } from "./pages/LogsPage.ts";
-import { DownloadsPage } from "./pages/DownloadsPage.ts";
+import { HomePage } from "./pages/HomePage.tsx";
+import { APITester } from "./pages/APITester.tsx";
+import { FileUploader } from "./pages/FileUploader.tsx";
+import { WebSocketTester } from "./pages/WebSocketTester.tsx";
+import { ChatPage } from "./pages/ChatPage.tsx";
+import { AIPage } from "./pages/AIPage.tsx";
+import { LogsPage } from "./pages/LogsPage.tsx";
+import { DownloadsPage } from "./pages/DownloadsPage.tsx";
 
 import "./index.css";
 
