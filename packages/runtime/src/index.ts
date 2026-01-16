@@ -717,3 +717,5 @@ export type {
   NetworkResponseInfo,
   BrowserConsoleLogEntry,
 } from "@ricsam/isolate-playwright";
+
+export * from './internal.ts';

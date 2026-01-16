@@ -272,10 +272,20 @@ function handleMessage(message: Message, state: ConnectionState): void {
       const msg = message as WsCommandMessage;
       const callbacks = isolateWsCallbacks.get(msg.isolateId);
       if (callbacks) {
+        // Convert Uint8Array to ArrayBuffer if needed
+        let data: string | ArrayBuffer | undefined;
+        if (msg.command.data instanceof Uint8Array) {
+          data = msg.command.data.buffer.slice(
+            msg.command.data.byteOffset,
+            msg.command.data.byteOffset + msg.command.data.byteLength
+          ) as ArrayBuffer;
+        } else {
+          data = msg.command.data;
+        }
         const cmd: WebSocketCommand = {
           type: msg.command.type,
           connectionId: msg.command.connectionId,
-          data: msg.command.data,
+          data,
           code: msg.command.code,
           reason: msg.command.reason,
         };

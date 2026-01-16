@@ -11,7 +11,8 @@
     }
   },
   "scripts": {
-    "bench": "node --experimental-strip-types src/index.ts"
+    "bench": "node --experimental-strip-types src/index.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ricsam/isolate-runtime": "*",

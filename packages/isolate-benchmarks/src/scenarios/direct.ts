@@ -25,7 +25,7 @@ export class DirectScenario implements BenchmarkScenario {
       }
 
       if (request.method === "GET" && url.pathname === "/download") {
-        return new Response(this.storedPayload);
+        return new Response(this.storedPayload as BodyInit | null);
       }
 
       return new Response("Not found", { status: 404 });
@@ -71,7 +71,7 @@ export class DirectScenario implements BenchmarkScenario {
     // Upload
     const uploadRes = await fetch(`http://localhost:${this.port}/upload`, {
       method: "POST",
-      body: payload,
+      body: payload as BodyInit,
     });
     await uploadRes.json();
 

@@ -4,7 +4,7 @@
 
 import type { Socket } from "node:net";
 import type ivm from "isolated-vm";
-import type { InternalRuntimeHandle } from "@ricsam/isolate-runtime/internal";
+import type { InternalRuntimeHandle } from "@ricsam/isolate-runtime";
 import type { CallbackRegistration } from "@ricsam/isolate-protocol";
 import type { PlaywrightHandle } from "@ricsam/isolate-playwright";
 

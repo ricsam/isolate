@@ -73,7 +73,7 @@ import {
 import {
   createInternalRuntime,
   type InternalRuntimeHandle,
-} from "@ricsam/isolate-runtime/internal";
+} from "@ricsam/isolate-runtime";
 import type {
   DaemonState,
   ConnectionState,
@@ -608,13 +608,20 @@ async function handleCreateRuntime(
 
     // Forward WebSocket commands from isolate to client
     instance.runtime.fetch.onWebSocketCommand((cmd) => {
+      // Convert ArrayBuffer to Uint8Array if needed for protocol
+      let data: string | Uint8Array | undefined;
+      if (cmd.data instanceof ArrayBuffer) {
+        data = new Uint8Array(cmd.data);
+      } else {
+        data = cmd.data as string | undefined;
+      }
       const wsCommandMsg: WsCommandMessage = {
         type: MessageType.WS_COMMAND,
         isolateId,
         command: {
           type: cmd.type,
           connectionId: cmd.connectionId,
-          data: cmd.data,
+          data,
           code: cmd.code,
           reason: cmd.reason,
         },
@@ -779,7 +786,7 @@ async function handleDispatchRequest(
 
     if (message.request.bodyStreamId !== undefined) {
       // Streaming body - wait for all chunks to arrive
-      requestBody = await receiveStreamedBody(connection, message.request.bodyStreamId);
+      requestBody = await receiveStreamedBody(connection, message.request.bodyStreamId) as BodyInit;
     } else if (message.request.body) {
       requestBody = message.request.body as unknown as BodyInit;
     }
