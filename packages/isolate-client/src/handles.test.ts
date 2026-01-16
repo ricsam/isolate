@@ -452,6 +452,255 @@ describe("handle-based API", () => {
         await runtime.dispose();
       }
     });
+
+    it("should stream large response via reader in real-time", async () => {
+      // NOTE: The daemon only streams responses > 1MB. For smaller streaming responses,
+      // the daemon buffers them before sending, so real-time behavior only applies to large bodies.
+      const runtime = await client.createRuntime();
+      try {
+        // Create a streaming response that exceeds 1MB to trigger daemon-side streaming
+        await runtime.eval(`
+          serve({
+            fetch() {
+              // Each chunk is ~200KB, send 6 chunks = ~1.2MB total (above 1MB threshold)
+              const chunkSize = 200 * 1024;
+              let count = 0;
+              const maxChunks = 6;
+
+              const stream = new ReadableStream({
+                pull(controller) {
+                  if (count >= maxChunks) {
+                    controller.close();
+                    return;
+                  }
+                  // Create a chunk with a recognizable pattern
+                  const data = new Uint8Array(chunkSize);
+                  data.fill(count + 65); // Fill with 'A', 'B', 'C', etc.
+                  controller.enqueue(data);
+                  count++;
+                }
+              });
+              return new Response(stream, {
+                headers: { "Content-Type": "application/octet-stream" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/stream")
+        );
+
+        assert.strictEqual(response.status, 200);
+        assert.ok(response.body, "Response should have a body");
+
+        const reader = response.body.getReader();
+        let totalBytes = 0;
+        let readCount = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          totalBytes += value.length;
+          readCount++;
+        }
+
+        // Verify we got all the data (~1.2MB)
+        const expectedSize = 200 * 1024 * 6;
+        assert.strictEqual(totalBytes, expectedSize);
+
+        // With streaming, we should get multiple reads (not all data in one read)
+        // The exact number depends on chunk sizes but should be > 1
+        assert.ok(
+          readCount > 1,
+          `Should have multiple reads for large streaming response, but got ${readCount}`
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should stream small response body correctly via reader", async () => {
+      // NOTE: Small streaming responses (< 1MB) are buffered by the daemon before sending,
+      // so they won't show real-time streaming behavior, but they should still work correctly.
+      const runtime = await client.createRuntime();
+      try {
+        await runtime.eval(`
+          serve({
+            fetch() {
+              let count = 0;
+              const stream = new ReadableStream({
+                pull(controller) {
+                  if (count >= 3) {
+                    controller.close();
+                    return;
+                  }
+                  controller.enqueue(new TextEncoder().encode("chunk" + count + "\\n"));
+                  count++;
+                }
+              });
+              return new Response(stream, {
+                headers: { "Content-Type": "text/plain" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/stream")
+        );
+
+        assert.strictEqual(response.status, 200);
+        assert.ok(response.body, "Response should have a body");
+
+        const reader = response.body.getReader();
+        let fullContent = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          fullContent += new TextDecoder().decode(value);
+        }
+
+        assert.strictEqual(fullContent, "chunk0\nchunk1\nchunk2\n");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should handle empty streaming response body", async () => {
+      const runtime = await client.createRuntime();
+      try {
+        await runtime.eval(`
+          serve({
+            fetch() {
+              const stream = new ReadableStream({
+                start(controller) {
+                  // Immediately close without any chunks
+                  controller.close();
+                }
+              });
+              return new Response(stream);
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/empty")
+        );
+
+        assert.strictEqual(response.status, 200);
+        const text = await response.text();
+        assert.strictEqual(text, "");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should allow reading response body with response.text() after streaming", async () => {
+      const runtime = await client.createRuntime();
+      try {
+        await runtime.eval(`
+          serve({
+            fetch() {
+              const stream = new ReadableStream({
+                async start(controller) {
+                  controller.enqueue(new TextEncoder().encode("Hello "));
+                  await new Promise(resolve => setTimeout(resolve, 20));
+                  controller.enqueue(new TextEncoder().encode("World!"));
+                  controller.close();
+                }
+              });
+              return new Response(stream, {
+                headers: { "Content-Type": "text/plain" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/text")
+        );
+
+        // response.text() should work and concatenate all streamed chunks
+        const text = await response.text();
+        assert.strictEqual(text, "Hello World!");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should allow reading response body with response.json() after streaming", async () => {
+      const runtime = await client.createRuntime();
+      try {
+        await runtime.eval(`
+          serve({
+            fetch() {
+              const stream = new ReadableStream({
+                async start(controller) {
+                  controller.enqueue(new TextEncoder().encode('{"name":'));
+                  await new Promise(resolve => setTimeout(resolve, 20));
+                  controller.enqueue(new TextEncoder().encode('"test","value":42}'));
+                  controller.close();
+                }
+              });
+              return new Response(stream, {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/json")
+        );
+
+        const json = await response.json();
+        assert.deepStrictEqual(json, { name: "test", value: 42 });
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should preserve response headers in streaming response", async () => {
+      const runtime = await client.createRuntime();
+      try {
+        await runtime.eval(`
+          serve({
+            fetch() {
+              const stream = new ReadableStream({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode("data"));
+                  controller.close();
+                }
+              });
+              return new Response(stream, {
+                status: 201,
+                statusText: "Created",
+                headers: {
+                  "Content-Type": "text/plain",
+                  "X-Custom-Header": "custom-value"
+                }
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/headers")
+        );
+
+        assert.strictEqual(response.status, 201);
+        assert.strictEqual(response.statusText, "Created");
+        assert.strictEqual(response.headers.get("Content-Type"), "text/plain");
+        assert.strictEqual(response.headers.get("X-Custom-Header"), "custom-value");
+
+        const text = await response.text();
+        assert.strictEqual(text, "data");
+      } finally {
+        await runtime.dispose();
+      }
+    });
   });
 
   describe("WebSocket command push", () => {

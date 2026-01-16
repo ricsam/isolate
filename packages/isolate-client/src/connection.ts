@@ -93,7 +93,7 @@ interface PendingRequest {
   timeoutId?: ReturnType<typeof setTimeout>;
 }
 
-/** Stream receiver for collecting streamed response chunks */
+/** Stream receiver for streaming response chunks directly to consumer */
 interface StreamResponseReceiver {
   streamId: number;
   requestId: number;
@@ -102,8 +102,10 @@ interface StreamResponseReceiver {
     statusText?: string;
     headers?: [string, string][];
   };
-  chunks: Uint8Array[];
-  totalBytes: number;
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  state: "active" | "closed" | "errored";
+  pendingChunks: Uint8Array[];  // Buffer for chunks arriving before consumer pulls
+  pullResolver?: () => void;    // Resolves when consumer wants more data
 }
 
 /** Stream session for tracking upload streams (client sending to daemon) */
@@ -301,16 +303,83 @@ function handleMessage(message: Message, state: ConnectionState): void {
     // Streaming response messages
     case MessageType.RESPONSE_STREAM_START: {
       const msg = message as ResponseStreamStart;
-      // Create a receiver to collect chunks
+
+      // Create a partial receiver that will be completed when the stream is created
       const receiver: StreamResponseReceiver = {
         streamId: msg.streamId,
         requestId: msg.requestId,
         metadata: msg.metadata,
-        chunks: [],
-        totalBytes: 0,
+        controller: null as unknown as ReadableStreamDefaultController<Uint8Array>,
+        state: "active",
+        pendingChunks: [],
       };
+
+      // Create a ReadableStream that yields chunks as they arrive
+      const readableStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          // Store the controller in the receiver
+          receiver.controller = controller;
+        },
+        pull(_controller) {
+          // Consumer is ready for more data
+          // Flush any pending chunks first
+          while (receiver.pendingChunks.length > 0) {
+            const chunk = receiver.pendingChunks.shift()!;
+            receiver.controller.enqueue(chunk);
+          }
+
+          // If stream is already closed or errored, handle it
+          if (receiver.state === "closed") {
+            receiver.controller.close();
+            return;
+          }
+          if (receiver.state === "errored") {
+            return;
+          }
+
+          // Send credit to daemon to request more data
+          sendMessage(state.socket, {
+            type: MessageType.STREAM_PULL,
+            streamId: msg.streamId,
+            maxBytes: STREAM_DEFAULT_CREDIT,
+          } as StreamPull);
+
+          // Return a promise that resolves when the next chunk arrives
+          return new Promise<void>((resolve) => {
+            receiver.pullResolver = resolve;
+          });
+        },
+        cancel(_reason) {
+          // Consumer cancelled the stream - notify daemon
+          receiver.state = "errored";
+          sendMessage(state.socket, {
+            type: MessageType.STREAM_ERROR,
+            streamId: msg.streamId,
+            error: "Stream cancelled by consumer",
+          } as StreamError);
+          state.streamResponses.delete(msg.streamId);
+        },
+      });
+
       state.streamResponses.set(msg.streamId, receiver);
-      // Send initial credit to allow daemon to start sending
+
+      // Create Response and resolve the pending request immediately
+      const pending = state.pendingRequests.get(msg.requestId);
+      if (pending) {
+        state.pendingRequests.delete(msg.requestId);
+        if (pending.timeoutId) clearTimeout(pending.timeoutId);
+
+        const response = new Response(readableStream, {
+          status: msg.metadata?.status ?? 200,
+          statusText: msg.metadata?.statusText ?? "OK",
+          headers: msg.metadata?.headers,
+        });
+
+        // Resolve with a marker that this is a streaming Response
+        pending.resolve({ response, __streaming: true });
+      }
+
+      // Send initial credit to start receiving data
       sendMessage(state.socket, {
         type: MessageType.STREAM_PULL,
         streamId: msg.streamId,
@@ -322,15 +391,17 @@ function handleMessage(message: Message, state: ConnectionState): void {
     case MessageType.RESPONSE_STREAM_CHUNK: {
       const msg = message as ResponseStreamChunk;
       const receiver = state.streamResponses.get(msg.streamId);
-      if (receiver) {
-        receiver.chunks.push(msg.chunk);
-        receiver.totalBytes += msg.chunk.length;
-        // Send more credit
-        sendMessage(state.socket, {
-          type: MessageType.STREAM_PULL,
-          streamId: msg.streamId,
-          maxBytes: STREAM_DEFAULT_CREDIT,
-        } as StreamPull);
+      if (receiver && receiver.state === "active") {
+        if (receiver.pullResolver) {
+          // Consumer is waiting for data - enqueue directly and resolve
+          receiver.controller.enqueue(msg.chunk);
+          const resolver = receiver.pullResolver;
+          receiver.pullResolver = undefined;
+          resolver();
+        } else {
+          // Consumer not ready - buffer the chunk
+          receiver.pendingChunks.push(msg.chunk);
+        }
       }
       break;
     }
@@ -339,22 +410,26 @@ function handleMessage(message: Message, state: ConnectionState): void {
       const msg = message as ResponseStreamEnd;
       const receiver = state.streamResponses.get(msg.streamId);
       if (receiver) {
-        // Concatenate all chunks
-        const body = concatUint8Arrays(receiver.chunks);
-        // Resolve pending request with the streamed response
-        const pending = state.pendingRequests.get(receiver.requestId);
-        if (pending) {
-          state.pendingRequests.delete(receiver.requestId);
-          if (pending.timeoutId) clearTimeout(pending.timeoutId);
-          pending.resolve({
-            response: {
-              status: receiver.metadata?.status ?? 200,
-              statusText: receiver.metadata?.statusText ?? "OK",
-              headers: receiver.metadata?.headers ?? [],
-              body,
-            },
-          });
+        // Mark stream as closed
+        receiver.state = "closed";
+
+        // Flush any remaining pending chunks
+        while (receiver.pendingChunks.length > 0) {
+          const chunk = receiver.pendingChunks.shift()!;
+          receiver.controller.enqueue(chunk);
         }
+
+        // Close the stream
+        receiver.controller.close();
+
+        // Resolve any pending pull
+        if (receiver.pullResolver) {
+          const resolver = receiver.pullResolver;
+          receiver.pullResolver = undefined;
+          resolver();
+        }
+
+        // Clean up
         state.streamResponses.delete(msg.streamId);
       }
       break;
@@ -382,15 +457,23 @@ function handleMessage(message: Message, state: ConnectionState): void {
         uploadSession.state = "closed";
         state.uploadStreams.delete(msg.streamId);
       }
-      // Handle error for response streams
+      // Handle error for response streams (streaming mode)
       const receiver = state.streamResponses.get(msg.streamId);
       if (receiver) {
-        const pending = state.pendingRequests.get(receiver.requestId);
-        if (pending) {
-          state.pendingRequests.delete(receiver.requestId);
-          if (pending.timeoutId) clearTimeout(pending.timeoutId);
-          pending.reject(new Error(msg.error));
+        // Mark stream as errored
+        receiver.state = "errored";
+
+        // Error the stream controller
+        receiver.controller.error(new Error(msg.error));
+
+        // Resolve any pending pull
+        if (receiver.pullResolver) {
+          const resolver = receiver.pullResolver;
+          receiver.pullResolver = undefined;
+          resolver();
         }
+
+        // Clean up
         state.streamResponses.delete(msg.streamId);
       }
       break;
@@ -399,20 +482,6 @@ function handleMessage(message: Message, state: ConnectionState): void {
     default:
       console.warn(`Unexpected message type: ${message.type}`);
   }
-}
-
-/**
- * Helper to concatenate Uint8Arrays.
- */
-function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
-  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const arr of arrays) {
-    result.set(arr, offset);
-    offset += arr.length;
-  }
-  return result;
 }
 
 /**
@@ -679,12 +748,22 @@ async function createRuntime(
         options: opts,
       };
 
+      // Helper to handle response which may be streaming or buffered
+      const handleResponse = (res: { response: SerializedResponse | Response; __streaming?: boolean }): Response => {
+        // Streaming case: already a Response
+        if (res.__streaming && res.response instanceof Response) {
+          return res.response;
+        }
+        // Buffered case: deserialize SerializedResponse
+        return deserializeResponse(res.response as SerializedResponse);
+      };
+
       // If streaming body, start sending chunks after request is sent
       if (serialized.bodyStreamId !== undefined && bodyStream) {
         const streamId = serialized.bodyStreamId;
 
         // Send the request first
-        const responsePromise = sendRequest<{ response: SerializedResponse }>(
+        const responsePromise = sendRequest<{ response: SerializedResponse | Response; __streaming?: boolean }>(
           state,
           request,
           opts?.timeout ?? DEFAULT_TIMEOUT
@@ -695,14 +774,14 @@ async function createRuntime(
 
         // Wait for response
         const res = await responsePromise;
-        return deserializeResponse(res.response);
+        return handleResponse(res);
       } else {
-        const res = await sendRequest<{ response: SerializedResponse }>(
+        const res = await sendRequest<{ response: SerializedResponse | Response; __streaming?: boolean }>(
           state,
           request,
           opts?.timeout ?? DEFAULT_TIMEOUT
         );
-        return deserializeResponse(res.response);
+        return handleResponse(res);
       }
     },
 
