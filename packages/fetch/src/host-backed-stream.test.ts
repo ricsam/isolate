@@ -360,4 +360,77 @@ describe("HostBackedReadableStream", () => {
       assert.strictEqual(data.text, "hello world");
     });
   });
+
+  describe("async iteration", () => {
+    it("supports Symbol.asyncIterator", () => {
+      const result = context.evalSync(`
+        const stream = new HostBackedReadableStream();
+        typeof stream[Symbol.asyncIterator] === 'function'
+      `);
+      assert.strictEqual(result, true);
+    });
+
+    it("for await...of iterates over chunks", async () => {
+      const result = await context.eval(
+        `
+        (async () => {
+          const stream = new HostBackedReadableStream();
+          const streamId = stream._getStreamId();
+
+          __Stream_push(streamId, Array.from(new TextEncoder().encode("a")));
+          __Stream_push(streamId, Array.from(new TextEncoder().encode("b")));
+          __Stream_push(streamId, Array.from(new TextEncoder().encode("c")));
+          __Stream_close(streamId);
+
+          const chunks = [];
+          for await (const chunk of stream) {
+            chunks.push(new TextDecoder().decode(chunk));
+          }
+          return JSON.stringify(chunks);
+        })()
+      `,
+        { promise: true }
+      );
+      assert.deepStrictEqual(JSON.parse(result as string), ["a", "b", "c"]);
+    });
+
+    it("releases lock after async iteration completes", async () => {
+      const result = await context.eval(
+        `
+        (async () => {
+          const stream = new HostBackedReadableStream();
+          const streamId = stream._getStreamId();
+          __Stream_push(streamId, Array.from(new TextEncoder().encode("x")));
+          __Stream_close(streamId);
+
+          for await (const chunk of stream) {
+            // consume
+          }
+          return stream.locked;
+        })()
+      `,
+        { promise: true }
+      );
+      assert.strictEqual(result, false);
+    });
+
+    it("propagates errors during async iteration", async () => {
+      await assert.rejects(
+        context.eval(
+          `
+          (async () => {
+            const stream = new HostBackedReadableStream();
+            const streamId = stream._getStreamId();
+            __Stream_error(streamId, "iteration error");
+
+            for await (const chunk of stream) {
+              // should throw
+            }
+          })()
+        `,
+          { promise: true }
+        )
+      );
+    });
+  });
 });

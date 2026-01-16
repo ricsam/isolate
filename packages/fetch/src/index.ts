@@ -571,6 +571,19 @@ const hostBackedStreamCode = `
       return false;
     }
 
+    async *[Symbol.asyncIterator]() {
+      const reader = this.getReader();
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) return;
+          yield value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+
     // Static method to create from existing stream ID
     static _fromStreamId(streamId) {
       return new HostBackedReadableStream(streamId);

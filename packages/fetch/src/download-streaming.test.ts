@@ -283,4 +283,178 @@ describe("Download Streaming", () => {
     const data = await response.json();
     assert.deepStrictEqual(data, { hello: "world" });
   });
+
+  describe("async iteration", () => {
+    it("for await...of works on Response.body from streaming response", async () => {
+      context.evalSync(`
+        serve({
+          async fetch(request) {
+            const stream = new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("chunk1"));
+                controller.enqueue(new TextEncoder().encode("chunk2"));
+                controller.enqueue(new TextEncoder().encode("chunk3"));
+                controller.close();
+              }
+            });
+            return new Response(stream);
+          }
+        });
+      `);
+
+      const response = await fetchHandle.dispatchRequest(
+        new Request("http://test/")
+      );
+
+      const chunks: string[] = [];
+      for await (const chunk of response.body! as unknown as AsyncIterable<Uint8Array>) {
+        chunks.push(new TextDecoder().decode(chunk));
+      }
+
+      assert.deepStrictEqual(chunks, ["chunk1", "chunk2", "chunk3"]);
+    });
+
+    it("for await...of works inside isolate on request body", async () => {
+      context.evalSync(`
+        serve({
+          async fetch(request) {
+            const chunks = [];
+            for await (const chunk of request.body) {
+              chunks.push(new TextDecoder().decode(chunk));
+            }
+            return new Response(JSON.stringify(chunks));
+          }
+        });
+      `);
+
+      const response = await fetchHandle.dispatchRequest(
+        new Request("http://test/", {
+          method: "POST",
+          body: "hello world",
+        })
+      );
+
+      const chunks = await response.json();
+      assert.deepStrictEqual(chunks, ["hello world"]);
+    });
+
+    it("for await...of with delayed streaming works", async () => {
+      context.evalSync(`
+        serve({
+          async fetch(request) {
+            let count = 0;
+            const stream = new ReadableStream({
+              async pull(controller) {
+                if (count < 3) {
+                  await new Promise(r => setTimeout(r, 5));
+                  controller.enqueue(new TextEncoder().encode("delayed" + count));
+                  count++;
+                } else {
+                  controller.close();
+                }
+              }
+            });
+            return new Response(stream);
+          }
+        });
+      `);
+
+      const response = await fetchHandle.dispatchRequest(
+        new Request("http://test/")
+      );
+
+      const chunks: string[] = [];
+      for await (const chunk of response.body! as unknown as AsyncIterable<Uint8Array>) {
+        chunks.push(new TextDecoder().decode(chunk));
+      }
+
+      assert.deepStrictEqual(chunks, ["delayed0", "delayed1", "delayed2"]);
+    });
+
+    it("for await...of on HostBackedReadableStream inside isolate", async () => {
+      const result = await context.eval(
+        `
+        (async () => {
+          const stream = new HostBackedReadableStream();
+          const streamId = stream._getStreamId();
+
+          __Stream_push(streamId, Array.from(new TextEncoder().encode("first")));
+          __Stream_push(streamId, Array.from(new TextEncoder().encode("second")));
+          __Stream_push(streamId, Array.from(new TextEncoder().encode("third")));
+          __Stream_close(streamId);
+
+          const chunks = [];
+          for await (const chunk of stream) {
+            chunks.push(new TextDecoder().decode(chunk));
+          }
+          return JSON.stringify(chunks);
+        })()
+      `,
+        { promise: true }
+      );
+
+      assert.deepStrictEqual(JSON.parse(result as string), ["first", "second", "third"]);
+    });
+
+    it("for await...of propagates errors from streaming response", async () => {
+      context.evalSync(`
+        serve({
+          async fetch(request) {
+            let count = 0;
+            const stream = new ReadableStream({
+              pull(controller) {
+                if (count < 1) {
+                  controller.enqueue(new TextEncoder().encode("ok"));
+                  count++;
+                } else {
+                  controller.error(new Error("Stream failed"));
+                }
+              }
+            });
+            return new Response(stream);
+          }
+        });
+      `);
+
+      const response = await fetchHandle.dispatchRequest(
+        new Request("http://test/")
+      );
+
+      const chunks: string[] = [];
+      await assert.rejects(async () => {
+        for await (const chunk of response.body! as unknown as AsyncIterable<Uint8Array>) {
+          chunks.push(new TextDecoder().decode(chunk));
+        }
+      });
+
+      // First chunk should have been received before error
+      assert.deepStrictEqual(chunks, ["ok"]);
+    });
+
+    it("for await...of works with empty stream", async () => {
+      context.evalSync(`
+        serve({
+          async fetch(request) {
+            const stream = new ReadableStream({
+              start(controller) {
+                controller.close();
+              }
+            });
+            return new Response(stream);
+          }
+        });
+      `);
+
+      const response = await fetchHandle.dispatchRequest(
+        new Request("http://test/")
+      );
+
+      const chunks: string[] = [];
+      for await (const chunk of response.body! as unknown as AsyncIterable<Uint8Array>) {
+        chunks.push(new TextDecoder().decode(chunk));
+      }
+
+      assert.deepStrictEqual(chunks, []);
+    });
+  });
 });
