@@ -18,14 +18,48 @@ export {
   createStreamRef,
   createErrorRef,
   createBlobRef,
+  createDateRef,
+  createRegExpRef,
+  createUndefinedRef,
+  createBigIntRef,
+  createRequestRef,
+  createResponseRef,
+  createHeadersRef,
+  createFileRef,
+  createFormDataRef,
+  createURLRef,
+  createPromiseRef,
+  createAsyncIteratorRef,
   ExtType,
   type IsolateRef,
   type CallbackRef,
   type StreamRef,
   type ErrorRef,
   type BlobRef,
+  type DateRef,
+  type RegExpRef,
+  type UndefinedRef,
+  type BigIntRef,
+  type RequestRef,
+  type ResponseRef,
+  type HeadersRef,
+  type FileRef,
+  type FormDataRef,
+  type URLRef,
+  type PromiseRef,
+  type AsyncIteratorRef,
   type ExtensionType,
 } from "./codec.ts";
+
+// Value marshalling
+export {
+  marshalValue,
+  marshalValueSync,
+  unmarshalValue,
+  MarshalError,
+  type MarshalContext,
+  type UnmarshalContext,
+} from "./marshalValue.ts";
 
 // Framing
 export {

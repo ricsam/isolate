@@ -66,6 +66,16 @@ export interface IsolateInstance {
   moduleCache?: Map<string, ivm.Module>;
   /** Pending callback promises for current eval */
   pendingCallbacks: Promise<unknown>[];
+
+  // Registries for returned callbacks/promises/iterators from custom function calls
+  /** Functions returned by custom function calls (callable from isolate) */
+  returnedCallbacks?: Map<number, Function>;
+  /** Promises returned by custom function calls (resolvable from isolate) */
+  returnedPromises?: Map<number, Promise<unknown>>;
+  /** Async iterators returned by custom function calls (iterable from isolate) */
+  returnedIterators?: Map<number, AsyncIterator<unknown>>;
+  /** Next ID for daemon-local callback registration (starts at high number to avoid conflicts) */
+  nextLocalCallbackId?: number;
 }
 
 /**

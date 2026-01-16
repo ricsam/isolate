@@ -55,6 +55,12 @@ import {
   type StreamPull,
   type StreamClose,
   type StreamError,
+  encodeValue,
+  decodeValue,
+  marshalValue,
+  unmarshalValue,
+  type MarshalContext,
+  type UnmarshalContext,
 } from "@ricsam/isolate-protocol";
 import { createCallbackFileSystemHandler } from "./callback-fs-handler.ts";
 import {
@@ -476,6 +482,12 @@ async function handleCreateRuntime(
       createdAt: Date.now(),
       lastActivity: Date.now(),
       pendingCallbacks,
+      // Initialize registries for returned callbacks/promises/iterators
+      returnedCallbacks: new Map(),
+      returnedPromises: new Map(),
+      returnedIterators: new Map(),
+      // Start at 1,000,000 to avoid conflicts with client callback IDs
+      nextLocalCallbackId: 1_000_000,
     };
 
     // Setup module loader
@@ -486,7 +498,7 @@ async function handleCreateRuntime(
 
     // Setup custom functions as globals in the isolate
     if (customCallbacks) {
-      await setupCustomFunctions(runtime.context, customCallbacks, connection);
+      await setupCustomFunctions(runtime.context, customCallbacks, connection, instance);
     }
 
     // Store callback registrations
@@ -1395,9 +1407,264 @@ async function invokeClientCallback(
 }
 
 /**
+ * Lightweight marshalling code to inject into the isolate.
+ * Converts JavaScript types to Ref objects for type-preserving serialization.
+ */
+const ISOLATE_MARSHAL_CODE = `
+(function() {
+  // Marshal a value (JavaScript → Ref)
+  function marshalForHost(value, depth = 0) {
+    if (depth > 100) throw new Error('Maximum marshalling depth exceeded');
+
+    if (value === null) return null;
+    if (value === undefined) return { __type: 'UndefinedRef' };
+
+    const type = typeof value;
+    if (type === 'string' || type === 'number' || type === 'boolean') return value;
+    if (type === 'bigint') return { __type: 'BigIntRef', value: value.toString() };
+    if (type === 'function') throw new Error('Cannot marshal functions from isolate');
+    if (type === 'symbol') throw new Error('Cannot marshal Symbol values');
+
+    if (type === 'object') {
+      if (value instanceof Date) {
+        return { __type: 'DateRef', timestamp: value.getTime() };
+      }
+      if (value instanceof RegExp) {
+        return { __type: 'RegExpRef', source: value.source, flags: value.flags };
+      }
+      if (value instanceof URL) {
+        return { __type: 'URLRef', href: value.href };
+      }
+      if (typeof Headers !== 'undefined' && value instanceof Headers) {
+        const pairs = [];
+        value.forEach((v, k) => pairs.push([k, v]));
+        return { __type: 'HeadersRef', pairs };
+      }
+      if (value instanceof Uint8Array) {
+        return { __type: 'Uint8ArrayRef', data: Array.from(value) };
+      }
+      if (value instanceof ArrayBuffer) {
+        return { __type: 'Uint8ArrayRef', data: Array.from(new Uint8Array(value)) };
+      }
+      if (typeof Request !== 'undefined' && value instanceof Request) {
+        throw new Error('Cannot marshal Request from isolate. Use fetch callback instead.');
+      }
+      if (typeof Response !== 'undefined' && value instanceof Response) {
+        throw new Error('Cannot marshal Response from isolate. Return plain objects instead.');
+      }
+      if (typeof File !== 'undefined' && value instanceof File) {
+        throw new Error('Cannot marshal File from isolate.');
+      }
+      if (typeof Blob !== 'undefined' && value instanceof Blob) {
+        throw new Error('Cannot marshal Blob from isolate.');
+      }
+      if (typeof FormData !== 'undefined' && value instanceof FormData) {
+        throw new Error('Cannot marshal FormData from isolate.');
+      }
+      if (Array.isArray(value)) {
+        return value.map(v => marshalForHost(v, depth + 1));
+      }
+      // Plain object
+      const result = {};
+      for (const key of Object.keys(value)) {
+        result[key] = marshalForHost(value[key], depth + 1);
+      }
+      return result;
+    }
+    return value;
+  }
+
+  // Unmarshal a value (Ref → JavaScript)
+  function unmarshalFromHost(value, depth = 0) {
+    if (depth > 100) throw new Error('Maximum unmarshalling depth exceeded');
+
+    if (value === null) return null;
+    if (typeof value !== 'object') return value;
+
+    if (value.__type) {
+      switch (value.__type) {
+        case 'UndefinedRef': return undefined;
+        case 'DateRef': return new Date(value.timestamp);
+        case 'RegExpRef': return new RegExp(value.source, value.flags);
+        case 'BigIntRef': return BigInt(value.value);
+        case 'URLRef': return new URL(value.href);
+        case 'HeadersRef': return new Headers(value.pairs);
+        case 'Uint8ArrayRef': return new Uint8Array(value.data);
+        case 'RequestRef': {
+          const init = {
+            method: value.method,
+            headers: value.headers,
+            body: value.body ? new Uint8Array(value.body) : null,
+          };
+          if (value.mode) init.mode = value.mode;
+          if (value.credentials) init.credentials = value.credentials;
+          if (value.cache) init.cache = value.cache;
+          if (value.redirect) init.redirect = value.redirect;
+          if (value.referrer) init.referrer = value.referrer;
+          if (value.referrerPolicy) init.referrerPolicy = value.referrerPolicy;
+          if (value.integrity) init.integrity = value.integrity;
+          return new Request(value.url, init);
+        }
+        case 'ResponseRef': {
+          return new Response(value.body ? new Uint8Array(value.body) : null, {
+            status: value.status,
+            statusText: value.statusText,
+            headers: value.headers,
+          });
+        }
+        case 'FileRef': {
+          if (!value.name) {
+            return new Blob([new Uint8Array(value.data)], { type: value.type });
+          }
+          return new File([new Uint8Array(value.data)], value.name, {
+            type: value.type,
+            lastModified: value.lastModified,
+          });
+        }
+        case 'FormDataRef': {
+          const fd = new FormData();
+          for (const [key, entry] of value.entries) {
+            if (typeof entry === 'string') {
+              fd.append(key, entry);
+            } else {
+              const file = unmarshalFromHost(entry, depth + 1);
+              fd.append(key, file);
+            }
+          }
+          return fd;
+        }
+        case 'CallbackRef': {
+          // Create a proxy function that invokes the callback
+          const callbackId = value.callbackId;
+          return function(...args) {
+            const argsJson = JSON.stringify(marshalForHost(args));
+            const resultJson = __customFn_invoke.applySyncPromise(undefined, [callbackId, argsJson]);
+            const result = JSON.parse(resultJson);
+            if (result.ok) {
+              return unmarshalFromHost(result.value);
+            } else {
+              const error = new Error(result.error.message);
+              error.name = result.error.name;
+              throw error;
+            }
+          };
+        }
+        case 'PromiseRef': {
+          // Create a proxy Promise that resolves via callback
+          const promiseId = value.promiseId;
+          return new Promise((resolve, reject) => {
+            try {
+              const argsJson = JSON.stringify([promiseId]);
+              const resultJson = __customFn_invoke.applySyncPromise(undefined, [value.__resolveCallbackId, argsJson]);
+              const result = JSON.parse(resultJson);
+              if (result.ok) {
+                resolve(unmarshalFromHost(result.value));
+              } else {
+                reject(new Error(result.error.message));
+              }
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }
+        case 'AsyncIteratorRef': {
+          const iteratorId = value.iteratorId;
+          const nextCallbackId = value.__nextCallbackId;
+          const returnCallbackId = value.__returnCallbackId;
+          return {
+            [Symbol.asyncIterator]() { return this; },
+            async next() {
+              const argsJson = JSON.stringify([iteratorId]);
+              const resultJson = __customFn_invoke.applySyncPromise(undefined, [nextCallbackId, argsJson]);
+              const result = JSON.parse(resultJson);
+              if (!result.ok) {
+                const error = new Error(result.error.message);
+                error.name = result.error.name;
+                throw error;
+              }
+              return {
+                done: result.value.done,
+                value: unmarshalFromHost(result.value.value)
+              };
+            },
+            async return(v) {
+              const argsJson = JSON.stringify([iteratorId, marshalForHost(v)]);
+              const resultJson = __customFn_invoke.applySyncPromise(undefined, [returnCallbackId, argsJson]);
+              const result = JSON.parse(resultJson);
+              return { done: true, value: result.ok ? unmarshalFromHost(result.value) : undefined };
+            }
+          };
+        }
+        default:
+          // Unknown ref type, return as-is
+          break;
+      }
+    }
+
+    if (Array.isArray(value)) {
+      return value.map(v => unmarshalFromHost(v, depth + 1));
+    }
+
+    // Plain object - recursively unmarshal
+    const result = {};
+    for (const key of Object.keys(value)) {
+      result[key] = unmarshalFromHost(value[key], depth + 1);
+    }
+    return result;
+  }
+
+  globalThis.__marshalForHost = marshalForHost;
+  globalThis.__unmarshalFromHost = unmarshalFromHost;
+})();
+`;
+
+// Threshold for daemon-local callback IDs (returned callbacks/promises/iterators)
+const LOCAL_CALLBACK_THRESHOLD = 1_000_000;
+
+/**
+ * Type guard for PromiseRef
+ */
+function isPromiseRef(value: unknown): value is { __type: "PromiseRef"; promiseId: number } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { __type?: string }).__type === 'PromiseRef'
+  );
+}
+
+/**
+ * Type guard for AsyncIteratorRef
+ */
+function isAsyncIteratorRef(value: unknown): value is { __type: "AsyncIteratorRef"; iteratorId: number } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { __type?: string }).__type === 'AsyncIteratorRef'
+  );
+}
+
+/**
+ * Type guard for CallbackRef
+ */
+function isCallbackRef(value: unknown): value is { __type: "CallbackRef"; callbackId: number } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { __type?: string }).__type === 'CallbackRef'
+  );
+}
+
+/**
+ * Check if a callback ID is for a daemon-local callback (returned from custom function)
+ */
+function isLocalCallbackId(callbackId: number): boolean {
+  return callbackId >= LOCAL_CALLBACK_THRESHOLD;
+}
+
+/**
  * Setup custom functions as globals in the isolate context.
  * Each function invokes the client callback when called.
- * Results are JSON serialized/deserialized to ensure proper transfer across isolate boundary.
+ * Results are marshalled/unmarshalled to preserve type fidelity across isolate boundary.
  *
  * Custom functions return Promises that resolve when the host callback completes.
  * Users should use `await` when calling these functions.
@@ -1405,18 +1672,163 @@ async function invokeClientCallback(
 async function setupCustomFunctions(
   context: ivm.Context,
   customCallbacks: CustomFunctionRegistrations,
-  connection: ConnectionState
+  connection: ConnectionState,
+  instance: IsolateInstance
 ): Promise<void> {
   const global = context.global;
 
+  /**
+   * Create a MarshalContext for registering returned callbacks/promises/iterators.
+   * These are registered on the instance so they can be invoked when the isolate calls back.
+   */
+  function createMarshalContext(): MarshalContext {
+    return {
+      registerCallback: (fn: Function): number => {
+        const callbackId = instance.nextLocalCallbackId!++;
+        instance.returnedCallbacks!.set(callbackId, fn);
+        return callbackId;
+      },
+      registerPromise: (promise: Promise<unknown>): number => {
+        const promiseId = instance.nextLocalCallbackId!++;
+        instance.returnedPromises!.set(promiseId, promise);
+        return promiseId;
+      },
+      registerIterator: (iterator: AsyncIterator<unknown>): number => {
+        const iteratorId = instance.nextLocalCallbackId!++;
+        instance.returnedIterators!.set(iteratorId, iterator);
+        return iteratorId;
+      },
+    };
+  }
+
+  /**
+   * Post-process marshalled value to add callback IDs for PromiseRef and AsyncIteratorRef.
+   * This recursively walks the value and adds __resolveCallbackId, __nextCallbackId, etc.
+   */
+  function addCallbackIdsToRefs(value: unknown): unknown {
+    if (value === null || typeof value !== 'object') {
+      return value;
+    }
+
+    // Check for PromiseRef - skip if already has callback ID (came from client)
+    if (isPromiseRef(value)) {
+      if ('__resolveCallbackId' in value) {
+        // Already has callback ID from client, pass through
+        return value;
+      }
+      // Create a resolve callback that waits for the promise
+      const resolveCallbackId = instance.nextLocalCallbackId!++;
+      instance.returnedCallbacks!.set(resolveCallbackId, async (promiseId: number) => {
+        const promise = instance.returnedPromises!.get(promiseId);
+        if (!promise) {
+          throw new Error(`Promise ${promiseId} not found`);
+        }
+        const result = await promise;
+        // Clean up
+        instance.returnedPromises!.delete(promiseId);
+        // Marshal the result recursively
+        const ctx = createMarshalContext();
+        const marshalled = await marshalValue(result, ctx);
+        return addCallbackIdsToRefs(marshalled);
+      });
+      return {
+        ...value,
+        __resolveCallbackId: resolveCallbackId,
+      };
+    }
+
+    // Check for AsyncIteratorRef - skip if already has callback IDs (came from client)
+    if (isAsyncIteratorRef(value)) {
+      if ('__nextCallbackId' in value) {
+        // Already has callback IDs from client, pass through
+        return value;
+      }
+      // Create next callback
+      const nextCallbackId = instance.nextLocalCallbackId!++;
+      instance.returnedCallbacks!.set(nextCallbackId, async (iteratorId: number) => {
+        const iterator = instance.returnedIterators!.get(iteratorId);
+        if (!iterator) {
+          throw new Error(`Iterator ${iteratorId} not found`);
+        }
+        const result = await iterator.next();
+        if (result.done) {
+          instance.returnedIterators!.delete(iteratorId);
+        }
+        // Marshal the value recursively
+        const ctx = createMarshalContext();
+        const marshalledValue = await marshalValue(result.value, ctx);
+        return {
+          done: result.done,
+          value: addCallbackIdsToRefs(marshalledValue),
+        };
+      });
+
+      // Create return callback
+      const returnCallbackId = instance.nextLocalCallbackId!++;
+      instance.returnedCallbacks!.set(returnCallbackId, async (iteratorId: number, returnValue?: unknown) => {
+        const iterator = instance.returnedIterators!.get(iteratorId);
+        instance.returnedIterators!.delete(iteratorId);
+        if (!iterator || !iterator.return) {
+          return { done: true, value: undefined };
+        }
+        const result = await iterator.return(returnValue);
+        const ctx = createMarshalContext();
+        const marshalledValue = await marshalValue(result.value, ctx);
+        return {
+          done: true,
+          value: addCallbackIdsToRefs(marshalledValue),
+        };
+      });
+
+      return {
+        ...value,
+        __nextCallbackId: nextCallbackId,
+        __returnCallbackId: returnCallbackId,
+      };
+    }
+
+    // Handle arrays
+    if (Array.isArray(value)) {
+      return value.map(item => addCallbackIdsToRefs(item));
+    }
+
+    // Handle plain objects (recursively process values)
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+      result[key] = addCallbackIdsToRefs((value as Record<string, unknown>)[key]);
+    }
+    return result;
+  }
+
   // Reference that invokes the callback and returns the result
   // Uses applySyncPromise which works in async contexts (serve handlers, etc.)
+  // Args are JSON-encoded marshalled values, result is JSON-encoded marshalled value
   const invokeCallbackRef = new ivm.Reference(
     async (callbackId: number, argsJson: string) => {
-      const args = JSON.parse(argsJson);
+      // Parse the JSON and unmarshal refs back to real types
+      const marshalledArgs = JSON.parse(argsJson);
+      const args = unmarshalValue(marshalledArgs) as unknown[];
       try {
-        const result = await invokeClientCallback(connection, callbackId, args);
-        return JSON.stringify({ ok: true, value: result });
+        let result: unknown;
+
+        if (isLocalCallbackId(callbackId)) {
+          // Local callback (returned from a previous custom function call)
+          const callback = instance.returnedCallbacks!.get(callbackId);
+          if (!callback) {
+            throw new Error(`Local callback ${callbackId} not found`);
+          }
+          result = await callback(...args);
+        } else {
+          // Client callback
+          result = await invokeClientCallback(connection, callbackId, args);
+        }
+
+        // Marshal the result with context for registering returned callbacks/promises/iterators
+        const ctx = createMarshalContext();
+        const marshalledResult = await marshalValue({ ok: true, value: result }, ctx);
+        // Add callback IDs to any PromiseRef/AsyncIteratorRef in the result
+        const processedResult = addCallbackIdsToRefs(marshalledResult);
+        return JSON.stringify(processedResult);
       } catch (error: unknown) {
         const err = error as Error;
         return JSON.stringify({
@@ -1428,6 +1840,9 @@ async function setupCustomFunctions(
   );
 
   global.setSync("__customFn_invoke", invokeCallbackRef);
+
+  // Inject marshalling helpers into the isolate
+  context.evalSync(ISOLATE_MARSHAL_CODE);
 
   // Create wrapper functions for each custom function
   for (const [name, registration] of Object.entries(customCallbacks)) {
@@ -1441,13 +1856,14 @@ async function setupCustomFunctions(
       // The function blocks until the host responds, but returns the value directly (not a Promise)
       context.evalSync(`
         globalThis.${name} = function(...args) {
+          const argsJson = JSON.stringify(__marshalForHost(args));
           const resultJson = __customFn_invoke.applySyncPromise(
             undefined,
-            [${registration.callbackId}, JSON.stringify(args)]
+            [${registration.callbackId}, argsJson]
           );
           const result = JSON.parse(resultJson);
           if (result.ok) {
-            return result.value;
+            return __unmarshalFromHost(result.value);
           } else {
             const error = new Error(result.error.message);
             error.name = result.error.name;
@@ -1469,9 +1885,10 @@ async function setupCustomFunctions(
       context.evalSync(`
         globalThis.${name} = function(...args) {
           // Start the iterator and get the iteratorId
+          const argsJson = JSON.stringify(__marshalForHost(args));
           const startResultJson = __customFn_invoke.applySyncPromise(
             undefined,
-            [${startReg.callbackId}, JSON.stringify(args)]
+            [${startReg.callbackId}, argsJson]
           );
           const startResult = JSON.parse(startResultJson);
           if (!startResult.ok) {
@@ -1479,14 +1896,15 @@ async function setupCustomFunctions(
             error.name = startResult.error.name;
             throw error;
           }
-          const iteratorId = startResult.value.iteratorId;
+          const iteratorId = __unmarshalFromHost(startResult.value).iteratorId;
 
           return {
             [Symbol.asyncIterator]() { return this; },
             async next() {
+              const argsJson = JSON.stringify(__marshalForHost([iteratorId]));
               const resultJson = __customFn_invoke.applySyncPromise(
                 undefined,
-                [${nextReg.callbackId}, JSON.stringify([iteratorId])]
+                [${nextReg.callbackId}, argsJson]
               );
               const result = JSON.parse(resultJson);
               if (!result.ok) {
@@ -1494,20 +1912,23 @@ async function setupCustomFunctions(
                 error.name = result.error.name;
                 throw error;
               }
-              return { done: result.value.done, value: result.value.value };
+              const val = __unmarshalFromHost(result.value);
+              return { done: val.done, value: val.value };
             },
             async return(v) {
+              const argsJson = JSON.stringify(__marshalForHost([iteratorId, v]));
               const resultJson = __customFn_invoke.applySyncPromise(
                 undefined,
-                [${returnReg.callbackId}, JSON.stringify([iteratorId, v])]
+                [${returnReg.callbackId}, argsJson]
               );
               const result = JSON.parse(resultJson);
-              return { done: true, value: result.ok ? result.value : undefined };
+              return { done: true, value: result.ok ? __unmarshalFromHost(result.value) : undefined };
             },
             async throw(e) {
+              const argsJson = JSON.stringify(__marshalForHost([iteratorId, { message: e?.message, name: e?.name }]));
               const resultJson = __customFn_invoke.applySyncPromise(
                 undefined,
-                [${throwReg.callbackId}, JSON.stringify([iteratorId, { message: e?.message, name: e?.name }])]
+                [${throwReg.callbackId}, argsJson]
               );
               const result = JSON.parse(resultJson);
               if (!result.ok) {
@@ -1515,7 +1936,8 @@ async function setupCustomFunctions(
                 error.name = result.error.name;
                 throw error;
               }
-              return { done: result.value.done, value: result.value.value };
+              const val = __unmarshalFromHost(result.value);
+              return { done: val.done, value: val.value };
             }
           };
         };
@@ -1524,13 +1946,14 @@ async function setupCustomFunctions(
       // Async function: use applySyncPromise and async function wrapper
       context.evalSync(`
         globalThis.${name} = async function(...args) {
+          const argsJson = JSON.stringify(__marshalForHost(args));
           const resultJson = __customFn_invoke.applySyncPromise(
             undefined,
-            [${registration.callbackId}, JSON.stringify(args)]
+            [${registration.callbackId}, argsJson]
           );
           const result = JSON.parse(resultJson);
           if (result.ok) {
-            return result.value;
+            return __unmarshalFromHost(result.value);
           } else {
             const error = new Error(result.error.message);
             error.name = result.error.name;
