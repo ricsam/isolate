@@ -1,6 +1,6 @@
 {
   "name": "@ricsam/isolate-test-environment",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Test environment for isolated-vm with Jest/Vitest-compatible primitives",
   "type": "module",
   "main": "./src/index.ts",
