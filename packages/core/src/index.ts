@@ -948,8 +948,11 @@ export async function setupCore(
     await injectURL(context);
   }
 
-  // Inject DOMException (needed by AbortController)
+  // Inject DOMException (needed by AbortController and structuredClone)
   await injectDOMException(context);
+
+  // Inject structuredClone
+  await injectStructuredClone(context);
 
   // Inject AbortController/AbortSignal (needed by Streams)
   await injectAbortController(context);
@@ -1956,6 +1959,137 @@ async function injectAbortController(context: ivm.Context): Promise<void> {
 })();
 `;
 
+  context.evalSync(code);
+}
+
+// ============================================================================
+// structuredClone Implementation
+// ============================================================================
+
+async function injectStructuredClone(context: ivm.Context): Promise<void> {
+  const code = `
+(function() {
+  globalThis.structuredClone = function structuredClone(value, options) {
+    const transfer = options?.transfer;
+    const transferSet = transfer ? new Set(transfer) : null;
+    const seen = new Map();
+
+    function clone(val) {
+      // Primitives
+      if (val === null || val === undefined) return val;
+      const type = typeof val;
+      if (type === 'string' || type === 'number' || type === 'boolean' || type === 'bigint') {
+        return val;
+      }
+
+      // Non-cloneable types
+      if (type === 'function') {
+        throw new DOMException('Function cannot be cloned.', 'DataCloneError');
+      }
+      if (type === 'symbol') {
+        throw new DOMException('Symbol cannot be cloned.', 'DataCloneError');
+      }
+
+      // Circular reference check
+      if (seen.has(val)) {
+        return seen.get(val);
+      }
+
+      // Date
+      if (val instanceof Date) {
+        const cloned = new Date(val.getTime());
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // RegExp
+      if (val instanceof RegExp) {
+        const cloned = new RegExp(val.source, val.flags);
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // Error types
+      if (val instanceof Error) {
+        const ErrorCtor = globalThis[val.name] || Error;
+        const cloned = new ErrorCtor(val.message);
+        seen.set(val, cloned);
+        cloned.stack = val.stack;
+        if (val.cause !== undefined) cloned.cause = clone(val.cause);
+        return cloned;
+      }
+
+      // ArrayBuffer
+      if (val instanceof ArrayBuffer) {
+        const cloned = val.slice(0);
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // TypedArrays
+      if (ArrayBuffer.isView(val) && !(val instanceof DataView)) {
+        const TypedArrayCtor = val.constructor;
+        const bufferClone = clone(val.buffer);
+        const cloned = new TypedArrayCtor(bufferClone, val.byteOffset, val.length);
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // DataView
+      if (val instanceof DataView) {
+        const bufferClone = clone(val.buffer);
+        const cloned = new DataView(bufferClone, val.byteOffset, val.byteLength);
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // Map
+      if (val instanceof Map) {
+        const cloned = new Map();
+        seen.set(val, cloned);
+        for (const [k, v] of val) cloned.set(clone(k), clone(v));
+        return cloned;
+      }
+
+      // Set
+      if (val instanceof Set) {
+        const cloned = new Set();
+        seen.set(val, cloned);
+        for (const v of val) cloned.add(clone(v));
+        return cloned;
+      }
+
+      // Array
+      if (Array.isArray(val)) {
+        const cloned = new Array(val.length);
+        seen.set(val, cloned);
+        for (let i = 0; i < val.length; i++) {
+          if (i in val) cloned[i] = clone(val[i]);
+        }
+        return cloned;
+      }
+
+      // WeakMap/WeakSet - not cloneable
+      if (val instanceof WeakMap) {
+        throw new DOMException('WeakMap cannot be cloned.', 'DataCloneError');
+      }
+      if (val instanceof WeakSet) {
+        throw new DOMException('WeakSet cannot be cloned.', 'DataCloneError');
+      }
+
+      // Plain objects
+      const cloned = {};
+      seen.set(val, cloned);
+      for (const key of Object.keys(val)) {
+        cloned[key] = clone(val[key]);
+      }
+      return cloned;
+    }
+
+    return clone(value);
+  };
+})();
+`;
   context.evalSync(code);
 }
 
