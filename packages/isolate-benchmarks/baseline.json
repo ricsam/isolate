@@ -1,0 +1,43 @@
+{
+  "timestamp": "2026-01-16T07:40:18.307Z",
+  "payloadSize": 20971520,
+  "websocketMessages": 10000,
+  "results": [
+    {
+      "scenario": "Direct Node.js",
+      "benchmark": "file-transfer",
+      "durationMs": 56.66479100000001,
+      "throughputMBps": 705.9057184204561
+    },
+    {
+      "scenario": "Direct Node.js",
+      "benchmark": "websocket-ping-pong",
+      "durationMs": 247.68283399999999,
+      "messagesPerSecond": 80748.43006681683
+    },
+    {
+      "scenario": "Isolate Runtime",
+      "benchmark": "file-transfer",
+      "durationMs": 1861.639834,
+      "throughputMBps": 21.486433234539394
+    },
+    {
+      "scenario": "Isolate Runtime",
+      "benchmark": "websocket-ping-pong",
+      "durationMs": 255.6599580000002,
+      "messagesPerSecond": 78228.91060632962
+    },
+    {
+      "scenario": "Isolate Client + Daemon",
+      "benchmark": "file-transfer",
+      "durationMs": 1991.8617909999998,
+      "throughputMBps": 20.081714595227155
+    },
+    {
+      "scenario": "Isolate Client + Daemon",
+      "benchmark": "websocket-ping-pong",
+      "durationMs": 339.145125,
+      "messagesPerSecond": 58971.80447455938
+    }
+  ]
+}

@@ -31,6 +31,32 @@ Or from this directory:
 npm run bench
 ```
 
+### Saving a Baseline
+
+Use the `--save` flag to save results to `baseline.json`:
+
+```bash
+npm run bench -- --save
+```
+
+On subsequent runs, if a baseline exists, the output will show the percentage difference in duration compared to the saved baseline:
+
+```
+(Comparing against saved baseline)
+
+=== File Transfer (20 MB upload + download) ===
+
+┌─────────┬───────────────────────────┬─────────────────────┬───────────────────┐
+│ (index) │ Scenario                  │ Duration (ms)       │ Throughput (MB/s) │
+├─────────┼───────────────────────────┼─────────────────────┼───────────────────┤
+│ 0       │ 'Direct Node.js'          │ '62.00 (-4.6%)'     │ '645.16'          │
+│ 1       │ 'Isolate Runtime'         │ '2450.00 (+2.7%)'   │ '16.33'           │
+│ 2       │ 'Isolate Client + Daemon' │ '2500.00 (-2.3%)'   │ '16.00'           │
+└─────────┴───────────────────────────┴─────────────────────┴───────────────────┘
+```
+
+Negative percentages indicate faster performance, positive indicates slower.
+
 ## Example Output
 
 ```
