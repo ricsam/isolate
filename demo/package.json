@@ -8,6 +8,7 @@
     "build": "bun build src/index.html --outdir dist",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types 'tests/**/*.test.ts'",
+    "build:library-types": "bun scripts/build-library-types.ts",
     "test:e2e": "playwright test",
     "test:e2e:logs": "bun scripts/e2e-with-logs.ts"
   },

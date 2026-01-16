@@ -70,19 +70,17 @@ describe("demo server tests", () => {
     });
 
     // Log server output for debugging
+    // Always log stdout in CI so we can see server startup progress
     demoServer.stdout?.on("data", (data) => {
-      if (process.env.DEBUG) {
-        console.log(`[demo-server] ${data.toString().trim()}`);
-      }
+      console.log(`[demo-server] ${data.toString().trim()}`);
     });
+    // Always log stderr to see errors
     demoServer.stderr?.on("data", (data) => {
-      if (process.env.DEBUG) {
-        console.error(`[demo-server-err] ${data.toString().trim()}`);
-      }
+      console.error(`[demo-server-err] ${data.toString().trim()}`);
     });
 
-    // Wait for server to be ready
-    await waitForServer(DEMO_SERVER_URL);
+    // Wait for server to be ready (60s timeout for slow CI environments)
+    await waitForServer(DEMO_SERVER_URL, 60000);
   });
 
   after(async () => {

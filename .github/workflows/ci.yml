@@ -33,6 +33,14 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
+      - name: Build library types
+        run: bun run build:library-types
+        working-directory: demo
+
+      - name: Build demo front-end
+        run: bun run build
+        working-directory: demo
+
       - name: Run tests
         run: npm test
 
