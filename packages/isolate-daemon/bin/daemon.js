@@ -38,7 +38,7 @@ function parseArgs(args) {
         options.maxIsolates = parseInt(args[++i], 10);
         break;
       case "--memory-limit":
-        options.defaultMemoryLimit = parseInt(args[++i], 10);
+        options.defaultMemoryLimitMB = parseInt(args[++i], 10);
         break;
       case "--help":
       case "-h":

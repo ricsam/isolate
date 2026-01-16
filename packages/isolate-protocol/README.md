@@ -40,7 +40,7 @@ import {
 const request: CreateRuntimeRequest = {
   type: MessageType.CREATE_RUNTIME,
   requestId: 1,
-  options: { memoryLimit: 128 },
+  options: { memoryLimitMB: 128 },
 };
 const frame = buildFrame(request);
 

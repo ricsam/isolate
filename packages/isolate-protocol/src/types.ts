@@ -231,7 +231,7 @@ export interface TestEnvironmentOptionsProtocol {
 export interface CreateRuntimeRequest extends BaseMessage {
   type: typeof MessageType.CREATE_RUNTIME;
   options: {
-    memoryLimit?: number;
+    memoryLimitMB?: number;
     callbacks?: RuntimeCallbackRegistrations;
     /** Current working directory for path.resolve(). Defaults to "/" */
     cwd?: string;

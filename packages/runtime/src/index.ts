@@ -67,8 +67,8 @@ export type {
  * Options for creating a runtime.
  */
 export interface RuntimeOptions {
-  /** Memory limit in MB */
-  memoryLimit?: number;
+  /** Memory limit in megabytes (optional) */
+  memoryLimitMB?: number;
   /** Console callback handlers */
   console?: ConsoleCallbacks;
   /** Fetch callback handler */
@@ -398,7 +398,7 @@ export async function createRuntime(
 
   // Create isolate with optional memory limit
   const isolate = new ivm.Isolate({
-    memoryLimit: opts.memoryLimit,
+    memoryLimit: opts.memoryLimitMB,
   });
   const context = await isolate.createContext();
 

@@ -1,4 +1,5 @@
 import type ivm from "isolated-vm";
+import IsolatedVM from "isolated-vm";
 
 // ============================================================
 // Test Environment Options
@@ -978,9 +979,7 @@ export async function setupTestEnvironment(
 
   // Set up event callback if provided
   if (options?.onEvent) {
-    const eventCallbackRef = new (
-      await import("isolated-vm")
-    ).default.Reference((eventJson: string) => {
+    const eventCallbackRef = new IsolatedVM.Reference((eventJson: string) => {
       try {
         const event = JSON.parse(eventJson);
         options.onEvent!(event);

@@ -60,7 +60,7 @@ console.log("Initializing isolated-vm runtime...");
 
 // Create the runtime with all WHATWG APIs
 const runtime = await createRuntime({
-  memoryLimit: 128, // 128MB memory limit
+  memoryLimitMB: 128,
   console: simpleConsoleHandler({
     log: (...args) => console.log(`[Isolate log]`, ...args),
     warn: (...args) => console.log(`[Isolate warn]`, ...args),

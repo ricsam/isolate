@@ -38,7 +38,7 @@ npm add @ricsam/isolate-client  # Client (any runtime)
 import { createRuntime } from "@ricsam/isolate-runtime";
 
 const runtime = await createRuntime({
-  memoryLimit: 128,
+  memoryLimitMB: 128,
   console: {
     onEntry: (entry) => {
       if (entry.type === "output") {
@@ -193,7 +193,7 @@ import { connect } from "@ricsam/isolate-client";
 const client = await connect({ socket: "/tmp/isolate.sock" });
 
 const runtime = await client.createRuntime({
-  memoryLimit: 128,
+  memoryLimitMB: 128,
   console: {
     onEntry: (entry) => {
       if (entry.type === "output") {
@@ -357,8 +357,8 @@ Configuration options for creating a runtime:
 
 ```typescript
 interface RuntimeOptions {
-  /** Memory limit in MB for the V8 isolate heap */
-  memoryLimit?: number;
+  /** Memory limit in megabytes for the V8 isolate heap */
+  memoryLimitMB?: number;
 
   /** Console callback handlers - receive console.* calls from the isolate */
   console?: ConsoleCallbacks;
@@ -480,7 +480,7 @@ type ModuleLoaderCallback = (moduleName: string) => string | Promise<string>;
 Expose host functions that can be called directly from isolate code:
 
 ```typescript
-type CustomFunctions = Record<string, CustomFunction | CustomFunctionDefinition>;
+type CustomFunctions = Record<string, CustomFunctionDefinition>;
 
 type CustomFunction = (...args: unknown[]) => unknown | Promise<unknown>;
 
@@ -507,8 +507,6 @@ const runtime = await createRuntime({
       fn: () => ({ env: "production" }),
       async: false,
     },
-    // Shorthand: function directly (treated as async)
-    queryDb: async (sql) => db.query(sql),
   },
 });
 ```

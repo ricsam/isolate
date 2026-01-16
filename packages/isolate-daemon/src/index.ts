@@ -21,7 +21,7 @@ const DEFAULT_OPTIONS: Required<DaemonOptions> = {
   host: "127.0.0.1",
   port: 47891,
   maxIsolates: 100,
-  defaultMemoryLimit: 128,
+  defaultMemoryLimitMB: 128,
 };
 
 /**

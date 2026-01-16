@@ -67,8 +67,8 @@ export interface TestEnvironmentOptions {
  * Options for creating a runtime.
  */
 export interface RuntimeOptions {
-  /** Memory limit in MB */
-  memoryLimit?: number;
+  /** Memory limit in megabytes (optional) */
+  memoryLimitMB?: number;
   /** Console callback handlers */
   console?: ConsoleCallbacks;
   /** Fetch callback handler */
@@ -158,9 +158,8 @@ export interface CustomFunctionDefinition {
 
 /**
  * Custom functions to register in the runtime.
- * Can be either a function directly (treated as async) or a definition with metadata.
  */
-export type CustomFunctions = Record<string, CustomFunction | CustomFunctionDefinition>;
+export type CustomFunctions = Record<string, CustomFunctionDefinition>;
 
 /**
  * @deprecated Use the simplified eval signature instead: eval(code: string, filename?: string)

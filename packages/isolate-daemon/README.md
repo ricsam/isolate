@@ -27,7 +27,7 @@ const daemon = await startDaemon({
   socketPath: "/tmp/isolate-daemon.sock", // Unix socket
   // Or TCP: host: "127.0.0.1", port: 47891
   maxIsolates: 100,
-  defaultMemoryLimit: 128,
+  defaultMemoryLimitMB: 128,
 });
 
 console.log(`Daemon listening on ${daemon.address}`);
@@ -61,7 +61,7 @@ interface DaemonOptions {
   host?: string;            // TCP host
   port?: number;            // TCP port
   maxIsolates?: number;     // Maximum concurrent isolates
-  defaultMemoryLimit?: number; // Default memory limit (MB)
+  defaultMemoryLimitMB?: number; // Default memory limit in megabytes
 }
 ```
 

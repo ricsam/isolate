@@ -27,7 +27,7 @@ describe("codec", () => {
       type: MessageType.CREATE_RUNTIME,
       requestId: 1,
       options: {
-        memoryLimit: 128,
+        memoryLimitMB: 128,
       },
     };
 
@@ -37,7 +37,7 @@ describe("codec", () => {
     assert.deepStrictEqual(decoded, {
       type: MessageType.CREATE_RUNTIME,
       requestId: 1,
-      options: { memoryLimit: 128 },
+      options: { memoryLimitMB: 128 },
     });
   });
 
@@ -109,7 +109,7 @@ describe("framing", () => {
     const message: CreateRuntimeRequest = {
       type: MessageType.CREATE_RUNTIME,
       requestId: 1,
-      options: { memoryLimit: 256 },
+      options: { memoryLimitMB: 256 },
     };
 
     const frame = buildFrame(message);
@@ -119,7 +119,7 @@ describe("framing", () => {
     assert.strictEqual(parsed.type, MessageType.CREATE_RUNTIME);
     assert.strictEqual((parsed.message as CreateRuntimeRequest).requestId, 1);
     assert.deepStrictEqual((parsed.message as CreateRuntimeRequest).options, {
-      memoryLimit: 256,
+      memoryLimitMB: 256,
     });
   });
 
@@ -128,17 +128,17 @@ describe("framing", () => {
       {
         type: MessageType.CREATE_RUNTIME,
         requestId: 1,
-        options: { memoryLimit: 64 },
+        options: { memoryLimitMB: 64 },
       },
       {
         type: MessageType.CREATE_RUNTIME,
         requestId: 2,
-        options: { memoryLimit: 128 },
+        options: { memoryLimitMB: 128 },
       },
       {
         type: MessageType.CREATE_RUNTIME,
         requestId: 3,
-        options: { memoryLimit: 256 },
+        options: { memoryLimitMB: 256 },
       },
     ];
 

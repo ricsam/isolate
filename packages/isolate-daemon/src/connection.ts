@@ -396,7 +396,7 @@ async function handleCreateRuntime(
     const pendingCallbacks: Promise<unknown>[] = [];
 
     const runtime = await createInternalRuntime({
-      memoryLimit: message.options.memoryLimit ?? state.options.defaultMemoryLimit,
+      memoryLimitMB: message.options.memoryLimitMB ?? state.options.defaultMemoryLimitMB,
       cwd: message.options.cwd,
       console: consoleCallbacks?.onEntry
         ? {

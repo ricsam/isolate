@@ -32,7 +32,7 @@ const client = await connect({
 
 // Create a runtime with callbacks
 const runtime = await client.createRuntime({
-  memoryLimit: 128,
+  memoryLimitMB: 128,
   console: {
     onEntry: (entry) => console.log("[isolate]", entry),
   },

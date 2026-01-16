@@ -63,7 +63,6 @@ import type {
   FileSystemCallbacks,
   ModuleLoaderCallback,
   CustomFunctions,
-  CustomFunctionDefinition,
   EvalOptions,
   UpgradeRequest,
   WebSocketCommand,
@@ -462,7 +461,7 @@ async function createRuntime(
     type: MessageType.CREATE_RUNTIME,
     requestId,
     options: {
-      memoryLimit: options.memoryLimit,
+      memoryLimitMB: options.memoryLimitMB,
       cwd: options.cwd,
       callbacks,
       testEnvironment: testEnvironmentOption,
@@ -949,10 +948,7 @@ function registerCustomFunctions(
 ): Record<string, CallbackRegistration> {
   const registrations: Record<string, CallbackRegistration> = {};
 
-  for (const [name, fnOrDef] of Object.entries(customFunctions)) {
-    // Normalize to definition format
-    const def: CustomFunctionDefinition =
-      typeof fnOrDef === "function" ? { fn: fnOrDef, async: true } : fnOrDef;
+  for (const [name, def] of Object.entries(customFunctions)) {
 
     const callbackId = state.nextCallbackId++;
 

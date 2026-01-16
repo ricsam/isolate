@@ -20,8 +20,8 @@ export interface DaemonOptions {
   port?: number;
   /** Maximum number of isolates */
   maxIsolates?: number;
-  /** Default memory limit for isolates (MB) */
-  defaultMemoryLimit?: number;
+  /** Default memory limit for isolates in megabytes */
+  defaultMemoryLimitMB?: number;
 }
 
 /**

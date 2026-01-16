@@ -28,7 +28,7 @@ import type { CryptoHandle } from "@ricsam/isolate-crypto";
  * @internal Options for creating a legacy runtime.
  */
 export interface InternalRuntimeOptions {
-  memoryLimit?: number;
+  memoryLimitMB?: number;
   console?: ConsoleOptions;
   fetch?: FetchOptions;
   fs?: FsOptions;
@@ -59,7 +59,7 @@ export async function createInternalRuntime(
   const opts = options ?? {};
 
   const isolate = new ivm.Isolate({
-    memoryLimit: opts.memoryLimit,
+    memoryLimit: opts.memoryLimitMB,
   });
 
   const context = await isolate.createContext();

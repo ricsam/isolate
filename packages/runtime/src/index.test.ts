@@ -96,7 +96,7 @@ describe("@ricsam/isolate-runtime", () => {
 
     test("accepts memory limit option", async () => {
       const runtime = await createRuntime({
-        memoryLimit: 128,
+        memoryLimitMB: 128,
       });
       try {
         assert(runtime.id, "runtime should be created with memory limit");

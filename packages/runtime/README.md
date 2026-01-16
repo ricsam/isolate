@@ -14,7 +14,7 @@ npm add @ricsam/isolate-runtime isolated-vm
 import { createRuntime } from "@ricsam/isolate-runtime";
 
 const runtime = await createRuntime({
-  memoryLimit: 128,
+  memoryLimitMB: 128,
   console: {
     onEntry: (entry) => console.log("[sandbox]", entry),
   },
@@ -106,7 +106,7 @@ interface RuntimePlaywrightHandle {
 
 ```typescript
 interface RuntimeOptions {
-  memoryLimit?: number;
+  memoryLimitMB?: number;
   console?: ConsoleCallbacks;
   fetch?: FetchCallback;
   fs?: FsOptions;
