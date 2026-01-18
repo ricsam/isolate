@@ -587,17 +587,14 @@ describe("Namespace Runtime Caching Integration Tests", () => {
   });
 
   describe("Error Cases", () => {
-    it("should error when namespace has active runtime", async () => {
-      const namespace = client.createNamespace("error-active-1");
+    it("should return same runtime when namespace has active runtime (idempotent)", async () => {
+      const namespace = client.createNamespace("idempotent-active-1");
       const runtime1 = await namespace.createRuntime();
 
       try {
-        await assert.rejects(
-          async () => {
-            await namespace.createRuntime();
-          },
-          /already has an active runtime|namespace.*active/i
-        );
+        const runtime2 = await namespace.createRuntime();
+        assert.strictEqual(runtime2.id, runtime1.id);
+        assert.strictEqual(runtime2.reused, true);
       } finally {
         await runtime1.dispose();
       }

@@ -615,7 +615,16 @@ async function handleCreateRuntime(
 
     if (existing) {
       if (!existing.isDisposed) {
-        // Namespace already has an active runtime
+        // Check if same connection already owns this runtime (idempotent case)
+        if (existing.ownerConnection === connection.socket) {
+          sendOk(connection.socket, message.requestId, {
+            isolateId: existing.isolateId,
+            reused: true,
+          });
+          return;
+        }
+
+        // Different connection - still error
         sendError(
           connection.socket,
           message.requestId,
