@@ -241,6 +241,8 @@ export interface CreateRuntimeRequest extends BaseMessage {
     cwd?: string;
     /** Enable test environment (describe, it, expect, etc.) */
     testEnvironment?: boolean | TestEnvironmentOptionsProtocol;
+    /** Namespace ID for runtime pooling/reuse. If provided, runtime will be cached on dispose. */
+    namespaceId?: string;
   };
 }
 
@@ -774,6 +776,8 @@ export interface DispatchOptions {
 
 export interface CreateRuntimeResult {
   isolateId: string;
+  /** True if runtime was reused from namespace pool */
+  reused?: boolean;
 }
 
 export interface EvalResult {

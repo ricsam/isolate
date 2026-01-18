@@ -52,7 +52,7 @@ export interface DaemonStats {
 export interface IsolateInstance {
   isolateId: string;
   runtime: InternalRuntimeHandle;
-  ownerConnection: Socket;
+  ownerConnection: Socket | null;
   callbacks: Map<number, CallbackRegistration>;
   createdAt: number;
   lastActivity: number;
@@ -76,6 +76,45 @@ export interface IsolateInstance {
   returnedIterators?: Map<number, AsyncIterator<unknown>>;
   /** Next ID for daemon-local callback registration (starts at high number to avoid conflicts) */
   nextLocalCallbackId?: number;
+
+  // Namespace pooling fields
+  /** Namespace ID for pooling/reuse (if set, runtime is cached on dispose) */
+  namespaceId?: string;
+  /** Whether this runtime is soft-deleted (disposed but cached for reuse) */
+  isDisposed: boolean;
+  /** Timestamp when runtime was disposed (for LRU eviction) */
+  disposedAt?: number;
+
+  // Mutable callback context for runtime reuse
+  /** Mutable context for callbacks - allows updating callback IDs/connection on reuse */
+  callbackContext?: CallbackContext;
+}
+
+/**
+ * Mutable context for callbacks that can be updated on runtime reuse.
+ * This allows closures to reference current callback IDs instead of captured values.
+ */
+export interface CallbackContext {
+  /** Current connection state (updated on reuse) */
+  connection: ConnectionState | null;
+  /** Console onEntry callback ID */
+  consoleOnEntry?: number;
+  /** Fetch callback ID */
+  fetch?: number;
+  /** Module loader callback ID */
+  moduleLoader?: number;
+  /** FS callback IDs by name */
+  fs: {
+    readFile?: number;
+    writeFile?: number;
+    stat?: number;
+    readdir?: number;
+    unlink?: number;
+    mkdir?: number;
+    rmdir?: number;
+  };
+  /** Custom function callback IDs by name */
+  custom: Map<string, number>;
 }
 
 /**
@@ -137,4 +176,6 @@ export interface DaemonState {
   connections: Map<Socket, ConnectionState>;
   stats: DaemonStats;
   options: Required<DaemonOptions>;
+  /** Index of namespaced runtimes by namespace ID for fast lookup */
+  namespacedRuntimes: Map<string, IsolateInstance>;
 }

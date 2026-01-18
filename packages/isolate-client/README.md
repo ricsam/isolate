@@ -18,6 +18,7 @@ npm add @ricsam/isolate-client
 - Module loader for custom ES module resolution
 - Custom functions callable from isolate code
 - Test environment and Playwright support
+- **Namespace-based runtime caching** for performance optimization
 
 ## Basic Usage
 
@@ -68,6 +69,79 @@ const counters = await runtime.console.getCounters();
 await runtime.dispose();
 await client.close();
 ```
+
+## Namespace-Based Runtime Caching
+
+For performance-critical applications, use **namespaces** to cache and reuse runtimes. Namespaced runtimes preserve their V8 isolate, context, and compiled module cache across dispose/create cycles:
+
+```typescript
+import { connect } from "@ricsam/isolate-client";
+
+const client = await connect({ socket: "/tmp/isolate.sock" });
+
+// Create a namespace for a tenant/user/session
+const namespace = client.createNamespace("tenant-123");
+
+// Create a runtime in this namespace
+const runtime = await namespace.createRuntime({
+  memoryLimitMB: 128,
+  moduleLoader: async (name) => loadModule(name),
+});
+
+console.log(runtime.reused); // false - first time
+
+// Import heavy modules (gets compiled and cached)
+await runtime.eval(`
+  import { heavyLibrary } from "@/heavy-module";
+  console.log("Module loaded!");
+`);
+
+// Dispose returns runtime to pool (soft-delete)
+await runtime.dispose();
+
+// Later: reuse the same namespace (same or different connection!)
+const client2 = await connect({ socket: "/tmp/isolate.sock" });
+const namespace2 = client2.createNamespace("tenant-123");
+const runtime2 = await namespace2.createRuntime({ /* options */ });
+
+console.log(runtime2.reused); // true - reused from pool!
+// Module cache preserved - no recompilation needed
+await runtime2.eval(`
+  import { heavyLibrary } from "@/heavy-module";  // instant!
+`);
+```
+
+### Namespace Interface
+
+```typescript
+interface Namespace {
+  /** The namespace ID */
+  readonly id: string;
+  /** Create a runtime in this namespace (cacheable on dispose) */
+  createRuntime(options?: RuntimeOptions): Promise<RemoteRuntime>;
+}
+```
+
+### What's Preserved vs Reset
+
+**Preserved on reuse (performance benefit):**
+- V8 Isolate instance
+- V8 Context
+- Compiled ES module cache
+- Global state and imported modules
+
+**Reset on reuse:**
+- Owner connection (new owner)
+- Callbacks (re-registered from new client)
+- Timers (cleared)
+- Console state (counters, timers, groups reset)
+
+### Behavior Notes
+
+- Non-namespaced runtimes (`client.createRuntime()`) work as before - true disposal
+- Namespaced runtimes are cached on dispose and evicted via LRU when `maxIsolates` limit is reached
+- Cross-client reuse is allowed - any connection can reuse a namespace by ID
+- A namespace can only have one active runtime at a time; creating a second runtime with the same namespace ID while one is active will fail
 
 ## Module Loader
 
@@ -340,7 +414,11 @@ await browser.close();
 ```typescript
 interface RemoteRuntime {
   readonly id: string;
+  /** True if runtime was reused from namespace pool */
+  readonly reused?: boolean;
+
   eval(code: string, filename?: string): Promise<void>;
+  /** Dispose runtime (soft-delete if namespaced, hard delete otherwise) */
   dispose(): Promise<void>;
 
   // Module handles
@@ -349,6 +427,17 @@ interface RemoteRuntime {
   readonly console: RemoteConsoleHandle;
   readonly testEnvironment: RemoteTestEnvironmentHandle;
   readonly playwright: RemotePlaywrightHandle;
+}
+
+interface DaemonConnection {
+  /** Create a new runtime in the daemon */
+  createRuntime(options?: RuntimeOptions): Promise<RemoteRuntime>;
+  /** Create a namespace for runtime pooling/reuse */
+  createNamespace(id: string): Namespace;
+  /** Close the connection */
+  close(): Promise<void>;
+  /** Check if connected */
+  isConnected(): boolean;
 }
 
 interface RemoteFetchHandle {

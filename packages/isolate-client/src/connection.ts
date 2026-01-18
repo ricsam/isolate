@@ -80,6 +80,7 @@ import type {
   UpgradeRequest,
   WebSocketCommand,
   TestEnvironmentOptions,
+  Namespace,
 } from "./types.ts";
 
 const DEFAULT_TIMEOUT = 30000;
@@ -207,6 +208,11 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
   return {
     createRuntime: (runtimeOptions) =>
       createRuntime(state, runtimeOptions),
+    createNamespace: (id: string): Namespace => ({
+      id,
+      createRuntime: (runtimeOptions) =>
+        createRuntime(state, runtimeOptions, id),
+    }),
     close: async () => {
       state.connected = false;
       socket.destroy();
@@ -388,6 +394,13 @@ function handleMessage(message: Message, state: ConnectionState): void {
         cancel(_reason) {
           // Consumer cancelled the stream - notify daemon
           receiver.state = "errored";
+
+          // Resolve any pending pull promise to allow cleanup
+          if (receiver.pullResolver) {
+            receiver.pullResolver();
+            receiver.pullResolver = undefined;
+          }
+
           sendMessage(state.socket, {
             type: MessageType.STREAM_ERROR,
             streamId: msg.streamId,
@@ -607,7 +620,8 @@ function sendRequest<T>(
  */
 async function createRuntime(
   state: ConnectionState,
-  options: RuntimeOptions = {}
+  options: RuntimeOptions = {},
+  namespaceId?: string
 ): Promise<RemoteRuntime> {
   // Register callbacks
   const callbacks: RuntimeCallbackRegistrations = {};
@@ -764,11 +778,13 @@ async function createRuntime(
       cwd: options.cwd,
       callbacks,
       testEnvironment: testEnvironmentOption,
+      namespaceId,
     },
   };
 
   const result = await sendRequest<CreateRuntimeResult>(state, request);
   const isolateId = result.isolateId;
+  const reused = result.reused ?? false;
 
   // WebSocket command callbacks - store in module-level Map for WS_COMMAND message handling
   const wsCommandCallbacks: Set<(cmd: WebSocketCommand) => void> = new Set();
@@ -1065,6 +1081,7 @@ async function createRuntime(
   return {
     id: isolateId,
     isolateId,
+    reused,
 
     // Module handles
     fetch: fetchHandle,

@@ -43,11 +43,24 @@ export interface ConnectOptions {
 }
 
 /**
+ * Namespace for runtime pooling/reuse.
+ * Runtimes created in a namespace are cached on dispose and can be reused.
+ */
+export interface Namespace {
+  /** The namespace ID */
+  readonly id: string;
+  /** Create a runtime in this namespace (cacheable on dispose) */
+  createRuntime(options?: RuntimeOptions): Promise<RemoteRuntime>;
+}
+
+/**
  * Connection to the daemon.
  */
 export interface DaemonConnection {
   /** Create a new runtime in the daemon */
   createRuntime(options?: RuntimeOptions): Promise<RemoteRuntime>;
+  /** Create a namespace for runtime pooling/reuse */
+  createNamespace(id: string): Namespace;
   /** Close the connection */
   close(): Promise<void>;
   /** Check if connected */
@@ -263,6 +276,9 @@ export interface RemoteRuntime {
    * @deprecated Use id instead
    */
   readonly isolateId: string;
+
+  /** True if runtime was reused from namespace pool */
+  readonly reused?: boolean;
 
   /** Fetch handle - access to fetch/serve operations */
   readonly fetch: RemoteFetchHandle;

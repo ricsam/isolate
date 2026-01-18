@@ -6,8 +6,7 @@
  */
 
 import type { FileSystemHandler } from "@ricsam/isolate-fs";
-import type { FsCallbackRegistrations, CallbackRegistration } from "@ricsam/isolate-protocol";
-import type { ConnectionState } from "./types.ts";
+import type { ConnectionState, CallbackContext } from "./types.ts";
 
 interface InvokeClientCallback {
   (connection: ConnectionState, callbackId: number, args: unknown[]): Promise<unknown>;
@@ -15,7 +14,7 @@ interface InvokeClientCallback {
 
 interface CallbackFsHandlerOptions {
   connection: ConnectionState;
-  callbacks: FsCallbackRegistrations;
+  callbackContext: CallbackContext;
   invokeClientCallback: InvokeClientCallback;
   basePath?: string;
 }
@@ -24,11 +23,12 @@ interface CallbackFsHandlerOptions {
  * Create a FileSystemHandler that invokes client callbacks.
  *
  * Maps WHATWG FileSystem API operations to simple POSIX-like callbacks.
+ * Uses callbackContext for dynamic callback ID lookup to support runtime reuse.
  */
 export function createCallbackFileSystemHandler(
   options: CallbackFsHandlerOptions
 ): FileSystemHandler {
-  const { connection, callbacks, invokeClientCallback, basePath = "" } = options;
+  const { connection, callbackContext, invokeClientCallback, basePath = "" } = options;
 
   const resolvePath = (path: string): string => {
     // Remove leading slash from the path
@@ -42,18 +42,31 @@ export function createCallbackFileSystemHandler(
     return `${cleanBase}/${cleanPath}`;
   };
 
+  // Helper to get current callback ID (supports runtime reuse)
+  const getCallbackId = (name: keyof CallbackContext["fs"]): number | undefined => {
+    return callbackContext.fs[name];
+  };
+
+  // Helper to get current connection (supports runtime reuse)
+  const getConnection = (): ConnectionState => {
+    return callbackContext.connection || connection;
+  };
+
   return {
     async getFileHandle(path: string, opts?: { create?: boolean }): Promise<void> {
       const fullPath = resolvePath(path);
+      const conn = getConnection();
 
       if (opts?.create) {
         // Ensure file exists by writing empty content if it doesn't exist
-        if (callbacks.writeFile) {
+        const writeFileId = getCallbackId("writeFile");
+        if (writeFileId !== undefined) {
           try {
             // Check if file exists first
-            if (callbacks.stat) {
+            const statId = getCallbackId("stat");
+            if (statId !== undefined) {
               try {
-                await invokeClientCallback(connection, callbacks.stat.callbackId, [fullPath]);
+                await invokeClientCallback(conn, statId, [fullPath]);
                 // File exists, nothing to do
                 return;
               } catch {
@@ -61,7 +74,7 @@ export function createCallbackFileSystemHandler(
               }
             }
             // Create empty file
-            await invokeClientCallback(connection, callbacks.writeFile.callbackId, [
+            await invokeClientCallback(conn, writeFileId, [
               fullPath,
               new Uint8Array(0),
             ]);
@@ -74,9 +87,10 @@ export function createCallbackFileSystemHandler(
       }
 
       // Check file exists
-      if (callbacks.stat) {
+      const statId = getCallbackId("stat");
+      if (statId !== undefined) {
         try {
-          const result = (await invokeClientCallback(connection, callbacks.stat.callbackId, [
+          const result = (await invokeClientCallback(conn, statId, [
             fullPath,
           ])) as { isFile: boolean };
           if (!result.isFile) {
@@ -92,11 +106,13 @@ export function createCallbackFileSystemHandler(
 
     async getDirectoryHandle(path: string, opts?: { create?: boolean }): Promise<void> {
       const fullPath = resolvePath(path);
+      const conn = getConnection();
 
       if (opts?.create) {
-        if (callbacks.mkdir) {
+        const mkdirId = getCallbackId("mkdir");
+        if (mkdirId !== undefined) {
           try {
-            await invokeClientCallback(connection, callbacks.mkdir.callbackId, [
+            await invokeClientCallback(conn, mkdirId, [
               fullPath,
               { recursive: true },
             ]);
@@ -108,9 +124,10 @@ export function createCallbackFileSystemHandler(
       }
 
       // Check directory exists
-      if (callbacks.stat) {
+      const statId = getCallbackId("stat");
+      if (statId !== undefined) {
         try {
-          const result = (await invokeClientCallback(connection, callbacks.stat.callbackId, [
+          const result = (await invokeClientCallback(conn, statId, [
             fullPath,
           ])) as { isDirectory: boolean };
           if (!result.isDirectory) {
@@ -126,12 +143,14 @@ export function createCallbackFileSystemHandler(
 
     async removeEntry(path: string, opts?: { recursive?: boolean }): Promise<void> {
       const fullPath = resolvePath(path);
+      const conn = getConnection();
 
       // Check if it's a file or directory
       let isFile = true;
-      if (callbacks.stat) {
+      const statId = getCallbackId("stat");
+      if (statId !== undefined) {
         try {
-          const result = (await invokeClientCallback(connection, callbacks.stat.callbackId, [
+          const result = (await invokeClientCallback(conn, statId, [
             fullPath,
           ])) as { isFile: boolean; isDirectory: boolean };
           isFile = result.isFile;
@@ -141,16 +160,18 @@ export function createCallbackFileSystemHandler(
       }
 
       if (isFile) {
-        if (!callbacks.unlink) {
+        const unlinkId = getCallbackId("unlink");
+        if (unlinkId === undefined) {
           throw new Error(`[NotAllowedError]File deletion not supported`);
         }
-        await invokeClientCallback(connection, callbacks.unlink.callbackId, [fullPath]);
+        await invokeClientCallback(conn, unlinkId, [fullPath]);
       } else {
-        if (!callbacks.rmdir) {
+        const rmdirId = getCallbackId("rmdir");
+        if (rmdirId === undefined) {
           throw new Error(`[NotAllowedError]Directory deletion not supported`);
         }
         // Note: recursive option may need special handling
-        await invokeClientCallback(connection, callbacks.rmdir.callbackId, [fullPath]);
+        await invokeClientCallback(conn, rmdirId, [fullPath]);
       }
     },
 
@@ -158,25 +179,28 @@ export function createCallbackFileSystemHandler(
       path: string
     ): Promise<Array<{ name: string; kind: "file" | "directory" }>> {
       const fullPath = resolvePath(path);
+      const conn = getConnection();
 
-      if (!callbacks.readdir) {
+      const readdirId = getCallbackId("readdir");
+      if (readdirId === undefined) {
         throw new Error(`[NotAllowedError]Directory reading not supported`);
       }
 
-      const entries = (await invokeClientCallback(connection, callbacks.readdir.callbackId, [
+      const entries = (await invokeClientCallback(conn, readdirId, [
         fullPath,
       ])) as string[];
 
       // We need to stat each entry to determine if it's a file or directory
       const result: Array<{ name: string; kind: "file" | "directory" }> = [];
 
+      const statId = getCallbackId("stat");
       for (const name of entries) {
         const entryPath = fullPath ? `${fullPath}/${name}` : name;
         let kind: "file" | "directory" = "file";
 
-        if (callbacks.stat) {
+        if (statId !== undefined) {
           try {
-            const stat = (await invokeClientCallback(connection, callbacks.stat.callbackId, [
+            const stat = (await invokeClientCallback(conn, statId, [
               entryPath,
             ])) as { isFile: boolean; isDirectory: boolean };
             kind = stat.isDirectory ? "directory" : "file";
@@ -195,12 +219,14 @@ export function createCallbackFileSystemHandler(
       path: string
     ): Promise<{ data: Uint8Array; size: number; lastModified: number; type: string }> {
       const fullPath = resolvePath(path);
+      const conn = getConnection();
 
-      if (!callbacks.readFile) {
+      const readFileId = getCallbackId("readFile");
+      if (readFileId === undefined) {
         throw new Error(`[NotAllowedError]File reading not supported`);
       }
 
-      const data = (await invokeClientCallback(connection, callbacks.readFile.callbackId, [
+      const data = (await invokeClientCallback(conn, readFileId, [
         fullPath,
       ])) as Uint8Array | ArrayBuffer | number[];
 
@@ -220,9 +246,10 @@ export function createCallbackFileSystemHandler(
       let size = bytes.length;
       let lastModified = Date.now();
 
-      if (callbacks.stat) {
+      const statId = getCallbackId("stat");
+      if (statId !== undefined) {
         try {
-          const stat = (await invokeClientCallback(connection, callbacks.stat.callbackId, [
+          const stat = (await invokeClientCallback(conn, statId, [
             fullPath,
           ])) as { size: number; lastModified?: number };
           size = stat.size;
@@ -258,8 +285,10 @@ export function createCallbackFileSystemHandler(
 
     async writeFile(path: string, data: Uint8Array, position?: number): Promise<void> {
       const fullPath = resolvePath(path);
+      const conn = getConnection();
 
-      if (!callbacks.writeFile) {
+      const writeFileId = getCallbackId("writeFile");
+      if (writeFileId === undefined) {
         throw new Error(`[NotAllowedError]File writing not supported`);
       }
 
@@ -267,11 +296,12 @@ export function createCallbackFileSystemHandler(
       // Simple implementation overwrites entire file
       if (position !== undefined && position > 0) {
         // For positional writes, we need to read existing content and merge
-        if (callbacks.readFile) {
+        const readFileId = getCallbackId("readFile");
+        if (readFileId !== undefined) {
           try {
             const existing = (await invokeClientCallback(
-              connection,
-              callbacks.readFile.callbackId,
+              conn,
+              readFileId,
               [fullPath]
             )) as Uint8Array | ArrayBuffer | number[];
 
@@ -292,7 +322,7 @@ export function createCallbackFileSystemHandler(
             merged.set(existingBytes);
             merged.set(data, position);
 
-            await invokeClientCallback(connection, callbacks.writeFile.callbackId, [
+            await invokeClientCallback(conn, writeFileId, [
               fullPath,
               merged,
             ]);
@@ -301,7 +331,7 @@ export function createCallbackFileSystemHandler(
             // File doesn't exist, create new one at position
             const newData = new Uint8Array(position + data.length);
             newData.set(data, position);
-            await invokeClientCallback(connection, callbacks.writeFile.callbackId, [
+            await invokeClientCallback(conn, writeFileId, [
               fullPath,
               newData,
             ]);
@@ -310,18 +340,21 @@ export function createCallbackFileSystemHandler(
         }
       }
 
-      await invokeClientCallback(connection, callbacks.writeFile.callbackId, [fullPath, data]);
+      await invokeClientCallback(conn, writeFileId, [fullPath, data]);
     },
 
     async truncateFile(path: string, size: number): Promise<void> {
       const fullPath = resolvePath(path);
+      const conn = getConnection();
 
-      if (!callbacks.readFile || !callbacks.writeFile) {
+      const readFileId = getCallbackId("readFile");
+      const writeFileId = getCallbackId("writeFile");
+      if (readFileId === undefined || writeFileId === undefined) {
         throw new Error(`[NotAllowedError]File truncation not supported`);
       }
 
       // Read existing content
-      const existing = (await invokeClientCallback(connection, callbacks.readFile.callbackId, [
+      const existing = (await invokeClientCallback(conn, readFileId, [
         fullPath,
       ])) as Uint8Array | ArrayBuffer | number[];
 
@@ -340,19 +373,21 @@ export function createCallbackFileSystemHandler(
       const truncated = new Uint8Array(size);
       truncated.set(existingBytes.slice(0, size));
 
-      await invokeClientCallback(connection, callbacks.writeFile.callbackId, [fullPath, truncated]);
+      await invokeClientCallback(conn, writeFileId, [fullPath, truncated]);
     },
 
     async getFileMetadata(
       path: string
     ): Promise<{ size: number; lastModified: number; type: string }> {
       const fullPath = resolvePath(path);
+      const conn = getConnection();
 
-      if (!callbacks.stat) {
+      const statId = getCallbackId("stat");
+      if (statId === undefined) {
         throw new Error(`[NotAllowedError]File stat not supported`);
       }
 
-      const stat = (await invokeClientCallback(connection, callbacks.stat.callbackId, [
+      const stat = (await invokeClientCallback(conn, statId, [
         fullPath,
       ])) as { size: number; lastModified?: number; isFile: boolean };
 

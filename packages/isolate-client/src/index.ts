@@ -9,6 +9,7 @@ export { connect } from "./connection.ts";
 export type {
   ConnectOptions,
   DaemonConnection,
+  Namespace,
   RuntimeOptions,
   RemoteRuntime,
   RemoteFetchHandle,

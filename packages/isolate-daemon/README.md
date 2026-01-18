@@ -17,6 +17,7 @@ npm add @ricsam/isolate-daemon
 - Test environment support (enabled via `testEnvironment: true`)
 - Playwright integration (client owns the browser, daemon invokes callbacks)
 - Connection-scoped resource cleanup
+- **Namespace-based runtime pooling** with LRU eviction for performance optimization
 
 ## Starting the Daemon
 
@@ -75,6 +76,32 @@ interface DaemonStats {
   totalRequestsProcessed: number;
 }
 ```
+
+## Runtime Pooling with Namespaces
+
+The daemon supports **namespace-based runtime pooling** for improved performance. When a client creates a runtime with a namespace ID, the runtime is cached on dispose (soft-delete) rather than destroyed. Future requests with the same namespace ID reuse the cached runtime, preserving:
+
+- V8 Isolate instance
+- V8 Context
+- Compiled ES module cache
+- Global state and imported modules
+
+### How It Works
+
+1. Client creates a namespace: `client.createNamespace("tenant-123")`
+2. Client creates a runtime in that namespace: `namespace.createRuntime(options)`
+3. On dispose, runtime is soft-deleted (cached in pool)
+4. Any client can later request the same namespace and reuse the cached runtime
+5. When `maxIsolates` limit is reached, oldest disposed runtimes are evicted (LRU)
+
+### Pooling Behavior
+
+- **Non-namespaced runtimes** (`client.createRuntime()`) work as before - true disposal on dispose
+- **Namespaced runtimes** are cached and reusable across connections
+- **LRU eviction** removes oldest disposed runtimes when at capacity
+- **Connection close** soft-deletes namespaced runtimes (keeps them in pool)
+
+The `maxIsolates` limit includes both active and pooled (disposed) runtimes. This ensures predictable memory usage while allowing runtime reuse.
 
 ## License
 

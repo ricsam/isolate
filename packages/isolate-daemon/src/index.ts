@@ -48,6 +48,7 @@ export async function startDaemon(
       totalRequestsProcessed: 0,
     },
     options: resolvedOptions,
+    namespacedRuntimes: new Map(),
   };
 
   const server = createServer((socket) => {
@@ -111,6 +112,7 @@ export async function startDaemon(
 
       state.isolates.clear();
       state.connections.clear();
+      state.namespacedRuntimes.clear();
 
       // Close server
       await closeServer(server);

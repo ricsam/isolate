@@ -85,6 +85,7 @@ import type {
   ConnectionState,
   IsolateInstance,
   PendingRequest,
+  CallbackContext,
 } from "./types.ts";
 
 /**
@@ -121,20 +122,26 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
   });
 
   socket.on("close", () => {
-    // Dispose all isolates owned by this connection
+    // Dispose or soft-delete isolates owned by this connection
     for (const isolateId of connection.isolates) {
       const instance = state.isolates.get(isolateId);
       if (instance) {
-        try {
-          // Clean up Playwright resources if present
-          if (instance.playwrightHandle) {
-            instance.playwrightHandle.dispose();
+        if (instance.namespaceId != null && !instance.isDisposed) {
+          // Namespaced runtime: soft-delete (keep cached for reuse)
+          softDeleteRuntime(instance, state);
+        } else if (!instance.isDisposed) {
+          // Non-namespaced runtime: hard delete
+          try {
+            // Clean up Playwright resources if present
+            if (instance.playwrightHandle) {
+              instance.playwrightHandle.dispose();
+            }
+            instance.runtime.dispose();
+          } catch {
+            // Ignore disposal errors
           }
-          instance.runtime.dispose();
-        } catch {
-          // Ignore disposal errors
+          state.isolates.delete(isolateId);
         }
-        state.isolates.delete(isolateId);
       }
     }
 
@@ -403,6 +410,193 @@ async function handleMessage(
   }
 }
 
+// ============================================================================
+// Namespace Runtime Management
+// ============================================================================
+
+/**
+ * Soft-delete a namespaced runtime (keep cached for reuse).
+ * Clears owner connection and callbacks but preserves isolate/context/module cache.
+ */
+function softDeleteRuntime(instance: IsolateInstance, state: DaemonState): void {
+  instance.isDisposed = true;
+  instance.disposedAt = Date.now();
+  instance.ownerConnection = null;
+  instance.callbacks.clear();
+
+  // Clear timers
+  instance.runtime.timers.clearAll();
+
+  // Reset console state
+  instance.runtime.console.reset();
+
+  // Clear pending callbacks
+  instance.pendingCallbacks.length = 0;
+
+  // Clear returned callback/promise/iterator registries
+  instance.returnedCallbacks?.clear();
+  instance.returnedPromises?.clear();
+  instance.returnedIterators?.clear();
+
+  // Note: We preserve the module cache (moduleCache) for performance benefit
+}
+
+/**
+ * Reuse a cached namespaced runtime for a new connection.
+ * Resets state that should be fresh but preserves isolate/context/module cache.
+ */
+function reuseNamespacedRuntime(
+  instance: IsolateInstance,
+  connection: ConnectionState,
+  message: CreateRuntimeRequest,
+  state: DaemonState
+): void {
+  // Update ownership
+  instance.ownerConnection = connection.socket;
+  instance.isDisposed = false;
+  instance.disposedAt = undefined;
+  instance.lastActivity = Date.now();
+
+  // Track in connection
+  connection.isolates.add(instance.isolateId);
+
+  // Re-register callbacks from the new request
+  const callbacks = message.options.callbacks;
+
+  // Update the mutable callback context (closures reference this object)
+  if (instance.callbackContext) {
+    // Update connection reference
+    instance.callbackContext.connection = connection;
+
+    // Update callback IDs
+    instance.callbackContext.consoleOnEntry = callbacks?.console?.onEntry?.callbackId;
+    instance.callbackContext.fetch = callbacks?.fetch?.callbackId;
+    instance.callbackContext.moduleLoader = callbacks?.moduleLoader?.callbackId;
+
+    // Update FS callback IDs
+    instance.callbackContext.fs = {
+      readFile: callbacks?.fs?.readFile?.callbackId,
+      writeFile: callbacks?.fs?.writeFile?.callbackId,
+      stat: callbacks?.fs?.stat?.callbackId,
+      readdir: callbacks?.fs?.readdir?.callbackId,
+      unlink: callbacks?.fs?.unlink?.callbackId,
+      mkdir: callbacks?.fs?.mkdir?.callbackId,
+      rmdir: callbacks?.fs?.rmdir?.callbackId,
+    };
+
+    // Update custom function callback IDs
+    instance.callbackContext.custom.clear();
+    if (callbacks?.custom) {
+      for (const [name, reg] of Object.entries(callbacks.custom)) {
+        if (reg) {
+          instance.callbackContext.custom.set(name, reg.callbackId);
+        }
+      }
+    }
+  }
+
+  // Also update the callbacks map for registration tracking
+  instance.callbacks.clear();
+
+  if (callbacks?.console?.onEntry) {
+    instance.callbacks.set(callbacks.console.onEntry.callbackId, {
+      ...callbacks.console.onEntry,
+      name: "onEntry",
+    });
+  }
+
+  if (callbacks?.fetch) {
+    instance.callbacks.set(callbacks.fetch.callbackId, callbacks.fetch);
+  }
+
+  if (callbacks?.fs) {
+    for (const [name, reg] of Object.entries(callbacks.fs)) {
+      if (reg) {
+        instance.callbacks.set(reg.callbackId, { ...reg, name });
+      }
+    }
+  }
+
+  if (callbacks?.moduleLoader) {
+    instance.moduleLoaderCallbackId = callbacks.moduleLoader.callbackId;
+    instance.callbacks.set(callbacks.moduleLoader.callbackId, callbacks.moduleLoader);
+  }
+
+  if (callbacks?.custom) {
+    for (const [name, reg] of Object.entries(callbacks.custom)) {
+      if (reg) {
+        instance.callbacks.set(reg.callbackId, { ...reg, name });
+      }
+    }
+  }
+
+  // Re-initialize registries for new callbacks
+  instance.returnedCallbacks = new Map();
+  instance.returnedPromises = new Map();
+  instance.returnedIterators = new Map();
+  instance.nextLocalCallbackId = 1_000_000;
+
+  // Update the __customFnCallbackIds global in the V8 context with new callback IDs
+  // This allows custom functions to use the new client's callback IDs
+  if (callbacks?.custom) {
+    const newCallbackIdMap: Record<string, number> = {};
+    for (const [name, reg] of Object.entries(callbacks.custom)) {
+      if (reg) {
+        newCallbackIdMap[name] = reg.callbackId;
+      }
+    }
+    try {
+      instance.runtime.context.global.setSync(
+        "__customFnCallbackIds",
+        new ivm.ExternalCopy(newCallbackIdMap).copyInto()
+      );
+    } catch {
+      // Ignore errors if context is not available
+    }
+  }
+}
+
+/**
+ * Evict the oldest disposed runtime to make room for a new one.
+ * Returns true if a runtime was evicted, false if no disposed runtimes available.
+ */
+function evictOldestDisposedRuntime(state: DaemonState): boolean {
+  let oldest: IsolateInstance | null = null;
+  let oldestTime = Infinity;
+
+  for (const [, instance] of state.isolates) {
+    if (instance.isDisposed && instance.disposedAt !== undefined) {
+      if (instance.disposedAt < oldestTime) {
+        oldestTime = instance.disposedAt;
+        oldest = instance;
+      }
+    }
+  }
+
+  if (oldest) {
+    // Hard delete the oldest disposed runtime
+    try {
+      if (oldest.playwrightHandle) {
+        oldest.playwrightHandle.dispose();
+      }
+      oldest.runtime.dispose();
+    } catch {
+      // Ignore disposal errors
+    }
+    state.isolates.delete(oldest.isolateId);
+    if (oldest.namespaceId != null) {
+      state.namespacedRuntimes.delete(oldest.namespaceId);
+    }
+    return true;
+  }
+
+  return false;
+}
+
+// ============================================================================
+// Message Handlers
+// ============================================================================
+
 /**
  * Handle CREATE_RUNTIME message.
  */
@@ -411,15 +605,49 @@ async function handleCreateRuntime(
   connection: ConnectionState,
   state: DaemonState
 ): Promise<void> {
-  // Check limits
+  const namespaceId = message.options.namespaceId;
+
+  // Check if we're trying to reuse a namespaced runtime
+  // Note: use != null to allow empty string namespace IDs but exclude undefined/null
+  // (MessagePack converts undefined to null during encoding)
+  if (namespaceId != null) {
+    const existing = state.namespacedRuntimes.get(namespaceId);
+
+    if (existing) {
+      if (!existing.isDisposed) {
+        // Namespace already has an active runtime
+        sendError(
+          connection.socket,
+          message.requestId,
+          ErrorCode.SCRIPT_ERROR,
+          `Namespace "${namespaceId}" already has an active runtime`
+        );
+        return;
+      }
+
+      // Reuse the cached runtime
+      reuseNamespacedRuntime(existing, connection, message, state);
+
+      sendOk(connection.socket, message.requestId, {
+        isolateId: existing.isolateId,
+        reused: true,
+      });
+      return;
+    }
+  }
+
+  // Check limits - try LRU eviction if at limit
   if (state.isolates.size >= state.options.maxIsolates) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.ISOLATE_MEMORY_LIMIT,
-      `Maximum isolates (${state.options.maxIsolates}) reached`
-    );
-    return;
+    // Try to evict an old disposed runtime
+    if (!evictOldestDisposedRuntime(state)) {
+      sendError(
+        connection.socket,
+        message.requestId,
+        ErrorCode.ISOLATE_MEMORY_LIMIT,
+        `Maximum isolates (${state.options.maxIsolates}) reached`
+      );
+      return;
+    }
   }
 
   try {
@@ -435,47 +663,86 @@ async function handleCreateRuntime(
     // Track pending callbacks so eval can wait for them
     const pendingCallbacks: Promise<unknown>[] = [];
 
+    // Create mutable callback context that closures can reference
+    // This allows updating callback IDs on runtime reuse
+    const callbackContext: CallbackContext = {
+      connection,
+      consoleOnEntry: consoleCallbacks?.onEntry?.callbackId,
+      fetch: fetchCallback?.callbackId,
+      moduleLoader: moduleLoaderCallback?.callbackId,
+      fs: {
+        readFile: fsCallbacks?.readFile?.callbackId,
+        writeFile: fsCallbacks?.writeFile?.callbackId,
+        stat: fsCallbacks?.stat?.callbackId,
+        readdir: fsCallbacks?.readdir?.callbackId,
+        unlink: fsCallbacks?.unlink?.callbackId,
+        mkdir: fsCallbacks?.mkdir?.callbackId,
+        rmdir: fsCallbacks?.rmdir?.callbackId,
+      },
+      custom: new Map(
+        customCallbacks
+          ? Object.entries(customCallbacks).map(([name, reg]) => [name, reg.callbackId])
+          : []
+      ),
+    };
+
     const runtime = await createInternalRuntime({
       memoryLimitMB: message.options.memoryLimitMB ?? state.options.defaultMemoryLimitMB,
       cwd: message.options.cwd,
-      console: consoleCallbacks?.onEntry
-        ? {
-            onEntry: (entry) => {
-              // Track this callback so eval waits for it to complete
-              const promise = invokeClientCallback(
-                connection,
-                consoleCallbacks.onEntry!.callbackId,
-                [entry]
-              ).catch(() => {}); // Ignore errors, just track completion
-              pendingCallbacks.push(promise);
-            },
+      // Always create console handler to support adding callbacks on reuse
+      console: {
+        onEntry: (entry) => {
+          // Use callback context for dynamic lookup (supports runtime reuse)
+          const conn = callbackContext.connection;
+          const callbackId = callbackContext.consoleOnEntry;
+          // Only invoke if callback is registered
+          if (!conn || callbackId === undefined) return;
+
+          // Track this callback so eval waits for it to complete
+          const promise = invokeClientCallback(
+            conn,
+            callbackId,
+            [entry]
+          ).catch(() => {}); // Ignore errors, just track completion
+          pendingCallbacks.push(promise);
+        },
+      },
+      // Always create fetch handler to support adding callbacks on reuse
+      fetch: {
+        onFetch: async (request) => {
+          // Use callback context for dynamic lookup (supports runtime reuse)
+          const conn = callbackContext.connection;
+          const callbackId = callbackContext.fetch;
+          if (!conn || callbackId === undefined) {
+            throw new Error("Fetch callback not available");
           }
-        : undefined,
-      fetch: fetchCallback
-        ? {
-            onFetch: async (request) => {
-              const serialized = await serializeRequest(request);
-              const result = await invokeClientCallback(
-                connection,
-                fetchCallback.callbackId,
-                [serialized]
-              );
-              return deserializeResponse(result as SerializedResponseData);
-            },
+
+          const serialized = await serializeRequest(request);
+          const result = await invokeClientCallback(
+            conn,
+            callbackId,
+            [serialized]
+          );
+          return deserializeResponse(result as SerializedResponseData);
+        },
+      },
+      // Always create fs handler to support adding callbacks on reuse
+      fs: {
+        getDirectory: async (path: string) => {
+          // Use callback context for dynamic lookup (supports runtime reuse)
+          const conn = callbackContext.connection;
+          if (!conn) {
+            throw new Error("FS callbacks not available");
           }
-        : undefined,
-      fs: fsCallbacks
-        ? {
-            getDirectory: async (path: string) => {
-              return createCallbackFileSystemHandler({
-                connection,
-                callbacks: fsCallbacks,
-                invokeClientCallback,
-                basePath: path,
-              });
-            },
-          }
-        : undefined,
+
+          return createCallbackFileSystemHandler({
+            connection: conn,
+            callbackContext,
+            invokeClientCallback,
+            basePath: path,
+          });
+        },
+      },
     });
 
     const instance: IsolateInstance = {
@@ -492,6 +759,11 @@ async function handleCreateRuntime(
       returnedIterators: new Map(),
       // Start at 1,000,000 to avoid conflicts with client callback IDs
       nextLocalCallbackId: 1_000_000,
+      // Namespace pooling fields
+      namespaceId,
+      isDisposed: false,
+      // Mutable callback context for runtime reuse
+      callbackContext,
     };
 
     // Setup module loader
@@ -622,6 +894,11 @@ async function handleCreateRuntime(
     connection.isolates.add(isolateId);
     state.stats.totalIsolatesCreated++;
 
+    // Add to namespace index if this is a namespaced runtime
+    if (namespaceId != null) {
+      state.namespacedRuntimes.set(namespaceId, instance);
+    }
+
     // Forward WebSocket commands from isolate to client
     instance.runtime.fetch.onWebSocketCommand((cmd) => {
       // Convert ArrayBuffer to Uint8Array if needed for protocol
@@ -645,7 +922,7 @@ async function handleCreateRuntime(
       sendMessage(connection.socket, wsCommandMsg);
     });
 
-    sendOk(connection.socket, message.requestId, { isolateId });
+    sendOk(connection.socket, message.requestId, { isolateId, reused: false });
   } catch (err) {
     const error = err as Error;
     sendError(
@@ -689,14 +966,22 @@ async function handleDisposeRuntime(
   }
 
   try {
-    // Clean up Playwright resources if present
-    if (instance.playwrightHandle) {
-      instance.playwrightHandle.dispose();
-    }
-
-    instance.runtime.dispose();
-    state.isolates.delete(message.isolateId);
+    // Remove from connection's tracking
     connection.isolates.delete(message.isolateId);
+
+    if (instance.namespaceId != null) {
+      // Namespaced runtime: soft-delete (keep cached for reuse)
+      softDeleteRuntime(instance, state);
+    } else {
+      // Non-namespaced runtime: hard delete
+      // Clean up Playwright resources if present
+      if (instance.playwrightHandle) {
+        instance.playwrightHandle.dispose();
+      }
+
+      instance.runtime.dispose();
+      state.isolates.delete(message.isolateId);
+    }
 
     sendOk(connection.socket, message.requestId);
   } catch (err) {
@@ -1803,6 +2088,7 @@ async function setupCustomFunctions(
   // Reference that invokes the callback and returns the result
   // Uses applySyncPromise which works in async contexts (serve handlers, etc.)
   // Args are JSON-encoded marshalled values, result is JSON-encoded marshalled value
+  // Uses instance.callbackContext for dynamic connection lookup (supports runtime reuse)
   const invokeCallbackRef = new ivm.Reference(
     async (callbackId: number, argsJson: string) => {
       // Parse the JSON and unmarshal refs back to real types
@@ -1819,8 +2105,9 @@ async function setupCustomFunctions(
           }
           result = await callback(...args);
         } else {
-          // Client callback
-          result = await invokeClientCallback(connection, callbackId, args);
+          // Client callback - use dynamic connection lookup for runtime reuse support
+          const conn = instance.callbackContext?.connection || connection;
+          result = await invokeClientCallback(conn, callbackId, args);
         }
 
         // Marshal the result with context for registering returned callbacks/promises/iterators
@@ -1844,7 +2131,16 @@ async function setupCustomFunctions(
   // Inject marshalling helpers into the isolate
   context.evalSync(ISOLATE_MARSHAL_CODE);
 
+  // Create a global registry for custom function callback IDs
+  // This allows updating callback IDs on runtime reuse without recreating wrapper functions
+  const callbackIdMap: Record<string, number> = {};
+  for (const [name, registration] of Object.entries(customCallbacks)) {
+    callbackIdMap[name] = registration.callbackId;
+  }
+  global.setSync("__customFnCallbackIds", new ivm.ExternalCopy(callbackIdMap).copyInto());
+
   // Create wrapper functions for each custom function
+  // These use __customFnCallbackIds for dynamic callback ID lookup
   for (const [name, registration] of Object.entries(customCallbacks)) {
     // Skip companion callbacks (name:start, name:next, etc.) - they are used internally by asyncIterator
     if (name.includes(':')) {
@@ -1856,10 +2152,11 @@ async function setupCustomFunctions(
       // The function blocks until the host responds, but returns the value directly (not a Promise)
       context.evalSync(`
         globalThis.${name} = function(...args) {
+          const callbackId = globalThis.__customFnCallbackIds["${name}"];
           const argsJson = JSON.stringify(__marshalForHost(args));
           const resultJson = __customFn_invoke.applySyncPromise(
             undefined,
-            [${registration.callbackId}, argsJson]
+            [callbackId, argsJson]
           );
           const result = JSON.parse(resultJson);
           if (result.ok) {
@@ -1885,10 +2182,11 @@ async function setupCustomFunctions(
       context.evalSync(`
         globalThis.${name} = function(...args) {
           // Start the iterator and get the iteratorId
+          const startCallbackId = globalThis.__customFnCallbackIds["${name}:start"];
           const argsJson = JSON.stringify(__marshalForHost(args));
           const startResultJson = __customFn_invoke.applySyncPromise(
             undefined,
-            [${startReg.callbackId}, argsJson]
+            [startCallbackId, argsJson]
           );
           const startResult = JSON.parse(startResultJson);
           if (!startResult.ok) {
@@ -1901,10 +2199,11 @@ async function setupCustomFunctions(
           return {
             [Symbol.asyncIterator]() { return this; },
             async next() {
+              const nextCallbackId = globalThis.__customFnCallbackIds["${name}:next"];
               const argsJson = JSON.stringify(__marshalForHost([iteratorId]));
               const resultJson = __customFn_invoke.applySyncPromise(
                 undefined,
-                [${nextReg.callbackId}, argsJson]
+                [nextCallbackId, argsJson]
               );
               const result = JSON.parse(resultJson);
               if (!result.ok) {
@@ -1916,19 +2215,21 @@ async function setupCustomFunctions(
               return { done: val.done, value: val.value };
             },
             async return(v) {
+              const returnCallbackId = globalThis.__customFnCallbackIds["${name}:return"];
               const argsJson = JSON.stringify(__marshalForHost([iteratorId, v]));
               const resultJson = __customFn_invoke.applySyncPromise(
                 undefined,
-                [${returnReg.callbackId}, argsJson]
+                [returnCallbackId, argsJson]
               );
               const result = JSON.parse(resultJson);
               return { done: true, value: result.ok ? __unmarshalFromHost(result.value) : undefined };
             },
             async throw(e) {
+              const throwCallbackId = globalThis.__customFnCallbackIds["${name}:throw"];
               const argsJson = JSON.stringify(__marshalForHost([iteratorId, { message: e?.message, name: e?.name }]));
               const resultJson = __customFn_invoke.applySyncPromise(
                 undefined,
-                [${throwReg.callbackId}, argsJson]
+                [throwCallbackId, argsJson]
               );
               const result = JSON.parse(resultJson);
               if (!result.ok) {
@@ -1946,10 +2247,11 @@ async function setupCustomFunctions(
       // Async function: use applySyncPromise and async function wrapper
       context.evalSync(`
         globalThis.${name} = async function(...args) {
+          const callbackId = globalThis.__customFnCallbackIds["${name}"];
           const argsJson = JSON.stringify(__marshalForHost(args));
           const resultJson = __customFn_invoke.applySyncPromise(
             undefined,
-            [${registration.callbackId}, argsJson]
+            [callbackId, argsJson]
           );
           const result = JSON.parse(resultJson);
           if (result.ok) {

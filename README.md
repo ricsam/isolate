@@ -346,6 +346,62 @@ await runtime.eval(`
 `);
 ```
 
+### Runtime Caching with Namespaces
+
+For performance-critical applications, use **namespaces** to cache and reuse runtimes. Namespaced runtimes preserve their V8 isolate, context, and compiled module cache across dispose/create cycles:
+
+```typescript
+const client = await connect({ socket: "/tmp/isolate.sock" });
+
+// Create a namespace for a tenant/user/session
+const namespace = client.createNamespace("tenant-123");
+
+// Create a runtime in this namespace
+const runtime = await namespace.createRuntime({
+  memoryLimitMB: 128,
+  moduleLoader: async (name) => loadModule(name),
+});
+
+console.log(runtime.reused); // false - first time
+
+// Import heavy modules (gets compiled and cached)
+await runtime.eval(`
+  import { heavyLibrary } from "@/heavy-module";
+  console.log("Module loaded!");
+`);
+
+// Dispose returns runtime to pool (soft-delete)
+await runtime.dispose();
+
+// Later: reuse the same namespace (same or different connection!)
+const client2 = await connect({ socket: "/tmp/isolate.sock" });
+const namespace2 = client2.createNamespace("tenant-123");
+const runtime2 = await namespace2.createRuntime({ /* same options */ });
+
+console.log(runtime2.reused); // true - reused from pool!
+// Module cache preserved - no recompilation needed
+await runtime2.eval(`
+  import { heavyLibrary } from "@/heavy-module";  // instant!
+`);
+```
+
+**What's preserved on reuse:**
+- V8 Isolate instance
+- V8 Context
+- Compiled ES module cache
+- Global state and imported modules
+
+**What's reset on reuse:**
+- Owner connection (new owner)
+- Callbacks (re-registered from new client)
+- Timers (cleared)
+- Console state (counters, timers, groups reset)
+
+**Namespace behavior:**
+- Non-namespaced runtimes (`client.createRuntime()`) work as before - true disposal
+- Namespaced runtimes are cached on dispose and evicted via LRU when `maxIsolates` limit is reached
+- Cross-client reuse is allowed - any connection can reuse a namespace by ID
+
 ## Runtime Interface
 
 Both `@ricsam/isolate-runtime` (local) and `@ricsam/isolate-client` (remote) provide the same unified interface:
@@ -354,10 +410,13 @@ Both `@ricsam/isolate-runtime` (local) and `@ricsam/isolate-client` (remote) pro
 interface Runtime {
   readonly id: string;
 
+  /** True if runtime was reused from namespace pool (remote only) */
+  readonly reused?: boolean;
+
   // Execute code as ES module (supports top-level await)
   eval(code: string, filename?: string): Promise<void>;
 
-  // Release all resources
+  // Release all resources (soft-delete if namespaced, hard delete otherwise)
   dispose(): Promise<void>;
 
   // Module handles
