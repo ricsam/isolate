@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
+    "test": "node --test --experimental-strip-types --test-force-exit 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

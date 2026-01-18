@@ -138,10 +138,14 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
       }
     }
 
-    // Reject pending callbacks
+    // Reject pending callbacks and clear their timeouts
     for (const [, pending] of connection.pendingCallbacks) {
+      if (pending.timeoutId) {
+        clearTimeout(pending.timeoutId);
+      }
       pending.reject(new Error("Connection closed"));
     }
+    connection.pendingCallbacks.clear();
 
     state.connections.delete(socket);
   });
@@ -816,29 +820,25 @@ async function handleDispatchRequest(
     // Dispatch to isolate
     const response = await instance.runtime.fetch.dispatchRequest(request);
 
-    // Check response size before serializing
-    const contentLength = response.headers.get("content-length");
-    const knownSize = contentLength ? parseInt(contentLength, 10) : null;
-
-    if (knownSize !== null && knownSize > STREAM_THRESHOLD) {
-      // Large response - stream it
+    // Always stream responses with a body to preserve chunk boundaries
+    // Only inline responses without a body (e.g., 204 No Content)
+    if (response.body) {
       await sendStreamedResponse(connection, message.requestId, response);
     } else {
-      // Try inline serialization
-      const clonedResponse = response.clone();
-      try {
-        const serialized = await serializeResponse(response);
+      // No body - send inline response with just headers
+      const headers: [string, string][] = [];
+      response.headers.forEach((value, key) => {
+        headers.push([key, value]);
+      });
 
-        if (serialized.body && serialized.body.length > STREAM_THRESHOLD) {
-          // Ended up being large - stream the clone
-          await sendStreamedResponse(connection, message.requestId, clonedResponse);
-        } else {
-          sendOk(connection.socket, message.requestId, { response: serialized });
-        }
-      } catch {
-        // Likely too large - stream instead
-        await sendStreamedResponse(connection, message.requestId, clonedResponse);
-      }
+      sendOk(connection.socket, message.requestId, {
+        response: {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+          body: null,
+        },
+      });
     }
   } catch (err) {
     const error = err as Error;
@@ -2320,16 +2320,24 @@ async function handleRunTests(
   try {
     // Run tests with optional timeout
     const timeout = message.timeout ?? 30000;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error("Test timeout")), timeout);
+      timeoutId = setTimeout(() => reject(new Error("Test timeout")), timeout);
     });
 
-    const results = await Promise.race([
-      runTestsInContext(instance.runtime.context),
-      timeoutPromise,
-    ]);
+    try {
+      const results = await Promise.race([
+        runTestsInContext(instance.runtime.context),
+        timeoutPromise,
+      ]);
 
-    sendOk(connection.socket, message.requestId, results);
+      sendOk(connection.socket, message.requestId, results);
+    } finally {
+      // Always clear the timeout to prevent process from hanging
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
   } catch (err) {
     const error = err as Error;
     sendError(

@@ -105,6 +105,7 @@ interface StreamResponseReceiver {
   controller: ReadableStreamDefaultController<Uint8Array>;
   state: "active" | "closed" | "errored";
   pendingChunks: Uint8Array[];  // Buffer for chunks arriving before consumer pulls
+  error?: Error;  // Stored error to propagate after pending chunks are consumed
   pullResolver?: () => void;    // Resolves when consumer wants more data
 }
 
@@ -130,6 +131,8 @@ interface ConnectionState {
   streamResponses: Map<number, StreamResponseReceiver>;
   /** Track upload streams (for request body streaming) */
   uploadStreams: Map<number, StreamUploadSession>;
+  /** Cache for module source code (shared across all runtimes in this connection) */
+  moduleSourceCache: Map<string, string>;
 }
 
 /**
@@ -148,6 +151,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
     connected: true,
     streamResponses: new Map(),
     uploadStreams: new Map(),
+    moduleSourceCache: new Map(),
   };
 
   const parser = createFrameParser();
@@ -164,11 +168,36 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
 
   socket.on("close", () => {
     state.connected = false;
-    // Reject all pending requests
+    // Reject all pending requests and clear their timeouts
     for (const [, pending] of state.pendingRequests) {
+      if (pending.timeoutId) {
+        clearTimeout(pending.timeoutId);
+      }
       pending.reject(new Error("Connection closed"));
     }
     state.pendingRequests.clear();
+
+    // Clean up streaming responses - error any pending streams
+    for (const [, receiver] of state.streamResponses) {
+      receiver.state = "errored";
+      receiver.error = new Error("Connection closed");
+      // Resolve any pending pull so the stream can error properly
+      if (receiver.pullResolver) {
+        const resolver = receiver.pullResolver;
+        receiver.pullResolver = undefined;
+        resolver();
+      }
+    }
+    state.streamResponses.clear();
+
+    // Clean up upload streams
+    for (const [, session] of state.uploadStreams) {
+      session.state = "closed";
+      if (session.creditResolver) {
+        session.creditResolver();
+      }
+    }
+    state.uploadStreams.clear();
   });
 
   socket.on("error", (err) => {
@@ -334,6 +363,13 @@ function handleMessage(message: Message, state: ConnectionState): void {
             return;
           }
           if (receiver.state === "errored") {
+            // Error the stream now that consumer has read all queued chunks
+            // Only call error() once - clear the error after propagating
+            if (receiver.error) {
+              const error = receiver.error;
+              receiver.error = undefined;
+              receiver.controller.error(error);
+            }
             return;
           }
 
@@ -460,20 +496,27 @@ function handleMessage(message: Message, state: ConnectionState): void {
       // Handle error for response streams (streaming mode)
       const receiver = state.streamResponses.get(msg.streamId);
       if (receiver) {
-        // Mark stream as errored
+        // Mark stream as errored and store the error
         receiver.state = "errored";
+        receiver.error = new Error(msg.error);
 
-        // Error the stream controller
-        receiver.controller.error(new Error(msg.error));
+        // Flush any remaining pending chunks to controller
+        // These will be readable before the error is signaled
+        while (receiver.pendingChunks.length > 0) {
+          const chunk = receiver.pendingChunks.shift()!;
+          receiver.controller.enqueue(chunk);
+        }
 
-        // Resolve any pending pull
+        // Resolve any pending pull so consumer can proceed to read queued chunks
+        // The error will be signaled on the next pull() after queue is empty
         if (receiver.pullResolver) {
           const resolver = receiver.pullResolver;
           receiver.pullResolver = undefined;
           resolver();
         }
 
-        // Clean up
+        // Clean up from map - pull() still has access to receiver via closure
+        // Note: Don't call controller.error() here - it discards queued chunks
         state.streamResponses.delete(msg.streamId);
       }
       break;
@@ -1220,6 +1263,7 @@ function registerFsCallbacks(
 
 /**
  * Register module loader callback.
+ * Uses connection-level cache to avoid calling the callback multiple times for the same module.
  */
 function registerModuleLoaderCallback(
   state: ConnectionState,
@@ -1228,7 +1272,21 @@ function registerModuleLoaderCallback(
   const callbackId = state.nextCallbackId++;
 
   state.callbacks.set(callbackId, async (moduleName: unknown) => {
-    return callback(moduleName as string);
+    const specifier = moduleName as string;
+
+    // Check cache first
+    const cached = state.moduleSourceCache.get(specifier);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    // Call the user's module loader
+    const source = await callback(specifier);
+
+    // Cache the source code
+    state.moduleSourceCache.set(specifier, source);
+
+    return source;
   });
 
   return { callbackId, name: "moduleLoader", type: 'async' };
