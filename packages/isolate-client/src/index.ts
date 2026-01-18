@@ -32,4 +32,6 @@ export type {
   SuiteResult,
   CollectedData,
   ConsoleEntry,
+  CustomFunctions,
+  UpgradeRequest,
 } from "./types.ts";

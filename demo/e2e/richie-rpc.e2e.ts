@@ -301,8 +301,8 @@ test.describe("Streaming Tests", () => {
     // Verify event structure
     const messageEvents = result.events.filter((e) => e.type === "message");
     expect(messageEvents.length).toBeGreaterThan(0);
-    expect(messageEvents[0].data).toHaveProperty("count");
-    expect(messageEvents[0].data).toHaveProperty("timestamp");
+    expect(messageEvents[0]!.data).toHaveProperty("count");
+    expect(messageEvents[0]!.data).toHaveProperty("timestamp");
   });
 
   test("SSE connection can be cleanly closed", async ({ page }) => {

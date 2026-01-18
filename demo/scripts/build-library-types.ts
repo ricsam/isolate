@@ -79,7 +79,7 @@ async function buildLibraryTypes() {
     for (const typeFile of pkg.files) {
       const file = Bun.file(typeFile.path);
       if (await file.exists()) {
-        bundle[pkg.name].files.push({
+        bundle[pkg.name]!.files.push({
           content: await file.text(),
           path: typeFile.virtualPath,
         });

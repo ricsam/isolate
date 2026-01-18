@@ -1,20 +1,10 @@
-import {
-  formatTypecheckErrors,
-  typecheckIsolateCode,
-} from "@ricsam/isolate-types";
-import express from "express";
+import { createNodeFileSystemHandler, createRuntime, simpleConsoleHandler, type WebSocketCommand } from "@ricsam/isolate-runtime";
 import { createServerAdapter } from "@whatwg-node/server";
-import {
-  createRuntime,
-  createNodeFileSystemHandler,
-  simpleConsoleHandler,
-  type WebSocketCommand,
-} from "@ricsam/isolate-runtime";
-import { richieRpcHandlerCode } from "./richie-rpc-handlers.ts";
-import { bundleAllModules } from "./bundler.ts";
-import { LIBRARY_TYPES } from "./library-types.ts";
-import { WebSocketServer, WebSocket } from "ws";
 import * as esbuild from "esbuild";
+import express from "express";
+import { WebSocket, WebSocketServer } from "ws";
+import { bundleAllModules } from "./bundler.ts";
+import { richieRpcHandlerCode } from "./richie-rpc-handlers.ts";
 
 // Start server
 const port = parseInt(process.env.PORT || "6421", 10);
@@ -118,11 +108,7 @@ runtime.fetch.onWebSocketCommand((cmd: WebSocketCommand) => {
   if (!ws) return;
 
   if (cmd.type === "message" && cmd.data !== undefined) {
-    ws.send(
-      typeof cmd.data === "string"
-        ? cmd.data
-        : Buffer.from(cmd.data as ArrayBuffer)
-    );
+    ws.send(typeof cmd.data === "string" ? cmd.data : Buffer.from(cmd.data as ArrayBuffer));
   } else if (cmd.type === "close") {
     ws.close(cmd.code ?? 1000, cmd.reason ?? "");
   }
@@ -225,11 +211,7 @@ wss.on("connection", async (ws, req) => {
 
   ws.on("close", (code, reason) => {
     if (activeConnectionId) {
-      runtime.fetch.dispatchWebSocketClose(
-        activeConnectionId,
-        code,
-        reason.toString()
-      );
+      runtime.fetch.dispatchWebSocketClose(activeConnectionId, code, reason.toString());
       wsConnections.delete(activeConnectionId);
     }
   });
