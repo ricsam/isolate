@@ -1,11 +1,8 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
 import ivm from "isolated-vm";
-import {
-  setupConsole,
-  simpleConsoleHandler,
-  type ConsoleEntry,
-} from "./index.ts";
+import { setupConsole, type ConsoleEntry } from "./index.ts";
+import { simpleConsoleHandler } from "./utils.ts";
 
 describe("@ricsam/isolate-console", () => {
   let isolate: ivm.Isolate;

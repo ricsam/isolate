@@ -9,6 +9,7 @@
 
 import { spawn, type Subprocess } from "bun";
 import { connect } from "@ricsam/isolate-client";
+import { simpleConsoleHandler } from "@ricsam/isolate-console/utils";
 
 console.log("✅ Successfully imported @ricsam/isolate-client from Bun!");
 console.log("   connect function:", typeof connect);

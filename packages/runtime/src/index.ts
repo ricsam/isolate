@@ -16,7 +16,13 @@ import {
 import { setupPlaywright } from "@ricsam/isolate-playwright";
 
 import type { ConsoleOptions, ConsoleHandle } from "@ricsam/isolate-console";
-import type { FetchOptions, FetchHandle, DispatchRequestOptions, UpgradeRequest, WebSocketCommand } from "@ricsam/isolate-fetch";
+import type {
+  FetchOptions,
+  FetchHandle,
+  DispatchRequestOptions,
+  UpgradeRequest,
+  WebSocketCommand,
+} from "@ricsam/isolate-fetch";
 import type { FsOptions, FsHandle } from "@ricsam/isolate-fs";
 import type { CoreHandle } from "@ricsam/isolate-core";
 import type { EncodingHandle } from "@ricsam/isolate-encoding";
@@ -113,15 +119,25 @@ export interface PlaywrightOptions {
  */
 export interface RuntimeFetchHandle {
   /** Dispatch HTTP request to serve() handler */
-  dispatchRequest(request: Request, options?: DispatchRequestOptions): Promise<Response>;
+  dispatchRequest(
+    request: Request,
+    options?: DispatchRequestOptions
+  ): Promise<Response>;
   /** Check if isolate requested WebSocket upgrade */
   getUpgradeRequest(): UpgradeRequest | null;
   /** Dispatch WebSocket open event to isolate */
   dispatchWebSocketOpen(connectionId: string): void;
   /** Dispatch WebSocket message event to isolate */
-  dispatchWebSocketMessage(connectionId: string, message: string | ArrayBuffer): void;
+  dispatchWebSocketMessage(
+    connectionId: string,
+    message: string | ArrayBuffer
+  ): void;
   /** Dispatch WebSocket close event to isolate */
-  dispatchWebSocketClose(connectionId: string, code: number, reason: string): void;
+  dispatchWebSocketClose(
+    connectionId: string,
+    code: number,
+    reason: string
+  ): void;
   /** Dispatch WebSocket error event to isolate */
   dispatchWebSocketError(connectionId: string, error: Error): void;
   /** Register callback for WebSocket commands from isolate */
@@ -271,12 +287,16 @@ async function setupCustomFunctions(
       if (!def) {
         return JSON.stringify({
           ok: false,
-          error: { message: `Custom function '${name}' not found`, name: "Error" },
+          error: {
+            message: `Custom function '${name}' not found`,
+            name: "Error",
+          },
         });
       }
       const args = JSON.parse(argsJson) as unknown[];
       try {
-        const result = def.type === 'async' ? await def.fn(...args) : def.fn(...args);
+        const result =
+          def.type === "async" ? await def.fn(...args) : def.fn(...args);
         return JSON.stringify({ ok: true, value: result });
       } catch (error: unknown) {
         const err = error as Error;
@@ -294,10 +314,13 @@ async function setupCustomFunctions(
   const iterStartRef = new ivm.Reference(
     async (name: string, argsJson: string): Promise<string> => {
       const def = customFunctions[name];
-      if (!def || def.type !== 'asyncIterator') {
+      if (!def || def.type !== "asyncIterator") {
         return JSON.stringify({
           ok: false,
-          error: { message: `Async iterator function '${name}' not found`, name: "Error" },
+          error: {
+            message: `Async iterator function '${name}' not found`,
+            name: "Error",
+          },
         });
       }
       try {
@@ -326,7 +349,10 @@ async function setupCustomFunctions(
       if (!session) {
         return JSON.stringify({
           ok: false,
-          error: { message: `Iterator session ${iteratorId} not found`, name: "Error" },
+          error: {
+            message: `Iterator session ${iteratorId} not found`,
+            name: "Error",
+          },
         });
       }
       try {
@@ -334,7 +360,11 @@ async function setupCustomFunctions(
         if (result.done) {
           iteratorSessions.delete(iteratorId);
         }
-        return JSON.stringify({ ok: true, done: result.done, value: result.value });
+        return JSON.stringify({
+          ok: true,
+          done: result.done,
+          value: result.value,
+        });
       } catch (error: unknown) {
         const err = error as Error;
         iteratorSessions.delete(iteratorId);
@@ -380,15 +410,27 @@ async function setupCustomFunctions(
       if (!session) {
         return JSON.stringify({
           ok: false,
-          error: { message: `Iterator session ${iteratorId} not found`, name: "Error" },
+          error: {
+            message: `Iterator session ${iteratorId} not found`,
+            name: "Error",
+          },
         });
       }
       try {
-        const errorData = JSON.parse(errorJson) as { message: string; name: string };
-        const error = Object.assign(new Error(errorData.message), { name: errorData.name });
+        const errorData = JSON.parse(errorJson) as {
+          message: string;
+          name: string;
+        };
+        const error = Object.assign(new Error(errorData.message), {
+          name: errorData.name,
+        });
         const result = await session.iterator.throw?.(error);
         iteratorSessions.delete(iteratorId);
-        return JSON.stringify({ ok: true, done: result?.done ?? true, value: result?.value });
+        return JSON.stringify({
+          ok: true,
+          done: result?.done ?? true,
+          value: result?.value,
+        });
       } catch (error: unknown) {
         const err = error as Error;
         iteratorSessions.delete(iteratorId);
@@ -406,7 +448,7 @@ async function setupCustomFunctions(
   for (const name of Object.keys(customFunctions)) {
     const def = customFunctions[name]!;
 
-    if (def.type === 'async') {
+    if (def.type === "async") {
       // Async function: use applySyncPromise and async function wrapper
       context.evalSync(`
         globalThis.${name} = async function(...args) {
@@ -424,7 +466,7 @@ async function setupCustomFunctions(
           }
         };
       `);
-    } else if (def.type === 'sync') {
+    } else if (def.type === "sync") {
       // Sync function: use applySyncPromise (to await the host) but wrap in regular function
       // The function blocks until the host responds, but returns the value directly (not a Promise)
       context.evalSync(`
@@ -443,7 +485,7 @@ async function setupCustomFunctions(
           }
         };
       `);
-    } else if (def.type === 'asyncIterator') {
+    } else if (def.type === "asyncIterator") {
       // Async iterator function: returns an async iterable object
       context.evalSync(`
         globalThis.${name} = function(...args) {
@@ -496,7 +538,9 @@ function createModuleResolver(
     if (cached) return cached;
 
     if (!state.moduleLoader) {
-      throw new Error(`No module loader registered. Cannot import: ${specifier}`);
+      throw new Error(
+        `No module loader registered. Cannot import: ${specifier}`
+      );
     }
 
     // Invoke module loader to get source code
@@ -616,8 +660,13 @@ export async function createRuntime(
   // Setup test environment (if enabled)
   if (opts.testEnvironment) {
     const testEnvOptions: TestEnvironmentOptions | undefined =
-      typeof opts.testEnvironment === "object" ? opts.testEnvironment : undefined;
-    state.handles.testEnvironment = await setupTestEnvironment(context, testEnvOptions);
+      typeof opts.testEnvironment === "object"
+        ? opts.testEnvironment
+        : undefined;
+    state.handles.testEnvironment = await setupTestEnvironment(
+      context,
+      testEnvOptions
+    );
   }
 
   // Setup playwright (if page provided) - AFTER test environment so expect can be extended
@@ -658,7 +707,10 @@ export async function createRuntime(
 
   // Create fetch handle wrapper
   const fetchHandle: RuntimeFetchHandle = {
-    async dispatchRequest(request: Request, options?: DispatchRequestOptions): Promise<Response> {
+    async dispatchRequest(
+      request: Request,
+      options?: DispatchRequestOptions
+    ): Promise<Response> {
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
@@ -676,7 +728,10 @@ export async function createRuntime(
       }
       state.handles.fetch.dispatchWebSocketOpen(connectionId);
     },
-    dispatchWebSocketMessage(connectionId: string, message: string | ArrayBuffer) {
+    dispatchWebSocketMessage(
+      connectionId: string,
+      message: string | ArrayBuffer
+    ) {
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
@@ -741,20 +796,26 @@ export async function createRuntime(
   const testEnvironmentHandle: RuntimeTestEnvironmentHandle = {
     async runTests(_timeout?: number): Promise<RunResults> {
       if (!state.handles.testEnvironment) {
-        throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
+        throw new Error(
+          "Test environment not enabled. Set testEnvironment: true in createRuntime options."
+        );
       }
       // Note: timeout parameter reserved for future use
       return runTestsInContext(state.context);
     },
     hasTests(): boolean {
       if (!state.handles.testEnvironment) {
-        throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
+        throw new Error(
+          "Test environment not enabled. Set testEnvironment: true in createRuntime options."
+        );
       }
       return hasTestsInContext(state.context);
     },
     getTestCount(): number {
       if (!state.handles.testEnvironment) {
-        throw new Error("Test environment not enabled. Set testEnvironment: true in createRuntime options.");
+        throw new Error(
+          "Test environment not enabled. Set testEnvironment: true in createRuntime options."
+        );
       }
       return getTestCountInContext(state.context);
     },
@@ -767,7 +828,9 @@ export async function createRuntime(
   const playwrightHandle: RuntimePlaywrightHandle = {
     getCollectedData(): CollectedData {
       if (!state.handles.playwright) {
-        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
+        throw new Error(
+          "Playwright not configured. Provide playwright.page in createRuntime options."
+        );
       }
       return {
         browserConsoleLogs: state.handles.playwright.getBrowserConsoleLogs(),
@@ -790,11 +853,15 @@ export async function createRuntime(
     testEnvironment: testEnvironmentHandle,
     playwright: playwrightHandle,
 
-    async eval(code: string, filenameOrOptions?: string | EvalOptions): Promise<void> {
+    async eval(
+      code: string,
+      filenameOrOptions?: string | EvalOptions
+    ): Promise<void> {
       // Parse options
-      const options = typeof filenameOrOptions === 'string'
-        ? { filename: filenameOrOptions }
-        : filenameOrOptions;
+      const options =
+        typeof filenameOrOptions === "string"
+          ? { filename: filenameOrOptions }
+          : filenameOrOptions;
 
       // Compile as ES module
       const mod = await state.isolate.compileModule(code, {
@@ -806,7 +873,11 @@ export async function createRuntime(
       await mod.instantiate(state.context, resolver);
 
       // Evaluate the module with optional timeout
-      await mod.evaluate(options?.maxExecutionMs ? { timeout: options.maxExecutionMs } : undefined);
+      await mod.evaluate(
+        options?.maxExecutionMs
+          ? { timeout: options.maxExecutionMs }
+          : undefined
+      );
     },
 
     async dispose(): Promise<void> {
@@ -841,8 +912,16 @@ export async function createRuntime(
 export { setupCore } from "@ricsam/isolate-core";
 export type { CoreHandle, SetupCoreOptions } from "@ricsam/isolate-core";
 
-export { setupConsole, simpleConsoleHandler } from "@ricsam/isolate-console";
-export type { ConsoleHandle, ConsoleOptions, ConsoleEntry as ConsoleEntryFromConsole, SimpleConsoleCallbacks } from "@ricsam/isolate-console";
+export { setupConsole } from "@ricsam/isolate-console";
+export {
+  simpleConsoleHandler,
+  type SimpleConsoleCallbacks,
+} from "@ricsam/isolate-console/utils";
+export type {
+  ConsoleHandle,
+  ConsoleOptions,
+  ConsoleEntry as ConsoleEntryFromConsole,
+} from "@ricsam/isolate-console";
 
 export { setupCrypto } from "@ricsam/isolate-crypto";
 export type { CryptoHandle } from "@ricsam/isolate-crypto";
@@ -851,10 +930,20 @@ export { setupEncoding } from "@ricsam/isolate-encoding";
 export type { EncodingHandle } from "@ricsam/isolate-encoding";
 
 export { setupFetch } from "@ricsam/isolate-fetch";
-export type { FetchHandle, FetchOptions, WebSocketCommand, UpgradeRequest } from "@ricsam/isolate-fetch";
+export type {
+  FetchHandle,
+  FetchOptions,
+  WebSocketCommand,
+  UpgradeRequest,
+} from "@ricsam/isolate-fetch";
 
 export { setupFs, createNodeFileSystemHandler } from "@ricsam/isolate-fs";
-export type { FsHandle, FsOptions, FileSystemHandler, NodeFileSystemHandlerOptions } from "@ricsam/isolate-fs";
+export type {
+  FsHandle,
+  FsOptions,
+  FileSystemHandler,
+  NodeFileSystemHandlerOptions,
+} from "@ricsam/isolate-fs";
 
 export { setupPath } from "@ricsam/isolate-path";
 export type { PathHandle, PathOptions } from "@ricsam/isolate-path";
@@ -862,7 +951,12 @@ export type { PathHandle, PathOptions } from "@ricsam/isolate-path";
 export { setupTimers } from "@ricsam/isolate-timers";
 export type { TimersHandle } from "@ricsam/isolate-timers";
 
-export { setupTestEnvironment, runTests, hasTests, getTestCount } from "@ricsam/isolate-test-environment";
+export {
+  setupTestEnvironment,
+  runTests,
+  hasTests,
+  getTestCount,
+} from "@ricsam/isolate-test-environment";
 export type {
   TestEnvironmentHandle,
   TestEnvironmentOptions,
@@ -875,7 +969,10 @@ export type {
   SuiteResult,
 } from "@ricsam/isolate-test-environment";
 
-export { setupPlaywright, createPlaywrightHandler } from "@ricsam/isolate-playwright";
+export {
+  setupPlaywright,
+  createPlaywrightHandler,
+} from "@ricsam/isolate-playwright";
 export type {
   PlaywrightHandle,
   PlaywrightSetupOptions,
@@ -886,4 +983,4 @@ export type {
   BrowserConsoleLogEntry,
 } from "@ricsam/isolate-playwright";
 
-export * from './internal.ts';
+export * from "./internal.ts";

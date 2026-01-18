@@ -33,7 +33,8 @@
     "build": "npm run build --workspaces",
     "build:npm": "bun scripts/build.ts",
     "test": "node --test '**/*.test.ts' --test-reporter spec --test-reporter-destination stdout",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test-bun-import": "bun run bun-demo/index.ts"
   },
   "devDependencies": {
     "@changesets/cli": "latest",
