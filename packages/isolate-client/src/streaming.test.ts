@@ -11,7 +11,7 @@ import type { DaemonConnection } from "./types.ts";
 
 const TEST_SOCKET = "/tmp/isolate-streaming-test.sock";
 
-describe.skip("isolate-client streaming", () => {
+describe("isolate-client streaming", () => {
   let daemon: DaemonHandle;
   let client: DaemonConnection;
 

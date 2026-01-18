@@ -2374,9 +2374,13 @@ async function injectStreams(
     _cancelInternal(reason) {
       this.#state = 'closed';
       // Resolve any pending reads with done: true
-      if (this.#reader && this.#reader._pendingRead) {
-        this.#reader._pendingRead.resolve({ value: undefined, done: true });
-        this.#reader._pendingRead = null;
+      if (this.#reader) {
+        if (this.#reader._pendingRead) {
+          this.#reader._pendingRead.resolve({ value: undefined, done: true });
+          this.#reader._pendingRead = null;
+        }
+        // Resolve the reader's closed promise
+        this.#reader._resolveClose?.();
       }
       return Promise.resolve(this.#underlyingSource?.cancel?.(reason));
     }

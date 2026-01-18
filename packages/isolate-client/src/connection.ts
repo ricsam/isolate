@@ -107,7 +107,8 @@ interface StreamResponseReceiver {
   state: "active" | "closed" | "errored";
   pendingChunks: Uint8Array[];  // Buffer for chunks arriving before consumer pulls
   error?: Error;  // Stored error to propagate after pending chunks are consumed
-  pullResolver?: () => void;    // Resolves when consumer wants more data
+  pullResolvers: Array<() => void>;  // Queue of resolvers for pending pull() calls
+  controllerFinalized: boolean;  // True if controller.close() or controller.error() was called
 }
 
 /** Stream session for tracking upload streams (client sending to daemon) */
@@ -182,10 +183,9 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
     for (const [, receiver] of state.streamResponses) {
       receiver.state = "errored";
       receiver.error = new Error("Connection closed");
-      // Resolve any pending pull so the stream can error properly
-      if (receiver.pullResolver) {
-        const resolver = receiver.pullResolver;
-        receiver.pullResolver = undefined;
+      // Resolve all pending pull promises so the stream can error properly
+      const resolvers = receiver.pullResolvers.splice(0);
+      for (const resolver of resolvers) {
         resolver();
       }
     }
@@ -347,6 +347,8 @@ function handleMessage(message: Message, state: ConnectionState): void {
         controller: null as unknown as ReadableStreamDefaultController<Uint8Array>,
         state: "active",
         pendingChunks: [],
+        pullResolvers: [],
+        controllerFinalized: false,
       };
 
       // Create a ReadableStream that yields chunks as they arrive
@@ -357,6 +359,11 @@ function handleMessage(message: Message, state: ConnectionState): void {
         },
         pull(_controller) {
           // Consumer is ready for more data
+          // If controller is already finalized, just return
+          if (receiver.controllerFinalized) {
+            return;
+          }
+
           // Flush any pending chunks first
           while (receiver.pendingChunks.length > 0) {
             const chunk = receiver.pendingChunks.shift()!;
@@ -365,18 +372,21 @@ function handleMessage(message: Message, state: ConnectionState): void {
 
           // If stream is already closed or errored, handle it
           if (receiver.state === "closed") {
-            receiver.controller.close();
-            return;
+            if (!receiver.controllerFinalized) {
+              receiver.controllerFinalized = true;
+              receiver.controller.close();
+            }
+            // Return a resolved Promise to signal completion cleanly
+            return Promise.resolve();
           }
           if (receiver.state === "errored") {
-            // Error the stream now that consumer has read all queued chunks
-            // Only call error() once - clear the error after propagating
-            if (receiver.error) {
-              const error = receiver.error;
-              receiver.error = undefined;
-              receiver.controller.error(error);
+            // Error the stream if not already done
+            if (!receiver.controllerFinalized && receiver.error) {
+              receiver.controllerFinalized = true;
+              receiver.controller.error(receiver.error);
             }
-            return;
+            // Return a resolved Promise to signal completion cleanly
+            return Promise.resolve();
           }
 
           // Send credit to daemon to request more data
@@ -388,25 +398,32 @@ function handleMessage(message: Message, state: ConnectionState): void {
 
           // Return a promise that resolves when the next chunk arrives
           return new Promise<void>((resolve) => {
-            receiver.pullResolver = resolve;
+            receiver.pullResolvers.push(resolve);
           });
         },
         cancel(_reason) {
-          // Consumer cancelled the stream - notify daemon
-          receiver.state = "errored";
+          // Consumer cancelled the stream - mark as closed (not errored)
+          // since cancel is a clean termination
+          receiver.state = "closed";
+          receiver.controllerFinalized = true; // Mark as finalized on cancel
 
-          // Resolve any pending pull promise to allow cleanup
-          if (receiver.pullResolver) {
-            receiver.pullResolver();
-            receiver.pullResolver = undefined;
+          // Resolve ALL pending pull promises to allow cleanup
+          const resolvers = receiver.pullResolvers.splice(0);
+          for (const resolver of resolvers) {
+            resolver();
           }
 
+          // Notify daemon that stream was cancelled
           sendMessage(state.socket, {
             type: MessageType.STREAM_ERROR,
             streamId: msg.streamId,
             error: "Stream cancelled by consumer",
           } as StreamError);
           state.streamResponses.delete(msg.streamId);
+
+          // Return a Promise that resolves after a macrotask to ensure
+          // all internal cleanup and promise resolution is processed
+          return new Promise<void>((resolve) => setTimeout(resolve, 0));
         },
       });
 
@@ -441,11 +458,10 @@ function handleMessage(message: Message, state: ConnectionState): void {
       const msg = message as ResponseStreamChunk;
       const receiver = state.streamResponses.get(msg.streamId);
       if (receiver && receiver.state === "active") {
-        if (receiver.pullResolver) {
-          // Consumer is waiting for data - enqueue directly and resolve
+        if (receiver.pullResolvers.length > 0) {
+          // Consumer is waiting for data - enqueue directly and resolve one pending pull
           receiver.controller.enqueue(msg.chunk);
-          const resolver = receiver.pullResolver;
-          receiver.pullResolver = undefined;
+          const resolver = receiver.pullResolvers.shift()!;
           resolver();
         } else {
           // Consumer not ready - buffer the chunk
@@ -468,13 +484,15 @@ function handleMessage(message: Message, state: ConnectionState): void {
           receiver.controller.enqueue(chunk);
         }
 
-        // Close the stream
-        receiver.controller.close();
+        // Close the stream (only if not already finalized)
+        if (!receiver.controllerFinalized) {
+          receiver.controllerFinalized = true;
+          receiver.controller.close();
+        }
 
-        // Resolve any pending pull
-        if (receiver.pullResolver) {
-          const resolver = receiver.pullResolver;
-          receiver.pullResolver = undefined;
+        // Resolve all pending pull promises
+        const resolvers = receiver.pullResolvers.splice(0);
+        for (const resolver of resolvers) {
           resolver();
         }
 
@@ -520,11 +538,10 @@ function handleMessage(message: Message, state: ConnectionState): void {
           receiver.controller.enqueue(chunk);
         }
 
-        // Resolve any pending pull so consumer can proceed to read queued chunks
+        // Resolve all pending pull promises so consumer can proceed to read queued chunks
         // The error will be signaled on the next pull() after queue is empty
-        if (receiver.pullResolver) {
-          const resolver = receiver.pullResolver;
-          receiver.pullResolver = undefined;
+        const resolvers = receiver.pullResolvers.splice(0);
+        for (const resolver of resolvers) {
           resolver();
         }
 
