@@ -1,5 +1,11 @@
 # @ricsam/isolate-protocol
 
+## 0.1.6
+
+### Patch Changes
+
+- various updates
+
 ## 0.1.5
 
 ### Patch Changes

@@ -1,5 +1,17 @@
 # @ricsam/isolate-test-utils
 
+## 0.1.8
+
+### Patch Changes
+
+- various updates
+- Updated dependencies
+  - @ricsam/isolate-console@0.1.8
+  - @ricsam/isolate-core@0.1.8
+  - @ricsam/isolate-fetch@0.1.8
+  - @ricsam/isolate-fs@0.1.8
+  - @ricsam/isolate-runtime@0.1.9
+
 ## 0.1.7
 
 ### Patch Changes

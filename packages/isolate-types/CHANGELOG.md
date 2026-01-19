@@ -1,5 +1,11 @@
 # @ricsam/isolate-types
 
+## 0.1.8
+
+### Patch Changes
+
+- various updates
+
 ## 0.1.7
 
 ### Patch Changes
