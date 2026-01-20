@@ -56,6 +56,9 @@ import {
   type StreamPull,
   type StreamClose,
   type StreamError,
+  type CallbackStreamStart,
+  type CallbackStreamChunk,
+  type CallbackStreamEnd,
   marshalValue,
   type MarshalContext,
 } from "@ricsam/isolate-protocol";
@@ -125,6 +128,8 @@ interface ConnectionState {
   socket: Socket;
   pendingRequests: Map<number, PendingRequest>;
   callbacks: Map<number, (...args: unknown[]) => unknown>;
+  /** Callback IDs that need requestId passed as last argument (e.g., fetch callbacks for streaming) */
+  callbacksNeedingRequestId: Set<number>;
   nextRequestId: number;
   nextCallbackId: number;
   nextStreamId: number;
@@ -147,6 +152,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
     socket,
     pendingRequests: new Map(),
     callbacks: new Map(),
+    callbacksNeedingRequestId: new Set(),
     nextRequestId: 1,
     nextCallbackId: 1,
     nextStreamId: 1,
@@ -576,10 +582,24 @@ async function handleCallbackInvoke(
       name: "Error",
       message: `Unknown callback: ${invoke.callbackId}`,
     };
+    sendMessage(state.socket, response);
   } else {
     try {
-      const result = await callback(...invoke.args);
+      // Only pass requestId to callbacks that need it (e.g., fetch callbacks for streaming)
+      const needsRequestId = state.callbacksNeedingRequestId.has(invoke.callbackId);
+      const result = needsRequestId
+        ? await callback(...invoke.args, invoke.requestId)
+        : await callback(...invoke.args);
+
+      // Check if this is a streaming response (don't send CALLBACK_RESPONSE, streaming handles it)
+      if (result && typeof result === 'object' && (result as { __callbackStreaming?: boolean }).__callbackStreaming) {
+        // Streaming response - CALLBACK_STREAM_START already sent, body streaming in progress
+        // Don't send a CALLBACK_RESPONSE here
+        return;
+      }
+
       response.result = result;
+      sendMessage(state.socket, response);
     } catch (err) {
       const error = err as Error;
       response.error = {
@@ -587,10 +607,9 @@ async function handleCallbackInvoke(
         message: error.message,
         stack: error.stack,
       };
+      sendMessage(state.socket, response);
     }
   }
-
-  sendMessage(state.socket, response);
 }
 
 /**
@@ -1180,8 +1199,12 @@ function registerConsoleCallbacks(
   return registrations;
 }
 
+/** Threshold for streaming callback responses (64KB) */
+const CALLBACK_STREAM_THRESHOLD = 64 * 1024;
+
 /**
  * Register fetch callback.
+ * Supports streaming responses for large/unknown-size bodies.
  */
 function registerFetchCallback(
   state: ConnectionState,
@@ -1189,13 +1212,108 @@ function registerFetchCallback(
 ): CallbackRegistration {
   const callbackId = state.nextCallbackId++;
 
-  state.callbacks.set(callbackId, async (serialized: unknown) => {
+  // Mark this callback as needing requestId for streaming support
+  state.callbacksNeedingRequestId.add(callbackId);
+
+  // Register a callback that returns a special marker for streaming responses
+  state.callbacks.set(callbackId, async (serialized: unknown, requestId: unknown) => {
     const request = deserializeRequest(serialized as SerializedRequestData);
     const response = await callback(request);
+
+    // Determine if we should stream the response
+    const contentLength = response.headers.get("content-length");
+    const knownSize = contentLength ? parseInt(contentLength, 10) : null;
+
+    // Only stream network responses (responses with http/https URLs)
+    // Locally constructed Responses (no URL or non-http URL) are buffered
+    const isNetworkResponse = response.url && (response.url.startsWith('http://') || response.url.startsWith('https://'));
+
+    // Stream if: network response AND has body AND (no content-length OR size > threshold)
+    const shouldStream = isNetworkResponse && response.body && (knownSize === null || knownSize > CALLBACK_STREAM_THRESHOLD);
+
+    if (shouldStream && response.body) {
+      // Streaming path: send metadata immediately, then stream body
+      const streamId = state.nextStreamId++;
+
+      // Collect headers
+      const headers: [string, string][] = [];
+      response.headers.forEach((value, key) => {
+        headers.push([key, value]);
+      });
+
+      // Send CALLBACK_STREAM_START with metadata
+      sendMessage(state.socket, {
+        type: MessageType.CALLBACK_STREAM_START,
+        requestId: requestId as number,
+        streamId,
+        metadata: {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+          url: response.url || undefined,
+        },
+      } as CallbackStreamStart);
+
+      // Stream the body in the background
+      streamCallbackResponseBody(state, streamId, requestId as number, response.body);
+
+      // Return special marker indicating streaming is in progress
+      return { __callbackStreaming: true, streamId };
+    }
+
+    // Buffered path for small responses
     return serializeResponse(response);
   });
 
   return { callbackId, name: "fetch", type: 'async' };
+}
+
+/**
+ * Stream a callback response body to the daemon.
+ */
+async function streamCallbackResponseBody(
+  state: ConnectionState,
+  streamId: number,
+  requestId: number,
+  body: ReadableStream<Uint8Array>
+): Promise<void> {
+  const reader = body.getReader();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        // Send stream end
+        sendMessage(state.socket, {
+          type: MessageType.CALLBACK_STREAM_END,
+          requestId,
+          streamId,
+        } as CallbackStreamEnd);
+        break;
+      }
+
+      // Send chunk(s) - split large chunks if needed
+      for (let offset = 0; offset < value.length; offset += STREAM_CHUNK_SIZE) {
+        const chunk = value.slice(offset, offset + STREAM_CHUNK_SIZE);
+        sendMessage(state.socket, {
+          type: MessageType.CALLBACK_STREAM_CHUNK,
+          requestId,
+          streamId,
+          chunk,
+        } as CallbackStreamChunk);
+      }
+    }
+  } catch (err) {
+    // Send error
+    sendMessage(state.socket, {
+      type: MessageType.STREAM_ERROR,
+      streamId,
+      error: (err as Error).message,
+    } as StreamError);
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 /**

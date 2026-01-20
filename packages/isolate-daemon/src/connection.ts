@@ -55,6 +55,9 @@ import {
   type StreamPull,
   type StreamClose,
   type StreamError,
+  type CallbackStreamStart,
+  type CallbackStreamChunk,
+  type CallbackStreamEnd,
   encodeValue,
   decodeValue,
   marshalValue,
@@ -86,6 +89,7 @@ import type {
   IsolateInstance,
   PendingRequest,
   CallbackContext,
+  CallbackStreamReceiver,
 } from "./types.ts";
 
 /**
@@ -102,6 +106,7 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
     nextStreamId: 1,
     activeStreams: new Map(),
     streamReceivers: new Map(),
+    callbackStreamReceivers: new Map(),
   };
 
   state.connections.set(socket, connection);
@@ -398,6 +403,19 @@ async function handleMessage(
 
     case MessageType.STREAM_ERROR:
       handleStreamError(message as StreamError, connection);
+      break;
+
+    // Callback streaming messages (for streaming fetch callback responses)
+    case MessageType.CALLBACK_STREAM_START:
+      handleCallbackStreamStart(message as CallbackStreamStart, connection);
+      break;
+
+    case MessageType.CALLBACK_STREAM_CHUNK:
+      handleCallbackStreamChunk(message as CallbackStreamChunk, connection);
+      break;
+
+    case MessageType.CALLBACK_STREAM_END:
+      handleCallbackStreamEnd(message as CallbackStreamEnd, connection);
       break;
 
     default:
@@ -730,8 +748,22 @@ async function handleCreateRuntime(
           const result = await invokeClientCallback(
             conn,
             callbackId,
-            [serialized]
+            [serialized],
+            // Use longer timeout for fetch callbacks since they may involve streaming
+            // The timeout is for the initial response, streaming continues after
+            60000
           );
+
+          // Check if this is a streaming response
+          if (result && typeof result === 'object' && (result as { __streamingResponse?: boolean }).__streamingResponse) {
+            // Streaming response - return the Response directly
+            // Mark it so fetch setup knows to stream it to the isolate
+            const response = (result as { response: Response }).response;
+            (response as Response & { __isCallbackStream?: boolean }).__isCallbackStream = true;
+            return response;
+          }
+
+          // Buffered response - deserialize
           return deserializeResponse(result as SerializedResponseData);
         },
       },
@@ -2461,6 +2493,179 @@ function handleStreamError(message: StreamError, connection: ConnectionState): v
   if (session) {
     session.state = "closed";
     connection.activeStreams.delete(message.streamId);
+  }
+
+  // Also handle callback stream receivers
+  const callbackReceiver = connection.callbackStreamReceivers.get(message.streamId);
+  if (callbackReceiver && callbackReceiver.state === "active") {
+    callbackReceiver.state = "errored";
+    callbackReceiver.error = new Error(message.error);
+
+    // Resolve all pending pull promises so the stream can error properly
+    const resolvers = callbackReceiver.pullResolvers.splice(0);
+    for (const resolver of resolvers) {
+      resolver();
+    }
+
+    connection.callbackStreamReceivers.delete(message.streamId);
+  }
+}
+
+// ============================================================================
+// Callback Stream Handlers (for streaming fetch callback responses)
+// ============================================================================
+
+/**
+ * Handle CALLBACK_STREAM_START message.
+ * Creates a ReadableStream and resolves the pending callback with a Response.
+ */
+function handleCallbackStreamStart(
+  message: CallbackStreamStart,
+  connection: ConnectionState
+): void {
+  // Create a partial receiver that will be completed when the stream is created
+  const receiver: CallbackStreamReceiver = {
+    streamId: message.streamId,
+    requestId: message.requestId,
+    metadata: message.metadata,
+    controller: null as unknown as ReadableStreamDefaultController<Uint8Array>,
+    state: "active",
+    pendingChunks: [],
+    pullResolvers: [],
+    controllerFinalized: false,
+  };
+
+  // Create a ReadableStream that yields chunks as they arrive
+  const readableStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      receiver.controller = controller;
+    },
+    pull(_controller) {
+      // If controller is already finalized, just return
+      if (receiver.controllerFinalized) {
+        return;
+      }
+
+      // If there's a pending chunk, enqueue ONE chunk and return
+      // This preserves streaming behavior - one chunk per pull
+      if (receiver.pendingChunks.length > 0) {
+        const chunk = receiver.pendingChunks.shift()!;
+        receiver.controller.enqueue(chunk);
+        return Promise.resolve();
+      }
+
+      // If stream is already closed or errored, handle it
+      if (receiver.state === "closed") {
+        if (!receiver.controllerFinalized) {
+          receiver.controllerFinalized = true;
+          receiver.controller.close();
+        }
+        return Promise.resolve();
+      }
+      if (receiver.state === "errored") {
+        if (!receiver.controllerFinalized && receiver.error) {
+          receiver.controllerFinalized = true;
+          receiver.controller.error(receiver.error);
+        }
+        return Promise.resolve();
+      }
+
+      // Return a promise that resolves when the next chunk arrives
+      return new Promise<void>((resolve) => {
+        receiver.pullResolvers.push(resolve);
+      });
+    },
+    cancel(_reason) {
+      receiver.state = "closed";
+      receiver.controllerFinalized = true;
+
+      // Resolve all pending pull promises
+      const resolvers = receiver.pullResolvers.splice(0);
+      for (const resolver of resolvers) {
+        resolver();
+      }
+
+      connection.callbackStreamReceivers.delete(message.streamId);
+      return Promise.resolve();
+    },
+  });
+
+  connection.callbackStreamReceivers.set(message.streamId, receiver);
+
+  // Create Response and resolve the pending callback
+  const pending = connection.pendingCallbacks.get(message.requestId);
+  if (pending) {
+    connection.pendingCallbacks.delete(message.requestId);
+    if (pending.timeoutId) {
+      clearTimeout(pending.timeoutId);
+    }
+
+    const response = new Response(readableStream, {
+      status: message.metadata.status,
+      statusText: message.metadata.statusText,
+      headers: message.metadata.headers,
+    });
+
+    // Resolve with the streaming Response
+    pending.resolve({ __streamingResponse: true, response });
+  }
+}
+
+/**
+ * Handle CALLBACK_STREAM_CHUNK message.
+ * Enqueues a chunk to the stream controller.
+ */
+function handleCallbackStreamChunk(
+  message: CallbackStreamChunk,
+  connection: ConnectionState
+): void {
+  const receiver = connection.callbackStreamReceivers.get(message.streamId);
+  if (receiver && receiver.state === "active") {
+    if (receiver.pullResolvers.length > 0) {
+      // Consumer is waiting for data - enqueue directly and resolve one pending pull
+      receiver.controller.enqueue(message.chunk);
+      const resolver = receiver.pullResolvers.shift()!;
+      resolver();
+    } else {
+      // Consumer not ready - buffer the chunk
+      receiver.pendingChunks.push(message.chunk);
+    }
+  }
+}
+
+/**
+ * Handle CALLBACK_STREAM_END message.
+ * Closes the stream controller.
+ */
+function handleCallbackStreamEnd(
+  message: CallbackStreamEnd,
+  connection: ConnectionState
+): void {
+  const receiver = connection.callbackStreamReceivers.get(message.streamId);
+  if (receiver) {
+    // Mark stream as closed
+    receiver.state = "closed";
+
+    // Flush any remaining pending chunks
+    while (receiver.pendingChunks.length > 0) {
+      const chunk = receiver.pendingChunks.shift()!;
+      receiver.controller.enqueue(chunk);
+    }
+
+    // Close the stream (only if not already finalized)
+    if (!receiver.controllerFinalized) {
+      receiver.controllerFinalized = true;
+      receiver.controller.close();
+    }
+
+    // Resolve all pending pull promises
+    const resolvers = receiver.pullResolvers.splice(0);
+    for (const resolver of resolvers) {
+      resolver();
+    }
+
+    // Clean up
+    connection.callbackStreamReceivers.delete(message.streamId);
   }
 }
 

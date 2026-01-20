@@ -57,6 +57,9 @@ export const MessageType = {
   // Bidirectional: Callbacks
   CALLBACK_INVOKE: 0x90,
   CALLBACK_RESPONSE: 0x91,
+  CALLBACK_STREAM_START: 0x92,
+  CALLBACK_STREAM_CHUNK: 0x93,
+  CALLBACK_STREAM_END: 0x94,
 
   // Bidirectional: Stream data
   STREAM_PUSH: 0xa0,
@@ -469,6 +472,44 @@ export interface CallbackResponseMsg extends BaseMessage {
   };
 }
 
+/**
+ * Start a streaming callback response (client → daemon).
+ * Used when the callback returns a Response with a streaming body.
+ */
+export interface CallbackStreamStart extends BaseMessage {
+  type: typeof MessageType.CALLBACK_STREAM_START;
+  /** The stream ID for correlating chunks */
+  streamId: number;
+  /** Response metadata */
+  metadata: {
+    status: number;
+    statusText: string;
+    headers: [string, string][];
+    /** Response URL (for network responses) */
+    url?: string;
+  };
+}
+
+/**
+ * A chunk of streaming callback response data (client → daemon).
+ */
+export interface CallbackStreamChunk extends BaseMessage {
+  type: typeof MessageType.CALLBACK_STREAM_CHUNK;
+  /** The stream ID for correlation */
+  streamId: number;
+  /** The chunk data */
+  chunk: Uint8Array;
+}
+
+/**
+ * End of a streaming callback response (client → daemon).
+ */
+export interface CallbackStreamEnd extends BaseMessage {
+  type: typeof MessageType.CALLBACK_STREAM_END;
+  /** The stream ID for correlation */
+  streamId: number;
+}
+
 // ============================================================================
 // Bidirectional: Stream Data
 // ============================================================================
@@ -600,6 +641,9 @@ export type ClientMessage =
   | GetCollectedDataRequest
   | ClearCollectedDataRequest
   | CallbackResponseMsg
+  | CallbackStreamStart
+  | CallbackStreamChunk
+  | CallbackStreamEnd
   | StreamPush
   | StreamPull
   | StreamClose

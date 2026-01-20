@@ -66,6 +66,8 @@ export interface FetchHandle {
 // ============================================================================
 
 const instanceStateMap = new WeakMap<ivm.Context, Map<number, unknown>>();
+/** Map of streamId -> passthruBody for lazy callback streaming */
+const passthruBodies = new WeakMap<ivm.Context, Map<number, ReadableStream<Uint8Array>>>();
 let nextInstanceId = 1;
 
 function getInstanceStateMapForContext(
@@ -75,6 +77,17 @@ function getInstanceStateMapForContext(
   if (!map) {
     map = new Map();
     instanceStateMap.set(context, map);
+  }
+  return map;
+}
+
+function getPassthruBodiesForContext(
+  context: ivm.Context
+): Map<number, ReadableStream<Uint8Array>> {
+  let map = passthruBodies.get(context);
+  if (!map) {
+    map = new Map();
+    passthruBodies.set(context, map);
   }
   return map;
 }
@@ -93,6 +106,8 @@ interface ResponseState {
   url: string;
   redirected: boolean;
   streamId: number | null;
+  /** Direct pass-through body for callback streams (bypasses registry for better streaming) */
+  passthruBody?: ReadableStream<Uint8Array>;
 }
 
 interface RequestState {
@@ -853,8 +868,12 @@ function setupResponse(
       // Mark as needing async Blob handling - will be read in constructor
       return { __isBlob: true, blob: body };
     }
-    // Handle ReadableStream (both native and host-backed)
-    if (body instanceof ReadableStream || body instanceof HostBackedReadableStream) {
+    // Handle HostBackedReadableStream specially - preserve streamId
+    if (body instanceof HostBackedReadableStream) {
+      return { __isHostStream: true, stream: body, streamId: body._getStreamId() };
+    }
+    // Handle native ReadableStream
+    if (body instanceof ReadableStream) {
       return { __isStream: true, stream: body };
     }
     // Try to convert to string
@@ -909,7 +928,27 @@ function setupResponse(
         return;
       }
 
-      // Handle streaming body
+      // Handle HostBackedReadableStream - reuse existing streamId for pass-through
+      if (preparedBody && preparedBody.__isHostStream) {
+        // Reuse the existing streamId to preserve the pass-through body mapping
+        this.#streamId = preparedBody.streamId;
+        const status = init.status ?? 200;
+        const statusText = init.statusText ?? '';
+        const headers = new Headers(init.headers);
+        const headersArray = Array.from(headers.entries());
+
+        this.#instanceId = __Response_constructStreaming(
+          this.#streamId,
+          status,
+          statusText,
+          headersArray
+        );
+        this.#headers = headers;
+        // Don't pump - the body is already backed by this streamId
+        return;
+      }
+
+      // Handle native ReadableStream body
       if (preparedBody && preparedBody.__isStream) {
         this.#streamId = __Stream_create();
         const status = init.status ?? 200;
@@ -1690,9 +1729,13 @@ function setupRequest(
 // fetch Implementation
 // ============================================================================
 
+/** Threshold for streaming fetch responses (64KB) */
+const FETCH_STREAM_THRESHOLD = 64 * 1024;
+
 function setupFetchFunction(
   context: ivm.Context,
   stateMap: Map<number, unknown>,
+  streamRegistry: StreamStateRegistry,
   options?: FetchOptions
 ): void {
   const global = context.global;
@@ -1728,7 +1771,97 @@ function setupFetchFunction(
       const onFetch = options?.onFetch ?? fetch;
       const nativeResponse = await onFetch(nativeRequest);
 
-      // Read response body
+      // Determine if we should stream the response
+      const contentLength = nativeResponse.headers.get("content-length");
+      const knownSize = contentLength ? parseInt(contentLength, 10) : null;
+
+      // Check for callback stream marker (set by daemon's onFetch for streaming callback responses)
+      const isCallbackStream = (nativeResponse as Response & { __isCallbackStream?: boolean }).__isCallbackStream;
+
+      // Network responses have http/https URLs
+      const isNetworkResponse = nativeResponse.url && (nativeResponse.url.startsWith('http://') || nativeResponse.url.startsWith('https://'));
+
+      // Stream if:
+      // - Callback stream (already streaming from client)
+      // - OR network response with no content-length or size > threshold
+      const shouldStream = nativeResponse.body && (
+        isCallbackStream ||
+        (isNetworkResponse && (knownSize === null || knownSize > FETCH_STREAM_THRESHOLD))
+      );
+
+      if (shouldStream && nativeResponse.body) {
+        // For callback streams, use lazy streaming to preserve timing
+        // For other streams, use eager pumping
+        if (isCallbackStream) {
+          // Create a stream in the registry but don't pump eagerly
+          // Store passthruBody so dispatchRequest can use it directly
+          const streamId = streamRegistry.create();
+          const passthruMap = getPassthruBodiesForContext(context);
+          passthruMap.set(streamId, nativeResponse.body);
+
+          const instanceId = nextInstanceId++;
+          const state: ResponseState = {
+            status: nativeResponse.status,
+            statusText: nativeResponse.statusText,
+            headers: Array.from(nativeResponse.headers.entries()),
+            body: new Uint8Array(0), // Empty for streaming
+            bodyUsed: false,
+            type: "default",
+            url: nativeResponse.url,
+            redirected: nativeResponse.redirected,
+            streamId, // Registry stream for isolate access
+          };
+          stateMap.set(instanceId, state);
+          return instanceId;
+        }
+
+        // Registry path: pump chunks to stream registry
+        const streamId = streamRegistry.create();
+
+        // Store the response state with stream ID immediately
+        const instanceId = nextInstanceId++;
+        const state: ResponseState = {
+          status: nativeResponse.status,
+          statusText: nativeResponse.statusText,
+          headers: Array.from(nativeResponse.headers.entries()),
+          body: new Uint8Array(0), // Empty for streaming
+          bodyUsed: false,
+          type: "default",
+          url: nativeResponse.url,
+          redirected: nativeResponse.redirected,
+          streamId, // Stream ID for body
+        };
+        stateMap.set(instanceId, state);
+
+        // Start pumping chunks in the background with backpressure
+        const reader = nativeResponse.body.getReader();
+        (async () => {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                streamRegistry.close(streamId);
+                break;
+              }
+              if (value) {
+                // Wait for queue to drain if full (backpressure)
+                while (streamRegistry.isQueueFull(streamId)) {
+                  await new Promise(r => setTimeout(r, 1));
+                }
+                streamRegistry.push(streamId, value);
+              }
+            }
+          } catch (err) {
+            streamRegistry.error(streamId, err);
+          } finally {
+            reader.releaseLock();
+          }
+        })();
+
+        return instanceId;
+      }
+
+      // Buffered path for small responses with known size
       const responseBody = await nativeResponse.arrayBuffer();
       const responseBodyArray = Array.from(new Uint8Array(responseBody));
 
@@ -1995,7 +2128,7 @@ export async function setupFetch(
   setupRequest(context, stateMap);
 
   // Setup fetch function
-  setupFetchFunction(context, stateMap, options);
+  setupFetchFunction(context, stateMap, streamRegistry, options);
 
   // Setup serve state
   const serveState: ServeState = {
@@ -2099,7 +2232,32 @@ export async function setupFetch(
           throw new Error("Response state not found");
         }
 
-        // Check if response has streaming body
+        // Check if there's a pass-through body for this stream (callback stream)
+        if (responseState.streamId !== null) {
+          const passthruMap = getPassthruBodiesForContext(context);
+          const passthruBody = passthruMap.get(responseState.streamId);
+
+          if (passthruBody) {
+            // Use pass-through body directly for true streaming
+            passthruMap.delete(responseState.streamId); // Clean up
+
+            const responseHeaders = new Headers(responseState.headers);
+            const status =
+              responseState.status === 101 ? 200 : responseState.status;
+            const response = new Response(passthruBody, {
+              status,
+              statusText: responseState.statusText,
+              headers: responseHeaders,
+            });
+
+            // @ts-expect-error - adding custom property
+            response._originalStatus = responseState.status;
+
+            return response;
+          }
+        }
+
+        // Check if response has streaming body (registry stream)
         if (responseState.streamId !== null) {
           const responseStreamId = responseState.streamId;
           let streamDone = false;

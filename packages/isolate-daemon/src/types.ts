@@ -152,6 +152,26 @@ export interface StreamReceiver {
 }
 
 /**
+ * Callback stream receiver for streaming fetch callback responses.
+ * Receives streamed response body from client for fetch callbacks.
+ */
+export interface CallbackStreamReceiver {
+  streamId: number;
+  requestId: number;
+  metadata: {
+    status: number;
+    statusText: string;
+    headers: [string, string][];
+  };
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  state: "active" | "closed" | "errored";
+  pendingChunks: Uint8Array[];
+  error?: Error;
+  pullResolvers: Array<() => void>;
+  controllerFinalized: boolean;
+}
+
+/**
  * Internal state for a client connection.
  */
 export interface ConnectionState {
@@ -166,6 +186,8 @@ export interface ConnectionState {
   activeStreams: Map<number, StreamSession>;
   /** Active upload stream receivers (client sending to daemon) */
   streamReceivers: Map<number, StreamReceiver>;
+  /** Active callback stream receivers (for streaming fetch callback responses) */
+  callbackStreamReceivers: Map<number, CallbackStreamReceiver>;
 }
 
 /**
