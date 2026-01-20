@@ -1,5 +1,11 @@
 # @ricsam/isolate-fetch
 
+## 0.1.10
+
+### Patch Changes
+
+- fix streaming issue
+
 ## 0.1.9
 
 ### Patch Changes

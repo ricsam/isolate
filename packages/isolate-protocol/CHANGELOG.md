@@ -1,5 +1,11 @@
 # @ricsam/isolate-protocol
 
+## 0.1.8
+
+### Patch Changes
+
+- fix streaming issue
+
 ## 0.1.7
 
 ### Patch Changes

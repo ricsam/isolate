@@ -1,5 +1,13 @@
 # @ricsam/isolate-daemon
 
+## 0.1.9
+
+### Patch Changes
+
+- fix streaming issue
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.8
+
 ## 0.1.8
 
 ### Patch Changes
