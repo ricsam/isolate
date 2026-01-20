@@ -21,7 +21,12 @@
   },
   "devDependencies": {
     "@ricsam/isolate-test-utils": "*",
+    "@ricsam/isolate-timers": "*",
+    "@ricsam/isolate-console": "*",
     "@types/node": "^24",
+    "@types/express": "^5",
+    "@whatwg-node/server": "^0.10.18",
+    "express": "^5.2.1",
     "typescript": "^5"
   },
   "peerDependencies": {
