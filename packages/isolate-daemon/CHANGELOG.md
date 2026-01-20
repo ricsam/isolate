@@ -1,5 +1,11 @@
 # @ricsam/isolate-daemon
 
+## 0.1.7
+
+### Patch Changes
+
+- fix daemon cli export
+
 ## 0.1.6
 
 ### Patch Changes

@@ -361,6 +361,31 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata) => 
     return transformed;
   }
 
+  // Transform bin from source package.json
+  function transformBin(originalBin: string | Record<string, string>): string | Record<string, string> {
+    if (typeof originalBin === 'string') {
+      // Simple string bin path
+      if (originalBin.startsWith('./src/') && originalBin.endsWith('.ts')) {
+        const relativePath = originalBin.replace('./src/', '').replace('.ts', '.cjs');
+        return `./dist/cjs/${relativePath}`;
+      }
+      return originalBin;
+    } else if (typeof originalBin === 'object' && originalBin !== null) {
+      // Object with multiple bin entries
+      const transformed: Record<string, string> = {};
+      for (const [binName, binPath] of Object.entries(originalBin)) {
+        if (binPath.startsWith('./src/') && binPath.endsWith('.ts')) {
+          const relativePath = binPath.replace('./src/', '').replace('.ts', '.cjs');
+          transformed[binName] = `./dist/cjs/${relativePath}`;
+        } else {
+          transformed[binName] = binPath;
+        }
+      }
+      return transformed;
+    }
+    return originalBin;
+  }
+
   // Use transformed exports from package.json if available, otherwise default to index
   if (packageJson.exports && Object.keys(packageJson.exports).length > 0) {
     publishPackageJson.exports = transformExports(packageJson.exports);
@@ -372,6 +397,11 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata) => 
         import: './dist/mjs/index.mjs',
       },
     };
+  }
+
+  // Transform bin field if present
+  if (packageJson.bin) {
+    publishPackageJson.bin = transformBin(packageJson.bin);
   }
 
   // Add isolate types export if this package has type definitions

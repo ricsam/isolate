@@ -14,32 +14,53 @@
  *   --memory-limit <mb> Default memory limit (default: 128)
  */
 
-import { startDaemon } from "../src/index.ts";
+import { startDaemon, type DaemonOptions } from "./index.ts";
 
-function parseArgs(args) {
-  const options = {};
+function parseArgs(args: string[]): Partial<DaemonOptions> {
+  const options: Partial<DaemonOptions> = {};
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
     switch (arg) {
       case "--socket":
-        options.socketPath = args[++i];
+        i++;
+        if (args[i]) {
+          options.socketPath = args[i];
+        }
         break;
       case "--host":
-        options.host = args[++i];
-        options.socketPath = undefined; // Use TCP instead
+        i++;
+        if (args[i]) {
+          options.host = args[i];
+          options.socketPath = undefined; // Use TCP instead
+        }
         break;
-      case "--port":
-        options.port = parseInt(args[++i], 10);
-        options.socketPath = undefined; // Use TCP instead
+      case "--port": {
+        i++;
+        const value = args[i];
+        if (value !== undefined) {
+          options.port = parseInt(value, 10);
+          options.socketPath = undefined; // Use TCP instead
+        }
         break;
-      case "--max-isolates":
-        options.maxIsolates = parseInt(args[++i], 10);
+      }
+      case "--max-isolates": {
+        i++;
+        const value = args[i];
+        if (value !== undefined) {
+          options.maxIsolates = parseInt(value, 10);
+        }
         break;
-      case "--memory-limit":
-        options.defaultMemoryLimitMB = parseInt(args[++i], 10);
+      }
+      case "--memory-limit": {
+        i++;
+        const value = args[i];
+        if (value !== undefined) {
+          options.defaultMemoryLimitMB = parseInt(value, 10);
+        }
         break;
+      }
       case "--help":
       case "-h":
         console.log(`
@@ -58,7 +79,7 @@ Options:
 `);
         process.exit(0);
       default:
-        if (arg.startsWith("-")) {
+        if (arg !== undefined && arg.startsWith("-")) {
           console.error(`Unknown option: ${arg}`);
           process.exit(1);
         }
