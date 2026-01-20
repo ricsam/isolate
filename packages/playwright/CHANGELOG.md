@@ -1,5 +1,13 @@
 # @ricsam/isolate-playwright
 
+## 0.1.7
+
+### Patch Changes
+
+- target node when building
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.7
+
 ## 0.1.6
 
 ### Patch Changes

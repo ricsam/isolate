@@ -1,5 +1,11 @@
 # @ricsam/isolate-types
 
+## 0.1.9
+
+### Patch Changes
+
+- target node when building
+
 ## 0.1.8
 
 ### Patch Changes

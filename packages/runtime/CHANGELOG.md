@@ -1,5 +1,23 @@
 # @ricsam/isolate-runtime
 
+## 0.1.10
+
+### Patch Changes
+
+- target node when building
+- Updated dependencies
+  - @ricsam/isolate-console@0.1.9
+  - @ricsam/isolate-core@0.1.9
+  - @ricsam/isolate-crypto@0.1.9
+  - @ricsam/isolate-encoding@0.1.9
+  - @ricsam/isolate-fetch@0.1.9
+  - @ricsam/isolate-fs@0.1.9
+  - @ricsam/isolate-protocol@0.1.7
+  - @ricsam/isolate-path@0.1.9
+  - @ricsam/isolate-playwright@0.1.7
+  - @ricsam/isolate-test-environment@0.1.9
+  - @ricsam/isolate-timers@0.1.9
+
 ## 0.1.9
 
 ### Patch Changes

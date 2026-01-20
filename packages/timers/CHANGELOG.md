@@ -1,5 +1,13 @@
 # @ricsam/isolate-timers
 
+## 0.1.9
+
+### Patch Changes
+
+- target node when building
+- Updated dependencies
+  - @ricsam/isolate-core@0.1.9
+
 ## 0.1.8
 
 ### Patch Changes

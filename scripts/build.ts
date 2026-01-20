@@ -145,7 +145,7 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata) => 
       packages: 'external',
       external: ['*'],
       naming: `[name].${type}`,
-      target: 'bun',
+      target: 'node',
       plugins: [
         {
           name: 'extension-plugin',
