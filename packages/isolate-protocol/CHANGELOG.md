@@ -1,5 +1,11 @@
 # @ricsam/isolate-protocol
 
+## 0.1.9
+
+### Patch Changes
+
+- new console.log handling
+
 ## 0.1.8
 
 ### Patch Changes

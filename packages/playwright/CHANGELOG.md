@@ -1,5 +1,13 @@
 # @ricsam/isolate-playwright
 
+## 0.1.8
+
+### Patch Changes
+
+- new console.log handling
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.9
+
 ## 0.1.7
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @ricsam/isolate-client
 
+## 0.1.9
+
+### Patch Changes
+
+- new console.log handling
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.9
+  - @ricsam/isolate-playwright@0.1.8
+
 ## 0.1.8
 
 ### Patch Changes

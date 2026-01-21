@@ -1,5 +1,15 @@
 # @ricsam/isolate-test-utils
 
+## 0.1.10
+
+### Patch Changes
+
+- new console.log handling
+- Updated dependencies
+  - @ricsam/isolate-console@0.1.10
+  - @ricsam/isolate-runtime@0.1.11
+  - @ricsam/isolate-fetch@0.1.11
+
 ## 0.1.9
 
 ### Patch Changes

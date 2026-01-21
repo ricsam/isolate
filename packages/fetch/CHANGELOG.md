@@ -1,5 +1,11 @@
 # @ricsam/isolate-fetch
 
+## 0.1.11
+
+### Patch Changes
+
+- new console.log handling
+
 ## 0.1.10
 
 ### Patch Changes
