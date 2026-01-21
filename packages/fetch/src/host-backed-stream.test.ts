@@ -95,7 +95,7 @@ describe("HostBackedReadableStream", () => {
       assert.strictEqual(data.hasReleaseLockMethod, true);
     });
 
-    it("has locked property (always false in current implementation)", () => {
+    it("has locked property that tracks reader state", () => {
       const result = context.evalSync(`
         const stream = new HostBackedReadableStream();
         const before = stream.locked;
@@ -109,31 +109,34 @@ describe("HostBackedReadableStream", () => {
         hasLocked: boolean;
       };
       assert.strictEqual(data.hasLocked, true);
-      // Note: Current implementation always returns false for locked
+      // WHATWG spec: locked is false before getting reader, true after
       assert.strictEqual(data.before, false);
-      assert.strictEqual(data.after, false);
+      assert.strictEqual(data.after, true);
     });
 
-    it("allows getting multiple readers (current implementation)", () => {
-      // Note: This differs from WHATWG spec but matches current implementation
+    it("throws when getting multiple readers (WHATWG spec behavior)", () => {
+      // Per WHATWG spec, getting a reader on a locked stream should throw
       const result = context.evalSync(`
-        const stream = new HostBackedReadableStream();
-        const reader1 = stream.getReader();
-        const reader2 = stream.getReader();
-        JSON.stringify({
-          hasReader1: reader1 != null,
-          hasReader2: reader2 != null,
-          areDifferent: reader1 !== reader2
-        })
+        try {
+          const stream = new HostBackedReadableStream();
+          const reader1 = stream.getReader();
+          const reader2 = stream.getReader();
+          JSON.stringify({ threw: false });
+        } catch (e) {
+          JSON.stringify({
+            threw: true,
+            isTypeError: e instanceof TypeError,
+            message: e.message
+          });
+        }
       `);
       const data = JSON.parse(result as string) as {
-        hasReader1: boolean;
-        hasReader2: boolean;
-        areDifferent: boolean;
+        threw: boolean;
+        isTypeError?: boolean;
+        message?: string;
       };
-      assert.strictEqual(data.hasReader1, true);
-      assert.strictEqual(data.hasReader2, true);
-      assert.strictEqual(data.areDifferent, true);
+      assert.strictEqual(data.threw, true);
+      assert.strictEqual(data.isTypeError, true);
     });
   });
 

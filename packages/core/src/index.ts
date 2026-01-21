@@ -1840,7 +1840,17 @@ async function injectBlob(
         // Internal: creating from existing instance ID (set via _setInstanceId)
         return;
       }
-      const instanceId = __Blob_construct(parts, options);
+      // Pre-process parts: extract bytes from Blob/File instances
+      const processedParts = [];
+      for (const part of (parts || [])) {
+        if (part instanceof Blob) {
+          // Get bytes synchronously via host callback
+          processedParts.push(__Blob_bytes(part._getInstanceId()));
+        } else {
+          processedParts.push(part);
+        }
+      }
+      const instanceId = __Blob_construct(processedParts, options);
       _blobInstanceIds.set(this, instanceId);
     }
 
@@ -1895,7 +1905,16 @@ async function injectBlob(
     constructor(parts, name, options = {}) {
       // Create file through host callback
       super(null, null);
-      const instanceId = __File_construct(parts, name, options);
+      // Pre-process parts: extract bytes from Blob/File instances
+      const processedParts = [];
+      for (const part of (parts || [])) {
+        if (part instanceof Blob) {
+          processedParts.push(__Blob_bytes(part._getInstanceId()));
+        } else {
+          processedParts.push(part);
+        }
+      }
+      const instanceId = __File_construct(processedParts, name, options);
       _blobInstanceIds.set(this, instanceId);
     }
 
@@ -1905,6 +1924,10 @@ async function injectBlob(
 
     get lastModified() {
       return __File_get_lastModified(this._getInstanceId());
+    }
+
+    get webkitRelativePath() {
+      return "";
     }
 
     slice(start, end, contentType) {

@@ -391,10 +391,8 @@ describe("Response Consistency", () => {
       });
     }
 
-    // WHATWG Issue: Response.body from fetch is not a proper ReadableStream
-    // See WHATWG_INCONSISTENCIES.md#4-responsebody-from-fetch-is-not-a-proper-readablestream
     describe("ReadableStream Compliance (fetchCallback)", () => {
-      test.todo("body instanceof ReadableStream when from fetchCallback", async () => {
+      test("body instanceof ReadableStream when from fetchCallback", async () => {
         await getResponseFromOrigin(ctx, "fetchCallback", "test");
         await ctx.eval(`
           setResult(__testResponse.body instanceof ReadableStream);
@@ -402,7 +400,7 @@ describe("Response Consistency", () => {
         assert.strictEqual(ctx.getResult(), true, "body should be instanceof ReadableStream");
       });
 
-      test.todo("body.constructor.name is ReadableStream when from fetchCallback", async () => {
+      test("body.constructor.name is ReadableStream when from fetchCallback", async () => {
         await getResponseFromOrigin(ctx, "fetchCallback", "test");
         await ctx.eval(`
           setResult(__testResponse.body.constructor.name);
@@ -410,7 +408,7 @@ describe("Response Consistency", () => {
         assert.strictEqual(ctx.getResult(), "ReadableStream", "body constructor should be ReadableStream");
       });
 
-      test.todo("body.tee() exists when from fetchCallback", async () => {
+      test("body.tee() exists when from fetchCallback", async () => {
         await getResponseFromOrigin(ctx, "fetchCallback", "test");
         await ctx.eval(`
           setResult(typeof __testResponse.body.tee === 'function');
@@ -418,7 +416,7 @@ describe("Response Consistency", () => {
         assert.strictEqual(ctx.getResult(), true, "tee() should be a function");
       });
 
-      test.todo("body.tee() works when from fetchCallback", async () => {
+      test("body.tee() works when from fetchCallback", async () => {
         await getResponseFromOrigin(ctx, "fetchCallback", "hello");
         await ctx.eval(`
           const [stream1, stream2] = __testResponse.body.tee();
@@ -436,7 +434,7 @@ describe("Response Consistency", () => {
         assert.strictEqual(result.stream2HasValue, true);
       });
 
-      test.todo("body.pipeThrough() exists when from fetchCallback", async () => {
+      test("body.pipeThrough() exists when from fetchCallback", async () => {
         await getResponseFromOrigin(ctx, "fetchCallback", "test");
         await ctx.eval(`
           setResult(typeof __testResponse.body.pipeThrough === 'function');
@@ -444,7 +442,7 @@ describe("Response Consistency", () => {
         assert.strictEqual(ctx.getResult(), true, "pipeThrough() should be a function");
       });
 
-      test.todo("body.pipeTo() exists when from fetchCallback", async () => {
+      test("body.pipeTo() exists when from fetchCallback", async () => {
         await getResponseFromOrigin(ctx, "fetchCallback", "test");
         await ctx.eval(`
           setResult(typeof __testResponse.body.pipeTo === 'function');
@@ -452,7 +450,7 @@ describe("Response Consistency", () => {
         assert.strictEqual(ctx.getResult(), true, "pipeTo() should be a function");
       });
 
-      test.todo("body.values() exists when from fetchCallback", async () => {
+      test("body.values() exists when from fetchCallback", async () => {
         await getResponseFromOrigin(ctx, "fetchCallback", "test");
         await ctx.eval(`
           setResult(typeof __testResponse.body.values === 'function');

@@ -273,9 +273,7 @@ describe("Request Consistency", () => {
       });
     }
 
-    // WHATWG Issue: Request body not transferred to serve() handler
-    // See WHATWG_INCONSISTENCIES.md#3-request-body-not-transferred-to-serve-handler
-    test.todo("text() returns body content when from serveRequest", async () => {
+    test("text() returns body content when from serveRequest", async () => {
       await getRequestFromOrigin(ctx, "serveRequest", "https://example.com", {
         method: "POST",
         body: "hello world",
@@ -287,7 +285,7 @@ describe("Request Consistency", () => {
       assert.strictEqual(ctx.getResult(), "hello world", "Request body should be transferred to serve handler");
     });
 
-    test.todo("json() parses JSON body when from serveRequest", async () => {
+    test("json() parses JSON body when from serveRequest", async () => {
       await getRequestFromOrigin(ctx, "serveRequest", "https://example.com", {
         method: "POST",
         body: '{"foo": "bar"}',
@@ -300,7 +298,7 @@ describe("Request Consistency", () => {
       assert.deepStrictEqual(JSON.parse(ctx.getResult() as string), { foo: "bar" });
     });
 
-    test.todo("arrayBuffer() returns buffer when from serveRequest", async () => {
+    test("arrayBuffer() returns buffer when from serveRequest", async () => {
       await getRequestFromOrigin(ctx, "serveRequest", "https://example.com", {
         method: "POST",
         body: "ABCDE",

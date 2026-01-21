@@ -534,76 +534,78 @@ const hostBackedStreamCode = `
 (function() {
   const _streamIds = new WeakMap();
 
-  class HostBackedReadableStream {
+  // Polyfill values() on ReadableStream if not available (older V8 versions)
+  if (typeof ReadableStream.prototype.values !== 'function') {
+    ReadableStream.prototype.values = function(options) {
+      const reader = this.getReader();
+      return {
+        async next() {
+          const { value, done } = await reader.read();
+          if (done) {
+            reader.releaseLock();
+            return { value: undefined, done: true };
+          }
+          return { value, done: false };
+        },
+        async return(value) {
+          reader.releaseLock();
+          return { value, done: true };
+        },
+        [Symbol.asyncIterator]() {
+          return this;
+        }
+      };
+    };
+  }
+
+  // Create a proper ReadableStream subclass that reports as "ReadableStream"
+  class HostBackedReadableStream extends ReadableStream {
     constructor(streamId) {
       if (streamId === undefined) {
         streamId = __Stream_create();
       }
+
+      let closed = false;
+
+      super({
+        async pull(controller) {
+          if (closed) return;
+
+          const resultJson = __Stream_pull_ref.applySyncPromise(undefined, [streamId]);
+          const result = JSON.parse(resultJson);
+
+          if (result.done) {
+            closed = true;
+            controller.close();
+            return;
+          }
+          controller.enqueue(new Uint8Array(result.value));
+        },
+        cancel(reason) {
+          closed = true;
+          __Stream_error(streamId, String(reason || "cancelled"));
+        }
+      });
+
       _streamIds.set(this, streamId);
+    }
+
+    // Override to report as ReadableStream for spec compliance
+    get [Symbol.toStringTag]() {
+      return 'ReadableStream';
     }
 
     _getStreamId() {
       return _streamIds.get(this);
     }
 
-    getReader() {
-      const streamId = this._getStreamId();
-      let released = false;
-
-      return {
-        read: async () => {
-          if (released) {
-            throw new TypeError("Reader has been released");
-          }
-          const resultJson = __Stream_pull_ref.applySyncPromise(undefined, [streamId]);
-          const result = JSON.parse(resultJson);
-
-          if (result.done) {
-            return { done: true, value: undefined };
-          }
-          return { done: false, value: new Uint8Array(result.value) };
-        },
-
-        releaseLock: () => {
-          released = true;
-        },
-
-        get closed() {
-          return new Promise(() => {});
-        },
-
-        cancel: async (reason) => {
-          __Stream_error(streamId, String(reason || "cancelled"));
-        }
-      };
-    }
-
-    async cancel(reason) {
-      __Stream_error(this._getStreamId(), String(reason || "cancelled"));
-    }
-
-    get locked() {
-      return false;
-    }
-
-    async *[Symbol.asyncIterator]() {
-      const reader = this.getReader();
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) return;
-          yield value;
-        }
-      } finally {
-        reader.releaseLock();
-      }
-    }
-
-    // Static method to create from existing stream ID
     static _fromStreamId(streamId) {
       return new HostBackedReadableStream(streamId);
     }
   }
+
+  // Make constructor.name return 'ReadableStream' for spec compliance
+  Object.defineProperty(HostBackedReadableStream, 'name', { value: 'ReadableStream' });
 
   globalThis.HostBackedReadableStream = HostBackedReadableStream;
 })();
@@ -2346,14 +2348,24 @@ export async function setupFetch(
 
         return response;
       } finally {
+        // Wait for native body to finish streaming into registry
+        if (requestStreamId !== null) {
+          // Give time for small bodies to fully stream
+          const startTime = Date.now();
+          let streamState = streamRegistry.get(requestStreamId);
+          while (streamState && !streamState.closed && !streamState.errored && Date.now() - startTime < 100) {
+            await new Promise(resolve => setTimeout(resolve, 5));
+            streamState = streamRegistry.get(requestStreamId);
+          }
+        }
+
         // Cleanup: cancel stream reader if still running
         if (streamCleanup) {
           await streamCleanup();
         }
-        // Delete stream from registry
-        if (requestStreamId !== null) {
-          streamRegistry.delete(requestStreamId);
-        }
+
+        // Don't delete stream here - let it be consumed by the Request
+        // Stream will be cleaned up when context is disposed
       }
     },
 

@@ -654,9 +654,9 @@ function sendRequest<T>(
 /**
  * Create a runtime in the daemon.
  */
-async function createRuntime(
+async function createRuntime<T extends Record<string, any[]> = Record<string, unknown[]>>(
   state: ConnectionState,
-  options: RuntimeOptions = {},
+  options: RuntimeOptions<T> = {},
   namespaceId?: string
 ): Promise<RemoteRuntime> {
   // Register callbacks
@@ -682,7 +682,7 @@ async function createRuntime(
   }
 
   if (options.customFunctions) {
-    callbacks.custom = registerCustomFunctions(state, options.customFunctions);
+    callbacks.custom = registerCustomFunctions(state, options.customFunctions as CustomFunctions<Record<string, unknown[]>>);
   }
 
   // Playwright callback registration - client owns the browser

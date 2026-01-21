@@ -80,7 +80,7 @@ export interface TestEnvironmentOptions {
 /**
  * Options for creating a runtime.
  */
-export interface RuntimeOptions {
+export interface RuntimeOptions<T extends Record<string, any[]> = Record<string, unknown[]>> {
   /** Memory limit in megabytes (optional) */
   memoryLimitMB?: number;
   /** Console callback handlers */
@@ -92,7 +92,7 @@ export interface RuntimeOptions {
   /** Module loader callback for resolving dynamic imports */
   moduleLoader?: ModuleLoaderCallback;
   /** Custom functions callable from within the isolate */
-  customFunctions?: CustomFunctions;
+  customFunctions?: CustomFunctions<T>;
   /** Current working directory for path.resolve(). Defaults to "/" */
   cwd?: string;
   /** Enable test environment (describe, it, expect, etc.) */
@@ -160,19 +160,19 @@ export type { CustomFunctionType };
 /**
  * A custom function that can be called from within the isolate.
  */
-export type CustomFunction = (...args: unknown[]) => unknown | Promise<unknown>;
+export type CustomFunction<T extends any[] = unknown[]> = (...args: T) => unknown | Promise<unknown>;
 
 /**
  * An async generator function that can be consumed in the isolate via for await...of.
  */
-export type CustomAsyncGeneratorFunction = (...args: unknown[]) => AsyncGenerator<unknown, unknown, unknown>;
+export type CustomAsyncGeneratorFunction<T extends any[] = unknown[]> = (...args: T) => AsyncGenerator<unknown, unknown, unknown>;
 
 /**
  * Custom function definition with metadata.
  */
-export interface CustomFunctionDefinition {
+export interface CustomFunctionDefinition<T extends any[] = unknown[]> {
   /** The function implementation */
-  fn: CustomFunction | CustomAsyncGeneratorFunction;
+  fn: CustomFunction<T> | CustomAsyncGeneratorFunction<T>;
   /** Function type: 'sync', 'async', or 'asyncIterator' */
   type: CustomFunctionType;
 }
@@ -180,7 +180,9 @@ export interface CustomFunctionDefinition {
 /**
  * Custom functions to register in the runtime.
  */
-export type CustomFunctions = Record<string, CustomFunctionDefinition>;
+export type CustomFunctions<T extends Record<string, any[]> = Record<string, unknown[]>> = {
+  [K in keyof T]: CustomFunctionDefinition<T[K]>;
+}
 
 /**
  * Options for eval() method.

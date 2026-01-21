@@ -684,20 +684,20 @@ export type ModuleLoaderCallback = (
 /**
  * A custom function that can be called from within the isolate.
  */
-export type CustomFunction = (...args: unknown[]) => unknown | Promise<unknown>;
+export type CustomFunction<T extends any[] = unknown[]> = (...args: T) => unknown | Promise<unknown>;
 
 /**
  * An async generator function that can be consumed in the isolate via for await...of.
  */
-export type CustomAsyncGeneratorFunction = (...args: unknown[]) => AsyncGenerator<unknown, unknown, unknown>;
+export type CustomAsyncGeneratorFunction<T extends any[] = unknown[]> = (...args: T) => AsyncGenerator<unknown, unknown, unknown>;
 
 /**
  * Custom function definition with metadata.
  * Requires explicit `type` property to indicate function behavior.
  */
-export interface CustomFunctionDefinition {
+export interface CustomFunctionDefinition<T extends any[] = unknown[]> {
   /** The function implementation */
-  fn: CustomFunction | CustomAsyncGeneratorFunction;
+  fn: CustomFunction<T> | CustomAsyncGeneratorFunction<T>;
   /** Function type: 'sync', 'async', or 'asyncIterator' */
   type: CustomFunctionType;
 }
@@ -731,7 +731,9 @@ export interface CustomFunctionDefinition {
  * }
  * ```
  */
-export type CustomFunctions = Record<string, CustomFunctionDefinition>;
+export type CustomFunctions<T extends Record<string, any[]> = Record<string, unknown[]>> = {
+  [K in keyof T]: CustomFunctionDefinition<T[K]>;
+}
 
 /**
  * Console entry types for structured console output.

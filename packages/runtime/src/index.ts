@@ -73,7 +73,7 @@ export type {
 /**
  * Options for creating a runtime.
  */
-export interface RuntimeOptions {
+export interface RuntimeOptions<T extends Record<string, any[]> = Record<string, unknown[]>> {
   /** Memory limit in megabytes (optional) */
   memoryLimitMB?: number;
   /** Console callback handlers */
@@ -89,7 +89,7 @@ export interface RuntimeOptions {
   /** Module loader callback for resolving dynamic imports */
   moduleLoader?: ModuleLoaderCallback;
   /** Custom functions callable from within the isolate */
-  customFunctions?: CustomFunctions;
+  customFunctions?: CustomFunctions<T>;
   /** Current working directory for path.resolve(). Defaults to "/" */
   cwd?: string;
   /** Enable test environment (describe, it, expect, etc.) */
@@ -595,8 +595,8 @@ function convertFetchCallback(callback?: FetchCallback): FetchOptions {
  *
  * await runtime.dispose();
  */
-export async function createRuntime(
-  options?: RuntimeOptions
+export async function createRuntime<T extends Record<string, any[]> = Record<string, unknown[]>>(
+  options?: RuntimeOptions<T>
 ): Promise<RuntimeHandle> {
   const opts = options ?? {};
 
@@ -616,7 +616,7 @@ export async function createRuntime(
     handles: {},
     moduleCache: new Map(),
     moduleLoader: opts.moduleLoader,
-    customFunctions: opts.customFunctions,
+    customFunctions: opts.customFunctions as CustomFunctions<Record<string, unknown[]>>,
   };
 
   // Setup all APIs in order
@@ -653,7 +653,7 @@ export async function createRuntime(
   if (opts.customFunctions) {
     state.customFnInvokeRef = await setupCustomFunctions(
       context,
-      opts.customFunctions
+      opts.customFunctions as CustomFunctions<Record<string, unknown[]>>
     );
   }
 

@@ -41,9 +41,7 @@ describe("File Consistency", () => {
         assert.strictEqual(ctx.getResult(), true);
       });
 
-      // WHATWG Issue: webkitRelativePath should always exist as empty string
-      // See WHATWG_INCONSISTENCIES.md#2-filewebkitrelativepath-property-missing
-      test.todo(`webkitRelativePath property exists as string when from ${origin}`, async () => {
+      test(`webkitRelativePath property exists as string when from ${origin}`, async () => {
         await getFileFromOrigin(ctx, origin, "content", "test.txt");
         await ctx.eval(`
           setResult({
@@ -98,9 +96,7 @@ describe("File Consistency", () => {
         assert.strictEqual(ctx.getResult(), timestamp);
       });
 
-      // WHATWG Issue: webkitRelativePath should be empty string
-      // See WHATWG_INCONSISTENCIES.md#2-filewebkitrelativepath-property-missing
-      test.todo(`webkitRelativePath is empty string when from ${origin}`, async () => {
+      test(`webkitRelativePath is empty string when from ${origin}`, async () => {
         await getFileFromOrigin(ctx, origin, "content", "test.txt");
         await ctx.eval(`
           setResult(__testFile.webkitRelativePath);
@@ -334,9 +330,7 @@ describe("File Consistency", () => {
       assert.strictEqual(result.text, "hello world");
     });
 
-    // WHATWG Issue: File from Blob should read content, not toString()
-    // See WHATWG_INCONSISTENCIES.md#1-blob-constructor-doesnt-handle-blobfile-parts
-    test.todo("new File([Blob], name) creates file from blob with correct content", async () => {
+    test("new File([Blob], name) creates file from blob with correct content", async () => {
       await ctx.eval(`
         const blob = new Blob(["blob content"]);
         const file = new File([blob], "from-blob.txt");
@@ -353,9 +347,7 @@ describe("File Consistency", () => {
       assert.strictEqual(result.name, "from-blob.txt");
     });
 
-    // WHATWG Issue: File from File should read content, not toString()
-    // See WHATWG_INCONSISTENCIES.md#1-blob-constructor-doesnt-handle-blobfile-parts
-    test.todo("new File([File], name) creates file from file with correct content", async () => {
+    test("new File([File], name) creates file from file with correct content", async () => {
       await ctx.eval(`
         const original = new File(["original content"], "original.txt", { type: "text/plain" });
         const copy = new File([original], "copy.txt");

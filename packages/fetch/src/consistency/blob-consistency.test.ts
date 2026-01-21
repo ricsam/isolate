@@ -387,9 +387,7 @@ describe("Blob Consistency", () => {
       assert.strictEqual(ctx.getResult(), "text/plain");
     });
 
-    // WHATWG Issue: Blob from Blob should read content, not toString()
-    // See WHATWG_INCONSISTENCIES.md#1-blob-constructor-doesnt-handle-blobfile-parts
-    test.todo("new Blob([Blob]) creates blob from other blob with correct content", async () => {
+    test("new Blob([Blob]) creates blob from other blob with correct content", async () => {
       await ctx.eval(`
         const original = new Blob(["hello"]);
         const copy = new Blob([original]);
