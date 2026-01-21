@@ -37,7 +37,7 @@ describe("@ricsam/isolate-runtime", () => {
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0] as string;
+              logValue = entry.stdout;
             }
           },
         },
@@ -57,7 +57,7 @@ describe("@ricsam/isolate-runtime", () => {
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0] as string;
+              logValue = entry.stdout;
             }
           },
         },
@@ -108,12 +108,12 @@ describe("@ricsam/isolate-runtime", () => {
 
   describe("moduleLoader", () => {
     test("module imports work with moduleLoader", async () => {
-      let logValue: unknown = null;
+      let logValue: string | null = null;
       const runtime = await createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0];
+              logValue = entry.stdout;
             }
           },
         },
@@ -137,19 +137,19 @@ describe("@ricsam/isolate-runtime", () => {
           import { add, multiply } from "@/utils";
           console.log(add(2, 3));
         `);
-        assert.strictEqual(logValue, 5);
+        assert.strictEqual(logValue, "5");
       } finally {
         await runtime.dispose();
       }
     });
 
     test("nested module imports work", async () => {
-      let logValue: unknown = null;
+      let logValue: string | null = null;
       const runtime = await createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0];
+              logValue = entry.stdout;
             }
           },
         },
@@ -174,7 +174,7 @@ describe("@ricsam/isolate-runtime", () => {
           import { addWithConstant } from "@/math";
           console.log(addWithConstant(5));
         `);
-        assert.strictEqual(logValue, 15);
+        assert.strictEqual(logValue, "15");
       } finally {
         await runtime.dispose();
       }
@@ -213,12 +213,12 @@ describe("@ricsam/isolate-runtime", () => {
 
   describe("customFunctions", () => {
     test("custom functions are callable from isolate", async () => {
-      let logValue: unknown = null;
+      let logValue: string | null = null;
       const runtime = await createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0];
+              logValue = entry.stdout;
             }
           },
         },
@@ -237,19 +237,19 @@ describe("@ricsam/isolate-runtime", () => {
           const result = await addNumbers(10, 20);
           console.log(result);
         `);
-        assert.strictEqual(logValue, 30);
+        assert.strictEqual(logValue, "30");
       } finally {
         await runtime.dispose();
       }
     });
 
     test("custom functions can be sync", async () => {
-      let logValue: unknown = null;
+      let logValue: string | null = null;
       const runtime = await createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0];
+              logValue = entry.stdout;
             }
           },
         },
@@ -300,12 +300,12 @@ describe("@ricsam/isolate-runtime", () => {
     });
 
     test("async iterator yields values", async () => {
-      let logValue: unknown = null;
+      let logValue: string | null = null;
       const runtime = await createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0];
+              logValue = entry.stdout;
             }
           },
         },
@@ -325,7 +325,7 @@ describe("@ricsam/isolate-runtime", () => {
           for await (const n of countUp(3)) arr.push(n);
           console.log(arr);
         `);
-        assert.deepStrictEqual(logValue, [0, 1, 2]);
+        assert.strictEqual(logValue, "[ 0, 1, 2 ]");
       } finally {
         await runtime.dispose();
       }
@@ -401,32 +401,32 @@ describe("@ricsam/isolate-runtime", () => {
         const outputEntries = entries.filter((e) => e.type === "output");
         assert.strictEqual(outputEntries.length, 3, "should have captured 3 logs");
 
-        const logEntry = outputEntries[0] as { type: "output"; level: string; args: unknown[] };
+        const logEntry = outputEntries[0] as { type: "output"; level: string; stdout: string };
         assert.strictEqual(logEntry.level, "log");
-        assert.deepStrictEqual(logEntry.args, ["hello", "world"]);
+        assert.strictEqual(logEntry.stdout, "hello world");
 
-        const warnEntry = outputEntries[1] as { type: "output"; level: string; args: unknown[] };
+        const warnEntry = outputEntries[1] as { type: "output"; level: string; stdout: string };
         assert.strictEqual(warnEntry.level, "warn");
-        assert.deepStrictEqual(warnEntry.args, ["warning message"]);
+        assert.strictEqual(warnEntry.stdout, "warning message");
 
-        const errorEntry = outputEntries[2] as { type: "output"; level: string; args: unknown[] };
+        const errorEntry = outputEntries[2] as { type: "output"; level: string; stdout: string };
         assert.strictEqual(errorEntry.level, "error");
-        assert.deepStrictEqual(errorEntry.args, ["error message"]);
+        assert.strictEqual(errorEntry.stdout, "error message");
       } finally {
         await runtime.dispose();
       }
     });
 
     test("simpleConsoleHandler routes to level callbacks", async () => {
-      const logs: unknown[][] = [];
-      const warns: unknown[][] = [];
-      const errors: unknown[][] = [];
+      const logs: string[] = [];
+      const warns: string[] = [];
+      const errors: string[] = [];
 
       const runtime = await createRuntime({
         console: simpleConsoleHandler({
-          log: (...args) => logs.push(args),
-          warn: (...args) => warns.push(args),
-          error: (...args) => errors.push(args),
+          log: (msg) => logs.push(msg),
+          warn: (msg) => warns.push(msg),
+          error: (msg) => errors.push(msg),
         }),
       });
 
@@ -437,9 +437,9 @@ describe("@ricsam/isolate-runtime", () => {
           console.error("error message", 3);
         `);
 
-        assert.deepStrictEqual(logs, [["log message", 1]]);
-        assert.deepStrictEqual(warns, [["warn message", 2]]);
-        assert.deepStrictEqual(errors, [["error message", 3]]);
+        assert.deepStrictEqual(logs, ["log message 1"]);
+        assert.deepStrictEqual(warns, ["warn message 2"]);
+        assert.deepStrictEqual(errors, ["error message 3"]);
       } finally {
         await runtime.dispose();
       }
@@ -449,13 +449,13 @@ describe("@ricsam/isolate-runtime", () => {
   describe("fetch integration", () => {
     test("fetch calls handler", async () => {
       let capturedUrl: string | null = null;
-      let logValue: unknown = null;
+      let logValue: string | null = null;
 
       const runtime = await createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0];
+              logValue = entry.stdout;
             }
           },
         },
@@ -510,12 +510,12 @@ describe("@ricsam/isolate-runtime", () => {
     });
 
     test("fetch.dispatchRequest handles async serve handlers", async () => {
-      let logValue: unknown = null;
+      let logValue: string | null = null;
       const runtime = await createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0];
+              logValue = entry.stdout;
             }
           },
         },
@@ -546,12 +546,12 @@ describe("@ricsam/isolate-runtime", () => {
 
   describe("timers integration", () => {
     test("setTimeout fires automatically with real time", async () => {
-      let logValue: unknown = null;
+      let logValue: string | null = null;
       const runtime = await createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0];
+              logValue = entry.stdout;
             }
           },
         },
@@ -702,12 +702,12 @@ describe("@ricsam/isolate-runtime", () => {
       });
 
       test("timers fire automatically with real time", async () => {
-        let logValue: unknown = null;
+        let logValue: string | null = null;
         const runtime = await createRuntime({
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logValue = entry.args[0];
+                logValue = entry.stdout;
               }
             },
           },
@@ -732,12 +732,12 @@ describe("@ricsam/isolate-runtime", () => {
       });
 
       test("timers.clearAll clears all pending timers", async () => {
-        let logValue: unknown = null;
+        let logValue: string | null = null;
         const runtime = await createRuntime({
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logValue = entry.args[0];
+                logValue = entry.stdout;
               }
             },
           },
@@ -893,12 +893,12 @@ describe("@ricsam/isolate-runtime", () => {
     });
 
     test("completes when code finishes within timeout", async () => {
-      let logValue: unknown = null;
+      let logValue: string | null = null;
       const runtime = await createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0];
+              logValue = entry.stdout;
             }
           },
         },
@@ -955,7 +955,7 @@ describe("@ricsam/isolate-runtime", () => {
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0] as string;
+              logValue = entry.stdout;
             }
           },
         },
@@ -978,7 +978,7 @@ describe("@ricsam/isolate-runtime", () => {
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.args[0] as string;
+              logValue = entry.stdout;
             }
           },
         },

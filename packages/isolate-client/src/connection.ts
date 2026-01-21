@@ -708,13 +708,13 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
     let browserConsoleLogCallbackId: number | undefined;
     if (hasOnEvent || hasConsoleHandler) {
       browserConsoleLogCallbackId = registerEventCallback(state, (entry: unknown) => {
-        const browserEntry = entry as { level: string; args: unknown[]; timestamp: number };
+        const browserEntry = entry as { level: string; stdout: string; timestamp: number };
 
         if (options.playwright!.onEvent) {
           options.playwright!.onEvent({
             type: "browserConsoleLog",
             level: browserEntry.level,
-            args: browserEntry.args,
+            stdout: browserEntry.stdout,
             timestamp: browserEntry.timestamp,
           });
         }
@@ -724,7 +724,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
           options.console.onEntry({
             type: "browserOutput",
             level: browserEntry.level,
-            args: browserEntry.args,
+            stdout: browserEntry.stdout,
             timestamp: browserEntry.timestamp,
           });
         }

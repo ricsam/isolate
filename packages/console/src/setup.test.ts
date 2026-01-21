@@ -29,7 +29,7 @@ describe("@ricsam/isolate-console", () => {
       assert.strictEqual(entries[0]!.type, "output");
       if (entries[0]!.type === "output") {
         assert.strictEqual(entries[0]!.level, "log");
-        assert.deepStrictEqual(entries[0]!.args, ["hello", 123]);
+        assert.strictEqual(entries[0]!.stdout, "hello 123");
         assert.strictEqual(entries[0]!.groupDepth, 0);
       }
     });
@@ -44,7 +44,7 @@ describe("@ricsam/isolate-console", () => {
       assert.strictEqual(entries[0]!.type, "output");
       if (entries[0]!.type === "output") {
         assert.strictEqual(entries[0]!.level, "warn");
-        assert.deepStrictEqual(entries[0]!.args, ["warning"]);
+        assert.strictEqual(entries[0]!.stdout, "warning");
       }
     });
 
@@ -58,7 +58,7 @@ describe("@ricsam/isolate-console", () => {
       assert.strictEqual(entries[0]!.type, "output");
       if (entries[0]!.type === "output") {
         assert.strictEqual(entries[0]!.level, "error");
-        assert.deepStrictEqual(entries[0]!.args, ["error message"]);
+        assert.strictEqual(entries[0]!.stdout, "error message");
       }
     });
 
@@ -96,7 +96,7 @@ describe("@ricsam/isolate-console", () => {
       context.evalSync(`console.log()`);
       assert.strictEqual(entries.length, 1);
       if (entries[0]!.type === "output") {
-        assert.deepStrictEqual(entries[0]!.args, []);
+        assert.strictEqual(entries[0]!.stdout, "");
       }
     });
 
@@ -108,7 +108,251 @@ describe("@ricsam/isolate-console", () => {
       context.evalSync(`console.log("a", "b", "c", 1, 2, 3)`);
       assert.strictEqual(entries.length, 1);
       if (entries[0]!.type === "output") {
-        assert.deepStrictEqual(entries[0]!.args, ["a", "b", "c", 1, 2, 3]);
+        assert.strictEqual(entries[0]!.stdout, "a b c 1 2 3");
+      }
+    });
+
+    test("console.log with circular reference", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`
+        const obj = { name: "test" };
+        obj.self = obj;
+        console.log(obj);
+      `);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "{ name: 'test', self: [Circular] }");
+      }
+    });
+
+    test("console.log with nested circular reference", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`
+        const a = { name: "a" };
+        const b = { name: "b", ref: a };
+        a.ref = b;
+        console.log(a);
+      `);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        // a -> b -> a (circular)
+        assert.strictEqual(entries[0]!.stdout, "{ name: 'a', ref: { name: 'b', ref: [Circular] } }");
+      }
+    });
+
+    test("console.log with circular array", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`
+        const arr = [1, 2];
+        arr.push(arr);
+        console.log(arr);
+      `);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "[ 1, 2, [Circular] ]");
+      }
+    });
+
+    test("console.log with named function", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`
+        function myFunction() { return 42; }
+        console.log(myFunction);
+      `);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "[Function: myFunction]");
+      }
+    });
+
+    test("console.log with anonymous function", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(function() {})`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "[Function: (anonymous)]");
+      }
+    });
+
+    test("console.log with arrow function", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`
+        const arrowFn = () => {};
+        console.log(arrowFn);
+      `);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "[Function: arrowFn]");
+      }
+    });
+
+    test("console.log with Symbol", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(Symbol("mySymbol"))`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "Symbol(mySymbol)");
+      }
+    });
+
+    test("console.log with Promise", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(Promise.resolve(42))`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "Promise { <pending> }");
+      }
+    });
+
+    test("console.log with Map", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(new Map([["a", 1], ["b", 2]]))`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "Map(2) { 'a' => 1, 'b' => 2 }");
+      }
+    });
+
+    test("console.log with Set", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(new Set([1, 2, 3]))`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "Set(3) { 1, 2, 3 }");
+      }
+    });
+
+    test("console.log with Date", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(new Date("2024-01-15T10:30:00.000Z"))`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "2024-01-15T10:30:00.000Z");
+      }
+    });
+
+    test("console.log with RegExp", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(/test.*pattern/gi)`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "/test.*pattern/gi");
+      }
+    });
+
+    test("console.log with Error", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(new Error("something went wrong"))`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.ok(entries[0]!.stdout.startsWith("Error: something went wrong"));
+        // Should include stack trace
+        assert.ok(entries[0]!.stdout.includes("at"));
+      }
+    });
+
+    test("console.log with TypeError", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(new TypeError("not a number"))`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.ok(entries[0]!.stdout.startsWith("TypeError: not a number"));
+      }
+    });
+
+    test("console.log with object containing function", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`
+        const obj = {
+          name: "test",
+          callback: function handler() {}
+        };
+        console.log(obj);
+      `);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "{ name: 'test', callback: [Function: handler] }");
+      }
+    });
+
+    test("console.log with bigint", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(9007199254740991n)`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "9007199254740991n");
+      }
+    });
+
+    test("console.log with Uint8Array", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(new Uint8Array([1, 2, 3]))`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "Uint8Array(3) [ 1, 2, 3 ]");
+      }
+    });
+
+    test("console.log with ArrayBuffer", async () => {
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`console.log(new ArrayBuffer(16))`);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(entries[0]!.stdout, "ArrayBuffer { byteLength: 16 }");
       }
     });
   });
@@ -123,7 +367,7 @@ describe("@ricsam/isolate-console", () => {
       assert.strictEqual(entries.length, 1);
       assert.strictEqual(entries[0]!.type, "dir");
       if (entries[0]!.type === "dir") {
-        assert.deepStrictEqual(entries[0]!.value, { key: "value" });
+        assert.strictEqual(entries[0]!.stdout, "{ key: 'value' }");
         assert.strictEqual(entries[0]!.groupDepth, 0);
       }
     });
@@ -139,7 +383,9 @@ describe("@ricsam/isolate-console", () => {
       assert.strictEqual(entries.length, 1);
       assert.strictEqual(entries[0]!.type, "table");
       if (entries[0]!.type === "table") {
-        assert.deepStrictEqual(entries[0]!.data, [1, 2, 3]);
+        // Table is now formatted as ASCII table
+        assert.ok(entries[0]!.stdout.includes("(index)"));
+        assert.ok(entries[0]!.stdout.includes("Values"));
         assert.strictEqual(entries[0]!.groupDepth, 0);
       }
     });
@@ -155,7 +401,9 @@ describe("@ricsam/isolate-console", () => {
       assert.strictEqual(entries.length, 1);
       assert.strictEqual(entries[0]!.type, "table");
       if (entries[0]!.type === "table") {
-        assert.deepStrictEqual(entries[0]!.columns, ["a", "b"]);
+        // Table is now formatted as ASCII table with specified columns
+        assert.ok(entries[0]!.stdout.includes("a"));
+        assert.ok(entries[0]!.stdout.includes("b"));
       }
     });
   });
@@ -170,8 +418,9 @@ describe("@ricsam/isolate-console", () => {
       assert.strictEqual(entries.length, 1);
       assert.strictEqual(entries[0]!.type, "trace");
       if (entries[0]!.type === "trace") {
-        assert.deepStrictEqual(entries[0]!.args, ["trace message"]);
+        assert.strictEqual(entries[0]!.stdout, "trace message");
         assert.ok(typeof entries[0]!.stack === "string");
+        assert.ok(entries[0]!.stack.includes("Trace: trace message"));
         assert.strictEqual(entries[0]!.groupDepth, 0);
       }
     });
@@ -246,7 +495,7 @@ describe("@ricsam/isolate-console", () => {
       assert.strictEqual(entries[0]!.type, "timeLog");
       if (entries[0]!.type === "timeLog") {
         assert.strictEqual(entries[0]!.label, "test");
-        assert.deepStrictEqual(entries[0]!.args, ["additional", "args"]);
+        assert.strictEqual(entries[0]!.stdout, "additional args");
         assert.ok(entries[0]!.duration >= 0);
       }
       assert.strictEqual(handle.getTimers().has("test"), true); // Timer still running
@@ -490,7 +739,7 @@ describe("@ricsam/isolate-console", () => {
       assert.strictEqual(entries.length, 1);
       assert.strictEqual(entries[0]!.type, "assert");
       if (entries[0]!.type === "assert") {
-        assert.deepStrictEqual(entries[0]!.args, ["assertion failed", 123]);
+        assert.strictEqual(entries[0]!.stdout, "Assertion failed: assertion failed 123");
         assert.strictEqual(entries[0]!.groupDepth, 0);
       }
     });
@@ -604,16 +853,16 @@ describe("@ricsam/isolate-console", () => {
 
   describe("simpleConsoleHandler helper", () => {
     test("routes output entries to level callbacks", async () => {
-      const logs: unknown[][] = [];
-      const warns: unknown[][] = [];
-      const errors: unknown[][] = [];
+      const logs: string[] = [];
+      const warns: string[] = [];
+      const errors: string[] = [];
 
       await setupConsole(
         context,
         simpleConsoleHandler({
-          log: (...args) => logs.push(args),
-          warn: (...args) => warns.push(args),
-          error: (...args) => errors.push(args),
+          log: (msg) => logs.push(msg),
+          warn: (msg) => warns.push(msg),
+          error: (msg) => errors.push(msg),
         })
       );
 
@@ -623,55 +872,50 @@ describe("@ricsam/isolate-console", () => {
         console.error("error message", 3);
       `);
 
-      assert.deepStrictEqual(logs, [["log message", 1]]);
-      assert.deepStrictEqual(warns, [["warn message", 2]]);
-      assert.deepStrictEqual(errors, [["error message", 3]]);
+      assert.deepStrictEqual(logs, ["log message 1"]);
+      assert.deepStrictEqual(warns, ["warn message 2"]);
+      assert.deepStrictEqual(errors, ["error message 3"]);
     });
 
     test("routes assert to error callback", async () => {
-      const errors: unknown[][] = [];
+      const errors: string[] = [];
 
       await setupConsole(
         context,
         simpleConsoleHandler({
-          error: (...args) => errors.push(args),
+          error: (msg) => errors.push(msg),
         })
       );
 
       context.evalSync(`console.assert(false, "assertion", "args")`);
 
       assert.strictEqual(errors.length, 1);
-      assert.deepStrictEqual(errors[0], [
-        "Assertion failed:",
-        "assertion",
-        "args",
-      ]);
+      assert.strictEqual(errors[0], "Assertion failed: assertion args");
     });
 
     test("routes trace to log callback with stack", async () => {
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
 
       await setupConsole(
         context,
         simpleConsoleHandler({
-          log: (...args) => logs.push(args),
+          log: (msg) => logs.push(msg),
         })
       );
 
       context.evalSync(`console.trace("trace message")`);
 
       assert.strictEqual(logs.length, 1);
-      assert.strictEqual(logs[0]![0], "trace message");
-      assert.ok((logs[0]![1] as string).includes("\n"));
+      assert.ok(logs[0]!.includes("Trace: trace message"));
     });
 
     test("routes dir and table to log callback", async () => {
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
 
       await setupConsole(
         context,
         simpleConsoleHandler({
-          log: (...args) => logs.push(args),
+          log: (msg) => logs.push(msg),
         })
       );
 
@@ -681,17 +925,17 @@ describe("@ricsam/isolate-console", () => {
       `);
 
       assert.strictEqual(logs.length, 2);
-      assert.deepStrictEqual(logs[0], [{ key: "value" }]);
-      assert.deepStrictEqual(logs[1], [[1, 2, 3]]);
+      assert.strictEqual(logs[0], "{ key: 'value' }");
+      assert.ok(logs[1]!.includes("(index)"));
     });
 
     test("routes time and timeLog to log callback", async () => {
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
 
       await setupConsole(
         context,
         simpleConsoleHandler({
-          log: (...args) => logs.push(args),
+          log: (msg) => logs.push(msg),
         })
       );
 
@@ -702,19 +946,19 @@ describe("@ricsam/isolate-console", () => {
       `);
 
       assert.strictEqual(logs.length, 2);
-      assert.ok((logs[0]![0] as string).includes("timer:"));
-      assert.ok((logs[0]![0] as string).includes("ms"));
-      assert.strictEqual(logs[0]![1], "progress");
-      assert.ok((logs[1]![0] as string).includes("timer:"));
+      assert.ok(logs[0]!.includes("timer:"));
+      assert.ok(logs[0]!.includes("ms"));
+      assert.ok(logs[0]!.includes("progress"));
+      assert.ok(logs[1]!.includes("timer:"));
     });
 
     test("routes count to log callback", async () => {
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
 
       await setupConsole(
         context,
         simpleConsoleHandler({
-          log: (...args) => logs.push(args),
+          log: (msg) => logs.push(msg),
         })
       );
 
@@ -724,17 +968,17 @@ describe("@ricsam/isolate-console", () => {
       `);
 
       assert.strictEqual(logs.length, 2);
-      assert.strictEqual(logs[0]![0], "clicks: 1");
-      assert.strictEqual(logs[1]![0], "clicks: 2");
+      assert.strictEqual(logs[0], "clicks: 1");
+      assert.strictEqual(logs[1], "clicks: 2");
     });
 
     test("silently ignores group, groupEnd, countReset, clear", async () => {
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
 
       await setupConsole(
         context,
         simpleConsoleHandler({
-          log: (...args) => logs.push(args),
+          log: (msg) => logs.push(msg),
         })
       );
 

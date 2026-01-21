@@ -38,12 +38,12 @@ describe("isolate-client integration", () => {
   });
 
   it("should evaluate code in runtime", async () => {
-    const logs: unknown[] = [];
+    const logs: string[] = [];
     const runtime = await client.createRuntime({
       console: {
         onEntry: (entry) => {
           if (entry.type === "output" && entry.level === "log") {
-            logs.push(entry.args[0]);
+            logs.push(entry.stdout);
           }
         },
       },
@@ -52,20 +52,20 @@ describe("isolate-client integration", () => {
       // eval returns void now (always module mode)
       await runtime.eval("console.log(1 + 2)");
       // No delay needed - eval waits for callbacks to complete
-      assert.strictEqual(logs[0], 3);
+      assert.strictEqual(logs[0], "3");
     } finally {
       await runtime.dispose();
     }
   });
 
   it("should handle console callbacks", async () => {
-    const logs: unknown[][] = [];
+    const logs: string[] = [];
 
     const runtime = await client.createRuntime({
       console: {
         onEntry: (entry) => {
           if (entry.type === "output" && entry.level === "log") {
-            logs.push(entry.args);
+            logs.push(entry.stdout);
           }
         },
       },
@@ -74,20 +74,20 @@ describe("isolate-client integration", () => {
     try {
       await runtime.eval(`console.log("hello", "world")`);
       // No delay needed - eval waits for callbacks to complete
-      assert.deepStrictEqual(logs, [["hello", "world"]]);
+      assert.deepStrictEqual(logs, ["hello world"]);
     } finally {
       await runtime.dispose();
     }
   });
 
   it("should handle multiple console methods", async () => {
-    const consoleCalls: { method: string; args: unknown[] }[] = [];
+    const consoleCalls: { method: string; stdout: string }[] = [];
 
     const runtime = await client.createRuntime({
       console: {
         onEntry: (entry) => {
           if (entry.type === "output") {
-            consoleCalls.push({ method: entry.level, args: entry.args });
+            consoleCalls.push({ method: entry.level, stdout: entry.stdout });
           }
         },
       },
@@ -103,15 +103,15 @@ describe("isolate-client integration", () => {
       assert.strictEqual(consoleCalls.length, 3);
       assert.deepStrictEqual(consoleCalls[0], {
         method: "log",
-        args: ["log message"],
+        stdout: "log message",
       });
       assert.deepStrictEqual(consoleCalls[1], {
         method: "warn",
-        args: ["warn message"],
+        stdout: "warn message",
       });
       assert.deepStrictEqual(consoleCalls[2], {
         method: "error",
-        args: ["error message"],
+        stdout: "error message",
       });
     } finally {
       await runtime.dispose();
@@ -222,12 +222,12 @@ describe("isolate-client integration", () => {
   });
 
   it("should complete when code finishes within maxExecutionMs", async () => {
-    const logs: unknown[] = [];
+    const logs: string[] = [];
     const runtime = await client.createRuntime({
       console: {
         onEntry: (entry) => {
           if (entry.type === "output" && entry.level === "log") {
-            logs.push(entry.args[0]);
+            logs.push(entry.stdout);
           }
         },
       },
@@ -511,7 +511,7 @@ describe("isolate-client integration", () => {
   });
 
   it("should stream playwright events", async () => {
-    const consoleLogs: { level: string; args: unknown[] }[] = [];
+    const consoleLogs: { level: string; stdout: string }[] = [];
     const browser = await chromium.launch({ headless: true });
     const browserContext = await browser.newContext();
     const page = await browserContext.newPage();
@@ -522,7 +522,7 @@ describe("isolate-client integration", () => {
         page,
         onEvent: (event) => {
           if (event.type === "browserConsoleLog") {
-            consoleLogs.push({ level: event.level, args: event.args });
+            consoleLogs.push({ level: event.level, stdout: event.stdout });
           }
         },
       },
@@ -944,13 +944,13 @@ describe("isolate-client integration", () => {
 
   it("should call custom functions in direct eval without serve handler", async () => {
     const calls: string[] = [];
-    const logs: unknown[] = [];
+    const logs: string[] = [];
 
     const runtime = await client.createRuntime({
       console: {
         onEntry: (entry) => {
           if (entry.type === "output" && entry.level === "log") {
-            logs.push(entry.args);
+            logs.push(entry.stdout);
           }
         },
       },
@@ -984,7 +984,7 @@ describe("isolate-client integration", () => {
         console.log(greeting, sum);
       `);
       // No delay needed - eval waits for callbacks to complete
-      assert.deepStrictEqual(logs[0], ["Hello, World!", 8]);
+      assert.strictEqual(logs[0], "Hello, World! 8");
       assert.strictEqual(calls.length, 2);
       assert.strictEqual(calls[0], "greet:World");
       assert.strictEqual(calls[1], "add:5+3");
@@ -995,13 +995,13 @@ describe("isolate-client integration", () => {
 
   it("should work with custom functions that are not async", async () => {
     const calls: string[] = [];
-    const logs: unknown[] = [];
+    const logs: string[] = [];
 
     const runtime = await client.createRuntime({
       console: {
         onEntry: (entry) => {
           if (entry.type === "output" && entry.level === "log") {
-            logs.push(entry.args);
+            logs.push(entry.stdout);
           }
         },
       },
@@ -1035,7 +1035,7 @@ describe("isolate-client integration", () => {
         console.log(greeting, sum);
       `);
       // No delay needed - eval waits for callbacks to complete
-      assert.deepStrictEqual(logs[0], ["Hello, World!", 8]);
+      assert.strictEqual(logs[0], "Hello, World! 8");
       assert.strictEqual(calls.length, 2);
       assert.strictEqual(calls[0], "greet:World");
       assert.strictEqual(calls[1], "add:5+3");
@@ -1052,7 +1052,7 @@ describe("isolate-client integration", () => {
       console: {
         onEntry: (entry) => {
           if (entry.type === "output" && entry.level === "log") {
-            logs.push(entry.args.join(" "));
+            logs.push(entry.stdout);
           }
         },
       },
@@ -1089,7 +1089,7 @@ describe("isolate-client integration", () => {
       console: {
         onEntry: (entry) => {
           if (entry.type === "output" && entry.level === "log") {
-            logs.push(entry.args.join(" "));
+            logs.push(entry.stdout);
           }
         },
       },
@@ -1131,7 +1131,7 @@ describe("isolate-client integration", () => {
       console: {
         onEntry: (entry) => {
           if (entry.type === "output" && entry.level === "log") {
-            logs.push(entry.args.join(" "));
+            logs.push(entry.stdout);
           }
         },
       },
@@ -1249,7 +1249,7 @@ describe("isolate-client integration", () => {
       console: {
         onEntry: (entry) => {
           if (entry.type === "output" && entry.level === "log") {
-            logs.push(entry.args.join(" "));
+            logs.push(entry.stdout);
           }
         },
       },
@@ -1286,13 +1286,13 @@ describe("isolate-client integration", () => {
   // values when the stream wraps an AsyncIterator from the host.
   describe("ReadableStream async iteration", () => {
     it("should iterate over ReadableStream with for-await-of", async () => {
-      const logs: unknown[] = [];
+      const logs: string[] = [];
 
       const runtime = await client.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },

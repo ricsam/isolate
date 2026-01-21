@@ -578,7 +578,7 @@ export type PlaywrightEvent =
   | {
       type: "browserConsoleLog";
       level: string;
-      args: unknown[];
+      stdout: string;
       timestamp: number;
     }
   | {
@@ -738,34 +738,35 @@ export type CustomFunctions<T extends Record<string, any[]> = Record<string, unk
 /**
  * Console entry types for structured console output.
  * Each entry type captures the specific data needed to render like DevTools.
+ * Output is pre-formatted as stdout strings (like Node.js console) inside the sandbox.
  */
 export type ConsoleEntry =
   | {
       type: "output";
       level: "log" | "warn" | "error" | "info" | "debug";
-      args: unknown[];
+      stdout: string;
       groupDepth: number;
     }
   | {
       /** Browser console output (from Playwright page, not sandbox) */
       type: "browserOutput";
       level: string;
-      args: unknown[];
+      stdout: string;
       timestamp: number;
     }
-  | { type: "dir"; value: unknown; groupDepth: number }
-  | { type: "table"; data: unknown; columns?: string[]; groupDepth: number }
+  | { type: "dir"; stdout: string; groupDepth: number }
+  | { type: "table"; stdout: string; groupDepth: number }
   | { type: "time"; label: string; duration: number; groupDepth: number }
   | {
       type: "timeLog";
       label: string;
       duration: number;
-      args: unknown[];
+      stdout: string;
       groupDepth: number;
     }
   | { type: "count"; label: string; count: number; groupDepth: number }
   | { type: "countReset"; label: string; groupDepth: number }
-  | { type: "assert"; args: unknown[]; groupDepth: number }
+  | { type: "assert"; stdout: string; groupDepth: number }
   | {
       type: "group";
       label: string;
@@ -774,7 +775,7 @@ export type ConsoleEntry =
     }
   | { type: "groupEnd"; groupDepth: number }
   | { type: "clear" }
-  | { type: "trace"; args: unknown[]; stack: string; groupDepth: number };
+  | { type: "trace"; stdout: string; stack: string; groupDepth: number };
 
 /**
  * Console callback handlers with single structured callback.
@@ -980,7 +981,7 @@ export interface CollectedData {
   /** Browser console logs (from the page, not sandbox) */
   browserConsoleLogs: {
     level: string;
-    args: unknown[];
+    stdout: string;
     timestamp: number;
   }[];
   networkRequests: {

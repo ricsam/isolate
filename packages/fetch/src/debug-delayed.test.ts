@@ -20,8 +20,8 @@ describe("Debug Delayed Streaming", () => {
     await setupConsole(context, {
       onEntry: (entry) => {
         if (entry.type === "output") {
-          logs.push(`[${entry.level}] ${entry.args.join(' ')}`);
-          console.log(`[ISOLATE] ${entry.args.join(' ')}`);
+          logs.push(`[${entry.level}] ${entry.stdout}`);
+          console.log(`[ISOLATE] ${entry.stdout}`);
         }
       }
     });

@@ -62,7 +62,7 @@ const runtime = await createRuntime({
   playwright: {
     page,
     baseUrl: "https://example.com",
-    onBrowserConsoleLog: (entry) => console.log("[browser]", entry.level, ...entry.args),
+    onBrowserConsoleLog: (entry) => console.log("[browser]", entry.level, entry.stdout),
     onNetworkRequest: (info) => console.log("Request:", info.url),
   },
 });
@@ -116,7 +116,7 @@ const handle = await setupPlaywright(context, {
   baseUrl: "https://example.com",
   onNetworkRequest: (info) => console.log("Request:", info.url),
   onNetworkResponse: (info) => console.log("Response:", info.status),
-  onBrowserConsoleLog: (entry) => console.log(`[${entry.level}]`, ...entry.args),
+  onBrowserConsoleLog: (entry) => console.log(`[${entry.level}]`, entry.stdout),
 });
 
 // Load and run untrusted test code
@@ -231,7 +231,7 @@ interface PlaywrightSetupOptions {
 }
 
 type PlaywrightEvent =
-  | { type: "browserConsoleLog"; level: string; args: unknown[]; timestamp: number }
+  | { type: "browserConsoleLog"; level: string; stdout: string; timestamp: number }
   | { type: "networkRequest"; url: string; method: string; headers: Record<string, string>; ... }
   | { type: "networkResponse"; url: string; status: number; headers: Record<string, string>; ... };
 ```

@@ -21,7 +21,7 @@ export interface RuntimeTestContext {
   /** Dispose all resources */
   dispose(): Promise<void>;
   /** Captured console.log calls */
-  logs: Array<{ level: string; args: unknown[] }>;
+  logs: Array<{ level: string; stdout: string }>;
   /** Captured fetch calls */
   fetchCalls: Array<{ url: string; method: string; headers: [string, string][] }>;
   /** Set the mock response for the next fetch call */
@@ -60,7 +60,7 @@ export interface RuntimeTestContext {
  * console.log(ctx.getResult()); // { data: "test" }
  *
  * // Check logs
- * console.log(ctx.logs); // [{ level: "log", args: ["Starting fetch..."] }, ...]
+ * console.log(ctx.logs); // [{ level: "log", stdout: "Starting fetch..." }, ...]
  *
  * // Check fetch calls
  * console.log(ctx.fetchCalls); // [{ url: "https://api.example.com/data", method: "GET", ... }]
@@ -78,7 +78,7 @@ export async function createRuntimeTestContext(
   clearAllInstanceState();
 
   // State for capturing logs and fetch calls
-  const logs: Array<{ level: string; args: unknown[] }> = [];
+  const logs: Array<{ level: string; stdout: string }> = [];
   const fetchCalls: Array<{
     url: string;
     method: string;
@@ -96,9 +96,9 @@ export async function createRuntimeTestContext(
     console: {
       onEntry: (entry) => {
         if (entry.type === "output") {
-          logs.push({ level: entry.level, args: entry.args });
+          logs.push({ level: entry.level, stdout: entry.stdout });
         } else if (entry.type === "assert") {
-          logs.push({ level: "error", args: ["Assertion failed:", ...entry.args] });
+          logs.push({ level: "error", stdout: entry.stdout });
         }
       },
     },

@@ -335,7 +335,7 @@ describe("playwright bridge", () => {
         if (event.type === "browserConsoleLog") {
           capturedLogs.push({
             level: event.level,
-            args: event.args as string[],
+            stdout: event.stdout,
             timestamp: event.timestamp,
           });
         }

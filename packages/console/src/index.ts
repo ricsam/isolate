@@ -3,34 +3,35 @@ import ivm from "isolated-vm";
 /**
  * Console entry types for structured console output.
  * Each entry type captures the specific data needed to render like DevTools.
+ * Output is pre-formatted as stdout strings (like Node.js console) inside the sandbox.
  */
 export type ConsoleEntry =
   | {
       type: "output";
       level: "log" | "warn" | "error" | "info" | "debug";
-      args: unknown[];
+      stdout: string;
       groupDepth: number;
     }
   | {
       /** Browser console output (from Playwright page, not sandbox) */
       type: "browserOutput";
       level: string;
-      args: unknown[];
+      stdout: string;
       timestamp: number;
     }
-  | { type: "dir"; value: unknown; groupDepth: number }
-  | { type: "table"; data: unknown; columns?: string[]; groupDepth: number }
+  | { type: "dir"; stdout: string; groupDepth: number }
+  | { type: "table"; stdout: string; groupDepth: number }
   | { type: "time"; label: string; duration: number; groupDepth: number }
   | {
       type: "timeLog";
       label: string;
       duration: number;
-      args: unknown[];
+      stdout: string;
       groupDepth: number;
     }
   | { type: "count"; label: string; count: number; groupDepth: number }
   | { type: "countReset"; label: string; groupDepth: number }
-  | { type: "assert"; args: unknown[]; groupDepth: number }
+  | { type: "assert"; stdout: string; groupDepth: number }
   | {
       type: "group";
       label: string;
@@ -39,7 +40,7 @@ export type ConsoleEntry =
     }
   | { type: "groupEnd"; groupDepth: number }
   | { type: "clear" }
-  | { type: "trace"; args: unknown[]; stack: string; groupDepth: number };
+  | { type: "trace"; stdout: string; stack: string; groupDepth: number };
 
 /**
  * Console options with a single structured callback.
@@ -100,11 +101,11 @@ export async function setupConsole(
   for (const level of logLevels) {
     global.setSync(
       `__console_${level}`,
-      new ivm.Callback((...args: unknown[]) => {
+      new ivm.Callback((stdout: string) => {
         opts.onEntry?.({
           type: "output",
           level,
-          args,
+          stdout,
           groupDepth,
         });
       })
@@ -114,10 +115,10 @@ export async function setupConsole(
   // dir method
   global.setSync(
     "__console_dir",
-    new ivm.Callback((value: unknown) => {
+    new ivm.Callback((stdout: string) => {
       opts.onEntry?.({
         type: "dir",
-        value,
+        stdout,
         groupDepth,
       });
     })
@@ -126,11 +127,10 @@ export async function setupConsole(
   // table method
   global.setSync(
     "__console_table",
-    new ivm.Callback((data: unknown, columns?: string[]) => {
+    new ivm.Callback((stdout: string) => {
       opts.onEntry?.({
         type: "table",
-        data,
-        columns,
+        stdout,
         groupDepth,
       });
     })
@@ -139,11 +139,10 @@ export async function setupConsole(
   // trace method (includes stack)
   global.setSync(
     "__console_trace",
-    new ivm.Callback((...args: unknown[]) => {
-      const stack = new Error().stack ?? "";
+    new ivm.Callback((stdout: string, stack: string) => {
       opts.onEntry?.({
         type: "trace",
-        args,
+        stdout,
         stack,
         groupDepth,
       });
@@ -179,16 +178,16 @@ export async function setupConsole(
 
   global.setSync(
     "__console_timeLog",
-    new ivm.Callback((label?: string, ...args: unknown[]) => {
+    new ivm.Callback((label: string, duration: number, stdout: string) => {
       const l = label ?? "default";
       const start = timers.get(l);
       if (start !== undefined) {
-        const duration = performance.now() - start;
+        const actualDuration = performance.now() - start;
         opts.onEntry?.({
           type: "timeLog",
           label: l,
-          duration,
-          args,
+          duration: actualDuration,
+          stdout,
           groupDepth,
         });
       }
@@ -276,92 +275,267 @@ export async function setupConsole(
 
   global.setSync(
     "__console_assert",
-    new ivm.Callback((condition: boolean, ...args: unknown[]) => {
-      if (!condition) {
-        opts.onEntry?.({
-          type: "assert",
-          args,
-          groupDepth,
-        });
-      }
+    new ivm.Callback((stdout: string) => {
+      opts.onEntry?.({
+        type: "assert",
+        stdout,
+        groupDepth,
+      });
     })
   );
 
-  // Inject console object with Error serialization
+  // Inject console object with Node.js-style formatting
   context.evalSync(`
-    // Serialize value for transfer to host, handling Error objects specially
-    function __serializeForConsole(value, seen = new WeakSet()) {
+    // Format a single value for console output (Node.js style)
+    function __formatForConsole(value, options = {}) {
+      const { depth = 2, currentDepth = 0, seen = new WeakSet(), inObject = false } = options;
+
       // Handle null/undefined
-      if (value === null || value === undefined) {
-        return value;
-      }
+      if (value === null) return 'null';
+      if (value === undefined) return 'undefined';
 
       // Handle primitives
-      if (typeof value !== 'object' && typeof value !== 'function') {
-        return value;
+      const type = typeof value;
+      if (type === 'string') {
+        // Strings: quoted when inside objects/arrays, raw when top-level console.log arg
+        return inObject ? "'" + value.replace(/'/g, "\\\\'") + "'" : value;
+      }
+      if (type === 'number' || type === 'boolean') {
+        return String(value);
+      }
+      if (type === 'bigint') {
+        return value.toString() + 'n';
+      }
+      if (type === 'symbol') {
+        return value.toString();
+      }
+      if (type === 'function') {
+        const name = value.name || '(anonymous)';
+        return '[Function: ' + name + ']';
       }
 
-      // Handle Error objects - convert to plain object with name, message, stack
-      if (value instanceof Error) {
-        return {
-          __isError: true,
-          name: value.name,
-          message: value.message,
-          stack: value.stack,
-        };
-      }
-
-      // Handle circular references
-      if (seen.has(value)) {
-        return '[Circular]';
-      }
-      seen.add(value);
-
-      // Handle arrays
-      if (Array.isArray(value)) {
-        return value.map(item => __serializeForConsole(item, seen));
-      }
-
-      // Handle plain objects
-      if (typeof value === 'object') {
-        const result = {};
-        for (const key in value) {
-          if (Object.prototype.hasOwnProperty.call(value, key)) {
-            result[key] = __serializeForConsole(value[key], seen);
-          }
+      // Handle objects
+      if (type === 'object') {
+        // Handle circular references BEFORE depth check (Node.js behavior)
+        if (seen.has(value)) {
+          return '[Circular]';
         }
-        return result;
+        seen.add(value);
+
+        // Check depth limit
+        if (currentDepth >= depth) {
+          if (Array.isArray(value)) return '[Array]';
+          return '[Object]';
+        }
+
+        const nextOptions = { depth, currentDepth: currentDepth + 1, seen, inObject: true };
+
+        // Handle Error objects
+        if (value instanceof Error) {
+          let result = value.name + ': ' + value.message;
+          if (value.stack) {
+            // Get stack lines after the first line (which is the error message)
+            const stackLines = value.stack.split('\\n').slice(1);
+            if (stackLines.length > 0) {
+              result += '\\n' + stackLines.join('\\n');
+            }
+          }
+          return result;
+        }
+
+        // Handle Response objects
+        if (typeof Response !== 'undefined' && value instanceof Response) {
+          return 'Response { status: ' + value.status + ', statusText: ' + __formatForConsole(value.statusText, nextOptions) + ', url: ' + __formatForConsole(value.url, nextOptions) + ' }';
+        }
+
+        // Handle Request objects
+        if (typeof Request !== 'undefined' && value instanceof Request) {
+          return 'Request { method: ' + __formatForConsole(value.method, nextOptions) + ', url: ' + __formatForConsole(value.url, nextOptions) + ' }';
+        }
+
+        // Handle Headers objects
+        if (typeof Headers !== 'undefined' && value instanceof Headers) {
+          const entries = [];
+          value.forEach((v, k) => {
+            entries.push(__formatForConsole(k, nextOptions) + ' => ' + __formatForConsole(v, nextOptions));
+          });
+          return 'Headers { ' + entries.join(', ') + ' }';
+        }
+
+        // Handle Date objects
+        if (value instanceof Date) {
+          return value.toISOString();
+        }
+
+        // Handle RegExp
+        if (value instanceof RegExp) {
+          return value.toString();
+        }
+
+        // Handle Map
+        if (value instanceof Map) {
+          const entries = [];
+          value.forEach((v, k) => {
+            entries.push(__formatForConsole(k, nextOptions) + ' => ' + __formatForConsole(v, nextOptions));
+          });
+          return 'Map(' + value.size + ') { ' + entries.join(', ') + ' }';
+        }
+
+        // Handle Set
+        if (value instanceof Set) {
+          const entries = [];
+          value.forEach((v) => {
+            entries.push(__formatForConsole(v, nextOptions));
+          });
+          return 'Set(' + value.size + ') { ' + entries.join(', ') + ' }';
+        }
+
+        // Handle ArrayBuffer and TypedArrays
+        if (value instanceof ArrayBuffer) {
+          return 'ArrayBuffer { byteLength: ' + value.byteLength + ' }';
+        }
+        if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+          const typedArray = value;
+          const name = typedArray.constructor.name;
+          const length = typedArray.length;
+          if (length <= 10) {
+            const items = Array.from(typedArray).map(v => __formatForConsole(v, nextOptions));
+            return name + '(' + length + ') [ ' + items.join(', ') + ' ]';
+          }
+          return name + '(' + length + ') [ ... ]';
+        }
+
+        // Handle Promise
+        if (value instanceof Promise) {
+          return 'Promise { <pending> }';
+        }
+
+        // Handle arrays
+        if (Array.isArray(value)) {
+          if (value.length === 0) return '[]';
+          const items = value.map(item => __formatForConsole(item, nextOptions));
+          return '[ ' + items.join(', ') + ' ]';
+        }
+
+        // Handle plain objects
+        const keys = Object.keys(value);
+        if (keys.length === 0) return '{}';
+        const entries = keys.map(key => {
+          const formattedKey = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(key) ? key : __formatForConsole(key, nextOptions);
+          return formattedKey + ': ' + __formatForConsole(value[key], nextOptions);
+        });
+        return '{ ' + entries.join(', ') + ' }';
       }
 
-      return value;
+      return String(value);
     }
 
-    // Wrapper to serialize all arguments
-    function __wrapConsoleArgs(fn) {
-      return function(...args) {
-        return fn(...args.map(arg => __serializeForConsole(arg)));
-      };
+    // Format multiple args with space separation (like console.log)
+    function __formatArgs(args) {
+      return args.map((arg, i) => __formatForConsole(arg, { inObject: false })).join(' ');
+    }
+
+    // Format data for console.table - creates ASCII table
+    function __formatTable(data, columns) {
+      if (data === null || data === undefined) {
+        return __formatForConsole(data);
+      }
+
+      // Convert to array of objects
+      let rows = [];
+      let headers = new Set();
+
+      if (Array.isArray(data)) {
+        rows = data.map((item, index) => {
+          if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+            Object.keys(item).forEach(k => headers.add(k));
+            return { __index: index, ...item };
+          }
+          return { __index: index, Values: item };
+        });
+        headers.add('Values');
+      } else if (typeof data === 'object') {
+        Object.keys(data).forEach(key => {
+          const item = data[key];
+          if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+            Object.keys(item).forEach(k => headers.add(k));
+            rows.push({ __index: key, ...item });
+          } else {
+            rows.push({ __index: key, Values: item });
+            headers.add('Values');
+          }
+        });
+      } else {
+        return __formatForConsole(data);
+      }
+
+      // Filter headers by columns if provided
+      let headerList = ['(index)', ...headers];
+      headerList = headerList.filter(h => h !== '__index');
+      if (columns && Array.isArray(columns)) {
+        headerList = ['(index)', ...columns.filter(c => headers.has(c))];
+      }
+
+      // Calculate column widths
+      const colWidths = {};
+      headerList.forEach(h => {
+        colWidths[h] = h === '(index)' ? 7 : h.length;
+      });
+      rows.forEach(row => {
+        headerList.forEach(h => {
+          const key = h === '(index)' ? '__index' : h;
+          const val = row[key];
+          const formatted = val !== undefined ? __formatForConsole(val, { depth: 1, inObject: true }) : '';
+          colWidths[h] = Math.max(colWidths[h], formatted.length);
+        });
+      });
+
+      // Build table
+      const sep = '+' + headerList.map(h => '-'.repeat(colWidths[h] + 2)).join('+') + '+';
+      const headerRow = '|' + headerList.map(h => ' ' + h.padEnd(colWidths[h]) + ' ').join('|') + '|';
+
+      const dataRows = rows.map(row => {
+        return '|' + headerList.map(h => {
+          const key = h === '(index)' ? '__index' : h;
+          const val = row[key];
+          const formatted = val !== undefined ? __formatForConsole(val, { depth: 1, inObject: true }) : '';
+          return ' ' + formatted.padEnd(colWidths[h]) + ' ';
+        }).join('|') + '|';
+      });
+
+      return [sep, headerRow, sep, ...dataRows, sep].join('\\n');
     }
 
     globalThis.console = {
-      log: __wrapConsoleArgs(__console_log),
-      warn: __wrapConsoleArgs(__console_warn),
-      error: __wrapConsoleArgs(__console_error),
-      debug: __wrapConsoleArgs(__console_debug),
-      info: __wrapConsoleArgs(__console_info),
-      trace: __wrapConsoleArgs(__console_trace),
-      dir: (value) => __console_dir(__serializeForConsole(value)),
-      table: (data, columns) => __console_table(__serializeForConsole(data), columns),
+      log: (...args) => __console_log(__formatArgs(args)),
+      warn: (...args) => __console_warn(__formatArgs(args)),
+      error: (...args) => __console_error(__formatArgs(args)),
+      debug: (...args) => __console_debug(__formatArgs(args)),
+      info: (...args) => __console_info(__formatArgs(args)),
+      trace: (...args) => {
+        const err = new Error();
+        const stack = err.stack || '';
+        // Remove the first two lines (Error and the trace call itself)
+        const stackLines = stack.split('\\n').slice(2).join('\\n');
+        __console_trace(__formatArgs(args), 'Trace' + (args.length > 0 ? ': ' + __formatArgs(args) : '') + '\\n' + stackLines);
+      },
+      dir: (value, options) => __console_dir(__formatForConsole(value, { depth: options?.depth ?? 2, inObject: true })),
+      table: (data, columns) => __console_table(__formatTable(data, columns)),
       time: __console_time,
       timeEnd: __console_timeEnd,
-      timeLog: __wrapConsoleArgs(__console_timeLog),
+      timeLog: (label, ...args) => __console_timeLog(label ?? 'default', 0, __formatArgs(args)),
       count: __console_count,
       countReset: __console_countReset,
       group: __console_group,
       groupCollapsed: __console_groupCollapsed,
       groupEnd: __console_groupEnd,
       clear: __console_clear,
-      assert: (condition, ...args) => __console_assert(condition, ...args.map(arg => __serializeForConsole(arg))),
+      assert: (condition, ...args) => {
+        if (!condition) {
+          const msg = args.length > 0 ? __formatArgs(args) : 'console.assert';
+          __console_assert('Assertion failed: ' + msg);
+        }
+      },
     };
   `);
 

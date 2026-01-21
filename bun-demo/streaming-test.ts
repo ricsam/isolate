@@ -256,7 +256,7 @@ async function testStreaming(url: string, label: string): Promise<void> {
   const avgDelta = deltas.reduce((a, b) => a + b, 0) / deltas.length;
   const minDelta = Math.min(...deltas);
   const maxDelta = Math.max(...deltas);
-  const totalTime = timings[timings.length - 1].deltaFromStart;
+  const totalTime = timings[timings.length - 1]!.deltaFromStart;
 
   console.log(`Total chunks received: ${timings.length}`);
   console.log(`Total time: ${totalTime}ms`);

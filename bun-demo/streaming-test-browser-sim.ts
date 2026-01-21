@@ -339,7 +339,7 @@ function analyzeTimings(
   const avgDelta = deltas.reduce((a, b) => a + b, 0) / deltas.length;
   const minDelta = Math.min(...deltas);
   const maxDelta = Math.max(...deltas);
-  const totalTime = timings[timings.length - 1].deltaFromStart;
+  const totalTime = timings[timings.length - 1]!.deltaFromStart;
 
   console.log(`Total events: ${timings.length}`);
   console.log(`Total time: ${totalTime}ms`);

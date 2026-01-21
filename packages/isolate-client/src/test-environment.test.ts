@@ -958,7 +958,7 @@ describe("playwright feature", () => {
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logs.push(entry.args.map(String).join(" "));
+                logs.push(entry.stdout);
               }
             },
           },
@@ -992,7 +992,7 @@ describe("playwright feature", () => {
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logs.push(String(entry.args[0]));
+                logs.push(entry.stdout);
               }
             },
           },
@@ -1019,13 +1019,13 @@ describe("playwright feature", () => {
     it("evaluates JavaScript in browser context", async () => {
       const page = await browser.newPage();
       try {
-        const logs: unknown[] = [];
+        const logs: string[] = [];
         const runtime = await client.createRuntime({
           testEnvironment: true, playwright: { page },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logs.push(entry.args[0]);
+                logs.push(entry.stdout);
               }
             },
           },
@@ -1039,7 +1039,7 @@ describe("playwright feature", () => {
           `);
 
           await new Promise(r => setTimeout(r, 100));
-          assert.ok(logs.includes(42));
+          assert.ok(logs.includes("42"));
         } finally {
           await runtime.dispose();
         }
@@ -1057,7 +1057,7 @@ describe("playwright feature", () => {
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logs.push(String(entry.args[0]));
+                logs.push(entry.stdout);
               }
             },
           },
@@ -1104,7 +1104,7 @@ describe("playwright feature", () => {
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logs.push(String(entry.args[0]));
+                logs.push(entry.stdout);
               }
             },
           },
@@ -1142,7 +1142,7 @@ describe("playwright feature", () => {
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logs.push(String(entry.args[0]));
+                logs.push(entry.stdout);
               }
             },
           },
@@ -1170,13 +1170,13 @@ describe("playwright feature", () => {
     it("gets element count", async () => {
       const page = await browser.newPage();
       try {
-        const logs: unknown[] = [];
+        const logs: string[] = [];
         const runtime = await client.createRuntime({
           testEnvironment: true, playwright: { page },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logs.push(entry.args[0]);
+                logs.push(entry.stdout);
               }
             },
           },
@@ -1190,7 +1190,7 @@ describe("playwright feature", () => {
           `);
 
           await new Promise(r => setTimeout(r, 100));
-          assert.ok(logs.includes(3));
+          assert.ok(logs.includes("3"));
         } finally {
           await runtime.dispose();
         }
@@ -1263,7 +1263,7 @@ describe("playwright feature", () => {
   describe("event callbacks", () => {
     it("receives console log events", async () => {
       const page = await browser.newPage();
-      const receivedLogs: { level: string; args: unknown[] }[] = [];
+      const receivedLogs: { level: string; stdout: string }[] = [];
 
       try {
         const runtime = await client.createRuntime({
@@ -1272,7 +1272,7 @@ describe("playwright feature", () => {
             page,
             onEvent: (event) => {
               if (event.type === "browserConsoleLog") {
-                receivedLogs.push({ level: event.level, args: event.args });
+                receivedLogs.push({ level: event.level, stdout: event.stdout });
               }
             },
           },

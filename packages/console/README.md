@@ -10,7 +10,7 @@ npm add @ricsam/isolate-console
 
 ## Usage
 
-The console module uses a single `onEntry` callback that receives structured `ConsoleEntry` objects:
+The console module uses a single `onEntry` callback that receives structured `ConsoleEntry` objects. Output is pre-formatted as `stdout` strings (like Node.js console output) inside the sandbox:
 
 ```typescript
 import { setupConsole, type ConsoleEntry } from "@ricsam/isolate-console";
@@ -19,7 +19,7 @@ const handle = await setupConsole(context, {
   onEntry: (entry: ConsoleEntry) => {
     switch (entry.type) {
       case "output":
-        console.log(`[${entry.level}]`, ...entry.args);
+        console.log(`[${entry.level}]`, entry.stdout);
         break;
       case "time":
         console.log(`${entry.label}: ${entry.duration}ms`);
@@ -49,35 +49,35 @@ import { setupConsole, simpleConsoleHandler } from "@ricsam/isolate-console";
 const handle = await setupConsole(
   context,
   simpleConsoleHandler({
-    log: (...args) => console.log("[sandbox]", ...args),
-    warn: (...args) => console.warn("[sandbox]", ...args),
-    error: (...args) => console.error("[sandbox]", ...args),
-    info: (...args) => console.info("[sandbox]", ...args),
-    debug: (...args) => console.debug("[sandbox]", ...args),
+    log: (msg) => console.log("[sandbox]", msg),
+    warn: (msg) => console.warn("[sandbox]", msg),
+    error: (msg) => console.error("[sandbox]", msg),
+    info: (msg) => console.info("[sandbox]", msg),
+    debug: (msg) => console.debug("[sandbox]", msg),
   })
 );
 ```
 
 ## ConsoleEntry Types
 
-The `ConsoleEntry` discriminated union type includes all possible console events:
+The `ConsoleEntry` discriminated union type includes all possible console events. Output is pre-formatted as `stdout` strings inside the sandbox (like Node.js console):
 
 ```typescript
 type ConsoleEntry =
   // Standard output (log, warn, error, info, debug)
-  | { type: "output"; level: "log" | "warn" | "error" | "info" | "debug"; args: unknown[]; groupDepth: number }
+  | { type: "output"; level: "log" | "warn" | "error" | "info" | "debug"; stdout: string; groupDepth: number }
 
   // console.dir()
-  | { type: "dir"; value: unknown; groupDepth: number }
+  | { type: "dir"; stdout: string; groupDepth: number }
 
   // console.table()
-  | { type: "table"; data: unknown; columns?: string[]; groupDepth: number }
+  | { type: "table"; stdout: string; groupDepth: number }
 
   // console.timeEnd() - timer completed
   | { type: "time"; label: string; duration: number; groupDepth: number }
 
   // console.timeLog() - timer checkpoint
-  | { type: "timeLog"; label: string; duration: number; args: unknown[]; groupDepth: number }
+  | { type: "timeLog"; label: string; duration: number; stdout: string; groupDepth: number }
 
   // console.count()
   | { type: "count"; label: string; count: number; groupDepth: number }
@@ -86,7 +86,7 @@ type ConsoleEntry =
   | { type: "countReset"; label: string; groupDepth: number }
 
   // console.assert() - failed assertion
-  | { type: "assert"; args: unknown[]; groupDepth: number }
+  | { type: "assert"; stdout: string; groupDepth: number }
 
   // console.group() or console.groupCollapsed()
   | { type: "group"; label: string; collapsed: boolean; groupDepth: number }
@@ -98,10 +98,26 @@ type ConsoleEntry =
   | { type: "clear" }
 
   // console.trace()
-  | { type: "trace"; args: unknown[]; stack: string; groupDepth: number };
+  | { type: "trace"; stdout: string; stack: string; groupDepth: number };
 ```
 
 Each entry includes `groupDepth` (except `clear`) which indicates the current nesting level of console groups. This allows you to render output with proper indentation without tracking state yourself.
+
+## Output Formatting
+
+Console output is formatted inside the sandbox using Node.js-style formatting rules:
+
+- **Strings**: passed as-is at top level, quoted in objects/arrays
+- **Numbers/booleans**: converted to string
+- **Functions**: `[Function: name]` or `[Function: (anonymous)]`
+- **Arrays**: `[ 1, 2, 3 ]`
+- **Objects**: `{ key: value }`
+- **Errors**: `Error: message` with stack trace
+- **Response/Request**: `Response { status: 200, ... }`
+- **Map/Set**: `Map(n) { ... }`, `Set(n) { ... }`
+- **Date**: ISO string
+- **Circular refs**: `[Circular]`
+- **Deep objects**: `[Object]` at depth limit (default 2)
 
 ## Injected Globals
 
@@ -116,7 +132,7 @@ Each entry includes `groupDepth` (except `clear`) which indicates the current ne
 
 ```javascript
 // Basic logging
-console.log("Hello", { name: "World" });
+console.log("Hello", { name: "World" });  // "Hello { name: 'World' }"
 console.warn("Warning message");
 console.error("Error occurred");
 
@@ -144,18 +160,18 @@ console.groupEnd();
 
 | Entry Type | Description | Key Properties |
 |------------|-------------|----------------|
-| `output` | Standard logging (log, warn, error, info, debug) | `level`, `args` |
-| `dir` | Object inspection | `value` |
-| `table` | Tabular data display | `data`, `columns?` |
+| `output` | Standard logging (log, warn, error, info, debug) | `level`, `stdout` |
+| `dir` | Object inspection | `stdout` |
+| `table` | Tabular data display (ASCII table) | `stdout` |
 | `time` | Timer completion (timeEnd) | `label`, `duration` |
-| `timeLog` | Timer checkpoint | `label`, `duration`, `args` |
+| `timeLog` | Timer checkpoint | `label`, `duration`, `stdout` |
 | `count` | Counter increment | `label`, `count` |
 | `countReset` | Counter reset | `label` |
-| `assert` | Failed assertion | `args` |
+| `assert` | Failed assertion | `stdout` |
 | `group` | Group start | `label`, `collapsed` |
 | `groupEnd` | Group end | - |
 | `clear` | Console clear | - |
-| `trace` | Stack trace | `args`, `stack` |
+| `trace` | Stack trace | `stdout`, `stack` |
 
 ## License
 

@@ -126,7 +126,7 @@ interface PlaywrightOptions {
   /** Print browser console logs to stdout */
   console?: boolean;
   /** Browser console log callback (from the page, not sandbox) */
-  onBrowserConsoleLog?: (entry: { level: string; args: unknown[]; timestamp: number }) => void;
+  onBrowserConsoleLog?: (entry: { level: string; stdout: string; timestamp: number }) => void;
   onNetworkRequest?: (info: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
   onNetworkResponse?: (info: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
 }
@@ -355,7 +355,7 @@ const runtime = await createRuntime({
   playwright: {
     page,
     baseUrl: "https://example.com",
-    onBrowserConsoleLog: (entry) => console.log("[browser]", ...entry.args),
+    onBrowserConsoleLog: (entry) => console.log("[browser]", entry.stdout),
   },
 });
 

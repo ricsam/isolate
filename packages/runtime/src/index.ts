@@ -830,7 +830,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
           consoleHandler({
             type: "browserOutput",
             level: event.level,
-            args: event.args,
+            stdout: event.stdout,
             timestamp: event.timestamp,
           });
         }

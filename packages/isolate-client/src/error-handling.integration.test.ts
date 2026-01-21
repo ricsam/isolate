@@ -576,12 +576,12 @@ serve({
 
   describe("Error console.log output", () => {
     it("should format error like Node.js when using console.log(err)", async () => {
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
       const runtime = await client.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -594,23 +594,16 @@ serve({
         `);
 
         assert.strictEqual(logs.length, 1);
-        const loggedArg = logs[0]![0] as {
-          __isError?: boolean;
-          name?: string;
-          message?: string;
-          stack?: string;
-        };
+        const loggedOutput = logs[0]!;
 
-        // Error should be serialized with name, message, and stack
+        // Error should be formatted as "Error: message\n  at stack..."
         assert.ok(
-          typeof loggedArg === "object" && loggedArg !== null,
-          `Expected error to be logged as object, got: ${typeof loggedArg}`
+          loggedOutput.startsWith("Error: test error message"),
+          `Expected error to start with "Error: test error message", got: ${loggedOutput}`
         );
-        assert.strictEqual(loggedArg.name, "Error");
-        assert.strictEqual(loggedArg.message, "test error message");
         assert.ok(
-          typeof loggedArg.stack === "string" && loggedArg.stack.length > 0,
-          `Expected error to have stack trace, got: ${loggedArg.stack}`
+          loggedOutput.includes("at "),
+          `Expected error to have stack trace, got: ${loggedOutput}`
         );
       } finally {
         await runtime.dispose();
@@ -618,12 +611,12 @@ serve({
     });
 
     it("should include stack trace when logging error", async () => {
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
       const runtime = await client.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -648,18 +641,14 @@ try {
         );
 
         assert.strictEqual(logs.length, 1);
-        const loggedArg = logs[0]![0] as { stack?: string };
+        const loggedOutput = logs[0]!;
 
         // The logged error should include stack information with function names
         assert.ok(
-          typeof loggedArg.stack === "string",
-          `Expected logged error to have stack property`
-        );
-        assert.ok(
-          loggedArg.stack.includes("innerFunction") ||
-            loggedArg.stack.includes("outerFunction") ||
-            loggedArg.stack.includes("test-stack.js"),
-          `Expected stack trace to include function names, got: ${loggedArg.stack}`
+          loggedOutput.includes("innerFunction") ||
+            loggedOutput.includes("outerFunction") ||
+            loggedOutput.includes("test-stack.js"),
+          `Expected stack trace to include function names, got: ${loggedOutput}`
         );
       } finally {
         await runtime.dispose();
@@ -667,12 +656,12 @@ try {
     });
 
     it("should preserve error type (TypeError, RangeError, etc.) in console.log", async () => {
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
       const runtime = await client.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -685,18 +674,12 @@ try {
         `);
 
         assert.strictEqual(logs.length, 1);
-        const loggedArg = logs[0]![0] as { name?: string; message?: string };
+        const loggedOutput = logs[0]!;
 
         // Should preserve the error type
-        assert.strictEqual(
-          loggedArg.name,
-          "TypeError",
-          `Expected error name to be "TypeError", got: ${loggedArg.name}`
-        );
-        assert.strictEqual(
-          loggedArg.message,
-          "type error message",
-          `Expected error message to be preserved, got: ${loggedArg.message}`
+        assert.ok(
+          loggedOutput.startsWith("TypeError: type error message"),
+          `Expected error to start with "TypeError: type error message", got: ${loggedOutput}`
         );
       } finally {
         await runtime.dispose();

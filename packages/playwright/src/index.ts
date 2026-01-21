@@ -35,7 +35,7 @@ export interface NetworkResponseInfo {
  */
 export interface BrowserConsoleLogEntry {
   level: string;
-  args: string[];
+  stdout: string;
   timestamp: number;
 }
 
@@ -506,9 +506,10 @@ export async function setupPlaywright(
     };
 
     consoleHandler = (msg: import("playwright").ConsoleMessage) => {
+      const args = msg.args().map((arg) => String(arg));
       const entry: BrowserConsoleLogEntry = {
         level: msg.type(),
-        args: msg.args().map((arg) => String(arg)),
+        stdout: args.join(" "),
         timestamp: Date.now(),
       };
       browserConsoleLogs.push(entry);
@@ -517,7 +518,7 @@ export async function setupPlaywright(
         onEvent({
           type: "browserConsoleLog",
           level: entry.level,
-          args: entry.args,
+          stdout: entry.stdout,
           timestamp: entry.timestamp,
         });
       }
@@ -525,7 +526,7 @@ export async function setupPlaywright(
       // Print to stdout if console option is true
       if ("console" in options && options.console) {
         const prefix = `[browser:${entry.level}]`;
-        console.log(prefix, ...entry.args);
+        console.log(prefix, entry.stdout);
       }
     };
 

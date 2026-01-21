@@ -351,9 +351,9 @@ describe("createRuntimeTestContext", () => {
 
     assert.strictEqual(ctx.logs.length, 2);
     assert.strictEqual(ctx.logs[0]!.level, "log");
-    assert.deepStrictEqual(ctx.logs[0]!.args, ["test message"]);
+    assert.strictEqual(ctx.logs[0]!.stdout, "test message");
     assert.strictEqual(ctx.logs[1]!.level, "warn");
-    assert.deepStrictEqual(ctx.logs[1]!.args, ["warning message"]);
+    assert.strictEqual(ctx.logs[1]!.stdout, "warning message");
   });
 
   test("captures and mocks fetch calls", async () => {

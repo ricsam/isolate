@@ -126,12 +126,12 @@ describe("handle-based API", () => {
     });
 
     it("timers fire automatically with real time", async () => {
-      const logs: unknown[] = [];
+      const logs: string[] = [];
       const runtime = await client.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args[0]);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -156,12 +156,12 @@ describe("handle-based API", () => {
     });
 
     it("should clear all timers via timers.clearAll", async () => {
-      const logs: unknown[] = [];
+      const logs: string[] = [];
       const runtime = await client.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args[0]);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -1011,13 +1011,13 @@ describe("handle-based API", () => {
     });
 
     it("should work with async iterator in direct eval context", async () => {
-      const logs: unknown[] = [];
+      const logs: string[] = [];
 
       const runtime = await client.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -1038,7 +1038,7 @@ describe("handle-based API", () => {
           console.log(arr);
         `);
 
-        assert.deepStrictEqual(logs[0], [[0, 1, 2]]);
+        assert.strictEqual(logs[0], "[ 0, 1, 2 ]");
       } finally {
         await runtime.dispose();
       }

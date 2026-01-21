@@ -4,11 +4,11 @@ import type { ConsoleOptions } from "./index.ts";
  * Simple console callback interface for basic usage.
  */
 export interface SimpleConsoleCallbacks {
-  log?: (...args: unknown[]) => void;
-  warn?: (...args: unknown[]) => void;
-  error?: (...args: unknown[]) => void;
-  info?: (...args: unknown[]) => void;
-  debug?: (...args: unknown[]) => void;
+  log?: (message: string) => void;
+  warn?: (message: string) => void;
+  error?: (message: string) => void;
+  info?: (message: string) => void;
+  debug?: (message: string) => void;
 }
 
 /**
@@ -19,9 +19,9 @@ export interface SimpleConsoleCallbacks {
  * ```typescript
  * const runtime = await createRuntime({
  *   console: simpleConsoleHandler({
- *     log: (...args) => console.log('[sandbox]', ...args),
- *     warn: (...args) => console.warn('[sandbox]', ...args),
- *     error: (...args) => console.error('[sandbox]', ...args),
+ *     log: (msg) => console.log('[sandbox]', msg),
+ *     warn: (msg) => console.warn('[sandbox]', msg),
+ *     error: (msg) => console.error('[sandbox]', msg),
  *   })
  * });
  * ```
@@ -32,26 +32,24 @@ export function simpleConsoleHandler(
   return {
     onEntry: (entry) => {
       if (entry.type === "output") {
-        callbacks[entry.level]?.(...entry.args);
+        callbacks[entry.level]?.(entry.stdout);
       } else if (entry.type === "assert") {
-        callbacks.error?.("Assertion failed:", ...entry.args);
+        callbacks.error?.(entry.stdout);
       } else if (entry.type === "trace") {
-        callbacks.log?.(...entry.args, "\n" + entry.stack);
+        callbacks.log?.(entry.stack);
       } else if (entry.type === "dir") {
-        callbacks.log?.(entry.value);
+        callbacks.log?.(entry.stdout);
       } else if (entry.type === "table") {
-        callbacks.log?.(entry.data);
+        callbacks.log?.(entry.stdout);
       } else if (entry.type === "time") {
         callbacks.log?.(`${entry.label}: ${entry.duration.toFixed(2)}ms`);
       } else if (entry.type === "timeLog") {
-        callbacks.log?.(
-          `${entry.label}: ${entry.duration.toFixed(2)}ms`,
-          ...entry.args
-        );
+        const timeMsg = `${entry.label}: ${entry.duration.toFixed(2)}ms`;
+        callbacks.log?.(entry.stdout ? `${timeMsg} ${entry.stdout}` : timeMsg);
       } else if (entry.type === "count") {
         callbacks.log?.(`${entry.label}: ${entry.count}`);
       }
-      // group, groupEnd, groupEnd, countReset, clear are silently ignored
+      // group, groupEnd, countReset, clear are silently ignored
     },
   };
 }

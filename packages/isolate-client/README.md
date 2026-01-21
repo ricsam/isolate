@@ -333,7 +333,7 @@ const runtime = await client.createRuntime({
     onEvent: (event) => {
       // Unified event handler for all playwright events
       if (event.type === "browserConsoleLog") {
-        console.log(`[browser:${event.level}]`, ...event.args);
+        console.log(`[browser:${event.level}]`, event.stdout);
       } else if (event.type === "networkRequest") {
         console.log(`[request] ${event.method} ${event.url}`);
       } else if (event.type === "networkResponse") {
@@ -373,9 +373,9 @@ const runtime = await client.createRuntime({
   console: {
     onEntry: (entry) => {
       if (entry.type === "output") {
-        console.log(`[sandbox:${entry.level}]`, ...entry.args);
+        console.log(`[sandbox:${entry.level}]`, entry.stdout);
       } else if (entry.type === "browserOutput") {
-        console.log(`[browser:${entry.level}]`, ...entry.args);
+        console.log(`[browser:${entry.level}]`, entry.stdout);
       }
     },
   },

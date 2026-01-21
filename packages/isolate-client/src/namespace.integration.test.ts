@@ -103,7 +103,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         },
       });
 
-      const logs1: unknown[][] = [];
+      const logs1: string[] = [];
       await runtime1.eval(`
         import { value } from "@/cached-module";
         globalThis.moduleValue = value;
@@ -117,7 +117,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         console: {
           onEntry: (entry) => {
             if (entry.type === "output") {
-              logs1.push(entry.args);
+              logs1.push(entry.stdout);
             }
           },
         },
@@ -141,7 +141,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
 
         // Module loader should not have been called again
         assert.strictEqual(loadCount, 1);
-        assert.ok(logs1.some((l) => l.includes("module value:") || (l[0] === "module value:" && l[1] === "cached")));
+        assert.ok(logs1.some((l) => l.includes("module value:") && l.includes("cached")));
       } finally {
         await runtime2.dispose();
       }
@@ -156,12 +156,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       await runtime1.dispose();
 
       // Second runtime - check global variable
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
       const runtime2 = await namespace.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -169,7 +169,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
 
       try {
         await runtime2.eval(`console.log("testValue:", globalThis.testValue);`);
-        assert.ok(logs.some((l) => l[0] === "testValue:" && l[1] === "preserved"));
+        assert.ok(logs.some((l) => l === "testValue: preserved"));
       } finally {
         await runtime2.dispose();
       }
@@ -186,12 +186,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       await runtime1.dispose();
 
       // Second runtime - function should still be callable
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
       const runtime2 = await namespace.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -202,7 +202,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           const result = globalThis.myFunction(21);
           console.log("result:", result);
         `);
-        assert.ok(logs.some((l) => l[0] === "result:" && l[1] === 42));
+        assert.ok(logs.some((l) => l === "result: 42"));
       } finally {
         await runtime2.dispose();
       }
@@ -212,14 +212,14 @@ describe("Namespace Runtime Caching Integration Tests", () => {
   describe("State Reset on Reuse", () => {
     it("should clear timers on reuse", async () => {
       const namespace = client.createNamespace("timer-reset-1");
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
 
       // First runtime - set a timeout
       const runtime1 = await namespace.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -242,7 +242,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -251,8 +251,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       try {
         await runtime2.eval(`console.log("timerFired:", globalThis.timerFired);`);
         // Timer should not have fired
-        assert.ok(logs.some((l) => l[0] === "timerFired:" && l[1] === false));
-        assert.ok(!logs.some((l) => l[0] === "timer fired!"));
+        assert.ok(logs.some((l) => l === "timerFired: false"));
+        assert.ok(!logs.some((l) => l === "timer fired!"));
       } finally {
         await runtime2.dispose();
       }
@@ -334,27 +334,27 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       const namespace = client.createNamespace("callback-console-1");
 
       // First runtime with first callback
-      const logs1: unknown[][] = [];
+      const logs1: string[] = [];
       const runtime1 = await namespace.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs1.push(entry.args);
+              logs1.push(entry.stdout);
             }
           },
         },
       });
       await runtime1.eval(`console.log("from runtime 1");`);
-      assert.ok(logs1.some((l) => l[0] === "from runtime 1"));
+      assert.ok(logs1.some((l) => l === "from runtime 1"));
       await runtime1.dispose();
 
       // Second runtime with different callback
-      const logs2: unknown[][] = [];
+      const logs2: string[] = [];
       const runtime2 = await namespace.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs2.push(entry.args);
+              logs2.push(entry.stdout);
             }
           },
         },
@@ -363,9 +363,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       try {
         await runtime2.eval(`console.log("from runtime 2");`);
         // New callback should receive logs
-        assert.ok(logs2.some((l) => l[0] === "from runtime 2"));
+        assert.ok(logs2.some((l) => l === "from runtime 2"));
         // Old callback should not receive new logs
-        assert.ok(!logs1.some((l) => l[0] === "from runtime 2"));
+        assert.ok(!logs1.some((l) => l === "from runtime 2"));
       } finally {
         await runtime2.dispose();
       }
@@ -431,12 +431,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       await runtime1.dispose();
 
       // Second runtime with different module loader
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
       const runtime2 = await namespace.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -454,7 +454,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           import { value } from "@/new-module";
           console.log("value:", value);
         `);
-        assert.ok(logs.some((l) => l[0] === "value:" && l[1] === "new"));
+        assert.ok(logs.some((l) => l === "value: new"));
       } finally {
         await runtime2.dispose();
       }
@@ -475,12 +475,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       await runtime1.dispose();
 
       // Second runtime with different custom function
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
       const runtime2 = await namespace.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -497,7 +497,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           const result = getValue();
           console.log("result:", result);
         `);
-        assert.ok(logs.some((l) => l[0] === "result:" && l[1] === "value-2"));
+        assert.ok(logs.some((l) => l === "result: value-2"));
       } finally {
         await runtime2.dispose();
       }
@@ -519,12 +519,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       const client2 = await connect({ socket: TEST_SOCKET });
       try {
         const namespace2 = client2.createNamespace(namespaceId);
-        const logs: unknown[][] = [];
+        const logs: string[] = [];
         const runtime2 = await namespace2.createRuntime({
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logs.push(entry.args);
+                logs.push(entry.stdout);
               }
             },
           },
@@ -535,7 +535,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           assert.strictEqual(runtime2.id, id1);
 
           await runtime2.eval(`console.log("crossClientValue:", globalThis.crossClientValue);`);
-          assert.ok(logs.some((l) => l[0] === "crossClientValue:" && l[1] === "shared"));
+          assert.ok(logs.some((l) => l === "crossClientValue: shared"));
         } finally {
           await runtime2.dispose();
         }
@@ -560,12 +560,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       const client2 = await connect({ socket: TEST_SOCKET });
       try {
         const namespace2 = client2.createNamespace(namespaceId);
-        const logs: unknown[][] = [];
+        const logs: string[] = [];
         const runtime2 = await namespace2.createRuntime({
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logs.push(entry.args);
+                logs.push(entry.stdout);
               }
             },
           },
@@ -576,7 +576,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           assert.strictEqual(runtime2.id, id1);
 
           await runtime2.eval(`console.log("connectionCloseValue:", globalThis.connectionCloseValue);`);
-          assert.ok(logs.some((l) => l[0] === "connectionCloseValue:" && l[1] === "persisted"));
+          assert.ok(logs.some((l) => l === "connectionCloseValue: persisted"));
         } finally {
           await runtime2.dispose();
         }
@@ -758,12 +758,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       const client2 = await connect({ socket: TEST_SOCKET });
       try {
         const ns2 = client2.createNamespace(namespaceId);
-        const logs: unknown[][] = [];
+        const logs: string[] = [];
         const rt2 = await ns2.createRuntime({
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
-                logs.push(entry.args);
+                logs.push(entry.stdout);
               }
             },
           },
@@ -773,7 +773,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         assert.strictEqual(rt2.id, id1);
 
         await rt2.eval(`console.log("softDeleteTest:", globalThis.softDeleteTest);`);
-        assert.ok(logs.some((l) => l[0] === "softDeleteTest:" && l[1] === "survived"));
+        assert.ok(logs.some((l) => l === "softDeleteTest: survived"));
 
         await rt2.dispose();
       } finally {
@@ -833,12 +833,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       }
 
       // Should be able to reuse
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
       const runtime2 = await namespace.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -846,7 +846,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       try {
         assert.strictEqual(runtime2.reused, true);
         await runtime2.eval(`console.log("specialTest:", globalThis.specialTest);`);
-        assert.ok(logs.some((l) => l[0] === "specialTest:" && l[1] === "works"));
+        assert.ok(logs.some((l) => l === "specialTest: works"));
       } finally {
         await runtime2.dispose();
       }
@@ -867,12 +867,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       }
 
       // Final check - value should be preserved
-      const logs: unknown[][] = [];
+      const logs: string[] = [];
       const finalRuntime = await namespace.createRuntime({
         console: {
           onEntry: (entry) => {
             if (entry.type === "output" && entry.level === "log") {
-              logs.push(entry.args);
+              logs.push(entry.stdout);
             }
           },
         },
@@ -880,7 +880,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
 
       try {
         await finalRuntime.eval(`console.log("cycleCount:", globalThis.cycleCount);`);
-        assert.ok(logs.some((l) => l[0] === "cycleCount:" && l[1] === 10));
+        assert.ok(logs.some((l) => l === "cycleCount: 10"));
       } finally {
         await finalRuntime.dispose();
       }

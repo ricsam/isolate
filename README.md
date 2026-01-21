@@ -42,7 +42,7 @@ const runtime = await createRuntime({
   console: {
     onEntry: (entry) => {
       if (entry.type === "output") {
-        console.log(`[sandbox:${entry.level}]`, ...entry.args);
+        console.log(`[sandbox:${entry.level}]`, entry.stdout);
       }
     },
   },
@@ -102,7 +102,7 @@ const runtime = await createRuntime({
   },
   console: {
     onEntry: (entry) => {
-      if (entry.type === "output") console.log(...entry.args);
+      if (entry.type === "output") console.log(entry.stdout);
     },
   },
   fetch: async (req) => fetch(req),
@@ -274,7 +274,7 @@ const runtime = await client.createRuntime({
   console: {
     onEntry: (entry) => {
       if (entry.type === "output") {
-        console.log("[isolate]", ...entry.args);
+        console.log("[isolate]", entry.stdout);
       }
     },
   },
@@ -481,7 +481,7 @@ interface PlaywrightHandle {
 
 interface CollectedData {
   /** Browser console logs (from the page, not sandbox) */
-  browserConsoleLogs: Array<{ level: string; args: unknown[]; timestamp: number }>;
+  browserConsoleLogs: Array<{ level: string; stdout: string; timestamp: number }>;
   networkRequests: Array<{ url: string; method: string; headers: Record<string, string>; timestamp: number }>;
   networkResponses: Array<{ url: string; status: number; headers: Record<string, string>; timestamp: number }>;
 }
@@ -535,7 +535,7 @@ interface PlaywrightOptions {
 }
 
 type PlaywrightEvent =
-  | { type: "browserConsoleLog"; level: string; args: unknown[]; timestamp: number }
+  | { type: "browserConsoleLog"; level: string; stdout: string; timestamp: number }
   | { type: "networkRequest"; url: string; method: string; headers: Record<string, string>; postData?: string; resourceType?: string; timestamp: number }
   | { type: "networkResponse"; url: string; status: number; statusText?: string; headers: Record<string, string>; timestamp: number };
 ```
@@ -550,19 +550,19 @@ interface ConsoleCallbacks {
 }
 
 type ConsoleEntry =
-  | { type: "output"; level: "log" | "warn" | "error" | "info" | "debug"; args: unknown[]; groupDepth: number }
-  | { type: "browserOutput"; level: string; args: unknown[]; timestamp: number } // Browser console (from Playwright page)
-  | { type: "dir"; value: unknown; groupDepth: number }
-  | { type: "table"; data: unknown; columns?: string[]; groupDepth: number }
+  | { type: "output"; level: "log" | "warn" | "error" | "info" | "debug"; stdout: string; groupDepth: number }
+  | { type: "browserOutput"; level: string; stdout: string; timestamp: number } // Browser console (from Playwright page)
+  | { type: "dir"; stdout: string; groupDepth: number }
+  | { type: "table"; stdout: string; groupDepth: number }
   | { type: "time"; label: string; duration: number; groupDepth: number }
-  | { type: "timeLog"; label: string; duration: number; args: unknown[]; groupDepth: number }
+  | { type: "timeLog"; label: string; duration: number; stdout: string; groupDepth: number }
   | { type: "count"; label: string; count: number; groupDepth: number }
   | { type: "countReset"; label: string; groupDepth: number }
-  | { type: "assert"; args: unknown[]; groupDepth: number }
+  | { type: "assert"; stdout: string; groupDepth: number }
   | { type: "group"; label: string; collapsed: boolean; groupDepth: number }
   | { type: "groupEnd"; groupDepth: number }
   | { type: "clear" }
-  | { type: "trace"; args: unknown[]; stack: string; groupDepth: number };
+  | { type: "trace"; stdout: string; stack: string; groupDepth: number };
 ```
 
 For simple logging, use the `simpleConsoleHandler` helper:
@@ -572,8 +572,8 @@ import { simpleConsoleHandler } from "@ricsam/isolate-runtime";
 
 const runtime = await createRuntime({
   console: simpleConsoleHandler({
-    log: (...args) => console.log("[sandbox]", ...args),
-    error: (...args) => console.error("[sandbox]", ...args),
+    log: (msg) => console.log("[sandbox]", msg),
+    error: (msg) => console.error("[sandbox]", msg),
   }),
 });
 ```
@@ -862,7 +862,7 @@ const runtime = await createRuntime({
       // Unified event handler for all playwright events
       switch (event.type) {
         case "browserConsoleLog":
-          console.log(`[browser:${event.level}]`, ...event.args);
+          console.log(`[browser:${event.level}]`, event.stdout);
           break;
         case "networkRequest":
           console.log(`[request] ${event.method} ${event.url}`);
@@ -905,9 +905,9 @@ const runtime = await createRuntime({
   console: {
     onEntry: (entry) => {
       if (entry.type === "output") {
-        console.log(`[sandbox:${entry.level}]`, ...entry.args);
+        console.log(`[sandbox:${entry.level}]`, entry.stdout);
       } else if (entry.type === "browserOutput") {
-        console.log(`[browser:${entry.level}]`, ...entry.args);
+        console.log(`[browser:${entry.level}]`, entry.stdout);
       }
     },
   },

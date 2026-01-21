@@ -31,7 +31,7 @@ await ctx.context.eval(`
 
 // Check captured logs
 console.log(ctx.logs);
-// [{ level: "log", args: ["Starting fetch..."] }, ...]
+// [{ level: "log", stdout: "Starting fetch..." }, ...]
 
 // Check captured fetch calls
 console.log(ctx.fetchCalls);
@@ -49,7 +49,7 @@ interface RuntimeTestContext {
   context: ivm.Context;
   tick(ms?: number): Promise<void>;
   dispose(): void;
-  logs: Array<{ level: string; args: unknown[] }>;
+  logs: Array<{ level: string; stdout: string }>;
   fetchCalls: Array<{ url: string; method: string; headers: [string, string][] }>;
   setMockResponse(response: MockResponse): void;
   mockFs: MockFileSystem;

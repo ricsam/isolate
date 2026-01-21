@@ -909,7 +909,7 @@ async function handleCreateRuntime(
             const promise = invokeClientCallback(
               connection,
               playwrightCallbacks.onBrowserConsoleLogCallbackId,
-              [{ level: event.level, args: event.args, timestamp: event.timestamp }]
+              [{ level: event.level, stdout: event.stdout, timestamp: event.timestamp }]
             ).catch(() => {});
             pendingCallbacks.push(promise);
           } else if (event.type === "networkRequest" && playwrightCallbacks.onNetworkRequestCallbackId) {
