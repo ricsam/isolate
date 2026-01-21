@@ -6,45 +6,6 @@ This document tracks known inconsistencies between the isolate implementation an
 
 ## Open Issues
 
-### 13. AbortSignal.onabort Event Handler Property Missing
-
-**Status:** Open
-**Severity:** Low
-**Spec:** [WHATWG DOM - AbortSignal interface](https://dom.spec.whatwg.org/#interface-AbortSignal)
-
-The WHATWG spec requires AbortSignal to have an `onabort` event handler property. This is not implemented:
-
-```javascript
-const controller = new AbortController();
-controller.signal.onabort = () => console.log('aborted');
-// TypeError: Cannot set property onabort
-```
-
-**Workaround:** Use `addEventListener('abort', handler)` instead.
-
----
-
-### 14. AbortSignal.any() Static Method Missing
-
-**Status:** Open
-**Severity:** Medium
-**Spec:** [WHATWG DOM - AbortSignal.any()](https://dom.spec.whatwg.org/#dom-abortsignal-any)
-
-The static `AbortSignal.any(signals)` method for combining multiple abort signals is not implemented:
-
-```javascript
-const controller1 = new AbortController();
-const controller2 = new AbortController();
-
-// Should create a signal that aborts when any of the input signals abort
-const combinedSignal = AbortSignal.any([controller1.signal, controller2.signal]);
-// TypeError: AbortSignal.any is not a function
-```
-
-**Workaround:** Manually combine signals by listening to each signal and calling abort on a new controller.
-
----
-
 ### 15. AbortController/AbortSignal No Marshalling Support
 
 **Status:** Open (By Design)
@@ -64,6 +25,43 @@ const controller = await customFunctionThatCreatesController();
 ---
 
 ## Fixed Issues
+
+### 13. AbortSignal.onabort Event Handler Property Missing
+
+**Status:** Fixed
+**Severity:** Low
+**Spec:** [WHATWG DOM - AbortSignal interface](https://dom.spec.whatwg.org/#interface-AbortSignal)
+
+The `onabort` event handler property is now implemented on AbortSignal:
+
+```javascript
+const controller = new AbortController();
+controller.signal.onabort = () => console.log('aborted');
+controller.abort(); // logs 'aborted'
+```
+
+---
+
+### 14. AbortSignal.any() Static Method Missing
+
+**Status:** Fixed
+**Severity:** Medium
+**Spec:** [WHATWG DOM - AbortSignal.any()](https://dom.spec.whatwg.org/#dom-abortsignal-any)
+
+The static `AbortSignal.any(signals)` method for combining multiple abort signals is now implemented:
+
+```javascript
+const controller1 = new AbortController();
+const controller2 = new AbortController();
+
+// Creates a signal that aborts when any of the input signals abort
+const combinedSignal = AbortSignal.any([controller1.signal, controller2.signal]);
+controller1.abort("reason");
+combinedSignal.aborted; // true
+combinedSignal.reason;  // "reason"
+```
+
+---
 
 ### 12. Response.body Returns New Stream on Each Access
 
@@ -247,9 +245,9 @@ paramsRef === url.searchParams; // true (same instance)
 
 | Issue | Severity | Spec Area | Status |
 |-------|----------|-----------|--------|
-| AbortSignal.onabort missing | Low | DOM | Open |
-| AbortSignal.any() missing | Medium | DOM | Open |
 | AbortController/AbortSignal no marshalling | Low | N/A | Open (By Design) |
+| AbortSignal.onabort missing | Low | DOM | Fixed |
+| AbortSignal.any() missing | Medium | DOM | Fixed |
 | Response.body identity | Medium | Fetch | Fixed |
 | Blob from Blob/File | High | File API | Fixed |
 | File.webkitRelativePath | Low | File API | Fixed |

@@ -154,9 +154,57 @@ describe("Abort Consistency", () => {
           assert.strictEqual(ctx.getResult(), true);
         });
 
-        // WHATWG spec requires onabort event handler property
-        // https://dom.spec.whatwg.org/#interface-AbortSignal
-        test.todo(`onabort property exists when from ${origin} (WHATWG: event handler property not implemented)`);
+        test(`onabort property exists when from ${origin}`, async () => {
+          await getAbortSignalFromOrigin(ctx, origin);
+          await ctx.eval(`
+            setResult('onabort' in __testAbortSignal);
+          `);
+          assert.strictEqual(ctx.getResult(), true);
+        });
+
+        test(`onabort getter returns null initially when from ${origin}`, async () => {
+          await getAbortSignalFromOrigin(ctx, origin);
+          await ctx.eval(`
+            setResult(__testAbortSignal.onabort);
+          `);
+          assert.strictEqual(ctx.getResult(), null);
+        });
+
+        test(`onabort setter registers handler when from ${origin}`, async () => {
+          await getAbortSignalFromOrigin(ctx, origin);
+          await ctx.eval(`
+            let called = false;
+            __testAbortSignal.onabort = () => { called = true; };
+            __testAbortController.abort();
+            setResult(called);
+          `);
+          assert.strictEqual(ctx.getResult(), true);
+        });
+
+        test(`setting onabort to null removes handler when from ${origin}`, async () => {
+          await getAbortSignalFromOrigin(ctx, origin);
+          await ctx.eval(`
+            let called = false;
+            __testAbortSignal.onabort = () => { called = true; };
+            __testAbortSignal.onabort = null;
+            __testAbortController.abort();
+            setResult(called);
+          `);
+          assert.strictEqual(ctx.getResult(), false);
+        });
+
+        test(`replacing onabort removes old handler when from ${origin}`, async () => {
+          await getAbortSignalFromOrigin(ctx, origin);
+          await ctx.eval(`
+            let calls = [];
+            __testAbortSignal.onabort = () => { calls.push('first'); };
+            __testAbortSignal.onabort = () => { calls.push('second'); };
+            __testAbortController.abort();
+            setResult(calls);
+          `);
+          const result = ctx.getResult() as string[];
+          assert.deepStrictEqual(result, ['second']);
+        });
       }
     });
 
@@ -203,9 +251,12 @@ describe("Abort Consistency", () => {
         assert.strictEqual(ctx.getResult(), true);
       });
 
-      // WHATWG spec requires AbortSignal.any() for combining multiple signals
-      // https://dom.spec.whatwg.org/#dom-abortsignal-any
-      test.todo("AbortSignal.any() static method exists (WHATWG: static method for combining signals not implemented)");
+      test("AbortSignal.any() static method exists", async () => {
+        await ctx.eval(`
+          setResult(typeof AbortSignal.any === 'function');
+        `);
+        assert.strictEqual(ctx.getResult(), true);
+      });
     });
 
     describe("Static Method Behavior", () => {
@@ -241,6 +292,104 @@ describe("Abort Consistency", () => {
         const result = ctx.getResult() as { isAbortSignal: boolean; aborted: boolean };
         assert.strictEqual(result.isAbortSignal, true);
         assert.strictEqual(result.aborted, false);
+      });
+
+      test("AbortSignal.any() returns AbortSignal", async () => {
+        await ctx.eval(`
+          const controller1 = new AbortController();
+          const controller2 = new AbortController();
+          const combined = AbortSignal.any([controller1.signal, controller2.signal]);
+          setResult({
+            isAbortSignal: combined instanceof AbortSignal,
+            aborted: combined.aborted,
+          });
+        `);
+        const result = ctx.getResult() as { isAbortSignal: boolean; aborted: boolean };
+        assert.strictEqual(result.isAbortSignal, true);
+        assert.strictEqual(result.aborted, false);
+      });
+
+      test("AbortSignal.any() aborts when first input signal aborts", async () => {
+        await ctx.eval(`
+          const controller1 = new AbortController();
+          const controller2 = new AbortController();
+          const combined = AbortSignal.any([controller1.signal, controller2.signal]);
+          const abortedBefore = combined.aborted;
+          controller1.abort("reason from first");
+          setResult({
+            abortedBefore,
+            abortedAfter: combined.aborted,
+            reason: combined.reason,
+          });
+        `);
+        const result = ctx.getResult() as { abortedBefore: boolean; abortedAfter: boolean; reason: string };
+        assert.strictEqual(result.abortedBefore, false);
+        assert.strictEqual(result.abortedAfter, true);
+        assert.strictEqual(result.reason, "reason from first");
+      });
+
+      test("AbortSignal.any() aborts when second input signal aborts", async () => {
+        await ctx.eval(`
+          const controller1 = new AbortController();
+          const controller2 = new AbortController();
+          const combined = AbortSignal.any([controller1.signal, controller2.signal]);
+          controller2.abort("reason from second");
+          setResult({
+            aborted: combined.aborted,
+            reason: combined.reason,
+          });
+        `);
+        const result = ctx.getResult() as { aborted: boolean; reason: string };
+        assert.strictEqual(result.aborted, true);
+        assert.strictEqual(result.reason, "reason from second");
+      });
+
+      test("AbortSignal.any() returns already-aborted signal if any input is already aborted", async () => {
+        await ctx.eval(`
+          const controller1 = new AbortController();
+          const controller2 = new AbortController();
+          controller1.abort("already aborted");
+          const combined = AbortSignal.any([controller1.signal, controller2.signal]);
+          setResult({
+            aborted: combined.aborted,
+            reason: combined.reason,
+          });
+        `);
+        const result = ctx.getResult() as { aborted: boolean; reason: string };
+        assert.strictEqual(result.aborted, true);
+        assert.strictEqual(result.reason, "already aborted");
+      });
+
+      test("AbortSignal.any() with empty array returns signal that never aborts", async () => {
+        await ctx.eval(`
+          const combined = AbortSignal.any([]);
+          setResult({
+            isAbortSignal: combined instanceof AbortSignal,
+            aborted: combined.aborted,
+          });
+        `);
+        const result = ctx.getResult() as { isAbortSignal: boolean; aborted: boolean };
+        assert.strictEqual(result.isAbortSignal, true);
+        assert.strictEqual(result.aborted, false);
+      });
+
+      test("AbortSignal.any() only aborts once even if multiple signals abort", async () => {
+        await ctx.eval(`
+          const controller1 = new AbortController();
+          const controller2 = new AbortController();
+          const combined = AbortSignal.any([controller1.signal, controller2.signal]);
+          let abortCount = 0;
+          combined.addEventListener('abort', () => { abortCount++; });
+          controller1.abort("first");
+          controller2.abort("second");
+          setResult({
+            abortCount,
+            reason: combined.reason,
+          });
+        `);
+        const result = ctx.getResult() as { abortCount: number; reason: string };
+        assert.strictEqual(result.abortCount, 1);
+        assert.strictEqual(result.reason, "first");
       });
     });
 

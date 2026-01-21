@@ -606,8 +606,8 @@ test.failing('Response.body.tee() works for fetchCallback origin', async () => {
 - [x] URLSearchParams iteration and mutation methods work consistently
 
 ### Abort Classes
-- [ ] AbortController creates valid signals across all origins
-- [ ] AbortSignal event handling works consistently
+- [x] AbortController creates valid signals across all origins
+- [x] AbortSignal event handling works consistently
 
 ### Encoding Classes
 - [ ] TextEncoder/TextDecoder roundtrip works across all origins

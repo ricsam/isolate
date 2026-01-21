@@ -2076,7 +2076,7 @@ async function injectAbortController(context: ivm.Context): Promise<void> {
     constructor() {
       // AbortSignal should not be constructed directly
       // Only AbortController can create it
-      _abortSignalState.set(this, { aborted: false, reason: undefined, listeners: [] });
+      _abortSignalState.set(this, { aborted: false, reason: undefined, listeners: [], onabortHandler: null });
     }
 
     get aborted() {
@@ -2085,6 +2085,27 @@ async function injectAbortController(context: ivm.Context): Promise<void> {
 
     get reason() {
       return _abortSignalState.get(this)?.reason;
+    }
+
+    get onabort() {
+      return _abortSignalState.get(this)?.onabortHandler ?? null;
+    }
+
+    set onabort(handler) {
+      const state = _abortSignalState.get(this);
+      if (!state) return;
+
+      // Remove previous handler if it was a listener
+      if (state.onabortHandler) {
+        this.removeEventListener('abort', state.onabortHandler);
+      }
+
+      state.onabortHandler = typeof handler === 'function' ? handler : null;
+
+      // Add new handler as listener
+      if (state.onabortHandler) {
+        this.addEventListener('abort', state.onabortHandler);
+      }
     }
 
     throwIfAborted() {
@@ -2137,6 +2158,32 @@ async function injectAbortController(context: ivm.Context): Promise<void> {
       setTimeout(() => {
         controller.abort(new DOMException('The operation timed out.', 'TimeoutError'));
       }, milliseconds);
+      return controller.signal;
+    }
+
+    static any(signals) {
+      if (!Array.isArray(signals)) {
+        throw new TypeError('signals must be an iterable');
+      }
+
+      // If any signal is already aborted, return an aborted signal with that reason
+      for (const signal of signals) {
+        if (signal.aborted) {
+          return AbortSignal.abort(signal.reason);
+        }
+      }
+
+      // Create a new controller that will abort when any input signal aborts
+      const controller = new AbortController();
+
+      for (const signal of signals) {
+        signal.addEventListener('abort', () => {
+          if (!controller.signal.aborted) {
+            controller.abort(signal.reason);
+          }
+        });
+      }
+
       return controller.signal;
     }
   }
