@@ -6,134 +6,170 @@ This document tracks known inconsistencies between the isolate implementation an
 
 ## Open Issues
 
+*No open issues at this time.*
+
+---
+
+## Fixed Issues
+
 ### 5. URL Marshalling Returns String Instead of URL Object
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** Medium
 **Spec:** [WHATWG URL - URL Class](https://url.spec.whatwg.org/#url-class)
 
-When URL objects are passed through custom functions (crossing the marshal/unmarshal boundary), they are serialized via `URLRef` which only preserves the `href` string. The returned value is a plain string, not a URL object:
+When URL objects are passed through custom functions (crossing the marshal/unmarshal boundary), they are now properly marshalled via `URLRef` and unmarshalled back to URL objects:
 
 ```javascript
 // In custom function context
 __setURL(new URL("https://example.com/path?query=1"));
 const url = __getURL();
 
-url instanceof URL;        // false - it's a string!
-typeof url;                // "string"
-url.searchParams;          // undefined
-url.pathname;              // undefined
-String(url);               // "https://example.com/path?query=1" - href is preserved
+url instanceof URL;        // true - properly unmarshalled!
+url.searchParams;          // URLSearchParams instance
+url.pathname;              // "/path"
 ```
 
 ---
 
 ### 6. URLSearchParams.size Property Missing
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** Low
 **Spec:** [WHATWG URL - URLSearchParams size](https://url.spec.whatwg.org/#dom-urlsearchparams-size)
 
-The `size` property on URLSearchParams is not implemented:
+The `size` property on URLSearchParams is now implemented:
 
 ```javascript
 const params = new URLSearchParams("a=1&b=2&c=3");
-params.size;              // undefined (should be 3)
-'size' in params;         // false
+params.size;              // 3
+'size' in params;         // true
 ```
 
 ---
 
 ### 7. URLSearchParams has() and delete() Two-Argument Forms Not Supported
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** Low
 **Spec:** [WHATWG URL - URLSearchParams](https://url.spec.whatwg.org/#interface-urlsearchparams)
 
-The two-argument forms of `has(name, value)` and `delete(name, value)` are not fully supported:
+The two-argument forms of `has(name, value)` and `delete(name, value)` are now fully supported:
 
 ```javascript
 const params = new URLSearchParams("a=1&a=2&a=3");
 
-// has() with value - may not filter by value
-params.has("a", "2");     // Behavior may vary
+// has() with value - filters by value
+params.has("a", "2");     // true
+params.has("a", "4");     // false
 
-// delete() with value - removes all entries with key, not just matching value
+// delete() with value - removes only matching entries
 params.delete("a", "2");
-params.getAll("a");       // [] instead of ["1", "3"]
+params.getAll("a");       // ["1", "3"]
 ```
 
 ---
 
 ### 8. URLSearchParams toString() Uses %20 Instead of + for Spaces
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** Low
 **Spec:** [WHATWG URL - application/x-www-form-urlencoded serializer](https://url.spec.whatwg.org/#concept-urlencoded-serializer)
 
-Per the WHATWG spec, spaces should be encoded as `+` in `application/x-www-form-urlencoded` format:
+Per the WHATWG spec, spaces are now encoded as `+` in `application/x-www-form-urlencoded` format:
 
 ```javascript
 const params = new URLSearchParams();
 params.set("key", "value with spaces");
-params.toString();        // "key=value%20with%20spaces" (should be "key=value+with+spaces")
+params.toString();        // "key=value+with+spaces"
 ```
 
-Both encodings are valid and will be decoded correctly, but the spec specifically requires `+` for spaces.
+The constructor also properly decodes `+` as space when parsing:
+
+```javascript
+const params = new URLSearchParams("key=value+with+spaces");
+params.get("key");        // "value with spaces"
+```
 
 ---
 
 ### 9. URLSearchParams Constructor Doesn't Accept URLSearchParams
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** Low
 **Spec:** [WHATWG URL - URLSearchParams Constructor](https://url.spec.whatwg.org/#dom-urlsearchparams-urlsearchparams)
 
-Creating URLSearchParams from another URLSearchParams instance does not work:
+Creating URLSearchParams from another URLSearchParams instance now works correctly:
 
 ```javascript
 const original = new URLSearchParams("a=1&b=2");
 const copy = new URLSearchParams(original);
-copy.get("a");            // null (should be "1")
+copy.get("a");            // "1"
+copy.get("b");            // "2"
+
+// Modifications to copy don't affect original
+copy.set("a", "changed");
+original.get("a");        // "1" (unchanged)
 ```
 
 ---
 
 ### 10. URL.canParse() Static Method Missing
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** Low
 **Spec:** [WHATWG URL - URL.canParse](https://url.spec.whatwg.org/#dom-url-canparse)
 
-The static `URL.canParse()` method is not implemented:
+The static `URL.canParse()` method is now implemented:
 
 ```javascript
-URL.canParse("https://example.com");  // TypeError: URL.canParse is not a function
+URL.canParse("https://example.com");       // true
+URL.canParse("not a url");                 // false
+URL.canParse("/path", "https://base.com"); // true
 ```
 
 ---
 
 ### 11. URLSearchParams-URL Live Binding Not Maintained
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** Medium
 **Spec:** [WHATWG URL - URLSearchParams update](https://url.spec.whatwg.org/#concept-urlsearchparams-update)
 
-Per the WHATWG spec, mutating `url.searchParams` should update `url.search` and `url.href` in real-time. The current implementation creates a disconnected URLSearchParams:
+Per the WHATWG spec, mutating `url.searchParams` now properly updates `url.search` and `url.href` in real-time:
 
 ```javascript
 const url = new URL("https://example.com?a=1");
 url.searchParams.set("b", "2");
 
-// WHATWG spec behavior:
-url.search;               // Should be "?a=1&b=2"
-url.href;                 // Should be "https://example.com?a=1&b=2"
-
-// Actual behavior:
-url.search;               // "?a=1" - not updated!
-url.href;                 // "https://example.com?a=1" - not updated!
-url.searchParams.toString(); // "a=1&b=2" - params are updated internally
+url.search;               // "?a=1&b=2"
+url.href;                 // "https://example.com?a=1&b=2"
+url.searchParams.toString(); // "a=1&b=2"
 ```
+
+Setting `url.search` also updates the searchParams:
+
+```javascript
+const url = new URL("https://example.com?a=1");
+const paramsRef = url.searchParams;
+url.search = "?b=2&c=3";
+
+paramsRef.get("a");       // null
+paramsRef.get("b");       // "2"
+paramsRef.get("c");       // "3"
+paramsRef === url.searchParams; // true (same instance)
+```
+
+---
+
+### Previously Fixed Issues
+
+| Issue | Severity | Spec Area | Status |
+|-------|----------|-----------|--------|
+| Blob from Blob/File | High | File API | Fixed |
+| File.webkitRelativePath | Low | File API | Fixed |
+| Request body in serve() | High | Fetch | Fixed |
+| Response.body stream | High | Streams | Fixed |
 
 ---
 
@@ -145,10 +181,10 @@ url.searchParams.toString(); // "a=1&b=2" - params are updated internally
 | File.webkitRelativePath | Low | File API | Fixed |
 | Request body in serve() | High | Fetch | Fixed |
 | Response.body stream | High | Streams | Fixed |
-| URL marshalling returns string | Medium | URL | Open |
-| URLSearchParams.size missing | Low | URL | Open |
-| URLSearchParams has/delete with value | Low | URL | Open |
-| URLSearchParams toString() space encoding | Low | URL | Open |
-| URLSearchParams copy constructor | Low | URL | Open |
-| URL.canParse() missing | Low | URL | Open |
-| URLSearchParams-URL live binding | Medium | URL | Open |
+| URL marshalling returns string | Medium | URL | Fixed |
+| URLSearchParams.size missing | Low | URL | Fixed |
+| URLSearchParams has/delete with value | Low | URL | Fixed |
+| URLSearchParams toString() space encoding | Low | URL | Fixed |
+| URLSearchParams copy constructor | Low | URL | Fixed |
+| URL.canParse() missing | Low | URL | Fixed |
+| URLSearchParams-URL live binding | Medium | URL | Fixed |

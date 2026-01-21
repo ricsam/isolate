@@ -8,16 +8,16 @@ import {
   type URLSearchParamsOrigin,
 } from "./origins.ts";
 
-// Note: URL customFunction origin doesn't work - URLs crossing the boundary
-// are serialized as URLRef (href only) and returned as strings, not URL objects.
-// This is documented in WHATWG_INCONSISTENCIES.md
-const WORKING_URL_ORIGINS = ["direct"] as const;
+// All URL origins now work - URLs are properly marshalled via URLRef and
+// unmarshalled back to URL objects (see WHATWG_INCONSISTENCIES.md - Issue #5 Fixed)
+const WORKING_URL_ORIGINS = ["direct", "customFunction"] as const;
 
-// Note: fromCustomFunctionURL has known issues - URL.searchParams is lost when
-// URLs cross the marshal/unmarshal boundary (see WHATWG_INCONSISTENCIES.md)
+// All URLSearchParams origins now work - URL.searchParams live binding is
+// properly maintained (see WHATWG_INCONSISTENCIES.md - Issue #11 Fixed)
 const WORKING_URLSEARCHPARAMS_ORIGINS: URLSearchParamsOrigin[] = [
   "direct",
   "fromURL",
+  "fromCustomFunctionURL",
 ];
 
 describe("URL Consistency", () => {
@@ -266,22 +266,34 @@ describe("URL Consistency", () => {
       assert.strictEqual(ctx.getResult(), "URL");
     });
 
-    // Document the customFunction behavior
-    test("url from customFunction is returned as string (known limitation)", async () => {
-      await getURLFromOrigin(ctx, "customFunction", "https://example.com");
+    // Verify that URLs from customFunction are properly unmarshalled to URL objects
+    test("url from customFunction is properly unmarshalled to URL instance", async () => {
+      await getURLFromOrigin(ctx, "customFunction", "https://example.com/path?query=1");
       await ctx.eval(`
         setResult({
           type: typeof __testURL,
           constructorName: __testURL.constructor.name,
           isInstanceOfURL: __testURL instanceof URL,
+          href: __testURL.href,
+          pathname: __testURL.pathname,
+          search: __testURL.search,
         });
       `);
-      const result = ctx.getResult() as { type: string; constructorName: string; isInstanceOfURL: boolean };
-      // URL is marshalled as URLRef (href only) and returned as a string
-      // This is a known limitation documented in WHATWG_INCONSISTENCIES.md
-      assert.strictEqual(result.type, "string");
-      assert.strictEqual(result.constructorName, "String");
-      assert.strictEqual(result.isInstanceOfURL, false);
+      const result = ctx.getResult() as {
+        type: string;
+        constructorName: string;
+        isInstanceOfURL: boolean;
+        href: string;
+        pathname: string;
+        search: string;
+      };
+      // URL is marshalled as URLRef and properly unmarshalled back to URL
+      assert.strictEqual(result.type, "object");
+      assert.strictEqual(result.constructorName, "URL");
+      assert.strictEqual(result.isInstanceOfURL, true);
+      assert.strictEqual(result.href, "https://example.com/path?query=1");
+      assert.strictEqual(result.pathname, "/path");
+      assert.strictEqual(result.search, "?query=1");
     });
   });
 
@@ -782,15 +794,14 @@ describe("URLSearchParams Consistency", () => {
   });
 
   // ============================================================================
-  // WHATWG Inconsistencies - TODO Tests
-  // These tests document known inconsistencies. When the underlying issues
-  // are fixed, these todo tests should be converted to regular tests.
-  // See WHATWG_INCONSISTENCIES.md for details.
+  // WHATWG Compliance Tests
+  // These tests verify that previously broken WHATWG features now work correctly.
+  // See WHATWG_INCONSISTENCIES.md for historical context.
   // ============================================================================
 
-  describe("WHATWG Inconsistencies (TODO)", () => {
-    // Issue #5: URL Marshalling Returns String Instead of URL Object
-    test.todo("URL crossing boundary should remain URL instance", async () => {
+  describe("WHATWG Compliance (Previously Fixed Issues)", () => {
+    // Issue #5: URL Marshalling Returns String Instead of URL Object - FIXED
+    test("URL crossing boundary should remain URL instance", async () => {
       await ctx.eval(`
         __setURL(new URL("https://example.com/path?a=1&b=2"));
         const url = __getURL();
@@ -810,8 +821,8 @@ describe("URLSearchParams Consistency", () => {
       assert.strictEqual(result.pathname, "/path");
     });
 
-    // Issue #6: URLSearchParams.size Property Missing
-    test.todo("URLSearchParams.size should return entry count", async () => {
+    // Issue #6: URLSearchParams.size Property Missing - FIXED
+    test("URLSearchParams.size should return entry count", async () => {
       await ctx.eval(`
         const params = new URLSearchParams("a=1&b=2&c=3");
         setResult({
@@ -824,8 +835,8 @@ describe("URLSearchParams Consistency", () => {
       assert.strictEqual(result.size, 3);
     });
 
-    // Issue #7: URLSearchParams has() and delete() Two-Argument Forms
-    test.todo("URLSearchParams.has(name, value) should filter by value", async () => {
+    // Issue #7: URLSearchParams has() and delete() Two-Argument Forms - FIXED
+    test("URLSearchParams.has(name, value) should filter by value", async () => {
       await ctx.eval(`
         const params = new URLSearchParams("a=1&a=2&a=3");
         setResult({
@@ -838,7 +849,7 @@ describe("URLSearchParams Consistency", () => {
       assert.strictEqual(result.hasA4, false);
     });
 
-    test.todo("URLSearchParams.delete(name, value) should only remove matching entries", async () => {
+    test("URLSearchParams.delete(name, value) should only remove matching entries", async () => {
       await ctx.eval(`
         const params = new URLSearchParams("a=1&a=2&a=3");
         params.delete("a", "2");
@@ -847,8 +858,8 @@ describe("URLSearchParams Consistency", () => {
       assert.deepStrictEqual(ctx.getResult(), ["1", "3"]);
     });
 
-    // Issue #8: URLSearchParams toString() Uses %20 Instead of + for Spaces
-    test.todo("URLSearchParams.toString() should encode spaces as +", async () => {
+    // Issue #8: URLSearchParams toString() Uses %20 Instead of + for Spaces - FIXED
+    test("URLSearchParams.toString() should encode spaces as +", async () => {
       await ctx.eval(`
         const params = new URLSearchParams();
         params.set("key", "value with spaces");
@@ -857,8 +868,16 @@ describe("URLSearchParams Consistency", () => {
       assert.strictEqual(ctx.getResult(), "key=value+with+spaces");
     });
 
-    // Issue #9: URLSearchParams Constructor Doesn't Accept URLSearchParams
-    test.todo("new URLSearchParams(URLSearchParams) should copy entries", async () => {
+    test("URLSearchParams should decode + as space when parsing", async () => {
+      await ctx.eval(`
+        const params = new URLSearchParams("key=value+with+spaces");
+        setResult(params.get("key"));
+      `);
+      assert.strictEqual(ctx.getResult(), "value with spaces");
+    });
+
+    // Issue #9: URLSearchParams Constructor Doesn't Accept URLSearchParams - FIXED
+    test("new URLSearchParams(URLSearchParams) should copy entries", async () => {
       await ctx.eval(`
         const original = new URLSearchParams("a=1&b=2");
         const copy = new URLSearchParams(original);
@@ -875,8 +894,8 @@ describe("URLSearchParams Consistency", () => {
       assert.strictEqual(result.originalA, "changed");
     });
 
-    // Issue #10: URL.canParse() Static Method Missing
-    test.todo("URL.canParse() should return true for valid URLs", async () => {
+    // Issue #10: URL.canParse() Static Method Missing - FIXED
+    test("URL.canParse() should return true for valid URLs", async () => {
       await ctx.eval(`
         setResult({
           valid: URL.canParse("https://example.com"),
@@ -890,8 +909,8 @@ describe("URLSearchParams Consistency", () => {
       assert.strictEqual(result.withBase, true);
     });
 
-    // Issue #11: URLSearchParams-URL Live Binding Not Maintained
-    test.todo("mutating searchParams should update URL.search (live binding)", async () => {
+    // Issue #11: URLSearchParams-URL Live Binding Not Maintained - FIXED
+    test("mutating searchParams should update URL.search (live binding)", async () => {
       await ctx.eval(`
         const url = new URL("https://example.com?a=1");
         url.searchParams.set("b", "2");
@@ -906,7 +925,7 @@ describe("URLSearchParams Consistency", () => {
       assert.strictEqual(result.href, "https://example.com/?b=2");
     });
 
-    test.todo("setting URL.search should update searchParams", async () => {
+    test("setting URL.search should update searchParams", async () => {
       await ctx.eval(`
         const url = new URL("https://example.com?a=1");
         const paramsRef = url.searchParams;

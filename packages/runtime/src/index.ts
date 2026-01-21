@@ -60,6 +60,10 @@ import type {
   PlaywrightOptions as ProtocolPlaywrightOptions,
   BaseRuntimeOptions,
 } from "@ricsam/isolate-protocol";
+import {
+  marshalValue,
+  unmarshalValue,
+} from "@ricsam/isolate-protocol";
 
 // Re-export shared types from protocol
 export type {
@@ -238,6 +242,157 @@ const iteratorSessions = new Map<number, IteratorSession>();
 let nextIteratorId = 1;
 
 /**
+ * Lightweight marshalling code to inject into the isolate.
+ * Converts JavaScript types to Ref objects for type-preserving serialization.
+ */
+const ISOLATE_MARSHAL_CODE = `
+(function() {
+  // Marshal a value (JavaScript → Ref)
+  function marshalForHost(value, depth = 0) {
+    if (depth > 100) throw new Error('Maximum marshalling depth exceeded');
+
+    if (value === null) return null;
+    if (value === undefined) return { __type: 'UndefinedRef' };
+
+    const type = typeof value;
+    if (type === 'string' || type === 'number' || type === 'boolean') return value;
+    if (type === 'bigint') return { __type: 'BigIntRef', value: value.toString() };
+    if (type === 'function') throw new Error('Cannot marshal functions from isolate');
+    if (type === 'symbol') throw new Error('Cannot marshal Symbol values');
+
+    if (type === 'object') {
+      if (value instanceof Date) {
+        return { __type: 'DateRef', timestamp: value.getTime() };
+      }
+      if (value instanceof RegExp) {
+        return { __type: 'RegExpRef', source: value.source, flags: value.flags };
+      }
+      if (value instanceof URL) {
+        return { __type: 'URLRef', href: value.href };
+      }
+      if (typeof Headers !== 'undefined' && value instanceof Headers) {
+        const pairs = [];
+        value.forEach((v, k) => pairs.push([k, v]));
+        return { __type: 'HeadersRef', pairs };
+      }
+      if (value instanceof Uint8Array) {
+        return { __type: 'Uint8ArrayRef', data: Array.from(value) };
+      }
+      if (value instanceof ArrayBuffer) {
+        return { __type: 'Uint8ArrayRef', data: Array.from(new Uint8Array(value)) };
+      }
+      if (typeof Request !== 'undefined' && value instanceof Request) {
+        throw new Error('Cannot marshal Request from isolate. Use fetch callback instead.');
+      }
+      if (typeof Response !== 'undefined' && value instanceof Response) {
+        throw new Error('Cannot marshal Response from isolate. Return plain objects instead.');
+      }
+      if (typeof File !== 'undefined' && value instanceof File) {
+        throw new Error('Cannot marshal File from isolate.');
+      }
+      if (typeof Blob !== 'undefined' && value instanceof Blob) {
+        throw new Error('Cannot marshal Blob from isolate.');
+      }
+      if (typeof FormData !== 'undefined' && value instanceof FormData) {
+        throw new Error('Cannot marshal FormData from isolate.');
+      }
+      if (Array.isArray(value)) {
+        return value.map(v => marshalForHost(v, depth + 1));
+      }
+      // Plain object
+      const result = {};
+      for (const key of Object.keys(value)) {
+        result[key] = marshalForHost(value[key], depth + 1);
+      }
+      return result;
+    }
+    return value;
+  }
+
+  // Unmarshal a value (Ref → JavaScript)
+  function unmarshalFromHost(value, depth = 0) {
+    if (depth > 100) throw new Error('Maximum unmarshalling depth exceeded');
+
+    if (value === null) return null;
+    if (typeof value !== 'object') return value;
+
+    if (value.__type) {
+      switch (value.__type) {
+        case 'UndefinedRef': return undefined;
+        case 'DateRef': return new Date(value.timestamp);
+        case 'RegExpRef': return new RegExp(value.source, value.flags);
+        case 'BigIntRef': return BigInt(value.value);
+        case 'URLRef': return new URL(value.href);
+        case 'HeadersRef': return new Headers(value.pairs);
+        case 'Uint8ArrayRef': return new Uint8Array(value.data);
+        case 'RequestRef': {
+          const init = {
+            method: value.method,
+            headers: value.headers,
+            body: value.body ? new Uint8Array(value.body) : null,
+          };
+          if (value.mode) init.mode = value.mode;
+          if (value.credentials) init.credentials = value.credentials;
+          if (value.cache) init.cache = value.cache;
+          if (value.redirect) init.redirect = value.redirect;
+          if (value.referrer) init.referrer = value.referrer;
+          if (value.referrerPolicy) init.referrerPolicy = value.referrerPolicy;
+          if (value.integrity) init.integrity = value.integrity;
+          return new Request(value.url, init);
+        }
+        case 'ResponseRef': {
+          return new Response(value.body ? new Uint8Array(value.body) : null, {
+            status: value.status,
+            statusText: value.statusText,
+            headers: value.headers,
+          });
+        }
+        case 'FileRef': {
+          if (!value.name) {
+            return new Blob([new Uint8Array(value.data)], { type: value.type });
+          }
+          return new File([new Uint8Array(value.data)], value.name, {
+            type: value.type,
+            lastModified: value.lastModified,
+          });
+        }
+        case 'FormDataRef': {
+          const fd = new FormData();
+          for (const [key, entry] of value.entries) {
+            if (typeof entry === 'string') {
+              fd.append(key, entry);
+            } else {
+              const file = unmarshalFromHost(entry, depth + 1);
+              fd.append(key, file);
+            }
+          }
+          return fd;
+        }
+        default:
+          // Unknown ref type, return as-is
+          break;
+      }
+    }
+
+    if (Array.isArray(value)) {
+      return value.map(v => unmarshalFromHost(v, depth + 1));
+    }
+
+    // Plain object - recursively unmarshal
+    const result = {};
+    for (const key of Object.keys(value)) {
+      result[key] = unmarshalFromHost(value[key], depth + 1);
+    }
+    return result;
+  }
+
+  // Expose as globals
+  globalThis.__marshalForHost = marshalForHost;
+  globalThis.__unmarshalFromHost = unmarshalFromHost;
+})();
+`;
+
+/**
  * Setup custom functions as globals in the isolate context.
  * Each function directly calls the host callback when invoked.
  */
@@ -260,11 +415,15 @@ async function setupCustomFunctions(
           },
         });
       }
-      const args = JSON.parse(argsJson) as unknown[];
+      // Unmarshal args from isolate (converts Refs back to JavaScript types)
+      const rawArgs = JSON.parse(argsJson) as unknown[];
+      const args = unmarshalValue(rawArgs) as unknown[];
       try {
         const result =
           def.type === "async" ? await def.fn(...args) : def.fn(...args);
-        return JSON.stringify({ ok: true, value: result });
+        // Marshal result for isolate (converts JavaScript types to Refs)
+        const marshalledResult = await marshalValue(result);
+        return JSON.stringify({ ok: true, value: marshalledResult });
       } catch (error: unknown) {
         const err = error as Error;
         return JSON.stringify({
@@ -291,7 +450,9 @@ async function setupCustomFunctions(
         });
       }
       try {
-        const args = JSON.parse(argsJson) as unknown[];
+        // Unmarshal args from isolate
+        const rawArgs = JSON.parse(argsJson) as unknown[];
+        const args = unmarshalValue(rawArgs) as unknown[];
         const fn = def.fn as CustomAsyncGeneratorFunction;
         const iterator = fn(...args);
         const iteratorId = nextIteratorId++;
@@ -327,10 +488,12 @@ async function setupCustomFunctions(
         if (result.done) {
           iteratorSessions.delete(iteratorId);
         }
+        // Marshal value for isolate
+        const marshalledValue = await marshalValue(result.value);
         return JSON.stringify({
           ok: true,
           done: result.done,
-          value: result.value,
+          value: marshalledValue,
         });
       } catch (error: unknown) {
         const err = error as Error;
@@ -353,10 +516,14 @@ async function setupCustomFunctions(
         return JSON.stringify({ ok: true, done: true, value: undefined });
       }
       try {
-        const value = valueJson ? JSON.parse(valueJson) : undefined;
+        // Unmarshal value from isolate
+        const rawValue = valueJson ? JSON.parse(valueJson) : undefined;
+        const value = unmarshalValue(rawValue);
         const result = await session.iterator.return?.(value);
         iteratorSessions.delete(iteratorId);
-        return JSON.stringify({ ok: true, done: true, value: result?.value });
+        // Marshal value for isolate
+        const marshalledValue = await marshalValue(result?.value);
+        return JSON.stringify({ ok: true, done: true, value: marshalledValue });
       } catch (error: unknown) {
         const err = error as Error;
         iteratorSessions.delete(iteratorId);
@@ -393,10 +560,12 @@ async function setupCustomFunctions(
         });
         const result = await session.iterator.throw?.(error);
         iteratorSessions.delete(iteratorId);
+        // Marshal value for isolate
+        const marshalledValue = await marshalValue(result?.value);
         return JSON.stringify({
           ok: true,
           done: result?.done ?? true,
-          value: result?.value,
+          value: marshalledValue,
         });
       } catch (error: unknown) {
         const err = error as Error;
@@ -411,6 +580,9 @@ async function setupCustomFunctions(
 
   global.setSync("__iter_throw", iterThrowRef);
 
+  // Inject marshalling helpers into the isolate
+  context.evalSync(ISOLATE_MARSHAL_CODE);
+
   // Create wrapper functions for each custom function
   for (const name of Object.keys(customFunctions)) {
     const def = customFunctions[name]!;
@@ -419,13 +591,14 @@ async function setupCustomFunctions(
       // Async function: use applySyncPromise and async function wrapper
       context.evalSync(`
         globalThis.${name} = async function(...args) {
+          const marshalledArgs = __marshalForHost(args);
           const resultJson = __customFn_invoke.applySyncPromise(
             undefined,
-            ["${name}", JSON.stringify(args)]
+            ["${name}", JSON.stringify(marshalledArgs)]
           );
           const result = JSON.parse(resultJson);
           if (result.ok) {
-            return result.value;
+            return __unmarshalFromHost(result.value);
           } else {
             const error = new Error(result.error.message);
             error.name = result.error.name;
@@ -438,13 +611,14 @@ async function setupCustomFunctions(
       // The function blocks until the host responds, but returns the value directly (not a Promise)
       context.evalSync(`
         globalThis.${name} = function(...args) {
+          const marshalledArgs = __marshalForHost(args);
           const resultJson = __customFn_invoke.applySyncPromise(
             undefined,
-            ["${name}", JSON.stringify(args)]
+            ["${name}", JSON.stringify(marshalledArgs)]
           );
           const result = JSON.parse(resultJson);
           if (result.ok) {
-            return result.value;
+            return __unmarshalFromHost(result.value);
           } else {
             const error = new Error(result.error.message);
             error.name = result.error.name;
@@ -456,7 +630,8 @@ async function setupCustomFunctions(
       // Async iterator function: returns an async iterable object
       context.evalSync(`
         globalThis.${name} = function(...args) {
-          const startResult = JSON.parse(__iter_start.applySyncPromise(undefined, ["${name}", JSON.stringify(args)]));
+          const marshalledArgs = __marshalForHost(args);
+          const startResult = JSON.parse(__iter_start.applySyncPromise(undefined, ["${name}", JSON.stringify(marshalledArgs)]));
           if (!startResult.ok) {
             throw Object.assign(new Error(startResult.error.message), { name: startResult.error.name });
           }
@@ -468,18 +643,18 @@ async function setupCustomFunctions(
               if (!result.ok) {
                 throw Object.assign(new Error(result.error.message), { name: result.error.name });
               }
-              return { done: result.done, value: result.value };
+              return { done: result.done, value: __unmarshalFromHost(result.value) };
             },
             async return(v) {
-              const result = JSON.parse(__iter_return.applySyncPromise(undefined, [iteratorId, JSON.stringify(v)]));
-              return { done: true, value: result.value };
+              const result = JSON.parse(__iter_return.applySyncPromise(undefined, [iteratorId, JSON.stringify(__marshalForHost(v))]));
+              return { done: true, value: __unmarshalFromHost(result.value) };
             },
             async throw(e) {
               const result = JSON.parse(__iter_throw.applySyncPromise(undefined, [iteratorId, JSON.stringify({ message: e.message, name: e.name })]));
               if (!result.ok) {
                 throw Object.assign(new Error(result.error.message), { name: result.error.name });
               }
-              return { done: result.done, value: result.value };
+              return { done: result.done, value: __unmarshalFromHost(result.value) };
             }
           };
         };

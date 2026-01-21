@@ -270,18 +270,27 @@ describe("URLSearchParams", () => {
   });
 
   describe("URL encoding", () => {
-    test("encodes special characters", async () => {
+    test("encodes spaces as + per WHATWG spec", async () => {
       const result = await context.eval(`
         const params = new URLSearchParams();
         params.append("key", "hello world");
         params.toString()
       `);
-      assert.strictEqual(result, "key=hello%20world");
+      // WHATWG spec requires + for spaces in application/x-www-form-urlencoded
+      assert.strictEqual(result, "key=hello+world");
     });
 
-    test("decodes special characters in constructor", async () => {
+    test("decodes %20 as space in constructor", async () => {
       const result = await context.eval(`
         const params = new URLSearchParams("key=hello%20world");
+        params.get("key")
+      `);
+      assert.strictEqual(result, "hello world");
+    });
+
+    test("decodes + as space in constructor", async () => {
+      const result = await context.eval(`
+        const params = new URLSearchParams("key=hello+world");
         params.get("key")
       `);
       assert.strictEqual(result, "hello world");

@@ -1272,21 +1272,33 @@ async function injectURL(context: ivm.Context): Promise<void> {
   // URL and URLSearchParams implementation in pure JS
   const code = `
 (function() {
+  // Helper for application/x-www-form-urlencoded encoding (spaces as +)
+  function urlEncode(str) {
+    return encodeURIComponent(String(str)).replace(/%20/g, '+');
+  }
+
   class URLSearchParams {
     #params = [];
+    #url = null;
 
-    constructor(init = '') {
+    constructor(init = '', url = null) {
+      this.#url = url;
+      this._parseInit(init);
+    }
+
+    _parseInit(init) {
+      this.#params = [];
       if (typeof init === 'string') {
         const query = init.startsWith('?') ? init.slice(1) : init;
         if (query) {
           for (const pair of query.split('&')) {
             const idx = pair.indexOf('=');
             if (idx === -1) {
-              this.#params.push([decodeURIComponent(pair), '']);
+              this.#params.push([decodeURIComponent(pair.replace(/\\+/g, ' ')), '']);
             } else {
               this.#params.push([
-                decodeURIComponent(pair.slice(0, idx)),
-                decodeURIComponent(pair.slice(idx + 1))
+                decodeURIComponent(pair.slice(0, idx).replace(/\\+/g, ' ')),
+                decodeURIComponent(pair.slice(idx + 1).replace(/\\+/g, ' '))
               ]);
             }
           }
@@ -1297,10 +1309,24 @@ async function injectURL(context: ivm.Context): Promise<void> {
             this.#params.push([String(pair[0]), String(pair[1])]);
           }
         }
+      } else if (init instanceof URLSearchParams) {
+        for (const [key, value] of init) {
+          this.#params.push([String(key), String(value)]);
+        }
       } else if (init && typeof init === 'object') {
         for (const [key, value] of Object.entries(init)) {
           this.#params.push([String(key), String(value)]);
         }
+      }
+    }
+
+    _updateFromSearch(search) {
+      this._parseInit(search);
+    }
+
+    #notifyUpdate() {
+      if (this.#url) {
+        this.#url._updateSearchFromParams(this.toString());
       }
     }
 
@@ -1310,6 +1336,7 @@ async function injectURL(context: ivm.Context): Promise<void> {
 
     append(name, value) {
       this.#params.push([String(name), String(value)]);
+      this.#notifyUpdate();
     }
 
     delete(name, value) {
@@ -1320,6 +1347,7 @@ async function injectURL(context: ivm.Context): Promise<void> {
         const valueStr = String(value);
         this.#params = this.#params.filter(([k, v]) => !(k === nameStr && v === valueStr));
       }
+      this.#notifyUpdate();
     }
 
     get(name) {
@@ -1364,15 +1392,17 @@ async function injectURL(context: ivm.Context): Promise<void> {
       } else {
         this.#params.push([nameStr, valueStr]);
       }
+      this.#notifyUpdate();
     }
 
     sort() {
       this.#params.sort((a, b) => a[0].localeCompare(b[0]));
+      this.#notifyUpdate();
     }
 
     toString() {
       return this.#params
-        .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
+        .map(([k, v]) => urlEncode(k) + '=' + urlEncode(v))
         .join('&');
     }
 
@@ -1530,7 +1560,13 @@ async function injectURL(context: ivm.Context): Promise<void> {
     set search(value) {
       const str = String(value);
       this.#search = str.startsWith('?') ? str : (str ? '?' + str : '');
-      this.#searchParams = null;
+      if (this.#searchParams) {
+        this.#searchParams._updateFromSearch(this.#search);
+      }
+    }
+
+    _updateSearchFromParams(search) {
+      this.#search = search ? '?' + search : '';
     }
 
     get hash() { return this.#hash; }
@@ -1596,7 +1632,7 @@ async function injectURL(context: ivm.Context): Promise<void> {
 
     get searchParams() {
       if (!this.#searchParams) {
-        this.#searchParams = new URLSearchParams(this.#search);
+        this.#searchParams = new URLSearchParams(this.#search, this);
       }
       return this.#searchParams;
     }
