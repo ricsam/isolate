@@ -31,6 +31,12 @@ export type BlobOrigin = "direct";
 
 export type FileOrigin = "direct";
 
+// URL has special marshalling via URLRef (only href stored)
+export type URLOrigin = "direct" | "customFunction";
+
+// URLSearchParams can come from direct construction or from URL.searchParams
+export type URLSearchParamsOrigin = "direct" | "fromURL" | "fromCustomFunctionURL";
+
 // FormData doesn't have special marshalling support for custom functions
 export type FormDataOrigin = "direct" | "fromResponse";
 
@@ -71,6 +77,14 @@ export const HEADERS_ORIGINS: HeadersOrigin[] = [
 export const BLOB_ORIGINS: BlobOrigin[] = ["direct"];
 
 export const FILE_ORIGINS: FileOrigin[] = ["direct"];
+
+export const URL_ORIGINS: URLOrigin[] = ["direct", "customFunction"];
+
+export const URLSEARCHPARAMS_ORIGINS: URLSearchParamsOrigin[] = [
+  "direct",
+  "fromURL",
+  "fromCustomFunctionURL",
+];
 
 export const FORMDATA_ORIGINS: FormDataOrigin[] = [
   "direct",
@@ -137,6 +151,7 @@ export async function createConsistencyTestContext(): Promise<ConsistencyTestCon
   // These are stored on the host and retrieved by the isolate to construct objects
   let pendingResponseParams: { body: string; init: ResponseInit } | null = null;
   let pendingRequestParams: { url: string; init: RequestInit } | null = null;
+  let pendingURL: URL | null = null;
 
   const runtime = await createRuntime({
     fetch: async (request: Request) => {
@@ -181,6 +196,21 @@ export async function createConsistencyTestContext(): Promise<ConsistencyTestCon
           const params = pendingRequestParams;
           pendingRequestParams = null;
           return params;
+        },
+        type: "sync",
+      },
+      // For URL customFunction origin: URL goes through marshal/unmarshal (URLRef)
+      __setURL: {
+        fn: (url: URL) => {
+          pendingURL = url;
+        },
+        type: "sync",
+      },
+      __getURL: {
+        fn: () => {
+          const url = pendingURL;
+          pendingURL = null;
+          return url;
         },
         type: "sync",
       },
@@ -709,5 +739,73 @@ export async function getQueuingStrategyFromOrigin(
     await ctx.eval(`
       globalThis.__testQueuingStrategy = new CountQueuingStrategy({ highWaterMark: ${highWaterMark} });
     `);
+  }
+}
+
+// ============================================================================
+// URL Helpers
+// ============================================================================
+
+/**
+ * Create a URL in the isolate from the specified origin.
+ * The URL is stored at globalThis.__testURL.
+ */
+export async function getURLFromOrigin(
+  ctx: ConsistencyTestContext,
+  origin: URLOrigin,
+  urlString: string
+): Promise<void> {
+  switch (origin) {
+    case "direct":
+      await ctx.eval(`
+        globalThis.__testURL = new URL(${JSON.stringify(urlString)});
+      `);
+      break;
+
+    case "customFunction":
+      // URL goes through marshal/unmarshal (URLRef)
+      await ctx.eval(`
+        __setURL(new URL(${JSON.stringify(urlString)}));
+        globalThis.__testURL = __getURL();
+      `);
+      break;
+  }
+}
+
+// ============================================================================
+// URLSearchParams Helpers
+// ============================================================================
+
+/**
+ * Create URLSearchParams in the isolate from the specified origin.
+ * The URLSearchParams is stored at globalThis.__testURLSearchParams.
+ */
+export async function getURLSearchParamsFromOrigin(
+  ctx: ConsistencyTestContext,
+  origin: URLSearchParamsOrigin,
+  init: string = ""
+): Promise<void> {
+  switch (origin) {
+    case "direct":
+      await ctx.eval(`
+        globalThis.__testURLSearchParams = new URLSearchParams(${JSON.stringify(init)});
+      `);
+      break;
+
+    case "fromURL":
+      await ctx.eval(`
+        const url = new URL("https://example.com?" + ${JSON.stringify(init)});
+        globalThis.__testURLSearchParams = url.searchParams;
+      `);
+      break;
+
+    case "fromCustomFunctionURL":
+      // URL comes through boundary, then get searchParams
+      await ctx.eval(`
+        __setURL(new URL("https://example.com?" + ${JSON.stringify(init)}));
+        const url = __getURL();
+        globalThis.__testURLSearchParams = url.searchParams;
+      `);
+      break;
   }
 }
