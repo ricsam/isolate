@@ -887,6 +887,7 @@ function setupResponse(
     #headers;
     #streamId = null;
     #blobInitPromise = null; // For async Blob body initialization
+    #cachedBody = null; // Memoized body stream for spec compliance
 
     constructor(body, init = {}) {
       // Handle internal construction from instance ID
@@ -1049,9 +1050,15 @@ function setupResponse(
     }
 
     get body() {
+      // Return cached body if available (WHATWG spec requires same object on repeated access)
+      if (this.#cachedBody !== null) {
+        return this.#cachedBody;
+      }
+
       const streamId = __Response_getStreamId(this.#instanceId);
       if (streamId !== null) {
-        return HostBackedReadableStream._fromStreamId(streamId);
+        this.#cachedBody = HostBackedReadableStream._fromStreamId(streamId);
+        return this.#cachedBody;
       }
 
       // Fallback: create host-backed stream from buffered body
@@ -1064,7 +1071,8 @@ function setupResponse(
       }
       __Stream_close(newStreamId);
 
-      return HostBackedReadableStream._fromStreamId(newStreamId);
+      this.#cachedBody = HostBackedReadableStream._fromStreamId(newStreamId);
+      return this.#cachedBody;
     }
 
     async text() {

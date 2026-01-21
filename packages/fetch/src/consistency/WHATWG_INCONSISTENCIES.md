@@ -6,33 +6,28 @@ This document tracks known inconsistencies between the isolate implementation an
 
 ## Open Issues
 
+*No open issues at this time.*
+
+---
+
+## Fixed Issues
+
 ### 12. Response.body Returns New Stream on Each Access
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** Medium
 **Spec:** [WHATWG Fetch - Body interface](https://fetch.spec.whatwg.org/#body)
 
-**Problem:** The `Response.body` getter creates a new `HostBackedReadableStream` each time it's accessed instead of returning the same stream object.
+Per the WHATWG spec, the `Response.body` getter now returns the same `ReadableStream` object on repeated access:
 
-**Expected behavior:**
 ```javascript
 const response = new Response("hello");
 response.body === response.body; // true (same object identity)
 ```
 
-**Actual behavior:**
-```javascript
-const response = new Response("hello");
-response.body === response.body; // false (new stream each time)
-```
-
-**Affects:** All Response origins (direct, customFunction, fetchCallback)
-
-**Location:** `packages/fetch/src/index.ts:1051-1068`
+This applies to all Response origins (direct, customFunction, fetchCallback).
 
 ---
-
-## Fixed Issues
 
 ### 5. URL Marshalling Returns String Instead of URL Object
 
@@ -199,7 +194,7 @@ paramsRef === url.searchParams; // true (same instance)
 
 | Issue | Severity | Spec Area | Status |
 |-------|----------|-----------|--------|
-| Response.body identity | Medium | Fetch | Open |
+| Response.body identity | Medium | Fetch | Fixed |
 | Blob from Blob/File | High | File API | Fixed |
 | File.webkitRelativePath | Low | File API | Fixed |
 | Request body in serve() | High | Fetch | Fixed |

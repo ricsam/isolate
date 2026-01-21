@@ -8,12 +8,14 @@ import {
   getTextEncoderStreamFromOrigin,
   getTextDecoderStreamFromOrigin,
   getQueuingStrategyFromOrigin,
+  getResponseFromOrigin,
   type ConsistencyTestContext,
   READABLE_STREAM_ORIGINS,
   WRITABLE_STREAM_ORIGINS,
   TRANSFORM_STREAM_ORIGINS,
   TEXT_ENCODER_STREAM_ORIGINS,
   TEXT_DECODER_STREAM_ORIGINS,
+  RESPONSE_ORIGINS,
 } from "./origins.ts";
 
 describe("Stream Consistency", () => {
@@ -223,17 +225,17 @@ describe("Stream Consistency", () => {
   // ============================================================================
 
   describe("Response.body Identity", () => {
-    // WHATWG Inconsistency #12: Response.body should return the same object on repeated access
-    // See WHATWG_INCONSISTENCIES.md for details.
-    //
-    // Per WHATWG Fetch spec, the body getter should return the same ReadableStream object
-    // on each access. Currently, the isolate implementation creates a new HostBackedReadableStream
-    // on every access to response.body (see packages/fetch/src/index.ts:1051-1068).
-    //
-    // Native behavior: response.body === response.body → true
-    // Isolate behavior: response.body === response.body → false
-    for (const origin of READABLE_STREAM_ORIGINS) {
-      test.todo(`Response.body returns same stream object on repeated access when from ${origin}`);
+    // WHATWG spec requires Response.body to return the same object on repeated access
+    for (const origin of RESPONSE_ORIGINS) {
+      test(`Response.body returns same stream object on repeated access when from ${origin}`, async () => {
+        await getResponseFromOrigin(ctx, origin, "test body");
+        await ctx.eval(`
+          const body1 = __testResponse.body;
+          const body2 = __testResponse.body;
+          setResult(body1 === body2);
+        `);
+        assert.strictEqual(ctx.getResult(), true);
+      });
     }
   });
 
