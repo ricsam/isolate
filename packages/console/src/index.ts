@@ -287,27 +287,81 @@ export async function setupConsole(
     })
   );
 
-  // Inject console object
+  // Inject console object with Error serialization
   context.evalSync(`
+    // Serialize value for transfer to host, handling Error objects specially
+    function __serializeForConsole(value, seen = new WeakSet()) {
+      // Handle null/undefined
+      if (value === null || value === undefined) {
+        return value;
+      }
+
+      // Handle primitives
+      if (typeof value !== 'object' && typeof value !== 'function') {
+        return value;
+      }
+
+      // Handle Error objects - convert to plain object with name, message, stack
+      if (value instanceof Error) {
+        return {
+          __isError: true,
+          name: value.name,
+          message: value.message,
+          stack: value.stack,
+        };
+      }
+
+      // Handle circular references
+      if (seen.has(value)) {
+        return '[Circular]';
+      }
+      seen.add(value);
+
+      // Handle arrays
+      if (Array.isArray(value)) {
+        return value.map(item => __serializeForConsole(item, seen));
+      }
+
+      // Handle plain objects
+      if (typeof value === 'object') {
+        const result = {};
+        for (const key in value) {
+          if (Object.prototype.hasOwnProperty.call(value, key)) {
+            result[key] = __serializeForConsole(value[key], seen);
+          }
+        }
+        return result;
+      }
+
+      return value;
+    }
+
+    // Wrapper to serialize all arguments
+    function __wrapConsoleArgs(fn) {
+      return function(...args) {
+        return fn(...args.map(arg => __serializeForConsole(arg)));
+      };
+    }
+
     globalThis.console = {
-      log: __console_log,
-      warn: __console_warn,
-      error: __console_error,
-      debug: __console_debug,
-      info: __console_info,
-      trace: __console_trace,
-      dir: __console_dir,
-      table: __console_table,
+      log: __wrapConsoleArgs(__console_log),
+      warn: __wrapConsoleArgs(__console_warn),
+      error: __wrapConsoleArgs(__console_error),
+      debug: __wrapConsoleArgs(__console_debug),
+      info: __wrapConsoleArgs(__console_info),
+      trace: __wrapConsoleArgs(__console_trace),
+      dir: (value) => __console_dir(__serializeForConsole(value)),
+      table: (data, columns) => __console_table(__serializeForConsole(data), columns),
       time: __console_time,
       timeEnd: __console_timeEnd,
-      timeLog: __console_timeLog,
+      timeLog: __wrapConsoleArgs(__console_timeLog),
       count: __console_count,
       countReset: __console_countReset,
       group: __console_group,
       groupCollapsed: __console_groupCollapsed,
       groupEnd: __console_groupEnd,
       clear: __console_clear,
-      assert: __console_assert,
+      assert: (condition, ...args) => __console_assert(condition, ...args.map(arg => __serializeForConsole(arg))),
     };
   `);
 

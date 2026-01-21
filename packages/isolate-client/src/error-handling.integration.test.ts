@@ -573,4 +573,134 @@ serve({
       }
     });
   });
+
+  describe("Error console.log output", () => {
+    it("should format error like Node.js when using console.log(err)", async () => {
+      const logs: unknown[][] = [];
+      const runtime = await client.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.args);
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          const err = new Error("test error message");
+          console.log(err);
+        `);
+
+        assert.strictEqual(logs.length, 1);
+        const loggedArg = logs[0]![0] as {
+          __isError?: boolean;
+          name?: string;
+          message?: string;
+          stack?: string;
+        };
+
+        // Error should be serialized with name, message, and stack
+        assert.ok(
+          typeof loggedArg === "object" && loggedArg !== null,
+          `Expected error to be logged as object, got: ${typeof loggedArg}`
+        );
+        assert.strictEqual(loggedArg.name, "Error");
+        assert.strictEqual(loggedArg.message, "test error message");
+        assert.ok(
+          typeof loggedArg.stack === "string" && loggedArg.stack.length > 0,
+          `Expected error to have stack trace, got: ${loggedArg.stack}`
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should include stack trace when logging error", async () => {
+      const logs: unknown[][] = [];
+      const runtime = await client.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.args);
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+function innerFunction() {
+  throw new Error("nested error");
+}
+function outerFunction() {
+  innerFunction();
+}
+try {
+  outerFunction();
+} catch (err) {
+  console.log(err);
+}
+        `,
+          { filename: "test-stack.js" }
+        );
+
+        assert.strictEqual(logs.length, 1);
+        const loggedArg = logs[0]![0] as { stack?: string };
+
+        // The logged error should include stack information with function names
+        assert.ok(
+          typeof loggedArg.stack === "string",
+          `Expected logged error to have stack property`
+        );
+        assert.ok(
+          loggedArg.stack.includes("innerFunction") ||
+            loggedArg.stack.includes("outerFunction") ||
+            loggedArg.stack.includes("test-stack.js"),
+          `Expected stack trace to include function names, got: ${loggedArg.stack}`
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should preserve error type (TypeError, RangeError, etc.) in console.log", async () => {
+      const logs: unknown[][] = [];
+      const runtime = await client.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.args);
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          const typeErr = new TypeError("type error message");
+          console.log(typeErr);
+        `);
+
+        assert.strictEqual(logs.length, 1);
+        const loggedArg = logs[0]![0] as { name?: string; message?: string };
+
+        // Should preserve the error type
+        assert.strictEqual(
+          loggedArg.name,
+          "TypeError",
+          `Expected error name to be "TypeError", got: ${loggedArg.name}`
+        );
+        assert.strictEqual(
+          loggedArg.message,
+          "type error message",
+          `Expected error message to be preserved, got: ${loggedArg.message}`
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+  });
 });
