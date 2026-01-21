@@ -6,7 +6,60 @@ This document tracks known inconsistencies between the isolate implementation an
 
 ## Open Issues
 
-*No open issues at this time.*
+### 13. AbortSignal.onabort Event Handler Property Missing
+
+**Status:** Open
+**Severity:** Low
+**Spec:** [WHATWG DOM - AbortSignal interface](https://dom.spec.whatwg.org/#interface-AbortSignal)
+
+The WHATWG spec requires AbortSignal to have an `onabort` event handler property. This is not implemented:
+
+```javascript
+const controller = new AbortController();
+controller.signal.onabort = () => console.log('aborted');
+// TypeError: Cannot set property onabort
+```
+
+**Workaround:** Use `addEventListener('abort', handler)` instead.
+
+---
+
+### 14. AbortSignal.any() Static Method Missing
+
+**Status:** Open
+**Severity:** Medium
+**Spec:** [WHATWG DOM - AbortSignal.any()](https://dom.spec.whatwg.org/#dom-abortsignal-any)
+
+The static `AbortSignal.any(signals)` method for combining multiple abort signals is not implemented:
+
+```javascript
+const controller1 = new AbortController();
+const controller2 = new AbortController();
+
+// Should create a signal that aborts when any of the input signals abort
+const combinedSignal = AbortSignal.any([controller1.signal, controller2.signal]);
+// TypeError: AbortSignal.any is not a function
+```
+
+**Workaround:** Manually combine signals by listening to each signal and calling abort on a new controller.
+
+---
+
+### 15. AbortController/AbortSignal No Marshalling Support
+
+**Status:** Open (By Design)
+**Severity:** Low
+**Spec:** N/A (implementation limitation)
+
+AbortController and AbortSignal cannot be passed through custom functions (no marshalling support). They can only be created directly within the isolate.
+
+```javascript
+// In custom function - this will not work correctly
+const controller = await customFunctionThatCreatesController();
+// The controller won't be properly marshalled across the boundary
+```
+
+**Note:** Only the boolean `aborted` state crosses boundaries during fetch operations. This is by design due to the complexity of maintaining abort semantics across isolate boundaries.
 
 ---
 
@@ -194,6 +247,9 @@ paramsRef === url.searchParams; // true (same instance)
 
 | Issue | Severity | Spec Area | Status |
 |-------|----------|-----------|--------|
+| AbortSignal.onabort missing | Low | DOM | Open |
+| AbortSignal.any() missing | Medium | DOM | Open |
+| AbortController/AbortSignal no marshalling | Low | N/A | Open (By Design) |
 | Response.body identity | Medium | Fetch | Fixed |
 | Blob from Blob/File | High | File API | Fixed |
 | File.webkitRelativePath | Low | File API | Fixed |

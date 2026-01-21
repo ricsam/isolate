@@ -108,6 +108,14 @@ export const TEXT_ENCODER_STREAM_ORIGINS: TextEncoderStreamOrigin[] = ["direct"]
 export const TEXT_DECODER_STREAM_ORIGINS: TextDecoderStreamOrigin[] = ["direct"];
 export const QUEUING_STRATEGY_ORIGINS: QueuingStrategyOrigin[] = ["direct"];
 
+// AbortController/AbortSignal have NO marshalling support (no AbortRef type in codec)
+// They cannot be passed through custom functions - only direct instantiation in isolate
+export type AbortControllerOrigin = "direct";
+export type AbortSignalOrigin = "direct";
+
+export const ABORT_CONTROLLER_ORIGINS: AbortControllerOrigin[] = ["direct"];
+export const ABORT_SIGNAL_ORIGINS: AbortSignalOrigin[] = ["direct"];
+
 // ============================================================================
 // Test Context
 // ============================================================================
@@ -808,4 +816,41 @@ export async function getURLSearchParamsFromOrigin(
       `);
       break;
   }
+}
+
+// ============================================================================
+// AbortController Helpers
+// ============================================================================
+
+/**
+ * Create an AbortController in the isolate from the specified origin.
+ * The AbortController is stored at globalThis.__testAbortController.
+ */
+export async function getAbortControllerFromOrigin(
+  ctx: ConsistencyTestContext,
+  _origin: AbortControllerOrigin
+): Promise<void> {
+  await ctx.eval(`
+    globalThis.__testAbortController = new AbortController();
+  `);
+}
+
+// ============================================================================
+// AbortSignal Helpers
+// ============================================================================
+
+/**
+ * Create an AbortSignal in the isolate from the specified origin.
+ * The AbortSignal is stored at globalThis.__testAbortSignal.
+ */
+export async function getAbortSignalFromOrigin(
+  ctx: ConsistencyTestContext,
+  _origin: AbortSignalOrigin
+): Promise<void> {
+  // AbortSignal is obtained from AbortController.signal
+  await ctx.eval(`
+    const controller = new AbortController();
+    globalThis.__testAbortSignal = controller.signal;
+    globalThis.__testAbortController = controller;
+  `);
 }

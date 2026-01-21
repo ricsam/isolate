@@ -602,8 +602,8 @@ test.failing('Response.body.tee() works for fetchCallback origin', async () => {
 - [x] Stream readers and writers behave consistently
 
 ### URL Classes
-- [ ] URL properties and methods work across all origins
-- [ ] URLSearchParams iteration and mutation methods work consistently
+- [x] URL properties and methods work across all origins
+- [x] URLSearchParams iteration and mutation methods work consistently
 
 ### Abort Classes
 - [ ] AbortController creates valid signals across all origins
