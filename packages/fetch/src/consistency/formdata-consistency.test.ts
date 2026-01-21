@@ -451,9 +451,7 @@ describe("FormData Consistency", () => {
       assert.strictEqual(result.hasSize, true);
     });
 
-    // WHATWG Issue: Blob content not properly read when appended to FormData
-    // See WHATWG_INCONSISTENCIES.md#1-blob-constructor-doesnt-handle-blobfile-parts
-    test.todo("append() with Blob preserves correct content size", async () => {
+    test("append() with Blob preserves correct content size", async () => {
       await ctx.eval(`
         const formData = new FormData();
         const blob = new Blob(["content"], { type: "text/plain" });

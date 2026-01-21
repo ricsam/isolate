@@ -18,6 +18,8 @@ await copy.text(); // Returns "hello"
 copy.size;         // Returns 5
 ```
 
+This also fixes FormData.append() with Blob, which internally creates a File from the Blob.
+
 ---
 
 ### 2. File.webkitRelativePath Property Missing (FIXED)
@@ -72,19 +74,6 @@ typeof response.body.values;             // "function"
 
 ---
 
-## Remaining Issues
-
-### FormData Blob Content Size
-
-**Severity:** Low
-**Status:** Open
-
-When appending a Blob to FormData, the size calculation may not match the original blob content size in all cases.
-
-**Test File:** `formdata-consistency.test.ts`
-
----
-
 ## Summary Table
 
 | Issue | Severity | Spec Area | Status |
@@ -93,4 +82,3 @@ When appending a Blob to FormData, the size calculation may not match the origin
 | File.webkitRelativePath | Low | File API | Fixed |
 | Request body in serve() | High | Fetch | Fixed |
 | Response.body stream | High | Streams | Fixed |
-| FormData Blob size | Low | File API | Open |

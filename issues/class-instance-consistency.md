@@ -588,12 +588,12 @@ test.failing('Response.body.tee() works for fetchCallback origin', async () => {
 ## Acceptance Criteria
 
 ### Core Classes
-- [ ] Test suite covers all 7 origins listed above
-- [ ] Test suite covers Request, Response, Headers, Blob, File, FormData
-- [ ] All property existence tests pass
-- [ ] All method existence tests pass
-- [ ] All behavioral equivalence tests pass
-- [ ] All instanceof tests pass
+- [x] Test suite covers all 7 origins listed above
+- [x] Test suite covers Request, Response, Headers, Blob, File, FormData
+- [x] All property existence tests pass
+- [x] All method existence tests pass
+- [x] All behavioral equivalence tests pass
+- [x] All instanceof tests pass
 
 ### Stream Classes
 - [ ] ReadableStream methods (`tee()`, `pipeThrough()`, `pipeTo()`, `getReader()`) work across all origins
