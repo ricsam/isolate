@@ -2232,6 +2232,12 @@ export async function setupFetch(
             const request = Request._fromInstanceId(${requestInstanceId});
             const server = new __Server__();
             const response = await Promise.resolve(__serveOptions__.fetch(request, server));
+            if (response == null) {
+              throw new TypeError("fetch handler did not return a Response object (got " + (response === null ? "null" : "undefined") + ")");
+            }
+            if (typeof response._getInstanceId !== 'function') {
+              throw new TypeError("fetch handler must return a Response object (got " + (typeof response) + ")");
+            }
             return response._getInstanceId();
           })()
         `, { promise: true });
