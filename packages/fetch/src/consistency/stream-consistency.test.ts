@@ -14,7 +14,6 @@ import {
   TRANSFORM_STREAM_ORIGINS,
   TEXT_ENCODER_STREAM_ORIGINS,
   TEXT_DECODER_STREAM_ORIGINS,
-  QUEUING_STRATEGY_ORIGINS,
 } from "./origins.ts";
 
 describe("Stream Consistency", () => {
@@ -217,6 +216,25 @@ describe("Stream Consistency", () => {
         });
       }
     });
+  });
+
+  // ============================================================================
+  // Response.body Identity Tests
+  // ============================================================================
+
+  describe("Response.body Identity", () => {
+    // WHATWG Inconsistency #12: Response.body should return the same object on repeated access
+    // See WHATWG_INCONSISTENCIES.md for details.
+    //
+    // Per WHATWG Fetch spec, the body getter should return the same ReadableStream object
+    // on each access. Currently, the isolate implementation creates a new HostBackedReadableStream
+    // on every access to response.body (see packages/fetch/src/index.ts:1051-1068).
+    //
+    // Native behavior: response.body === response.body → true
+    // Isolate behavior: response.body === response.body → false
+    for (const origin of READABLE_STREAM_ORIGINS) {
+      test.todo(`Response.body returns same stream object on repeated access when from ${origin}`);
+    }
   });
 
   // ============================================================================
@@ -743,45 +761,45 @@ describe("Stream Consistency", () => {
   // ============================================================================
 
   describe("ByteLengthQueuingStrategy Consistency", () => {
-    for (const _origin of QUEUING_STRATEGY_ORIGINS) {
-      test("highWaterMark property exists", async () => {
-        await getQueuingStrategyFromOrigin(ctx, "ByteLength", 1024);
-        await ctx.eval(`
-          setResult(__testQueuingStrategy.highWaterMark);
-        `);
-        assert.strictEqual(ctx.getResult(), 1024);
-      });
+    // Note: QueuingStrategy classes are only available via direct instantiation in the sandbox.
+    // No additional origins (like customFunction or fetchCallback) are applicable.
+    test("highWaterMark property exists", async () => {
+      await getQueuingStrategyFromOrigin(ctx, "ByteLength", 1024);
+      await ctx.eval(`
+        setResult(__testQueuingStrategy.highWaterMark);
+      `);
+      assert.strictEqual(ctx.getResult(), 1024);
+    });
 
-      test("size() method exists and works", async () => {
-        await getQueuingStrategyFromOrigin(ctx, "ByteLength");
-        await ctx.eval(`
-          const chunk = new Uint8Array([1, 2, 3, 4, 5]);
-          setResult({
-            hasSize: typeof __testQueuingStrategy.size === 'function',
-            size: __testQueuingStrategy.size(chunk),
-          });
-        `);
-        const result = ctx.getResult() as { hasSize: boolean; size: number };
-        assert.strictEqual(result.hasSize, true);
-        assert.strictEqual(result.size, 5);
-      });
+    test("size() method exists and works", async () => {
+      await getQueuingStrategyFromOrigin(ctx, "ByteLength");
+      await ctx.eval(`
+        const chunk = new Uint8Array([1, 2, 3, 4, 5]);
+        setResult({
+          hasSize: typeof __testQueuingStrategy.size === 'function',
+          size: __testQueuingStrategy.size(chunk),
+        });
+      `);
+      const result = ctx.getResult() as { hasSize: boolean; size: number };
+      assert.strictEqual(result.hasSize, true);
+      assert.strictEqual(result.size, 5);
+    });
 
-      test("instanceof ByteLengthQueuingStrategy", async () => {
-        await getQueuingStrategyFromOrigin(ctx, "ByteLength");
-        await ctx.eval(`
-          setResult(__testQueuingStrategy instanceof ByteLengthQueuingStrategy);
-        `);
-        assert.strictEqual(ctx.getResult(), true);
-      });
+    test("instanceof ByteLengthQueuingStrategy", async () => {
+      await getQueuingStrategyFromOrigin(ctx, "ByteLength");
+      await ctx.eval(`
+        setResult(__testQueuingStrategy instanceof ByteLengthQueuingStrategy);
+      `);
+      assert.strictEqual(ctx.getResult(), true);
+    });
 
-      test("constructor.name is ByteLengthQueuingStrategy", async () => {
-        await getQueuingStrategyFromOrigin(ctx, "ByteLength");
-        await ctx.eval(`
-          setResult(__testQueuingStrategy.constructor.name);
-        `);
-        assert.strictEqual(ctx.getResult(), "ByteLengthQueuingStrategy");
-      });
-    }
+    test("constructor.name is ByteLengthQueuingStrategy", async () => {
+      await getQueuingStrategyFromOrigin(ctx, "ByteLength");
+      await ctx.eval(`
+        setResult(__testQueuingStrategy.constructor.name);
+      `);
+      assert.strictEqual(ctx.getResult(), "ByteLengthQueuingStrategy");
+    });
   });
 
   // ============================================================================
@@ -789,45 +807,45 @@ describe("Stream Consistency", () => {
   // ============================================================================
 
   describe("CountQueuingStrategy Consistency", () => {
-    for (const _origin of QUEUING_STRATEGY_ORIGINS) {
-      test("highWaterMark property exists", async () => {
-        await getQueuingStrategyFromOrigin(ctx, "Count", 10);
-        await ctx.eval(`
-          setResult(__testQueuingStrategy.highWaterMark);
-        `);
-        assert.strictEqual(ctx.getResult(), 10);
-      });
+    // Note: QueuingStrategy classes are only available via direct instantiation in the sandbox.
+    // No additional origins (like customFunction or fetchCallback) are applicable.
+    test("highWaterMark property exists", async () => {
+      await getQueuingStrategyFromOrigin(ctx, "Count", 10);
+      await ctx.eval(`
+        setResult(__testQueuingStrategy.highWaterMark);
+      `);
+      assert.strictEqual(ctx.getResult(), 10);
+    });
 
-      test("size() method exists and returns 1", async () => {
-        await getQueuingStrategyFromOrigin(ctx, "Count");
-        await ctx.eval(`
-          const chunk = { data: "test" };
-          setResult({
-            hasSize: typeof __testQueuingStrategy.size === 'function',
-            size: __testQueuingStrategy.size(chunk),
-          });
-        `);
-        const result = ctx.getResult() as { hasSize: boolean; size: number };
-        assert.strictEqual(result.hasSize, true);
-        assert.strictEqual(result.size, 1);
-      });
+    test("size() method exists and returns 1", async () => {
+      await getQueuingStrategyFromOrigin(ctx, "Count");
+      await ctx.eval(`
+        const chunk = { data: "test" };
+        setResult({
+          hasSize: typeof __testQueuingStrategy.size === 'function',
+          size: __testQueuingStrategy.size(chunk),
+        });
+      `);
+      const result = ctx.getResult() as { hasSize: boolean; size: number };
+      assert.strictEqual(result.hasSize, true);
+      assert.strictEqual(result.size, 1);
+    });
 
-      test("instanceof CountQueuingStrategy", async () => {
-        await getQueuingStrategyFromOrigin(ctx, "Count");
-        await ctx.eval(`
-          setResult(__testQueuingStrategy instanceof CountQueuingStrategy);
-        `);
-        assert.strictEqual(ctx.getResult(), true);
-      });
+    test("instanceof CountQueuingStrategy", async () => {
+      await getQueuingStrategyFromOrigin(ctx, "Count");
+      await ctx.eval(`
+        setResult(__testQueuingStrategy instanceof CountQueuingStrategy);
+      `);
+      assert.strictEqual(ctx.getResult(), true);
+    });
 
-      test("constructor.name is CountQueuingStrategy", async () => {
-        await getQueuingStrategyFromOrigin(ctx, "Count");
-        await ctx.eval(`
-          setResult(__testQueuingStrategy.constructor.name);
-        `);
-        assert.strictEqual(ctx.getResult(), "CountQueuingStrategy");
-      });
-    }
+    test("constructor.name is CountQueuingStrategy", async () => {
+      await getQueuingStrategyFromOrigin(ctx, "Count");
+      await ctx.eval(`
+        setResult(__testQueuingStrategy.constructor.name);
+      `);
+      assert.strictEqual(ctx.getResult(), "CountQueuingStrategy");
+    });
   });
 
   // ============================================================================

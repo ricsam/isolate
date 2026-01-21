@@ -6,7 +6,29 @@ This document tracks known inconsistencies between the isolate implementation an
 
 ## Open Issues
 
-*No open issues at this time.*
+### 12. Response.body Returns New Stream on Each Access
+
+**Status:** Open
+**Severity:** Medium
+**Spec:** [WHATWG Fetch - Body interface](https://fetch.spec.whatwg.org/#body)
+
+**Problem:** The `Response.body` getter creates a new `HostBackedReadableStream` each time it's accessed instead of returning the same stream object.
+
+**Expected behavior:**
+```javascript
+const response = new Response("hello");
+response.body === response.body; // true (same object identity)
+```
+
+**Actual behavior:**
+```javascript
+const response = new Response("hello");
+response.body === response.body; // false (new stream each time)
+```
+
+**Affects:** All Response origins (direct, customFunction, fetchCallback)
+
+**Location:** `packages/fetch/src/index.ts:1051-1068`
 
 ---
 
@@ -177,6 +199,7 @@ paramsRef === url.searchParams; // true (same instance)
 
 | Issue | Severity | Spec Area | Status |
 |-------|----------|-----------|--------|
+| Response.body identity | Medium | Fetch | Open |
 | Blob from Blob/File | High | File API | Fixed |
 | File.webkitRelativePath | Low | File API | Fixed |
 | Request body in serve() | High | Fetch | Fixed |
