@@ -596,10 +596,10 @@ test.failing('Response.body.tee() works for fetchCallback origin', async () => {
 - [x] All instanceof tests pass
 
 ### Stream Classes
-- [ ] ReadableStream methods (`tee()`, `pipeThrough()`, `pipeTo()`, `getReader()`) work across all origins
-- [ ] WritableStream methods work across all origins
-- [ ] TransformStream produces correct readable/writable pairs
-- [ ] Stream readers and writers behave consistently
+- [x] ReadableStream methods (`tee()`, `pipeThrough()`, `pipeTo()`, `getReader()`) work across all origins
+- [x] WritableStream methods work across all origins
+- [x] TransformStream produces correct readable/writable pairs
+- [x] Stream readers and writers behave consistently
 
 ### URL Classes
 - [ ] URL properties and methods work across all origins

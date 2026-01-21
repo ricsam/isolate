@@ -34,6 +34,22 @@ export type FileOrigin = "direct";
 // FormData doesn't have special marshalling support for custom functions
 export type FormDataOrigin = "direct" | "fromResponse";
 
+// Stream origins
+export type ReadableStreamOrigin =
+  | "direct" // new ReadableStream() in isolate
+  | "responseBody" // response.body from fetch callback
+  | "blobStream" // blob.stream()
+  | "transformReadable"; // transformStream.readable
+
+export type WritableStreamOrigin =
+  | "direct" // new WritableStream() in isolate
+  | "transformWritable"; // transformStream.writable
+
+export type TransformStreamOrigin = "direct";
+export type TextEncoderStreamOrigin = "direct";
+export type TextDecoderStreamOrigin = "direct";
+export type QueuingStrategyOrigin = "direct";
+
 export const RESPONSE_ORIGINS: ResponseOrigin[] = [
   "direct",
   "customFunction",
@@ -60,6 +76,23 @@ export const FORMDATA_ORIGINS: FormDataOrigin[] = [
   "direct",
   "fromResponse",
 ];
+
+export const READABLE_STREAM_ORIGINS: ReadableStreamOrigin[] = [
+  "direct",
+  "responseBody",
+  "blobStream",
+  "transformReadable",
+];
+
+export const WRITABLE_STREAM_ORIGINS: WritableStreamOrigin[] = [
+  "direct",
+  "transformWritable",
+];
+
+export const TRANSFORM_STREAM_ORIGINS: TransformStreamOrigin[] = ["direct"];
+export const TEXT_ENCODER_STREAM_ORIGINS: TextEncoderStreamOrigin[] = ["direct"];
+export const TEXT_DECODER_STREAM_ORIGINS: TextDecoderStreamOrigin[] = ["direct"];
+export const QUEUING_STRATEGY_ORIGINS: QueuingStrategyOrigin[] = ["direct"];
 
 // ============================================================================
 // Test Context
@@ -478,4 +511,203 @@ export async function getDispatchResponse(
 ): Promise<Response> {
   await setupServeHandler(ctx, body, options);
   return ctx.dispatchRequest(new Request("https://example.com/test"));
+}
+
+// ============================================================================
+// ReadableStream Helpers
+// ============================================================================
+
+/**
+ * Create a ReadableStream in the isolate from the specified origin.
+ * The ReadableStream is stored at globalThis.__testReadableStream.
+ */
+export async function getReadableStreamFromOrigin(
+  ctx: ConsistencyTestContext,
+  origin: ReadableStreamOrigin,
+  chunks: string[] = ["chunk1", "chunk2"]
+): Promise<void> {
+  const chunksJson = JSON.stringify(chunks);
+
+  switch (origin) {
+    case "direct":
+      await ctx.eval(`
+        const chunks = ${chunksJson};
+        let index = 0;
+        globalThis.__testReadableStream = new ReadableStream({
+          pull(controller) {
+            if (index < chunks.length) {
+              controller.enqueue(new TextEncoder().encode(chunks[index++]));
+            } else {
+              controller.close();
+            }
+          }
+        });
+      `);
+      break;
+
+    case "responseBody":
+      ctx.setMockResponse({
+        status: 200,
+        body: chunks.join(""),
+      });
+      await ctx.eval(`
+        const response = await fetch("https://example.com/test");
+        globalThis.__testReadableStream = response.body;
+      `);
+      break;
+
+    case "blobStream":
+      await ctx.eval(`
+        const chunks = ${chunksJson};
+        const blob = new Blob(chunks);
+        globalThis.__testReadableStream = blob.stream();
+      `);
+      break;
+
+    case "transformReadable":
+      await ctx.eval(`
+        const transform = new TransformStream();
+        globalThis.__testReadableStream = transform.readable;
+        // Write chunks to writable side and close it
+        const writer = transform.writable.getWriter();
+        const chunks = ${chunksJson};
+        (async () => {
+          for (const chunk of chunks) {
+            await writer.write(new TextEncoder().encode(chunk));
+          }
+          await writer.close();
+        })();
+      `);
+      break;
+  }
+}
+
+// ============================================================================
+// WritableStream Helpers
+// ============================================================================
+
+/**
+ * Create a WritableStream in the isolate from the specified origin.
+ * The WritableStream is stored at globalThis.__testWritableStream.
+ * Also stores written chunks at globalThis.__testWrittenChunks.
+ */
+export async function getWritableStreamFromOrigin(
+  ctx: ConsistencyTestContext,
+  origin: WritableStreamOrigin
+): Promise<void> {
+  switch (origin) {
+    case "direct":
+      await ctx.eval(`
+        globalThis.__testWrittenChunks = [];
+        globalThis.__testWritableStream = new WritableStream({
+          write(chunk) {
+            globalThis.__testWrittenChunks.push(chunk);
+          }
+        });
+      `);
+      break;
+
+    case "transformWritable":
+      await ctx.eval(`
+        globalThis.__testWrittenChunks = [];
+        const transform = new TransformStream({
+          transform(chunk, controller) {
+            globalThis.__testWrittenChunks.push(chunk);
+            controller.enqueue(chunk);
+          }
+        });
+        globalThis.__testWritableStream = transform.writable;
+        // Start reading to allow writes to complete
+        const reader = transform.readable.getReader();
+        (async () => {
+          while (true) {
+            const { done } = await reader.read();
+            if (done) break;
+          }
+        })();
+      `);
+      break;
+  }
+}
+
+// ============================================================================
+// TransformStream Helpers
+// ============================================================================
+
+/**
+ * Create a TransformStream in the isolate from the specified origin.
+ * The TransformStream is stored at globalThis.__testTransformStream.
+ */
+export async function getTransformStreamFromOrigin(
+  ctx: ConsistencyTestContext,
+  _origin: TransformStreamOrigin
+): Promise<void> {
+  await ctx.eval(`
+    globalThis.__testTransformStream = new TransformStream();
+  `);
+}
+
+// ============================================================================
+// TextEncoderStream Helpers
+// ============================================================================
+
+/**
+ * Create a TextEncoderStream in the isolate from the specified origin.
+ * The TextEncoderStream is stored at globalThis.__testTextEncoderStream.
+ */
+export async function getTextEncoderStreamFromOrigin(
+  ctx: ConsistencyTestContext,
+  _origin: TextEncoderStreamOrigin
+): Promise<void> {
+  await ctx.eval(`
+    globalThis.__testTextEncoderStream = new TextEncoderStream();
+  `);
+}
+
+// ============================================================================
+// TextDecoderStream Helpers
+// ============================================================================
+
+export interface TextDecoderStreamOptions {
+  fatal?: boolean;
+  ignoreBOM?: boolean;
+}
+
+/**
+ * Create a TextDecoderStream in the isolate from the specified origin.
+ * The TextDecoderStream is stored at globalThis.__testTextDecoderStream.
+ */
+export async function getTextDecoderStreamFromOrigin(
+  ctx: ConsistencyTestContext,
+  _origin: TextDecoderStreamOrigin,
+  options?: TextDecoderStreamOptions
+): Promise<void> {
+  const optionsJson = JSON.stringify(options ?? {});
+  await ctx.eval(`
+    globalThis.__testTextDecoderStream = new TextDecoderStream("utf-8", ${optionsJson});
+  `);
+}
+
+// ============================================================================
+// QueuingStrategy Helpers
+// ============================================================================
+
+/**
+ * Create a ByteLengthQueuingStrategy or CountQueuingStrategy in the isolate.
+ * The strategy is stored at globalThis.__testQueuingStrategy.
+ */
+export async function getQueuingStrategyFromOrigin(
+  ctx: ConsistencyTestContext,
+  strategyType: "ByteLength" | "Count",
+  highWaterMark: number = 1
+): Promise<void> {
+  if (strategyType === "ByteLength") {
+    await ctx.eval(`
+      globalThis.__testQueuingStrategy = new ByteLengthQueuingStrategy({ highWaterMark: ${highWaterMark} });
+    `);
+  } else {
+    await ctx.eval(`
+      globalThis.__testQueuingStrategy = new CountQueuingStrategy({ highWaterMark: ${highWaterMark} });
+    `);
+  }
 }
