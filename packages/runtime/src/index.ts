@@ -56,6 +56,9 @@ import type {
   CustomFunctions,
   CustomAsyncGeneratorFunction,
   DispatchOptions,
+  EvalOptions as ProtocolEvalOptions,
+  PlaywrightOptions as ProtocolPlaywrightOptions,
+  BaseRuntimeOptions,
 } from "@ricsam/isolate-protocol";
 
 // Re-export shared types from protocol
@@ -70,48 +73,22 @@ export type {
   DispatchOptions,
 } from "@ricsam/isolate-protocol";
 
+// Re-export shared types with local aliases for backward compatibility
+export type EvalOptions = ProtocolEvalOptions;
+export type PlaywrightOptions = ProtocolPlaywrightOptions;
+
 /**
  * Options for creating a runtime.
+ * Extends BaseRuntimeOptions and adds runtime-specific fs type.
  */
-export interface RuntimeOptions<T extends Record<string, any[]> = Record<string, unknown[]>> {
-  /** Memory limit in megabytes (optional) */
-  memoryLimitMB?: number;
-  /** Console callback handlers */
-  console?: ConsoleCallbacks;
-  /** Fetch callback handler */
-  fetch?: FetchCallback;
+export interface RuntimeOptions<T extends Record<string, any[]> = Record<string, unknown[]>>
+  extends BaseRuntimeOptions<T> {
   /**
    * File system options.
    * Note: For local runtime, this uses FsOptions with getDirectory returning a FileSystemHandler.
    * For remote runtime (isolate-client), use FileSystemCallbacks instead.
    */
   fs?: FsOptions;
-  /** Module loader callback for resolving dynamic imports */
-  moduleLoader?: ModuleLoaderCallback;
-  /** Custom functions callable from within the isolate */
-  customFunctions?: CustomFunctions<T>;
-  /** Current working directory for path.resolve(). Defaults to "/" */
-  cwd?: string;
-  /** Enable test environment (describe, it, expect, etc.) */
-  testEnvironment?: boolean | TestEnvironmentOptions;
-  /** Playwright options - user provides page object */
-  playwright?: PlaywrightOptions;
-}
-
-/**
- * Options for playwright in local runtime.
- */
-export interface PlaywrightOptions {
-  /** Playwright Page object - user launches browser and creates page */
-  page: import("playwright").Page;
-  /** Default timeout for operations (default: 30000ms) */
-  timeout?: number;
-  /** Base URL for relative navigation */
-  baseUrl?: string;
-  /** If true, browser console logs are routed through console handler (or printed to stdout if no handler) */
-  console?: boolean;
-  /** Unified event callback for all playwright events */
-  onEvent?: (event: PlaywrightEvent) => void;
 }
 
 /**
@@ -203,16 +180,6 @@ export interface CollectedData {
   browserConsoleLogs: BrowserConsoleLogEntry[];
   networkRequests: NetworkRequestInfo[];
   networkResponses: NetworkResponseInfo[];
-}
-
-/**
- * Options for eval() method.
- */
-export interface EvalOptions {
-  /** Filename for stack traces */
-  filename?: string;
-  /** Maximum execution time in milliseconds. If exceeded, throws a timeout error. */
-  maxExecutionMs?: number;
 }
 
 /**

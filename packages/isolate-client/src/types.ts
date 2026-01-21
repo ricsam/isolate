@@ -14,6 +14,19 @@ import type {
   ConsoleEntry as ProtocolConsoleEntry,
   PlaywrightEvent as ProtocolPlaywrightEvent,
   CustomFunctionType,
+  EvalOptions as ProtocolEvalOptions,
+  TestEnvironmentOptions as ProtocolTestEnvironmentOptions,
+  PlaywrightOptions as ProtocolPlaywrightOptions,
+  BaseRuntimeOptions,
+  ConsoleCallbacks,
+  FetchCallback,
+  FileSystemCallbacks,
+  ModuleLoaderCallback,
+  CustomFunction,
+  CustomAsyncGeneratorFunction,
+  CustomFunctionDefinition,
+  CustomFunctions,
+  DispatchOptions,
 } from "@ricsam/isolate-protocol";
 
 // Re-export test result types
@@ -27,6 +40,23 @@ export type SuiteResult = ProtocolSuiteResult;
 export type CollectedData = ProtocolCollectedData;
 export type ConsoleEntry = ProtocolConsoleEntry;
 export type PlaywrightEvent = ProtocolPlaywrightEvent;
+
+// Re-export shared types from protocol for backward compatibility
+export type EvalOptions = ProtocolEvalOptions;
+export type TestEnvironmentOptions = ProtocolTestEnvironmentOptions;
+export type PlaywrightOptions = ProtocolPlaywrightOptions;
+export type {
+  ConsoleCallbacks,
+  FetchCallback,
+  FileSystemCallbacks,
+  ModuleLoaderCallback,
+  CustomFunction,
+  CustomAsyncGeneratorFunction,
+  CustomFunctionDefinition,
+  CustomFunctions,
+  CustomFunctionType,
+  DispatchOptions,
+};
 
 /**
  * Options for connecting to the daemon.
@@ -68,134 +98,13 @@ export interface DaemonConnection {
 }
 
 /**
- * Test environment options for createRuntime.
- */
-export interface TestEnvironmentOptions {
-  /** Receive test lifecycle events */
-  onEvent?: (event: TestEvent) => void;
-  /** Timeout for individual tests (ms) */
-  testTimeout?: number;
-}
-
-/**
  * Options for creating a runtime.
+ * Extends BaseRuntimeOptions and adds client-specific fs type.
  */
-export interface RuntimeOptions<T extends Record<string, any[]> = Record<string, unknown[]>> {
-  /** Memory limit in megabytes (optional) */
-  memoryLimitMB?: number;
-  /** Console callback handlers */
-  console?: ConsoleCallbacks;
-  /** Fetch callback handler */
-  fetch?: FetchCallback;
+export interface RuntimeOptions<T extends Record<string, any[]> = Record<string, unknown[]>>
+  extends BaseRuntimeOptions<T> {
   /** File system callback handlers */
   fs?: FileSystemCallbacks;
-  /** Module loader callback for resolving dynamic imports */
-  moduleLoader?: ModuleLoaderCallback;
-  /** Custom functions callable from within the isolate */
-  customFunctions?: CustomFunctions<T>;
-  /** Current working directory for path.resolve(). Defaults to "/" */
-  cwd?: string;
-  /** Enable test environment (describe, it, expect, etc.) */
-  testEnvironment?: boolean | TestEnvironmentOptions;
-  /** Playwright options - user provides page */
-  playwright?: PlaywrightOptions;
-}
-
-/**
- * Options for Playwright integration.
- * User provides the page object - client owns the browser.
- */
-export interface PlaywrightOptions {
-  /** Playwright page object */
-  page: import("playwright").Page;
-  /** Default timeout for operations in ms */
-  timeout?: number;
-  /** Base URL for navigation */
-  baseUrl?: string;
-  /** If true, browser console logs are routed through console handler (or printed to stdout if no handler) */
-  console?: boolean;
-  /** Unified event callback for all playwright events */
-  onEvent?: (event: PlaywrightEvent) => void;
-}
-
-/**
- * Console callback handlers with single structured callback.
- */
-export interface ConsoleCallbacks {
-  /**
-   * Callback invoked for each console operation.
-   * Receives a structured entry with all data needed to render the output.
-   */
-  onEntry?: (entry: ConsoleEntry) => void;
-}
-
-/**
- * Fetch callback type.
- */
-export type FetchCallback = (request: Request) => Response | Promise<Response>;
-
-/**
- * File system callback handlers.
- */
-export interface FileSystemCallbacks {
-  readFile?: (path: string) => Promise<ArrayBuffer>;
-  writeFile?: (path: string, data: ArrayBuffer) => Promise<void>;
-  unlink?: (path: string) => Promise<void>;
-  readdir?: (path: string) => Promise<string[]>;
-  mkdir?: (path: string, options?: { recursive?: boolean }) => Promise<void>;
-  rmdir?: (path: string) => Promise<void>;
-  stat?: (path: string) => Promise<{ isFile: boolean; isDirectory: boolean; size: number }>;
-  rename?: (from: string, to: string) => Promise<void>;
-}
-
-/**
- * Module loader callback type.
- * Called when the isolate imports a module dynamically.
- * Returns the JavaScript source code for the module.
- */
-export type ModuleLoaderCallback = (moduleName: string) => string | Promise<string>;
-
-export type { CustomFunctionType };
-
-/**
- * A custom function that can be called from within the isolate.
- */
-export type CustomFunction<T extends any[] = unknown[]> = (...args: T) => unknown | Promise<unknown>;
-
-/**
- * An async generator function that can be consumed in the isolate via for await...of.
- */
-export type CustomAsyncGeneratorFunction<T extends any[] = unknown[]> = (...args: T) => AsyncGenerator<unknown, unknown, unknown>;
-
-/**
- * Custom function definition with metadata.
- */
-export interface CustomFunctionDefinition<T extends any[] = unknown[]> {
-  /** The function implementation */
-  fn: CustomFunction<T> | CustomAsyncGeneratorFunction<T>;
-  /** Function type: 'sync', 'async', or 'asyncIterator' */
-  type: CustomFunctionType;
-}
-
-/**
- * Custom functions to register in the runtime.
- */
-export type CustomFunctions<T extends Record<string, any[]> = Record<string, unknown[]>> = {
-  [K in keyof T]: CustomFunctionDefinition<T[K]>;
-}
-
-/**
- * Options for eval() method.
- */
-export interface EvalOptions {
-  /** Filename for stack traces */
-  filename?: string;
-  /** Maximum execution time in milliseconds. If exceeded, throws a timeout error. */
-  maxExecutionMs?: number;
-  /**
-   * @deprecated Always uses module mode now. This option is ignored.
-   */
-  module?: boolean;
 }
 
 /**
@@ -334,13 +243,5 @@ export interface RemotePlaywrightHandle {
   getCollectedData(): Promise<CollectedData>;
   /** Clear collected data */
   clearCollectedData(): Promise<void>;
-}
-
-/**
- * Options for dispatching a request.
- */
-export interface DispatchOptions {
-  /** Request timeout in ms */
-  timeout?: number;
 }
 

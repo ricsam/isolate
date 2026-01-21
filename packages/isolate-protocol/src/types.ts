@@ -816,6 +816,70 @@ export interface DispatchOptions {
   timeout?: number;
 }
 
+/**
+ * Options for eval() method.
+ */
+export interface EvalOptions {
+  /** Filename for stack traces */
+  filename?: string;
+  /** Maximum execution time in milliseconds. If exceeded, throws a timeout error. */
+  maxExecutionMs?: number;
+  /**
+   * @deprecated Always uses module mode now. This option is ignored.
+   */
+  module?: boolean;
+}
+
+/**
+ * Test environment options for createRuntime.
+ */
+export interface TestEnvironmentOptions {
+  /** Receive test lifecycle events */
+  onEvent?: (event: TestEvent) => void;
+  /** Timeout for individual tests (ms) */
+  testTimeout?: number;
+}
+
+/**
+ * Options for Playwright integration.
+ * User provides the page object - client owns the browser.
+ */
+export interface PlaywrightOptions {
+  /** Playwright page object */
+  page: import("playwright").Page;
+  /** Default timeout for operations in ms */
+  timeout?: number;
+  /** Base URL for navigation */
+  baseUrl?: string;
+  /** If true, browser console logs are routed through console handler (or printed to stdout if no handler) */
+  console?: boolean;
+  /** Unified event callback for all playwright events */
+  onEvent?: (event: PlaywrightEvent) => void;
+}
+
+/**
+ * Base runtime options shared between isolate-client and isolate-runtime.
+ * Each package extends this with its own `fs` type.
+ */
+export interface BaseRuntimeOptions<T extends Record<string, any[]> = Record<string, unknown[]>> {
+  /** Memory limit in megabytes (optional) */
+  memoryLimitMB?: number;
+  /** Console callback handlers */
+  console?: ConsoleCallbacks;
+  /** Fetch callback handler */
+  fetch?: FetchCallback;
+  /** Module loader callback for resolving dynamic imports */
+  moduleLoader?: ModuleLoaderCallback;
+  /** Custom functions callable from within the isolate */
+  customFunctions?: CustomFunctions<T>;
+  /** Current working directory for path.resolve(). Defaults to "/" */
+  cwd?: string;
+  /** Enable test environment (describe, it, expect, etc.) */
+  testEnvironment?: boolean | TestEnvironmentOptions;
+  /** Playwright options - user provides page */
+  playwright?: PlaywrightOptions;
+}
+
 // ============================================================================
 // Result Types (for responses)
 // ============================================================================
