@@ -14,6 +14,7 @@ import {
   STREAM_THRESHOLD,
   STREAM_CHUNK_SIZE,
   STREAM_DEFAULT_CREDIT,
+  normalizeEntryFilename,
   type Message,
   type ResponseOk,
   type ResponseError,
@@ -1062,7 +1063,8 @@ async function handleEval(
   instance.lastActivity = Date.now();
 
   try {
-    const filename = message.filename ?? "<eval>";
+    // Normalize filename to absolute path for module resolution
+    const filename = normalizeEntryFilename(message.filename);
 
     // Always use module mode - supports top-level await and ES module syntax
     const mod = await instance.runtime.isolate.compileModule(message.code, {

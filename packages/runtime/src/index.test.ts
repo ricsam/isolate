@@ -240,7 +240,9 @@ describe("@ricsam/isolate-runtime", () => {
 
       try {
         await runtime.eval(`import { value } from "@/test";`, "entry.js");
-        assert.strictEqual(capturedImporter!.path, "entry.js");
+        // entry.js is normalized to /entry.js
+        assert.strictEqual(capturedImporter!.path, "/entry.js");
+        assert.strictEqual(capturedImporter!.resolveDir, "/");
       } finally {
         await runtime.dispose();
       }
@@ -269,8 +271,8 @@ describe("@ricsam/isolate-runtime", () => {
 
       try {
         await runtime.eval(`import { a } from "@/moduleA";`, "main.js");
-        // @/moduleA should be imported by main.js
-        assert.strictEqual(importerPaths.get("@/moduleA"), "main.js");
+        // @/moduleA should be imported by /main.js (normalized from main.js)
+        assert.strictEqual(importerPaths.get("@/moduleA"), "/main.js");
         // @/moduleB should be imported by @/moduleA (which resolved to /modules/moduleA)
         assert.strictEqual(importerPaths.get("@/moduleB"), "/modules/moduleA");
       } finally {

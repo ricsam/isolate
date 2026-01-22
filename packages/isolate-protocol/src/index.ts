@@ -4,7 +4,7 @@
  * Protocol definitions, codec, and framing for the isolate daemon.
  */
 
-// Types
+// Types and utilities
 export * from "./types.ts";
 
 // Codec

@@ -1003,3 +1003,125 @@ export interface CollectedData {
     timestamp: number;
   }[];
 }
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+/**
+ * Normalize a filename to an absolute path for module resolution.
+ *
+ * Rules:
+ * - undefined/empty/"" → "/index.js"
+ * - Absolute paths (start with /) → normalized as-is
+ * - Relative paths starting with "./" → converted to absolute from root
+ * - Bare filenames (no leading ./ or /) → converted to absolute from root
+ * - Paths starting with "../" → Error (can't resolve parent of root)
+ * - Directory paths ("/" or "./") → append "index.js"
+ *
+ * @example
+ * normalizeEntryFilename(undefined)     // "/index.js"
+ * normalizeEntryFilename("")            // "/index.js"
+ * normalizeEntryFilename("app.js")      // "/app.js"
+ * normalizeEntryFilename("./app.js")    // "/app.js"
+ * normalizeEntryFilename("/app.js")     // "/app.js"
+ * normalizeEntryFilename("./foo/bar.js") // "/foo/bar.js"
+ * normalizeEntryFilename("/")           // "/index.js"
+ * normalizeEntryFilename("./")          // "/index.js"
+ * normalizeEntryFilename("../app.js")   // throws Error
+ *
+ * @throws Error if the filename cannot be normalized (e.g., starts with "../")
+ */
+export function normalizeEntryFilename(filename: string | undefined): string {
+  // Default to /index.js
+  if (!filename || filename === "") {
+    return "/index.js";
+  }
+
+  // Reject paths that try to go above root
+  if (filename.startsWith("../")) {
+    throw new Error(
+      `Invalid entry filename "${filename}": cannot use "../" at the start. ` +
+      `Use an absolute path like "/app.js" or a relative path like "./app.js".`
+    );
+  }
+
+  // Track if original path ends with / (indicates directory)
+  const endsWithSlash = filename.endsWith("/");
+
+  let toNormalize: string;
+  if (filename.startsWith("/")) {
+    // Already absolute
+    toNormalize = filename;
+  } else if (filename.startsWith("./")) {
+    // Relative from root: ./app.js → /app.js
+    toNormalize = "/" + filename.slice(2);
+  } else {
+    // Bare filename: app.js → /app.js
+    toNormalize = "/" + filename;
+  }
+
+  // Normalize path and check for escaping root
+  const normalized = normalizePosixPath(toNormalize, filename);
+
+  // Handle directory paths - append index.js
+  if (normalized === "/" || endsWithSlash) {
+    return normalized === "/" ? "/index.js" : normalized + "/index.js";
+  }
+
+  return normalized;
+}
+
+/**
+ * Simple POSIX path normalization without external dependencies.
+ * Handles . and .. segments, collapses multiple slashes.
+ * Throws if path tries to escape above root.
+ */
+function normalizePosixPath(p: string, originalFilename: string): string {
+  if (p === "") return ".";
+
+  const isAbsolute = p.startsWith("/");
+  const segments = p.split("/").filter(s => s !== "" && s !== ".");
+  const result: string[] = [];
+  let parentCount = 0; // Track how many .. we've seen at root level
+
+  for (const segment of segments) {
+    if (segment === "..") {
+      if (result.length > 0 && result[result.length - 1] !== "..") {
+        result.pop();
+      } else if (isAbsolute) {
+        // For absolute paths, track attempts to go above root
+        parentCount++;
+      } else {
+        result.push("..");
+      }
+    } else {
+      result.push(segment);
+    }
+  }
+
+  // If we tried to go above root, throw an error
+  if (isAbsolute && parentCount > 0 && result.length === 0) {
+    // Only throw if we actually escaped (ended up at root after going above)
+    // This catches cases like /foo/../../bar.js where we went above root
+  }
+
+  // Count segments before normalization to detect if we went above root
+  const originalSegments = p.split("/").filter(s => s !== "" && s !== ".");
+  let depth = 0;
+  for (const segment of originalSegments) {
+    if (segment === "..") {
+      depth--;
+      if (isAbsolute && depth < 0) {
+        throw new Error(
+          `Invalid entry filename "${originalFilename}": path resolves above root directory.`
+        );
+      }
+    } else {
+      depth++;
+    }
+  }
+
+  const normalized = result.join("/");
+  return isAbsolute ? "/" + normalized : (normalized || ".");
+}

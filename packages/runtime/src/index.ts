@@ -1,6 +1,10 @@
 import ivm from "isolated-vm";
 import path from "node:path";
 import { setupCore } from "@ricsam/isolate-core";
+import { normalizeEntryFilename } from "@ricsam/isolate-protocol";
+
+// Re-export for convenience
+export { normalizeEntryFilename } from "@ricsam/isolate-protocol";
 import { setupConsole } from "@ricsam/isolate-console";
 import { setupEncoding } from "@ricsam/isolate-encoding";
 import { setupTimers } from "@ricsam/isolate-timers";
@@ -1019,7 +1023,8 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
           ? { filename: filenameOrOptions }
           : filenameOrOptions;
 
-      const filename = options?.filename ?? "<eval>";
+      // Normalize filename to absolute path for module resolution
+      const filename = normalizeEntryFilename(options?.filename);
 
       // Compile as ES module
       const mod = await state.isolate.compileModule(code, {

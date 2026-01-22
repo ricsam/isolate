@@ -1204,6 +1204,78 @@ describe("isolate-client integration", () => {
     }
   });
 
+  it("should preserve error message and type from module loader", async () => {
+    const runtime = await client.createRuntime({
+      moduleLoader: async (moduleName: string) => {
+        const error = new TypeError(`Invalid module specifier: ${moduleName}`);
+        throw error;
+      },
+    });
+
+    try {
+      await assert.rejects(
+        async () => {
+          await runtime.eval(`import { foo } from "@/bad-module";`);
+        },
+        (err: Error) => {
+          assert.ok(err.message.includes("Invalid module specifier: @/bad-module"));
+          return true;
+        }
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("should propagate error from nested module import", async () => {
+    const runtime = await client.createRuntime({
+      moduleLoader: async (moduleName: string, importer) => {
+        if (moduleName === "@/parent") {
+          return {
+            code: `import { child } from "@/child"; export const parent = child;`,
+            resolveDir: importer.resolveDir,
+          };
+        }
+        if (moduleName === "@/child") {
+          throw new Error(`Failed to load child module`);
+        }
+        throw new Error(`Unknown module: ${moduleName}`);
+      },
+    });
+
+    try {
+      await assert.rejects(
+        async () => {
+          await runtime.eval(`import { parent } from "@/parent";`);
+        },
+        /Failed to load child module/
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("should handle async rejection in module loader", async () => {
+    const runtime = await client.createRuntime({
+      moduleLoader: async (moduleName: string) => {
+        // Simulate async operation that fails
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return Promise.reject(new Error(`Async load failed: ${moduleName}`));
+      },
+    });
+
+    try {
+      await assert.rejects(
+        async () => {
+          await runtime.eval(`import { foo } from "@/async-fail";`);
+        },
+        /Async load failed: @\/async-fail/
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it("should pass importer.path as entry filename when importing from entry code", async () => {
     let capturedImporter: { path: string; resolveDir: string } | null = null;
 
@@ -1222,7 +1294,9 @@ describe("isolate-client integration", () => {
 
     try {
       await runtime.eval(`import { value } from "@/test";`, "entry.js");
-      assert.strictEqual(capturedImporter!.path, "entry.js");
+      // entry.js is normalized to /entry.js
+      assert.strictEqual(capturedImporter!.path, "/entry.js");
+      assert.strictEqual(capturedImporter!.resolveDir, "/");
     } finally {
       await runtime.dispose();
     }
@@ -1252,8 +1326,8 @@ describe("isolate-client integration", () => {
 
     try {
       await runtime.eval(`import { a } from "@/moduleA";`, "main.js");
-      // @/moduleA should be imported by main.js
-      assert.strictEqual(importerPaths.get("@/moduleA"), "main.js");
+      // @/moduleA should be imported by /main.js (normalized from main.js)
+      assert.strictEqual(importerPaths.get("@/moduleA"), "/main.js");
       // @/moduleB should be imported by @/moduleA (which resolved to /modules/moduleA)
       assert.strictEqual(importerPaths.get("@/moduleB"), "/modules/moduleA");
     } finally {

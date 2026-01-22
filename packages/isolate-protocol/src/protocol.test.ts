@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import {
   MessageType,
+  normalizeEntryFilename,
   type CreateRuntimeRequest,
   type ResponseOk,
   type CallbackInvoke,
@@ -214,5 +215,74 @@ describe("message types", () => {
       uniqueValues.size,
       "All message type values should be unique"
     );
+  });
+});
+
+describe("normalizeEntryFilename", () => {
+  it("should default to /index.js for undefined", () => {
+    assert.strictEqual(normalizeEntryFilename(undefined), "/index.js");
+  });
+
+  it("should default to /index.js for empty string", () => {
+    assert.strictEqual(normalizeEntryFilename(""), "/index.js");
+  });
+
+  it("should normalize bare filename to absolute path", () => {
+    assert.strictEqual(normalizeEntryFilename("app.js"), "/app.js");
+    assert.strictEqual(normalizeEntryFilename("main.ts"), "/main.ts");
+  });
+
+  it("should normalize relative path starting with ./ to absolute", () => {
+    assert.strictEqual(normalizeEntryFilename("./app.js"), "/app.js");
+    assert.strictEqual(normalizeEntryFilename("./foo/bar.js"), "/foo/bar.js");
+  });
+
+  it("should keep absolute paths as-is (normalized)", () => {
+    assert.strictEqual(normalizeEntryFilename("/app.js"), "/app.js");
+    assert.strictEqual(normalizeEntryFilename("/foo/bar.js"), "/foo/bar.js");
+  });
+
+  it("should normalize paths with . segments", () => {
+    assert.strictEqual(normalizeEntryFilename("/foo/./bar.js"), "/foo/bar.js");
+    assert.strictEqual(normalizeEntryFilename("./foo/./bar.js"), "/foo/bar.js");
+  });
+
+  it("should normalize paths with .. segments within the path", () => {
+    assert.strictEqual(normalizeEntryFilename("/foo/bar/../baz.js"), "/foo/baz.js");
+    assert.strictEqual(normalizeEntryFilename("./foo/bar/../baz.js"), "/foo/baz.js");
+    assert.strictEqual(normalizeEntryFilename("foo/bar/../baz.js"), "/foo/baz.js");
+  });
+
+  it("should append index.js to directory paths", () => {
+    assert.strictEqual(normalizeEntryFilename("/"), "/index.js");
+    assert.strictEqual(normalizeEntryFilename("./"), "/index.js");
+    assert.strictEqual(normalizeEntryFilename("/foo/"), "/foo/index.js");
+  });
+
+  it("should throw for paths starting with ../", () => {
+    assert.throws(
+      () => normalizeEntryFilename("../app.js"),
+      /cannot use "\.\.\/"/
+    );
+    assert.throws(
+      () => normalizeEntryFilename("../foo/bar.js"),
+      /cannot use "\.\.\/"/
+    );
+  });
+
+  it("should throw for paths that resolve above root", () => {
+    assert.throws(
+      () => normalizeEntryFilename("/foo/../../bar.js"),
+      /resolves above root/
+    );
+  });
+
+  it("should handle edge cases", () => {
+    // Multiple slashes get normalized
+    assert.strictEqual(normalizeEntryFilename("//app.js"), "/app.js");
+    assert.strictEqual(normalizeEntryFilename("/foo//bar.js"), "/foo/bar.js");
+
+    // .. that doesn't escape root is fine
+    assert.strictEqual(normalizeEntryFilename("/foo/bar/../../baz.js"), "/baz.js");
   });
 });
