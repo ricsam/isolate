@@ -4,6 +4,7 @@
 
 import type { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import ivm from "isolated-vm";
 import {
   createFrameParser,
@@ -811,6 +812,7 @@ async function handleCreateRuntime(
     if (moduleLoaderCallback) {
       instance.moduleLoaderCallbackId = moduleLoaderCallback.callbackId;
       instance.moduleCache = new Map();
+      instance.moduleToFilename = new Map();
     }
 
     // Setup custom functions as globals in the isolate
@@ -1060,13 +1062,18 @@ async function handleEval(
   instance.lastActivity = Date.now();
 
   try {
+    const filename = message.filename ?? "<eval>";
+
     // Always use module mode - supports top-level await and ES module syntax
     const mod = await instance.runtime.isolate.compileModule(message.code, {
-      filename: message.filename ?? "<eval>",
+      filename,
     });
 
     // Instantiate with module resolver if available
     if (instance.moduleLoaderCallbackId) {
+      // Track entry module filename for nested imports
+      instance.moduleToFilename?.set(mod, filename);
+
       const resolver = createModuleResolver(instance, connection);
       await mod.instantiate(instance.runtime.context, resolver);
     } else {
@@ -2315,7 +2322,7 @@ function createModuleResolver(
   instance: IsolateInstance,
   connection: ConnectionState
 ): (specifier: string, referrer: ivm.Module) => Promise<ivm.Module> {
-  return async (specifier: string, _referrer: ivm.Module): Promise<ivm.Module> => {
+  return async (specifier: string, referrer: ivm.Module): Promise<ivm.Module> => {
     // Check cache first
     const cached = instance.moduleCache?.get(specifier);
     if (cached) return cached;
@@ -2324,17 +2331,27 @@ function createModuleResolver(
       throw new Error(`Module not found: ${specifier}`);
     }
 
-    // Invoke client callback to get source code
-    const code = (await invokeClientCallback(
+    // Get importer info
+    const importerPath = instance.moduleToFilename?.get(referrer) ?? "<unknown>";
+    const importerResolveDir = path.posix.dirname(importerPath);
+
+    // Invoke client callback - now always returns { code, resolveDir }
+    const result = (await invokeClientCallback(
       connection,
       instance.moduleLoaderCallbackId,
-      [specifier]
-    )) as string;
+      [specifier, { path: importerPath, resolveDir: importerResolveDir }]
+    )) as { code: string; resolveDir: string };
+
+    const { code, resolveDir } = result;
 
     // Compile the module
     const mod = await instance.runtime.isolate.compileModule(code, {
       filename: specifier,
     });
+
+    // Construct resolved path and track for nested imports
+    const resolvedPath = path.posix.join(resolveDir, path.posix.basename(specifier));
+    instance.moduleToFilename?.set(mod, resolvedPath);
 
     // Instantiate with recursive resolver
     const resolver = createModuleResolver(instance, connection);

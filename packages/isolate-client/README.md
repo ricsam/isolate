@@ -85,7 +85,10 @@ const namespace = client.createNamespace("tenant-123");
 // Create a runtime in this namespace
 const runtime = await namespace.createRuntime({
   memoryLimitMB: 128,
-  moduleLoader: async (name) => loadModule(name),
+  moduleLoader: async (name, importer) => {
+    const code = loadModule(name);
+    return { code, resolveDir: importer.resolveDir };
+  },
 });
 
 console.log(runtime.reused); // false - first time
@@ -145,21 +148,29 @@ interface Namespace {
 
 ## Module Loader
 
-Register a custom module loader to handle dynamic `import()` calls:
+Register a custom module loader to handle dynamic `import()` calls. The loader receives the module specifier and importer info, and returns an object with the source code and `resolveDir` (used to resolve nested relative imports):
 
 ```typescript
 const runtime = await client.createRuntime({
-  moduleLoader: async (moduleName: string) => {
+  moduleLoader: async (moduleName: string, importer) => {
+    // importer.path = resolved path of importing module
+    // importer.resolveDir = directory for relative resolution
     if (moduleName === "@/db") {
-      return `
-        export async function getUser(id) {
-          const response = await fetch("/api/users/" + id);
-          return response.json();
-        }
-      `;
+      return {
+        code: `
+          export async function getUser(id) {
+            const response = await fetch("/api/users/" + id);
+            return response.json();
+          }
+        `,
+        resolveDir: "/modules",
+      };
     }
     if (moduleName === "@/config") {
-      return `export const API_KEY = "sk-xxx";`;
+      return {
+        code: `export const API_KEY = "sk-xxx";`,
+        resolveDir: "/modules",
+      };
     }
     throw new Error(`Unknown module: ${moduleName}`);
   },

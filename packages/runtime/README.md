@@ -134,15 +134,20 @@ interface PlaywrightOptions {
 
 ## Module Loader
 
-Provide custom ES modules:
+Provide custom ES modules. The loader receives the module specifier and importer info, and returns an object with the source code and `resolveDir` (used to resolve nested relative imports):
 
 ```typescript
 const runtime = await createRuntime({
-  moduleLoader: async (moduleName) => {
+  moduleLoader: async (moduleName, importer) => {
+    // importer.path = resolved path of importing module
+    // importer.resolveDir = directory for relative resolution
     if (moduleName === "@/utils") {
-      return `
-        export function add(a, b) { return a + b; }
-      `;
+      return {
+        code: `
+          export function add(a, b) { return a + b; }
+        `,
+        resolveDir: "/modules",
+      };
     }
     throw new Error(`Unknown module: ${moduleName}`);
   },

@@ -1,5 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert";
+import path from "node:path";
 import {
   createRuntime,
   simpleConsoleHandler,
@@ -117,16 +118,19 @@ describe("@ricsam/isolate-runtime", () => {
             }
           },
         },
-        moduleLoader: async (moduleName) => {
+        moduleLoader: async (moduleName, importer) => {
           if (moduleName === "@/utils") {
-            return `
+            return {
+              code: `
               export function add(a, b) {
                 return a + b;
               }
               export function multiply(a, b) {
                 return a * b;
               }
-            `;
+            `,
+              resolveDir: importer.resolveDir,
+            };
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },
@@ -153,17 +157,23 @@ describe("@ricsam/isolate-runtime", () => {
             }
           },
         },
-        moduleLoader: async (moduleName) => {
+        moduleLoader: async (moduleName, importer) => {
           if (moduleName === "@/math") {
-            return `
+            return {
+              code: `
               import { constant } from "@/constants";
               export function addWithConstant(x) {
                 return x + constant;
               }
-            `;
+            `,
+              resolveDir: importer.resolveDir,
+            };
           }
           if (moduleName === "@/constants") {
-            return `export const constant = 10;`;
+            return {
+              code: `export const constant = 10;`,
+              resolveDir: importer.resolveDir,
+            };
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },
@@ -183,10 +193,13 @@ describe("@ricsam/isolate-runtime", () => {
     test("module cache prevents duplicate loads", async () => {
       let loadCount = 0;
       const runtime = await createRuntime({
-        moduleLoader: async (moduleName) => {
+        moduleLoader: async (moduleName, importer) => {
           if (moduleName === "@/counter") {
             loadCount++;
-            return `export const count = ${loadCount};`;
+            return {
+              code: `export const count = ${loadCount};`,
+              resolveDir: importer.resolveDir,
+            };
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },
@@ -205,6 +218,118 @@ describe("@ricsam/isolate-runtime", () => {
 
         // Module should only be loaded once due to caching
         assert.strictEqual(loadCount, 1, "module should only be loaded once");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("importer.path is entry filename when importing from entry code", async () => {
+      let capturedImporter: { path: string; resolveDir: string } | null = null;
+      const runtime = await createRuntime({
+        moduleLoader: async (moduleName, importer) => {
+          capturedImporter = importer;
+          if (moduleName === "@/test") {
+            return {
+              code: `export const value = 42;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(`import { value } from "@/test";`, "entry.js");
+        assert.strictEqual(capturedImporter!.path, "entry.js");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("importer.path is correct for nested imports", async () => {
+      const importerPaths: Map<string, string> = new Map();
+      const runtime = await createRuntime({
+        moduleLoader: async (moduleName, importer) => {
+          importerPaths.set(moduleName, importer.path);
+          if (moduleName === "@/moduleA") {
+            return {
+              code: `import { b } from "@/moduleB"; export const a = b + 1;`,
+              resolveDir: "/modules",
+            };
+          }
+          if (moduleName === "@/moduleB") {
+            return {
+              code: `export const b = 10;`,
+              resolveDir: "/modules",
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(`import { a } from "@/moduleA";`, "main.js");
+        // @/moduleA should be imported by main.js
+        assert.strictEqual(importerPaths.get("@/moduleA"), "main.js");
+        // @/moduleB should be imported by @/moduleA (which resolved to /modules/moduleA)
+        assert.strictEqual(importerPaths.get("@/moduleB"), "/modules/moduleA");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("importer.path enables relative path resolution", async () => {
+      // Virtual file system with absolute paths
+      const files: Record<string, string> = {
+        "/foo/bar.js": `
+          import { value } from "../one.js";
+          globalThis.result = value;
+        `,
+        "/one.js": `
+          import { hello } from "./foo/hello.js";
+          export const value = hello + " world";
+        `,
+        "/foo/hello.js": `
+          export const hello = "hello";
+        `,
+      };
+
+      // Track what the importer resolves to for each import
+      const resolvedImporters: Map<string, string> = new Map();
+
+      const runtime = await createRuntime({
+        moduleLoader: async (specifier, importer) => {
+          // Resolve the specifier relative to the importer's resolveDir
+          const resolvedPath = path.posix.normalize(
+            path.posix.join(importer.resolveDir, specifier)
+          );
+
+          // Track for debugging
+          resolvedImporters.set(specifier, importer.path);
+
+          const code = files[resolvedPath];
+          if (!code) {
+            throw new Error(`Module not found: ${specifier} (resolved to ${resolvedPath})`);
+          }
+          return { code, resolveDir: path.posix.dirname(resolvedPath) };
+        },
+      });
+
+      try {
+        await runtime.eval(files["/foo/bar.js"]!, "/foo/bar.js");
+
+        // Verify the resolution chain worked correctly
+        // ../one.js was imported from /foo/bar.js
+        assert.strictEqual(resolvedImporters.get("../one.js"), "/foo/bar.js");
+        // ./foo/hello.js was imported from /one.js (the resolved path)
+        assert.strictEqual(resolvedImporters.get("./foo/hello.js"), "/one.js");
+
+        // Verify the final result
+        await runtime.eval(`
+          if (globalThis.result !== "hello world") {
+            throw new Error("Expected 'hello world' but got: " + globalThis.result);
+          }
+        `);
       } finally {
         await runtime.dispose();
       }

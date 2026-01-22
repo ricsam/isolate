@@ -70,7 +70,8 @@ const runtime = await createRuntime({
     if (!code) {
       throw new Error(`Module not found: ${specifier}`);
     }
-    return code;
+    // For bundled modules, use a consistent resolveDir
+    return { code, resolveDir: "/bundled" };
   },
 });
 

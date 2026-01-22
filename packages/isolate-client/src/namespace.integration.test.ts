@@ -94,10 +94,13 @@ describe("Namespace Runtime Caching Integration Tests", () => {
 
       // First runtime - load a module
       const runtime1 = await namespace.createRuntime({
-        moduleLoader: async (moduleName: string) => {
+        moduleLoader: async (moduleName: string, importer) => {
           loadCount++;
           if (moduleName === "@/cached-module") {
-            return `export const value = "cached";`;
+            return {
+              code: `export const value = "cached";`,
+              resolveDir: importer.resolveDir,
+            };
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },
@@ -121,10 +124,13 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             }
           },
         },
-        moduleLoader: async (moduleName: string) => {
+        moduleLoader: async (moduleName: string, importer) => {
           loadCount++;
           if (moduleName === "@/cached-module") {
-            return `export const value = "cached";`;
+            return {
+              code: `export const value = "cached";`,
+              resolveDir: importer.resolveDir,
+            };
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },
@@ -421,9 +427,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
 
       // First runtime
       const runtime1 = await namespace.createRuntime({
-        moduleLoader: async (moduleName: string) => {
+        moduleLoader: async (moduleName: string, importer) => {
           if (moduleName === "@/old-module") {
-            return `export const value = "old";`;
+            return {
+              code: `export const value = "old";`,
+              resolveDir: importer.resolveDir,
+            };
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },
@@ -440,9 +449,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             }
           },
         },
-        moduleLoader: async (moduleName: string) => {
+        moduleLoader: async (moduleName: string, importer) => {
           if (moduleName === "@/new-module") {
-            return `export const value = "new";`;
+            return {
+              code: `export const value = "new";`,
+              resolveDir: importer.resolveDir,
+            };
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },

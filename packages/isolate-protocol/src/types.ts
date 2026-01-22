@@ -675,11 +675,17 @@ export type Message = ClientMessage | DaemonMessage;
 /**
  * Module loader callback type.
  * Called when the isolate imports a module dynamically.
- * Returns the JavaScript source code for the module.
+ *
+ * @param moduleName - The module specifier being imported
+ * @param importer - Information about the importing module
+ * @param importer.path - The resolved path of the importing module
+ * @param importer.resolveDir - The directory to resolve relative imports from
+ * @returns Object with code and resolveDir for the resolved module
  */
 export type ModuleLoaderCallback = (
-  moduleName: string
-) => string | Promise<string>;
+  moduleName: string,
+  importer: { path: string; resolveDir: string }
+) => { code: string; resolveDir: string } | Promise<{ code: string; resolveDir: string }>;
 
 /**
  * A custom function that can be called from within the isolate.

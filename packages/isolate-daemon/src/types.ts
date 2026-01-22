@@ -64,6 +64,8 @@ export interface IsolateInstance {
   moduleLoaderCallbackId?: number;
   /** Cache of compiled ES modules */
   moduleCache?: Map<string, ivm.Module>;
+  /** Map from module to its filename (for tracking importer path) */
+  moduleToFilename?: Map<ivm.Module, string>;
   /** Pending callback promises for current eval */
   pendingCallbacks: Promise<unknown>[];
 

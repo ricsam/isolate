@@ -3,6 +3,7 @@
  */
 
 import { connect as netConnect, type Socket } from "node:net";
+import path from "node:path";
 import {
   createFrameParser,
   buildFrame,
@@ -1423,22 +1424,18 @@ function registerModuleLoaderCallback(
 ): CallbackRegistration {
   const callbackId = state.nextCallbackId++;
 
-  state.callbacks.set(callbackId, async (moduleName: unknown) => {
+  state.callbacks.set(callbackId, async (moduleName: unknown, importer: unknown) => {
     const specifier = moduleName as string;
+    const importerInfo = importer as { path: string; resolveDir: string };
 
-    // Check cache first
-    const cached = state.moduleSourceCache.get(specifier);
-    if (cached !== undefined) {
-      return cached;
-    }
+    // Call user's module loader - returns { code, resolveDir }
+    const result = await callback(specifier, importerInfo);
 
-    // Call the user's module loader
-    const source = await callback(specifier);
+    // Cache using resolved path
+    const resolvedPath = path.posix.join(result.resolveDir, path.posix.basename(specifier));
+    state.moduleSourceCache.set(resolvedPath, result.code);
 
-    // Cache the source code
-    state.moduleSourceCache.set(specifier, source);
-
-    return source;
+    return result;
   });
 
   return { callbackId, name: "moduleLoader", type: 'async' };

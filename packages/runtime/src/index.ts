@@ -1,4 +1,5 @@
 import ivm from "isolated-vm";
+import path from "node:path";
 import { setupCore } from "@ricsam/isolate-core";
 import { setupConsole } from "@ricsam/isolate-console";
 import { setupEncoding } from "@ricsam/isolate-encoding";
@@ -226,6 +227,7 @@ interface RuntimeState {
     playwright?: PlaywrightHandle;
   };
   moduleCache: Map<string, ivm.Module>;
+  moduleToFilename: Map<ivm.Module, string>;
   moduleLoader?: ModuleLoaderCallback;
   customFunctions?: CustomFunctions;
   customFnInvokeRef?: ivm.Reference<
@@ -673,7 +675,7 @@ function createModuleResolver(
 ): (specifier: string, referrer: ivm.Module) => Promise<ivm.Module> {
   return async (
     specifier: string,
-    _referrer: ivm.Module
+    referrer: ivm.Module
   ): Promise<ivm.Module> => {
     // Check cache first
     const cached = state.moduleCache.get(specifier);
@@ -685,13 +687,24 @@ function createModuleResolver(
       );
     }
 
-    // Invoke module loader to get source code
-    const code = await state.moduleLoader(specifier);
+    // Get importer info
+    const importerPath = state.moduleToFilename.get(referrer) ?? "<unknown>";
+    const importerResolveDir = path.posix.dirname(importerPath);
+
+    // Invoke module loader - now always returns { code, resolveDir }
+    const { code, resolveDir } = await state.moduleLoader(specifier, {
+      path: importerPath,
+      resolveDir: importerResolveDir,
+    });
 
     // Compile the module
     const mod = await state.isolate.compileModule(code, {
       filename: specifier,
     });
+
+    // Construct resolved path and track for nested imports
+    const resolvedPath = path.posix.join(resolveDir, path.posix.basename(specifier));
+    state.moduleToFilename.set(mod, resolvedPath);
 
     // Cache before instantiation (for circular dependencies)
     state.moduleCache.set(specifier, mod);
@@ -757,6 +770,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     context,
     handles: {},
     moduleCache: new Map(),
+    moduleToFilename: new Map(),
     moduleLoader: opts.moduleLoader,
     customFunctions: opts.customFunctions as CustomFunctions<Record<string, unknown[]>>,
   };
@@ -1005,10 +1019,15 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
           ? { filename: filenameOrOptions }
           : filenameOrOptions;
 
+      const filename = options?.filename ?? "<eval>";
+
       // Compile as ES module
       const mod = await state.isolate.compileModule(code, {
-        filename: options?.filename ?? "<eval>",
+        filename,
       });
+
+      // Track entry module filename for nested imports
+      state.moduleToFilename.set(mod, filename);
 
       // Instantiate with module resolver
       const resolver = createModuleResolver(state);

@@ -82,21 +82,29 @@ await runtime.dispose();
 
 ### Module Loader
 
-Provide custom ES modules for dependency injection:
+Provide custom ES modules for dependency injection. The module loader receives the module specifier and importer info, and returns an object with the source code and the `resolveDir` (used to resolve nested relative imports):
 
 ```typescript
 const runtime = await createRuntime({
-  moduleLoader: async (moduleName) => {
+  moduleLoader: async (moduleName, importer) => {
+    // importer.path = resolved path of importing module
+    // importer.resolveDir = directory for relative resolution
     if (moduleName === "@/db") {
-      return `
-        export async function getUser(id) {
-          const response = await fetch("/api/users/" + id);
-          return response.json();
-        }
-      `;
+      return {
+        code: `
+          export async function getUser(id) {
+            const response = await fetch("/api/users/" + id);
+            return response.json();
+          }
+        `,
+        resolveDir: "/modules",
+      };
     }
     if (moduleName === "@/config") {
-      return `export const API_URL = "https://api.example.com";`;
+      return {
+        code: `export const API_KEY = "https://api.example.com";`,
+        resolveDir: "/modules",
+      };
     }
     throw new Error(`Unknown module: ${moduleName}`);
   },
@@ -110,10 +118,10 @@ const runtime = await createRuntime({
 
 await runtime.eval(`
   import { getUser } from "@/db";
-  import { API_URL } from "@/config";
+  import { API_KEY } from "@/config";
 
   const user = await getUser("123");
-  console.log("User:", user, "from", API_URL);
+  console.log("User:", user, "from", API_KEY);
 `);
 ```
 
@@ -316,14 +324,17 @@ await client.close();
 
 ```typescript
 const runtime = await client.createRuntime({
-  moduleLoader: async (moduleName) => {
+  moduleLoader: async (moduleName, importer) => {
     if (moduleName === "@/auth") {
-      return `
-        export async function login(email, password) {
-          const hash = await hashPassword(password);
-          return { email, hash };
-        }
-      `;
+      return {
+        code: `
+          export async function login(email, password) {
+            const hash = await hashPassword(password);
+            return { email, hash };
+          }
+        `,
+        resolveDir: importer.resolveDir,
+      };
     }
     throw new Error(`Unknown module: ${moduleName}`);
   },
@@ -359,7 +370,10 @@ const namespace = client.createNamespace("tenant-123");
 // Create a runtime in this namespace
 const runtime = await namespace.createRuntime({
   memoryLimitMB: 128,
-  moduleLoader: async (name) => loadModule(name),
+  moduleLoader: async (name, importer) => {
+    const code = loadModule(name);
+    return { code, resolveDir: importer.resolveDir };
+  },
 });
 
 console.log(runtime.reused); // false - first time
@@ -605,11 +619,18 @@ interface FileSystemCallbacks {
 
 ### Module Loader Callback
 
-Resolve dynamic imports to JavaScript source code:
+Resolve dynamic imports to JavaScript source code. Returns an object with the code and `resolveDir` (directory path used to resolve nested relative imports from this module):
 
 ```typescript
-type ModuleLoaderCallback = (moduleName: string) => string | Promise<string>;
+type ModuleLoaderCallback = (
+  moduleName: string,
+  importer: { path: string; resolveDir: string }
+) => { code: string; resolveDir: string } | Promise<{ code: string; resolveDir: string }>;
 ```
+
+- `importer.path` - The resolved absolute path of the importing module
+- `importer.resolveDir` - The directory to resolve relative imports from
+- `resolveDir` (return) - Directory path for resolving nested imports from the loaded module
 
 ### Custom Functions
 
