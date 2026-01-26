@@ -1,4 +1,7 @@
 import type ivm from "isolated-vm";
+import ivmModule from "isolated-vm";
+import { setupCore } from "@ricsam/isolate-core";
+import { MockFileSystem } from "./mock-fs.ts";
 
 // ============================================================================
 // Types
@@ -24,8 +27,7 @@ export interface TestResult<T> {
  * This creates a bare context without any APIs set up.
  */
 export async function createTestContext(): Promise<TestContext> {
-  const ivm = await import("isolated-vm");
-  const isolate = new ivm.default.Isolate();
+  const isolate = new ivmModule.Isolate();
   const context = await isolate.createContext();
 
   return {
@@ -42,10 +44,7 @@ export async function createTestContext(): Promise<TestContext> {
  * Create a test context with core APIs set up (Blob, File, URL, streams, etc.)
  */
 export async function createCoreTestContext(): Promise<TestContext> {
-  const ivm = await import("isolated-vm");
-  const { setupCore } = await import("@ricsam/isolate-core");
-
-  const isolate = new ivm.default.Isolate();
+  const isolate = new ivmModule.Isolate();
   const context = await isolate.createContext();
   const coreHandle = await setupCore(context);
 
@@ -145,8 +144,7 @@ export async function injectGlobals(
 
   for (const [key, value] of Object.entries(values)) {
     if (typeof value === "function") {
-      const ivm = await import("isolated-vm");
-      global.setSync(key, new ivm.default.Callback(value as (...args: unknown[]) => unknown));
+        global.setSync(key, new ivmModule.Callback(value as (...args: unknown[]) => unknown));
     } else if (typeof value === "object" && value !== null) {
       // For objects, serialize as JSON and inject
       context.evalSync(`globalThis.${key} = ${JSON.stringify(value)}`);

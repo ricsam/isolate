@@ -1,5 +1,9 @@
 import type ivm from "isolated-vm";
 import { MockFileSystem } from "./mock-fs.ts";
+import ivmModule from "isolated-vm";
+import { setupFs } from "@ricsam/isolate-fs";
+import { clearAllInstanceState } from "@ricsam/isolate-core";
+import { setupCore } from "@ricsam/isolate-core";
 
 export interface FsTestContext {
   isolate: ivm.Isolate;
@@ -30,13 +34,7 @@ export interface FsTestContext {
  * ctx.dispose();
  */
 export async function createFsTestContext(): Promise<FsTestContext> {
-  const ivmModule = await import("isolated-vm");
-  const { setupCore, clearAllInstanceState } = await import(
-    "@ricsam/isolate-core"
-  );
-  const { setupFs } = await import("@ricsam/isolate-fs");
-
-  const isolate = new ivmModule.default.Isolate();
+  const isolate = new ivmModule.Isolate();
   const context = await isolate.createContext();
 
   // Clear any previous instance state

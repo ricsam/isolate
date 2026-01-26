@@ -1,4 +1,6 @@
 import { MockFileSystem } from "./mock-fs.ts";
+import { createRuntime } from "@ricsam/isolate-runtime";
+import { clearAllInstanceState } from "@ricsam/isolate-core";
 
 export interface MockResponse {
   status?: number;
@@ -71,8 +73,6 @@ export async function createRuntimeTestContext(
   options?: RuntimeTestContextOptions
 ): Promise<RuntimeTestContext> {
   const opts = options ?? {};
-  const { createRuntime } = await import("@ricsam/isolate-runtime");
-  const { clearAllInstanceState } = await import("@ricsam/isolate-core");
 
   // Clear any previous instance state
   clearAllInstanceState();
