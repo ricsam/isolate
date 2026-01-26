@@ -1,5 +1,13 @@
 # @ricsam/isolate-playwright
 
+## 0.1.9
+
+### Patch Changes
+
+- Public release
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.10
+
 ## 0.1.8
 
 ### Patch Changes
