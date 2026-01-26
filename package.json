@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "description": "Utilities for isolated-vm - run JavaScript in a sandboxed V8 environment with web-standard APIs",
-  "author": "Richard Samuelsson",
+  "author": "ricsam <oss@ricsam.dev>",
   "license": "MIT",
   "repository": {
     "type": "git",

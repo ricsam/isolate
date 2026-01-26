@@ -261,7 +261,10 @@ const buildPackage = async (packageName: string, rootMetadata: RootMetadata) => 
   // Inject metadata from root package.json
   publishPackageJson.author = rootMetadata.author;
   publishPackageJson.license = rootMetadata.license;
-  publishPackageJson.repository = rootMetadata.repository;
+  publishPackageJson.repository = {
+    ...rootMetadata.repository,
+    directory: `packages/${packageName}`,
+  };
   publishPackageJson.bugs = rootMetadata.bugs;
   publishPackageJson.homepage = rootMetadata.homepage;
   publishPackageJson.keywords = rootMetadata.keywords;
