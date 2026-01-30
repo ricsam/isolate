@@ -1,5 +1,13 @@
 # @ricsam/isolate-client
 
+## 0.1.12
+
+### Patch Changes
+
+- fix page.evaluate
+- Updated dependencies
+  - @ricsam/isolate-playwright@0.1.10
+
 ## 0.1.11
 
 ### Patch Changes

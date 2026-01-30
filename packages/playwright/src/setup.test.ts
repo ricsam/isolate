@@ -228,6 +228,33 @@ describe("playwright bridge", () => {
     handle.dispose();
   });
 
+  test("handles page.evaluate with function argument", async () => {
+    await setupTestEnvironment(context);
+    const handle = await setupPlaywright(context, { page });
+
+    await context.eval(`
+      describe("evaluate with function", () => {
+        it("should evaluate an arrow function", async () => {
+          await page.goto("https://example.com");
+          const result = await page.evaluate(() => document.title);
+          expect(result).toBe("Example Domain");
+        });
+
+        it("should evaluate a regular function", async () => {
+          await page.goto("https://example.com");
+          const result = await page.evaluate(function() { return document.title; });
+          expect(result).toBe("Example Domain");
+        });
+      });
+    `);
+
+    const results = await runTests(context);
+    assert.strictEqual(results.passed, 2);
+    assert.strictEqual(results.failed, 0);
+
+    handle.dispose();
+  });
+
   test("handles baseUrl option", async () => {
     await setupTestEnvironment(context);
     const handle = await setupPlaywright(context, {

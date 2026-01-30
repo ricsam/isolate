@@ -600,7 +600,8 @@ export async function setupPlaywright(
       return __pw_invoke("waitForLoadState", [state || null]);
     },
     async evaluate(script) {
-      return __pw_invoke("evaluate", [script]);
+      const serialized = typeof script === "function" ? "(" + script.toString() + ")()" : script;
+      return __pw_invoke("evaluate", [serialized]);
     },
     locator(selector) { return new Locator("css", selector, null); },
     getByRole(role, options) { return new Locator("role", role, options ? JSON.stringify(options) : null); },

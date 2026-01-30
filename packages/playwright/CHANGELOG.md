@@ -1,5 +1,11 @@
 # @ricsam/isolate-playwright
 
+## 0.1.10
+
+### Patch Changes
+
+- fix page.evaluate
+
 ## 0.1.9
 
 ### Patch Changes
