@@ -1218,7 +1218,7 @@ describe("playwright feature", () => {
 
           await runtime.testEnvironment.runTests();
 
-          const data = await runtime.playwright.getCollectedData();
+          const data = runtime.playwright.getCollectedData();
           assert.ok(Array.isArray(data.browserConsoleLogs));
           assert.ok(Array.isArray(data.networkRequests));
           assert.ok(Array.isArray(data.networkResponses));
@@ -1248,8 +1248,8 @@ describe("playwright feature", () => {
           await runtime.testEnvironment.runTests();
 
           // Clear and verify
-          await runtime.playwright.clearCollectedData();
-          const data = await runtime.playwright.getCollectedData();
+          runtime.playwright.clearCollectedData();
+          const data = runtime.playwright.getCollectedData();
           assert.strictEqual(data.browserConsoleLogs.length, 0);
         } finally {
           await runtime.dispose();

@@ -236,12 +236,11 @@ export interface RemoteTestEnvironmentHandle {
 
 /**
  * Remote playwright handle - provides access to browser data collection.
- * All methods are async since they communicate over IPC.
  */
 export interface RemotePlaywrightHandle {
   /** Get collected browser console logs and network data */
-  getCollectedData(): Promise<CollectedData>;
+  getCollectedData(): CollectedData;
   /** Clear collected data */
-  clearCollectedData(): Promise<void>;
+  clearCollectedData(): void;
 }
 

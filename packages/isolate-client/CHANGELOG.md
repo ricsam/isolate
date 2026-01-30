@@ -1,5 +1,11 @@
 # @ricsam/isolate-client
 
+## 0.1.11
+
+### Patch Changes
+
+- fix browser logs for the playwright runner
+
 ## 0.1.10
 
 ### Patch Changes

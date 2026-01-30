@@ -31,10 +31,8 @@ import {
   type TestEnvironmentCallbackRegistrations,
   type TestEnvironmentOptionsProtocol,
   type TestEventMessage,
-  type GetCollectedDataRequest,
   type CollectedData,
   type ResetTestEnvRequest,
-  type ClearCollectedDataRequest,
   type PlaywrightOperation,
   type PlaywrightResult,
   type WsOpenRequest,
@@ -688,6 +686,12 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
 
   // Playwright callback registration - client owns the browser
   let playwrightHandler: PlaywrightCallback | undefined;
+  // Client-side browser event buffers
+  const browserConsoleLogs: { level: string; stdout: string; timestamp: number }[] = [];
+  const networkRequests: { url: string; method: string; headers: Record<string, string>; timestamp: number }[] = [];
+  const networkResponses: { url: string; status: number; headers: Record<string, string>; timestamp: number }[] = [];
+  const pageListenerCleanups: (() => void)[] = [];
+
   if (options.playwright) {
     playwrightHandler = createPlaywrightHandler(options.playwright.page, {
       timeout: options.playwright.timeout,
@@ -701,79 +705,82 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       return JSON.stringify(result);
     });
 
-    // Determine if we need event callbacks
-    const hasOnEvent = !!options.playwright.onEvent;
-    const hasConsoleHandler = options.playwright.console && options.console?.onEntry;
+    // Set up client-side page.on listeners for browser events
+    const page = options.playwright.page;
 
-    // Browser console log callback
-    let browserConsoleLogCallbackId: number | undefined;
-    if (hasOnEvent || hasConsoleHandler) {
-      browserConsoleLogCallbackId = registerEventCallback(state, (entry: unknown) => {
-        const browserEntry = entry as { level: string; stdout: string; timestamp: number };
+    const onConsole = (msg: { type: () => string; text: () => string }) => {
+      const entry = {
+        level: msg.type(),
+        stdout: msg.text(),
+        timestamp: Date.now(),
+      };
+      browserConsoleLogs.push(entry);
 
-        if (options.playwright!.onEvent) {
-          options.playwright!.onEvent({
-            type: "browserConsoleLog",
-            level: browserEntry.level,
-            stdout: browserEntry.stdout,
-            timestamp: browserEntry.timestamp,
-          });
-        }
+      if (options.playwright!.onEvent) {
+        options.playwright!.onEvent({
+          type: "browserConsoleLog",
+          ...entry,
+        });
+      }
 
-        // Route through console handler as browserOutput entry if console: true
-        if (options.playwright!.console && options.console?.onEntry) {
-          options.console.onEntry({
-            type: "browserOutput",
-            level: browserEntry.level,
-            stdout: browserEntry.stdout,
-            timestamp: browserEntry.timestamp,
-          });
-        }
-      });
-    }
+      if (options.playwright!.console && options.console?.onEntry) {
+        options.console.onEntry({
+          type: "browserOutput",
+          ...entry,
+        });
+      } else if (options.playwright!.console) {
+        const prefix = entry.level === "error" ? "[browser:error]" : "[browser]";
+        console.log(prefix, entry.stdout);
+      }
+    };
 
-    // Network request callback
-    let networkRequestCallbackId: number | undefined;
-    if (hasOnEvent) {
-      networkRequestCallbackId = registerEventCallback(state, (info: unknown) => {
-        const reqInfo = info as { url: string; method: string; headers: Record<string, string>; postData?: string; resourceType?: string; timestamp: number };
+    const onRequest = (request: { url: () => string; method: () => string; headers: () => Record<string, string> }) => {
+      const info = {
+        url: request.url(),
+        method: request.method(),
+        headers: request.headers(),
+        timestamp: Date.now(),
+      };
+      networkRequests.push(info);
 
-        options.playwright!.onEvent!({
+      if (options.playwright!.onEvent) {
+        options.playwright!.onEvent({
           type: "networkRequest",
-          url: reqInfo.url,
-          method: reqInfo.method,
-          headers: reqInfo.headers,
-          postData: reqInfo.postData,
-          resourceType: reqInfo.resourceType,
-          timestamp: reqInfo.timestamp,
+          ...info,
         });
-      });
-    }
+      }
+    };
 
-    // Network response callback
-    let networkResponseCallbackId: number | undefined;
-    if (hasOnEvent) {
-      networkResponseCallbackId = registerEventCallback(state, (info: unknown) => {
-        const resInfo = info as { url: string; status: number; statusText?: string; headers: Record<string, string>; timestamp: number };
+    const onResponse = (response: { url: () => string; status: () => number; headers: () => Record<string, string> }) => {
+      const info = {
+        url: response.url(),
+        status: response.status(),
+        headers: response.headers(),
+        timestamp: Date.now(),
+      };
+      networkResponses.push(info);
 
-        options.playwright!.onEvent!({
+      if (options.playwright!.onEvent) {
+        options.playwright!.onEvent({
           type: "networkResponse",
-          url: resInfo.url,
-          status: resInfo.status,
-          statusText: resInfo.statusText,
-          headers: resInfo.headers,
-          timestamp: resInfo.timestamp,
+          ...info,
         });
-      });
-    }
+      }
+    };
+
+    page.on("console", onConsole);
+    page.on("request", onRequest);
+    page.on("response", onResponse);
+
+    pageListenerCleanups.push(
+      () => page.removeListener("console", onConsole),
+      () => page.removeListener("request", onRequest),
+      () => page.removeListener("response", onResponse),
+    );
 
     callbacks.playwright = {
       handlerCallbackId,
-      // Don't let daemon print directly if we're routing through console handler
       console: options.playwright.console && !options.console?.onEntry,
-      onBrowserConsoleLogCallbackId: browserConsoleLogCallbackId,
-      onNetworkRequestCallbackId: networkRequestCallbackId,
-      onNetworkResponseCallbackId: networkResponseCallbackId,
     };
   }
 
@@ -1088,30 +1095,24 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
 
   // Create playwright handle
   const playwrightHandle: RemotePlaywrightHandle = {
-    async getCollectedData(): Promise<CollectedData> {
+    getCollectedData(): CollectedData {
       if (!playwrightEnabled) {
         throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
       }
-      const reqId = state.nextRequestId++;
-      const req: GetCollectedDataRequest = {
-        type: MessageType.GET_COLLECTED_DATA,
-        requestId: reqId,
-        isolateId,
+      return {
+        browserConsoleLogs: [...browserConsoleLogs],
+        networkRequests: [...networkRequests],
+        networkResponses: [...networkResponses],
       };
-      return sendRequest<CollectedData>(state, req);
     },
 
-    async clearCollectedData(): Promise<void> {
+    clearCollectedData(): void {
       if (!playwrightEnabled) {
         throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
       }
-      const reqId = state.nextRequestId++;
-      const req: ClearCollectedDataRequest = {
-        type: MessageType.CLEAR_COLLECTED_DATA,
-        requestId: reqId,
-        isolateId,
-      };
-      await sendRequest(state, req);
+      browserConsoleLogs.length = 0;
+      networkRequests.length = 0;
+      networkResponses.length = 0;
     },
   };
 
@@ -1151,6 +1152,10 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
     },
 
     dispose: async () => {
+      // Clean up page listeners
+      for (const cleanup of pageListenerCleanups) {
+        cleanup();
+      }
       // Clean up WebSocket callbacks
       isolateWsCallbacks.delete(isolateId);
 

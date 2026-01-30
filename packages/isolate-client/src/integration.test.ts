@@ -417,10 +417,14 @@ describe("isolate-client integration", () => {
       await runtime.testEnvironment.runTests();
 
       // Get collected data
-      const data = await runtime.playwright.getCollectedData();
+      const data = runtime.playwright.getCollectedData();
 
-      // Should have captured the console log
-      assert.ok(data.browserConsoleLogs.length >= 0); // Console logs might be captured
+      // Should have captured the console log from the browser page
+      assert.ok(data.browserConsoleLogs.length > 0, "Expected at least one browser console log");
+      assert.ok(
+        data.browserConsoleLogs.some((log) => log.stdout.includes("test message")),
+        `Expected a log containing "test message", got: ${JSON.stringify(data.browserConsoleLogs)}`
+      );
       assert.ok(Array.isArray(data.networkRequests));
       assert.ok(Array.isArray(data.networkResponses));
     } finally {
@@ -538,9 +542,12 @@ describe("isolate-client integration", () => {
       `);
 
       await runtime.testEnvironment.runTests();
-      // No delay needed - runTests waits for callbacks to complete
-      // Console logs should have been streamed
-      assert.ok(Array.isArray(consoleLogs));
+      // Console logs should have been streamed via client-side page listeners
+      assert.ok(consoleLogs.length > 0, "Expected at least one streamed console log");
+      assert.ok(
+        consoleLogs.some((log) => log.stdout.includes("streamed message")),
+        `Expected a log containing "streamed message", got: ${JSON.stringify(consoleLogs)}`
+      );
     } finally {
       await runtime.dispose();
       await browser.close();
