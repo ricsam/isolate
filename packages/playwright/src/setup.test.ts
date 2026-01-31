@@ -392,4 +392,31 @@ describe("playwright bridge", () => {
 
     handle.dispose();
   });
+
+  test("locator first, last, and filter", async () => {
+    await setupTestEnvironment(context);
+    const handle = await setupPlaywright(context, { page });
+
+    await context.eval(`
+      describe("locator methods", () => {
+        it("should support first()", async () => {
+          await page.goto("https://example.com");
+          const link = page.locator("a").first();
+          await expect(link).toBeVisible();
+        });
+
+        it("should support filter with hasText", async () => {
+          await page.goto("https://example.com");
+          const link = page.locator("a").filter({ hasText: /Learn more/i });
+          await expect(link).toBeVisible();
+        });
+      });
+    `);
+
+    const results = await runTests(context);
+    assert.strictEqual(results.passed, 2);
+    assert.strictEqual(results.failed, 0);
+
+    handle.dispose();
+  });
 });

@@ -103,6 +103,7 @@ function getLocator(
   const roleOptions = options ? { ...options } : undefined;
   if (roleOptions) {
     delete roleOptions.nth;
+    delete roleOptions.filter;
   }
 
   let locator: PlaywrightLocator;
@@ -135,6 +136,18 @@ function getLocator(
   // Apply nth if specified
   if (nthIndex !== undefined) {
     locator = locator.nth(nthIndex);
+  }
+
+  // Apply filter if specified
+  if (options?.filter) {
+    const filterOpts = { ...options.filter };
+    if (filterOpts.hasText && typeof filterOpts.hasText === 'object' && filterOpts.hasText.$regex) {
+      filterOpts.hasText = new RegExp(filterOpts.hasText.$regex, filterOpts.hasText.$flags);
+    }
+    if (filterOpts.hasNotText && typeof filterOpts.hasNotText === 'object' && filterOpts.hasNotText.$regex) {
+      filterOpts.hasNotText = new RegExp(filterOpts.hasNotText.$regex, filterOpts.hasNotText.$flags);
+    }
+    locator = locator.filter(filterOpts);
   }
 
   return locator;
@@ -707,6 +720,23 @@ export async function setupPlaywright(
     nth(index) {
       const existingOpts = this.#options ? JSON.parse(this.#options) : {};
       return new Locator(this.#type, this.#value, JSON.stringify({ ...existingOpts, nth: index }));
+    }
+    first() {
+      return this.nth(0);
+    }
+    last() {
+      return this.nth(-1);
+    }
+    filter(options) {
+      const existingOpts = this.#options ? JSON.parse(this.#options) : {};
+      const serializedFilter = { ...options };
+      if (options.hasText instanceof RegExp) {
+        serializedFilter.hasText = { $regex: options.hasText.source, $flags: options.hasText.flags };
+      }
+      if (options.hasNotText instanceof RegExp) {
+        serializedFilter.hasNotText = { $regex: options.hasNotText.source, $flags: options.hasNotText.flags };
+      }
+      return new Locator(this.#type, this.#value, JSON.stringify({ ...existingOpts, filter: serializedFilter }));
     }
   }
   globalThis.Locator = Locator;
