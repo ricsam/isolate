@@ -179,7 +179,11 @@ export interface PlaywrightOperation {
     | "evaluate"
     | "locatorAction"
     | "expectLocator"
-    | "request";
+    | "request"
+    | "goBack"
+    | "goForward"
+    | "waitForURL"
+    | "clearCookies";
   args: unknown[];
 }
 

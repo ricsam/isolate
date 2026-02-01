@@ -104,6 +104,10 @@ function getLocator(
   if (roleOptions) {
     delete roleOptions.nth;
     delete roleOptions.filter;
+    // Deserialize regex name
+    if (roleOptions.name && typeof roleOptions.name === 'object' && roleOptions.name.$regex) {
+      roleOptions.name = new RegExp(roleOptions.name.$regex, roleOptions.name.$flags);
+    }
   }
 
   let locator: PlaywrightLocator;
@@ -209,6 +213,27 @@ async function executeLocatorAction(
       return await locator.isChecked();
     case "count":
       return await locator.count();
+    case "getAttribute":
+      return await locator.getAttribute(String(actionArg ?? ""), { timeout });
+    case "isDisabled":
+      return await locator.isDisabled();
+    case "isHidden":
+      return await locator.isHidden();
+    case "innerHTML":
+      return await locator.innerHTML({ timeout });
+    case "innerText":
+      return await locator.innerText({ timeout });
+    case "allTextContents":
+      return await locator.allTextContents();
+    case "allInnerTexts":
+      return await locator.allInnerTexts();
+    case "waitFor": {
+      const opts = actionArg && typeof actionArg === 'object' ? actionArg as Record<string, unknown> : {};
+      await locator.waitFor({ state: opts.state as any, timeout: (opts.timeout as number) ?? timeout });
+      return null;
+    }
+    case "boundingBox":
+      return await locator.boundingBox({ timeout });
     default:
       throw new Error(`Unknown action: ${action}`);
   }
@@ -237,11 +262,20 @@ async function executeExpectAssertion(
     }
     case "toContainText": {
       const text = await locator.textContent({ timeout });
-      const matches = text?.includes(String(expected)) ?? false;
-      if (negated) {
-        if (matches) throw new Error(`Expected text to not contain "${expected}", but got "${text}"`);
+      let matches: boolean;
+      let expectedDisplay: string;
+      if (expected && typeof expected === 'object' && (expected as any).$regex) {
+        const regex = new RegExp((expected as any).$regex, (expected as any).$flags);
+        matches = regex.test(text ?? '');
+        expectedDisplay = String(regex);
       } else {
-        if (!matches) throw new Error(`Expected text to contain "${expected}", but got "${text}"`);
+        matches = text?.includes(String(expected)) ?? false;
+        expectedDisplay = String(expected);
+      }
+      if (negated) {
+        if (matches) throw new Error(`Expected text to not contain ${expectedDisplay}, but got "${text}"`);
+      } else {
+        if (!matches) throw new Error(`Expected text to contain ${expectedDisplay}, but got "${text}"`);
       }
       break;
     }
@@ -270,6 +304,94 @@ async function executeExpectAssertion(
         if (isChecked) throw new Error("Expected element to not be checked, but it was checked");
       } else {
         if (!isChecked) throw new Error("Expected element to be checked, but it was not");
+      }
+      break;
+    }
+    case "toHaveAttribute": {
+      const { name, value } = expected as { name: string; value: unknown };
+      const actual = await locator.getAttribute(name, { timeout });
+      if (value instanceof RegExp || (value && typeof value === 'object' && (value as any).$regex)) {
+        const regex = (value as any).$regex ? new RegExp((value as any).$regex, (value as any).$flags) : value as RegExp;
+        const matches = regex.test(actual ?? '');
+        if (negated) {
+          if (matches) throw new Error(`Expected attribute "${name}" to not match ${regex}, but got "${actual}"`);
+        } else {
+          if (!matches) throw new Error(`Expected attribute "${name}" to match ${regex}, but got "${actual}"`);
+        }
+      } else {
+        const matches = actual === String(value);
+        if (negated) {
+          if (matches) throw new Error(`Expected attribute "${name}" to not be "${value}", but it was`);
+        } else {
+          if (!matches) throw new Error(`Expected attribute "${name}" to be "${value}", but got "${actual}"`);
+        }
+      }
+      break;
+    }
+    case "toHaveText": {
+      const text = (await locator.textContent({ timeout })) ?? '';
+      let matches: boolean;
+      let expectedDisplay: string;
+      if (expected && typeof expected === 'object' && (expected as any).$regex) {
+        const regex = new RegExp((expected as any).$regex, (expected as any).$flags);
+        matches = regex.test(text);
+        expectedDisplay = String(regex);
+      } else {
+        matches = text === String(expected);
+        expectedDisplay = JSON.stringify(expected);
+      }
+      if (negated) {
+        if (matches) throw new Error(`Expected text to not be ${expectedDisplay}, but got "${text}"`);
+      } else {
+        if (!matches) throw new Error(`Expected text to be ${expectedDisplay}, but got "${text}"`);
+      }
+      break;
+    }
+    case "toHaveCount": {
+      const count = await locator.count();
+      const expectedCount = Number(expected);
+      if (negated) {
+        if (count === expectedCount) throw new Error(`Expected count to not be ${expectedCount}, but it was`);
+      } else {
+        if (count !== expectedCount) throw new Error(`Expected count to be ${expectedCount}, but got ${count}`);
+      }
+      break;
+    }
+    case "toBeHidden": {
+      const isHidden = await locator.isHidden();
+      if (negated) {
+        if (isHidden) throw new Error("Expected element to not be hidden, but it was hidden");
+      } else {
+        if (!isHidden) throw new Error("Expected element to be hidden, but it was not");
+      }
+      break;
+    }
+    case "toBeDisabled": {
+      const isDisabled = await locator.isDisabled();
+      if (negated) {
+        if (isDisabled) throw new Error("Expected element to not be disabled, but it was disabled");
+      } else {
+        if (!isDisabled) throw new Error("Expected element to be disabled, but it was not");
+      }
+      break;
+    }
+    case "toBeFocused": {
+      const isFocused = await locator.evaluate((el) => document.activeElement === el).catch(() => false);
+      if (negated) {
+        if (isFocused) throw new Error("Expected element to not be focused, but it was focused");
+      } else {
+        if (!isFocused) throw new Error("Expected element to be focused, but it was not");
+      }
+      break;
+    }
+    case "toBeEmpty": {
+      const text = await locator.textContent({ timeout });
+      const value = await locator.inputValue({ timeout }).catch(() => null);
+      const isEmpty = (value !== null ? value === '' : (text ?? '') === '');
+      if (negated) {
+        if (isEmpty) throw new Error("Expected element to not be empty, but it was");
+      } else {
+        if (!isEmpty) throw new Error("Expected element to be empty, but it was not");
       }
       break;
     }
@@ -414,6 +536,34 @@ export function createPlaywrightHandler(
               body: null, // ArrayBuffer not easily serializable, use text/json instead
             },
           };
+        }
+        case "goBack": {
+          const [waitUntil] = op.args as [string?];
+          await page.goBack({
+            timeout,
+            waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
+          });
+          return { ok: true };
+        }
+        case "goForward": {
+          const [waitUntil] = op.args as [string?];
+          await page.goForward({
+            timeout,
+            waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
+          });
+          return { ok: true };
+        }
+        case "waitForURL": {
+          const [url, customTimeout, waitUntil] = op.args as [string, number?, string?];
+          await page.waitForURL(url, {
+            timeout: customTimeout ?? timeout,
+            waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? undefined,
+          });
+          return { ok: true };
+        }
+        case "clearCookies": {
+          await page.context().clearCookies();
+          return { ok: true };
         }
         default:
           return { ok: false, error: { name: "Error", message: `Unknown operation: ${(op as PlaywrightOperation).type}` } };
@@ -587,15 +737,22 @@ export async function setupPlaywright(
   // Page object
   context.evalSync(`
 (function() {
+  let __pw_currentUrl = '';
   globalThis.page = {
     async goto(url, options) {
-      return __pw_invoke("goto", [url, options?.waitUntil || null]);
+      const result = await __pw_invoke("goto", [url, options?.waitUntil || null]);
+      const resolvedUrl = await __pw_invoke("url", []);
+      __pw_currentUrl = resolvedUrl || url;
+      return result;
     },
     async reload() {
-      return __pw_invoke("reload", []);
+      const result = await __pw_invoke("reload", []);
+      const resolvedUrl = await __pw_invoke("url", []);
+      if (resolvedUrl) __pw_currentUrl = resolvedUrl;
+      return result;
     },
-    async url() {
-      return __pw_invoke("url", []);
+    url() {
+      return __pw_currentUrl;
     },
     async title() {
       return __pw_invoke("title", []);
@@ -617,11 +774,40 @@ export async function setupPlaywright(
       return __pw_invoke("evaluate", [serialized]);
     },
     locator(selector) { return new Locator("css", selector, null); },
-    getByRole(role, options) { return new Locator("role", role, options ? JSON.stringify(options) : null); },
+    getByRole(role, options) {
+      if (options) {
+        const serialized = { ...options };
+        if (options.name instanceof RegExp) {
+          serialized.name = { $regex: options.name.source, $flags: options.name.flags };
+        }
+        return new Locator("role", role, JSON.stringify(serialized));
+      }
+      return new Locator("role", role, null);
+    },
     getByText(text) { return new Locator("text", text, null); },
     getByLabel(label) { return new Locator("label", label, null); },
     getByPlaceholder(p) { return new Locator("placeholder", p, null); },
     getByTestId(id) { return new Locator("testId", id, null); },
+    async goBack(options) {
+      await __pw_invoke("goBack", [options?.waitUntil || null]);
+      const resolvedUrl = await __pw_invoke("url", []);
+      if (resolvedUrl) __pw_currentUrl = resolvedUrl;
+    },
+    async goForward(options) {
+      await __pw_invoke("goForward", [options?.waitUntil || null]);
+      const resolvedUrl = await __pw_invoke("url", []);
+      if (resolvedUrl) __pw_currentUrl = resolvedUrl;
+    },
+    async waitForURL(url, options) {
+      return __pw_invoke("waitForURL", [url, options?.timeout || null, options?.waitUntil || null]);
+    },
+    context() {
+      return {
+        async clearCookies() {
+          return __pw_invoke("clearCookies", []);
+        }
+      };
+    },
     async click(selector) { return this.locator(selector).click(); },
     async fill(selector, value) { return this.locator(selector).fill(value); },
     request: {
@@ -717,6 +903,49 @@ export async function setupPlaywright(
     async count() {
       return __pw_invoke("locatorAction", [...this._getInfo(), "count", null]);
     }
+    async getAttribute(name) {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "getAttribute", name]);
+    }
+    async isDisabled() {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "isDisabled", null]);
+    }
+    async isHidden() {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "isHidden", null]);
+    }
+    async innerHTML() {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "innerHTML", null]);
+    }
+    async innerText() {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "innerText", null]);
+    }
+    async allTextContents() {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "allTextContents", null]);
+    }
+    async allInnerTexts() {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "allInnerTexts", null]);
+    }
+    async waitFor(options) {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "waitFor", options || {}]);
+    }
+    async boundingBox() {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "boundingBox", null]);
+    }
+    locator(selector) {
+      const parentSelector = this.#type === 'css' ? this.#value : null;
+      if (parentSelector) {
+        return new Locator("css", parentSelector + " " + selector, this.#options);
+      }
+      // For non-css locators, use css with the combined approach
+      return new Locator("css", selector, this.#options);
+    }
+    async all() {
+      const n = await this.count();
+      const result = [];
+      for (let i = 0; i < n; i++) {
+        result.push(this.nth(i));
+      }
+      return result;
+    }
     nth(index) {
       const existingOpts = this.#options ? JSON.parse(this.#options) : {};
       return new Locator(this.#type, this.#value, JSON.stringify({ ...existingOpts, nth: index }));
@@ -755,7 +984,8 @@ export async function setupPlaywright(
         return __pw_invoke("expectLocator", [...info, "toBeVisible", null, false, options?.timeout]);
       },
       async toContainText(expected, options) {
-        return __pw_invoke("expectLocator", [...info, "toContainText", expected, false, options?.timeout]);
+        const serialized = expected instanceof RegExp ? { $regex: expected.source, $flags: expected.flags } : expected;
+        return __pw_invoke("expectLocator", [...info, "toContainText", serialized, false, options?.timeout]);
       },
       async toHaveValue(expected, options) {
         return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, false, options?.timeout]);
@@ -766,12 +996,35 @@ export async function setupPlaywright(
       async toBeChecked(options) {
         return __pw_invoke("expectLocator", [...info, "toBeChecked", null, false, options?.timeout]);
       },
+      async toHaveAttribute(name, value, options) {
+        return __pw_invoke("expectLocator", [...info, "toHaveAttribute", { name, value }, false, options?.timeout]);
+      },
+      async toHaveText(expected, options) {
+        const serialized = expected instanceof RegExp ? { $regex: expected.source, $flags: expected.flags } : expected;
+        return __pw_invoke("expectLocator", [...info, "toHaveText", serialized, false, options?.timeout]);
+      },
+      async toHaveCount(count, options) {
+        return __pw_invoke("expectLocator", [...info, "toHaveCount", count, false, options?.timeout]);
+      },
+      async toBeHidden(options) {
+        return __pw_invoke("expectLocator", [...info, "toBeHidden", null, false, options?.timeout]);
+      },
+      async toBeDisabled(options) {
+        return __pw_invoke("expectLocator", [...info, "toBeDisabled", null, false, options?.timeout]);
+      },
+      async toBeFocused(options) {
+        return __pw_invoke("expectLocator", [...info, "toBeFocused", null, false, options?.timeout]);
+      },
+      async toBeEmpty(options) {
+        return __pw_invoke("expectLocator", [...info, "toBeEmpty", null, false, options?.timeout]);
+      },
       not: {
         async toBeVisible(options) {
           return __pw_invoke("expectLocator", [...info, "toBeVisible", null, true, options?.timeout]);
         },
         async toContainText(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toContainText", expected, true, options?.timeout]);
+          const serialized = expected instanceof RegExp ? { $regex: expected.source, $flags: expected.flags } : expected;
+          return __pw_invoke("expectLocator", [...info, "toContainText", serialized, true, options?.timeout]);
         },
         async toHaveValue(expected, options) {
           return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, true, options?.timeout]);
@@ -781,6 +1034,28 @@ export async function setupPlaywright(
         },
         async toBeChecked(options) {
           return __pw_invoke("expectLocator", [...info, "toBeChecked", null, true, options?.timeout]);
+        },
+        async toHaveAttribute(name, value, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveAttribute", { name, value }, true, options?.timeout]);
+        },
+        async toHaveText(expected, options) {
+          const serialized = expected instanceof RegExp ? { $regex: expected.source, $flags: expected.flags } : expected;
+          return __pw_invoke("expectLocator", [...info, "toHaveText", serialized, true, options?.timeout]);
+        },
+        async toHaveCount(count, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveCount", count, true, options?.timeout]);
+        },
+        async toBeHidden(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeHidden", null, true, options?.timeout]);
+        },
+        async toBeDisabled(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeDisabled", null, true, options?.timeout]);
+        },
+        async toBeFocused(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeFocused", null, true, options?.timeout]);
+        },
+        async toBeEmpty(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeEmpty", null, true, options?.timeout]);
         },
       }
     };
