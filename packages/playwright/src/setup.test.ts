@@ -255,6 +255,33 @@ describe("playwright bridge", () => {
     handle.dispose();
   });
 
+  test("handles page.evaluate with arguments", async () => {
+    await setupTestEnvironment(context);
+    const handle = await setupPlaywright(context, { page });
+
+    await context.eval(`
+      describe("evaluate with arguments", () => {
+        it("should pass an argument to evaluate", async () => {
+          await page.goto("https://example.com");
+          const result = await page.evaluate((data) => data.foo, { foo: "bar" });
+          expect(result).toBe("bar");
+        });
+
+        it("should pass a primitive argument to evaluate", async () => {
+          await page.goto("https://example.com");
+          const result = await page.evaluate((n) => n * 2, 21);
+          expect(result).toBe(42);
+        });
+      });
+    `);
+
+    const results = await runTests(context);
+    assert.strictEqual(results.passed, 2);
+    assert.strictEqual(results.failed, 0);
+
+    handle.dispose();
+  });
+
   test("handles baseUrl option", async () => {
     await setupTestEnvironment(context);
     const handle = await setupPlaywright(context, {

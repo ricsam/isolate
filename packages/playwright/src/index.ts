@@ -457,7 +457,12 @@ export function createPlaywrightHandler(
           return { ok: true };
         }
         case "evaluate": {
-          const [script] = op.args as [string];
+          const [script, arg] = op.args as [string, unknown];
+          if (op.args.length > 1) {
+            const fn = new Function('return (' + script + ')')();
+            const result = await page.evaluate(fn, arg);
+            return { ok: true, value: result };
+          }
           const result = await page.evaluate(script);
           return { ok: true, value: result };
         }
@@ -769,7 +774,12 @@ export async function setupPlaywright(
     async waitForLoadState(state) {
       return __pw_invoke("waitForLoadState", [state || null]);
     },
-    async evaluate(script) {
+    async evaluate(script, arg) {
+      const hasArg = arguments.length > 1;
+      if (hasArg) {
+        const serialized = typeof script === "function" ? script.toString() : script;
+        return __pw_invoke("evaluate", [serialized, arg]);
+      }
       const serialized = typeof script === "function" ? "(" + script.toString() + ")()" : script;
       return __pw_invoke("evaluate", [serialized]);
     },

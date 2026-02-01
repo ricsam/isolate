@@ -1081,6 +1081,23 @@ function setupResponse(
       } catch (err) {
         throw __decodeError(err);
       }
+      if (this.#streamId !== null) {
+        const reader = this.body.getReader();
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) chunks.push(value);
+        }
+        const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+        const result = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          result.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return new TextDecoder().decode(result);
+      }
       return __Response_text(this.#instanceId);
     }
 
@@ -1791,44 +1808,17 @@ function setupFetchFunction(
       // Network responses have http/https URLs
       const isNetworkResponse = nativeResponse.url && (nativeResponse.url.startsWith('http://') || nativeResponse.url.startsWith('https://'));
 
-      // Stream if:
-      // - Callback stream (already streaming from client)
-      // - OR network response with no content-length or size > threshold
-      const shouldStream = nativeResponse.body && (
-        isCallbackStream ||
-        (isNetworkResponse && (knownSize === null || knownSize > FETCH_STREAM_THRESHOLD))
-      );
+      // Only stream for callback streams (onFetch streaming responses).
+      // Regular fetch responses are always buffered to avoid deadlocks with applySyncPromise.
+      const shouldStream = nativeResponse.body && isCallbackStream;
 
       if (shouldStream && nativeResponse.body) {
-        // For callback streams, use lazy streaming to preserve timing
-        // For other streams, use eager pumping
-        if (isCallbackStream) {
-          // Create a stream in the registry but don't pump eagerly
-          // Store passthruBody so dispatchRequest can use it directly
-          const streamId = streamRegistry.create();
-          const passthruMap = getPassthruBodiesForContext(context);
-          passthruMap.set(streamId, nativeResponse.body);
-
-          const instanceId = nextInstanceId++;
-          const state: ResponseState = {
-            status: nativeResponse.status,
-            statusText: nativeResponse.statusText,
-            headers: Array.from(nativeResponse.headers.entries()),
-            body: new Uint8Array(0), // Empty for streaming
-            bodyUsed: false,
-            type: "default",
-            url: nativeResponse.url,
-            redirected: nativeResponse.redirected,
-            streamId, // Registry stream for isolate access
-          };
-          stateMap.set(instanceId, state);
-          return instanceId;
-        }
-
-        // Registry path: pump chunks to stream registry
         const streamId = streamRegistry.create();
 
-        // Store the response state with stream ID immediately
+        // Pump native stream into registry so both isolate-side reads
+        // and dispatchRequest (via registry fallback) work
+        startNativeStreamReader(nativeResponse.body, streamId, streamRegistry);
+
         const instanceId = nextInstanceId++;
         const state: ResponseState = {
           status: nativeResponse.status,
@@ -1839,35 +1829,9 @@ function setupFetchFunction(
           type: "default",
           url: nativeResponse.url,
           redirected: nativeResponse.redirected,
-          streamId, // Stream ID for body
+          streamId, // Registry stream for isolate access
         };
         stateMap.set(instanceId, state);
-
-        // Start pumping chunks in the background with backpressure
-        const reader = nativeResponse.body.getReader();
-        (async () => {
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) {
-                streamRegistry.close(streamId);
-                break;
-              }
-              if (value) {
-                // Wait for queue to drain if full (backpressure)
-                while (streamRegistry.isQueueFull(streamId)) {
-                  await new Promise(r => setTimeout(r, 1));
-                }
-                streamRegistry.push(streamId, value);
-              }
-            }
-          } catch (err) {
-            streamRegistry.error(streamId, err);
-          } finally {
-            reader.releaseLock();
-          }
-        })();
-
         return instanceId;
       }
 
