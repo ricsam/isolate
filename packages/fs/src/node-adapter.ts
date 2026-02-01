@@ -253,7 +253,12 @@ export function createNodeFileSystemHandler(
           }
         } else {
           // Replace entire content
-          await fsPromises.writeFile(realPath, data);
+          const fh = await fsPromises.open(realPath, 'w');
+          try {
+            await fh.writeFile(data);
+          } finally {
+            await fh.close();
+          }
         }
       } catch (err) {
         throw mapError(err, "writeFile");
