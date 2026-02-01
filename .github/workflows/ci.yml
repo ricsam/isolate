@@ -42,7 +42,7 @@ jobs:
         working-directory: demo
 
       - name: Run tests
-        run: npm test
+        run: npm test -- --test-concurrency=1
 
       - name: Run e2e tests
         run: npm run test:e2e
