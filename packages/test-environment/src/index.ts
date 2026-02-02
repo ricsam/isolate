@@ -104,6 +104,26 @@ const testEnvironmentCode = `
   // Internal State
   // ============================================================
 
+  // Mock registry and call counter
+  let __mockCallOrder = 0;
+  const __mockRegistry = [];
+
+  // Assertion counting state
+  let __expectedAssertions = null;
+  let __assertionCount = 0;
+  let __hasAssertionsFlag = false;
+
+  function createMockState() {
+    return {
+      calls: [],
+      results: [],
+      contexts: [],
+      instances: [],
+      invocationCallOrder: [],
+      lastCall: undefined,
+    };
+  }
+
   function createSuite(name, skip = false, only = false) {
     return {
       name,
@@ -147,6 +167,34 @@ const testEnvironmentCode = `
       this.expected = expected;
       this.actual = actual;
     }
+  }
+
+  // ============================================================
+  // Asymmetric Matcher Infrastructure
+  // ============================================================
+
+  const ASYMMETRIC_MATCHER = Symbol('asymmetricMatcher');
+
+  function isAsymmetricMatcher(obj) {
+    return obj && obj[ASYMMETRIC_MATCHER] === true;
+  }
+
+  // Deep equality with asymmetric matcher support
+  function asymmetricDeepEqual(a, b) {
+    if (isAsymmetricMatcher(b)) return b.asymmetricMatch(a);
+    if (isAsymmetricMatcher(a)) return a.asymmetricMatch(b);
+    if (a === b) return true;
+    if (typeof a !== typeof b) return false;
+    if (typeof a !== 'object' || a === null || b === null) return false;
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+    for (const key of keysA) {
+      if (!keysB.includes(key)) return false;
+      if (!asymmetricDeepEqual(a[key], b[key])) return false;
+    }
+    return true;
   }
 
   // ============================================================
@@ -249,6 +297,7 @@ const testEnvironmentCode = `
   function expect(actual) {
     function createMatchers(negated = false) {
       const assert = (condition, message, matcherName, expected) => {
+        __assertionCount++;
         const pass = negated ? !condition : condition;
         if (!pass) {
           throw new TestError(message, matcherName, expected, actual);
@@ -269,7 +318,7 @@ const testEnvironmentCode = `
 
         toEqual(expected) {
           assert(
-            deepEqual(actual, expected),
+            asymmetricDeepEqual(actual, expected),
             negated
               ? \`Expected \${formatValue(actual)} not to equal \${formatValue(expected)}\`
               : \`Expected \${formatValue(actual)} to equal \${formatValue(expected)}\`,
@@ -444,7 +493,7 @@ const testEnvironmentCode = `
         toHaveProperty(path, value) {
           const prop = getNestedProperty(actual, path);
           const hasProperty = prop.exists;
-          const valueMatches = arguments.length < 2 || deepEqual(prop.value, value);
+          const valueMatches = arguments.length < 2 || asymmetricDeepEqual(prop.value, value);
 
           assert(
             hasProperty && valueMatches,
@@ -512,6 +561,150 @@ const testEnvironmentCode = `
             expected
           );
         },
+
+        toBeNaN() {
+          assert(
+            Number.isNaN(actual),
+            negated
+              ? \`Expected \${formatValue(actual)} not to be NaN\`
+              : \`Expected \${formatValue(actual)} to be NaN\`,
+            'toBeNaN',
+            NaN
+          );
+        },
+
+        toMatchObject(expected) {
+          function matchesObject(obj, pattern) {
+            if (isAsymmetricMatcher(pattern)) return pattern.asymmetricMatch(obj);
+            if (typeof pattern !== 'object' || pattern === null) return obj === pattern;
+            if (typeof obj !== 'object' || obj === null) return false;
+            for (const key of Object.keys(pattern)) {
+              if (!(key in obj)) return false;
+              if (!matchesObject(obj[key], pattern[key])) return false;
+            }
+            return true;
+          }
+          assert(
+            matchesObject(actual, expected),
+            negated
+              ? \`Expected \${formatValue(actual)} not to match object \${formatValue(expected)}\`
+              : \`Expected \${formatValue(actual)} to match object \${formatValue(expected)}\`,
+            'toMatchObject',
+            expected
+          );
+        },
+
+        toContainEqual(item) {
+          const contains = Array.isArray(actual) && actual.some(el => asymmetricDeepEqual(el, item));
+          assert(
+            contains,
+            negated
+              ? \`Expected array not to contain equal \${formatValue(item)}\`
+              : \`Expected array to contain equal \${formatValue(item)}\`,
+            'toContainEqual',
+            item
+          );
+        },
+
+        toBeTypeOf(expectedType) {
+          const actualType = typeof actual;
+          assert(
+            actualType === expectedType,
+            negated
+              ? \`Expected typeof \${formatValue(actual)} not to be "\${expectedType}"\`
+              : \`Expected typeof \${formatValue(actual)} to be "\${expectedType}", got "\${actualType}"\`,
+            'toBeTypeOf',
+            expectedType
+          );
+        },
+
+        // Mock matchers
+        toHaveBeenCalled() {
+          if (!actual.__isMockFunction) throw new Error('toHaveBeenCalled requires a mock function');
+          assert(actual.mock.calls.length > 0,
+            negated ? \`Expected mock not to have been called\` : \`Expected mock to have been called\`,
+            'toHaveBeenCalled', 'called');
+        },
+
+        toHaveBeenCalledTimes(n) {
+          if (!actual.__isMockFunction) throw new Error('toHaveBeenCalledTimes requires a mock function');
+          assert(actual.mock.calls.length === n,
+            negated ? \`Expected mock not to have been called \${n} times\`
+                    : \`Expected mock to be called \${n} times, got \${actual.mock.calls.length}\`,
+            'toHaveBeenCalledTimes', n);
+        },
+
+        toHaveBeenCalledWith(...expectedArgs) {
+          if (!actual.__isMockFunction) throw new Error('toHaveBeenCalledWith requires a mock function');
+          const match = actual.mock.calls.some(args => asymmetricDeepEqual(args, expectedArgs));
+          assert(match,
+            negated ? \`Expected mock not to have been called with \${formatValue(expectedArgs)}\`
+                    : \`Expected mock to have been called with \${formatValue(expectedArgs)}\`,
+            'toHaveBeenCalledWith', expectedArgs);
+        },
+
+        toHaveBeenLastCalledWith(...expectedArgs) {
+          if (!actual.__isMockFunction) throw new Error('toHaveBeenLastCalledWith requires a mock function');
+          assert(actual.mock.lastCall && asymmetricDeepEqual(actual.mock.lastCall, expectedArgs),
+            negated ? \`Expected last call not to be \${formatValue(expectedArgs)}\`
+                    : \`Expected last call to be \${formatValue(expectedArgs)}, got \${formatValue(actual.mock.lastCall)}\`,
+            'toHaveBeenLastCalledWith', expectedArgs);
+        },
+
+        toHaveBeenNthCalledWith(n, ...expectedArgs) {
+          if (!actual.__isMockFunction) throw new Error('toHaveBeenNthCalledWith requires a mock function');
+          const nthCall = actual.mock.calls[n - 1];
+          assert(nthCall && asymmetricDeepEqual(nthCall, expectedArgs),
+            negated ? \`Expected call \${n} not to be \${formatValue(expectedArgs)}\`
+                    : \`Expected call \${n} to be \${formatValue(expectedArgs)}, got \${formatValue(nthCall)}\`,
+            'toHaveBeenNthCalledWith', expectedArgs);
+        },
+
+        toHaveReturned() {
+          if (!actual.__isMockFunction) throw new Error('toHaveReturned requires a mock function');
+          const hasReturned = actual.mock.results.some(r => r.type === 'return');
+          assert(hasReturned,
+            negated ? \`Expected mock not to have returned\` : \`Expected mock to have returned\`,
+            'toHaveReturned', 'returned');
+        },
+
+        toHaveReturnedWith(value) {
+          if (!actual.__isMockFunction) throw new Error('toHaveReturnedWith requires a mock function');
+          const match = actual.mock.results.some(r => r.type === 'return' && asymmetricDeepEqual(r.value, value));
+          assert(match,
+            negated ? \`Expected mock not to have returned \${formatValue(value)}\`
+                    : \`Expected mock to have returned \${formatValue(value)}\`,
+            'toHaveReturnedWith', value);
+        },
+
+        toHaveLastReturnedWith(value) {
+          if (!actual.__isMockFunction) throw new Error('toHaveLastReturnedWith requires a mock function');
+          const returns = actual.mock.results.filter(r => r.type === 'return');
+          const last = returns[returns.length - 1];
+          assert(last && asymmetricDeepEqual(last.value, value),
+            negated ? \`Expected last return not to be \${formatValue(value)}\`
+                    : \`Expected last return to be \${formatValue(value)}, got \${formatValue(last?.value)}\`,
+            'toHaveLastReturnedWith', value);
+        },
+
+        toHaveReturnedTimes(n) {
+          if (!actual.__isMockFunction) throw new Error('toHaveReturnedTimes requires a mock function');
+          const returnCount = actual.mock.results.filter(r => r.type === 'return').length;
+          assert(returnCount === n,
+            negated ? \`Expected mock not to have returned \${n} times\`
+                    : \`Expected mock to have returned \${n} times, got \${returnCount}\`,
+            'toHaveReturnedTimes', n);
+        },
+
+        toHaveNthReturnedWith(n, value) {
+          if (!actual.__isMockFunction) throw new Error('toHaveNthReturnedWith requires a mock function');
+          const returns = actual.mock.results.filter(r => r.type === 'return');
+          const nthReturn = returns[n - 1];
+          assert(nthReturn && asymmetricDeepEqual(nthReturn.value, value),
+            negated ? \`Expected return \${n} not to be \${formatValue(value)}\`
+                    : \`Expected return \${n} to be \${formatValue(value)}, got \${formatValue(nthReturn?.value)}\`,
+            'toHaveNthReturnedWith', value);
+        },
       };
 
       return matchers;
@@ -520,8 +713,128 @@ const testEnvironmentCode = `
     const matchers = createMatchers(false);
     matchers.not = createMatchers(true);
 
+    // Promise matchers using Proxy
+    matchers.resolves = new Proxy({}, {
+      get(_, matcherName) {
+        if (matcherName === 'not') {
+          return new Proxy({}, {
+            get(_, negatedMatcherName) {
+              return async (...args) => {
+                const result = await actual;
+                return expect(result).not[negatedMatcherName](...args);
+              };
+            }
+          });
+        }
+        return async (...args) => {
+          const result = await actual;
+          return expect(result)[matcherName](...args);
+        };
+      }
+    });
+
+    matchers.rejects = new Proxy({}, {
+      get(_, matcherName) {
+        if (matcherName === 'not') {
+          return new Proxy({}, {
+            get(_, negatedMatcherName) {
+              return async (...args) => {
+                let error;
+                try {
+                  await actual;
+                  throw new TestError('Expected promise to reject', 'rejects', 'rejection', undefined);
+                } catch (e) {
+                  if (e instanceof TestError && e.matcherName === 'rejects') throw e;
+                  error = e;
+                }
+                return expect(error).not[negatedMatcherName](...args);
+              };
+            }
+          });
+        }
+        return async (...args) => {
+          let error;
+          try {
+            await actual;
+            throw new TestError('Expected promise to reject', 'rejects', 'rejection', undefined);
+          } catch (e) {
+            if (e instanceof TestError && e.matcherName === 'rejects') throw e;
+            error = e;
+          }
+          return expect(error)[matcherName](...args);
+        };
+      }
+    });
+
     return matchers;
   }
+
+  // Asymmetric matcher implementations
+  expect.anything = () => ({
+    [ASYMMETRIC_MATCHER]: true,
+    asymmetricMatch: (other) => other !== null && other !== undefined,
+    toString: () => 'anything()',
+  });
+
+  expect.any = (constructor) => ({
+    [ASYMMETRIC_MATCHER]: true,
+    asymmetricMatch: (other) => {
+      if (constructor === String) return typeof other === 'string' || other instanceof String;
+      if (constructor === Number) return typeof other === 'number' || other instanceof Number;
+      if (constructor === Boolean) return typeof other === 'boolean' || other instanceof Boolean;
+      if (constructor === Function) return typeof other === 'function';
+      if (constructor === Object) return typeof other === 'object' && other !== null;
+      if (constructor === Array) return Array.isArray(other);
+      return other instanceof constructor;
+    },
+    toString: () => \`any(\${constructor.name || constructor})\`,
+  });
+
+  expect.stringContaining = (str) => ({
+    [ASYMMETRIC_MATCHER]: true,
+    asymmetricMatch: (other) => typeof other === 'string' && other.includes(str),
+    toString: () => \`stringContaining("\${str}")\`,
+  });
+
+  expect.stringMatching = (pattern) => ({
+    [ASYMMETRIC_MATCHER]: true,
+    asymmetricMatch: (other) => {
+      if (typeof other !== 'string') return false;
+      return typeof pattern === 'string' ? other.includes(pattern) : pattern.test(other);
+    },
+    toString: () => \`stringMatching(\${pattern})\`,
+  });
+
+  expect.arrayContaining = (expected) => ({
+    [ASYMMETRIC_MATCHER]: true,
+    asymmetricMatch: (other) => {
+      if (!Array.isArray(other)) return false;
+      return expected.every(exp => other.some(item => asymmetricDeepEqual(item, exp)));
+    },
+    toString: () => \`arrayContaining(\${formatValue(expected)})\`,
+  });
+
+  expect.objectContaining = (expected) => ({
+    [ASYMMETRIC_MATCHER]: true,
+    asymmetricMatch: (other) => {
+      if (typeof other !== 'object' || other === null) return false;
+      for (const key of Object.keys(expected)) {
+        if (!(key in other)) return false;
+        if (!asymmetricDeepEqual(other[key], expected[key])) return false;
+      }
+      return true;
+    },
+    toString: () => \`objectContaining(\${formatValue(expected)})\`,
+  });
+
+  // Assertion counting
+  expect.assertions = (n) => {
+    __expectedAssertions = n;
+  };
+
+  expect.hasAssertions = () => {
+    __hasAssertionsFlag = true;
+  };
 
   // ============================================================
   // Test Registration Functions
@@ -630,6 +943,113 @@ const testEnvironmentCode = `
   function afterAll(fn) {
     currentSuite.afterAll.push(fn);
   }
+
+  // ============================================================
+  // Mock Implementation
+  // ============================================================
+
+  const mock = {
+    fn(implementation) {
+      const mockState = createMockState();
+      let defaultImpl = implementation;
+      const onceImpls = [];
+      const onceReturns = [];
+      let returnVal, resolvedVal, rejectedVal;
+      let returnSet = false, resolvedSet = false, rejectedSet = false;
+
+      function mockFn(...args) {
+        mockState.calls.push(args);
+        mockState.contexts.push(this);
+        mockState.lastCall = args;
+        mockState.invocationCallOrder.push(++__mockCallOrder);
+
+        let result;
+        try {
+          if (onceImpls.length > 0) {
+            result = onceImpls.shift().apply(this, args);
+          } else if (onceReturns.length > 0) {
+            result = onceReturns.shift();
+          } else if (returnSet) {
+            result = returnVal;
+          } else if (resolvedSet) {
+            result = Promise.resolve(resolvedVal);
+          } else if (rejectedSet) {
+            result = Promise.reject(rejectedVal);
+          } else if (defaultImpl) {
+            result = defaultImpl.apply(this, args);
+          }
+          mockState.results.push({ type: 'return', value: result });
+          return result;
+        } catch (e) {
+          mockState.results.push({ type: 'throw', value: e });
+          throw e;
+        }
+      }
+
+      mockFn.__isMockFunction = true;
+      mockFn.mock = mockState;
+
+      // Configuration methods
+      mockFn.mockReturnValue = (v) => { returnVal = v; returnSet = true; return mockFn; };
+      mockFn.mockReturnValueOnce = (v) => { onceReturns.push(v); return mockFn; };
+      mockFn.mockResolvedValue = (v) => { resolvedVal = v; resolvedSet = true; return mockFn; };
+      mockFn.mockRejectedValue = (v) => { rejectedVal = v; rejectedSet = true; return mockFn; };
+      mockFn.mockImplementation = (fn) => { defaultImpl = fn; return mockFn; };
+      mockFn.mockImplementationOnce = (fn) => { onceImpls.push(fn); return mockFn; };
+
+      // Clearing methods
+      mockFn.mockClear = () => {
+        mockState.calls = []; mockState.results = []; mockState.contexts = [];
+        mockState.instances = []; mockState.invocationCallOrder = []; mockState.lastCall = undefined;
+        return mockFn;
+      };
+      mockFn.mockReset = () => {
+        mockFn.mockClear();
+        defaultImpl = undefined; returnVal = resolvedVal = rejectedVal = undefined;
+        returnSet = resolvedSet = rejectedSet = false;
+        onceImpls.length = 0; onceReturns.length = 0;
+        return mockFn;
+      };
+      mockFn.mockRestore = () => mockFn.mockReset();
+
+      __mockRegistry.push(mockFn);
+      return mockFn;
+    },
+
+    spyOn(object, methodName) {
+      const original = object[methodName];
+      if (typeof original !== 'function') {
+        throw new Error(\`Cannot spy on \${methodName}: not a function\`);
+      }
+      const spy = mock.fn(original);
+      spy.__originalMethod = original;
+      spy.__spyTarget = object;
+      spy.__spyMethodName = methodName;
+      spy.__isSpyFunction = true;
+      spy.mockRestore = () => {
+        object[methodName] = original;
+        const idx = __mockRegistry.indexOf(spy);
+        if (idx !== -1) __mockRegistry.splice(idx, 1);
+        return spy;
+      };
+      object[methodName] = spy;
+      return spy;
+    },
+
+    clearAllMocks() {
+      for (const fn of __mockRegistry) fn.mockClear();
+    },
+
+    resetAllMocks() {
+      for (const fn of __mockRegistry) fn.mockReset();
+    },
+
+    restoreAllMocks() {
+      for (let i = __mockRegistry.length - 1; i >= 0; i--) {
+        if (__mockRegistry[i].__isSpyFunction) __mockRegistry[i].mockRestore();
+      }
+    },
+  };
 
   // ============================================================
   // Test Runner Helpers
@@ -797,6 +1217,11 @@ const testEnvironmentCode = `
           }
 
           const testStart = Date.now();
+          // Reset assertion counting state before each test
+          __expectedAssertions = null;
+          __assertionCount = 0;
+          __hasAssertionsFlag = false;
+
           try {
             // Run all beforeEach hooks (parent first, then current)
             for (const hook of [...parentHooks.beforeEach, ...suite.beforeEach]) {
@@ -809,6 +1234,17 @@ const testEnvironmentCode = `
             // Run all afterEach hooks (current first, then parent)
             for (const hook of [...suite.afterEach, ...parentHooks.afterEach]) {
               await hook();
+            }
+
+            // Verify assertion counts after test passes
+            if (__hasAssertionsFlag && __assertionCount === 0) {
+              throw new TestError('Expected at least one assertion', 'hasAssertions', '>0', 0);
+            }
+            if (__expectedAssertions !== null && __assertionCount !== __expectedAssertions) {
+              throw new TestError(
+                \`Expected \${__expectedAssertions} assertions, got \${__assertionCount}\`,
+                'assertions', __expectedAssertions, __assertionCount
+              );
             }
 
             const testResult = {
@@ -937,6 +1373,10 @@ const testEnvironmentCode = `
     currentSuite = rootSuite;
     suiteStack.length = 0;
     suiteStack.push(rootSuite);
+    // Clear mocks
+    __mockCallOrder = 0;
+    mock.restoreAllMocks();
+    __mockRegistry.length = 0;
   }
 
   function __setEventCallback(callback) {
@@ -955,6 +1395,8 @@ const testEnvironmentCode = `
   globalThis.afterEach = afterEach;
   globalThis.beforeAll = beforeAll;
   globalThis.afterAll = afterAll;
+  globalThis.mock = mock;
+  globalThis.jest = mock;  // Jest compatibility alias
   globalThis.__runAllTests = __runAllTests;
   globalThis.__resetTestEnvironment = __resetTestEnvironment;
   globalThis.__hasTests = __hasTests;
