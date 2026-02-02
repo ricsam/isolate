@@ -499,6 +499,19 @@ const testEnvironmentCode = `
             expected
           );
         },
+
+        toBeCloseTo(expected, numDigits = 2) {
+          const precision = Math.pow(10, -numDigits) / 2;
+          const pass = Math.abs(actual - expected) < precision;
+          assert(
+            pass,
+            negated
+              ? \`Expected \${formatValue(actual)} not to be close to \${formatValue(expected)} (precision: \${numDigits} digits)\`
+              : \`Expected \${formatValue(actual)} to be close to \${formatValue(expected)} (precision: \${numDigits} digits)\`,
+            'toBeCloseTo',
+            expected
+          );
+        },
       };
 
       return matchers;

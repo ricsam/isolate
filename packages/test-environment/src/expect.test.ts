@@ -316,4 +316,77 @@ describe("expect matchers", () => {
       assert.strictEqual(results.failed, 0);
     });
   });
+
+  describe("toBeCloseTo", () => {
+    test("handles floating-point precision", async () => {
+      context.evalSync(`
+        test("toBeCloseTo floating-point", () => {
+          expect(0.1 + 0.2).toBeCloseTo(0.3);
+        });
+      `);
+      const results = await runTests(context);
+      assert.strictEqual(results.passed, 1);
+      assert.strictEqual(results.failed, 0);
+    });
+
+    test("passes for exact values", async () => {
+      context.evalSync(`
+        test("toBeCloseTo exact", () => {
+          expect(5).toBeCloseTo(5);
+          expect(0).toBeCloseTo(0);
+        });
+      `);
+      const results = await runTests(context);
+      assert.strictEqual(results.passed, 1);
+      assert.strictEqual(results.failed, 0);
+    });
+
+    test("supports custom precision", async () => {
+      context.evalSync(`
+        test("toBeCloseTo custom precision", () => {
+          expect(0.555).toBeCloseTo(0.556, 2);
+          expect(0.555).toBeCloseTo(0.554, 2);
+        });
+      `);
+      const results = await runTests(context);
+      assert.strictEqual(results.passed, 1);
+      assert.strictEqual(results.failed, 0);
+    });
+
+    test("works with negative numbers", async () => {
+      context.evalSync(`
+        test("toBeCloseTo negative", () => {
+          expect(-0.1 - 0.2).toBeCloseTo(-0.3);
+          expect(-5.005).toBeCloseTo(-5, 1);
+        });
+      `);
+      const results = await runTests(context);
+      assert.strictEqual(results.passed, 1);
+      assert.strictEqual(results.failed, 0);
+    });
+
+    test("fails for values not close enough", async () => {
+      context.evalSync(`
+        test("toBeCloseTo fails", () => {
+          expect(0.1).toBeCloseTo(0.2);
+        });
+      `);
+      const results = await runTests(context);
+      assert.strictEqual(results.passed, 0);
+      assert.strictEqual(results.failed, 1);
+      assert.ok(results.tests[0]!.error?.message?.includes("to be close to"));
+    });
+
+    test("not.toBeCloseTo inverts the check", async () => {
+      context.evalSync(`
+        test("not.toBeCloseTo", () => {
+          expect(0.1).not.toBeCloseTo(0.2);
+          expect(1).not.toBeCloseTo(2);
+        });
+      `);
+      const results = await runTests(context);
+      assert.strictEqual(results.passed, 1);
+      assert.strictEqual(results.failed, 0);
+    });
+  });
 });
