@@ -43,6 +43,11 @@ function getLocator(
   const roleOptions = options ? { ...options } : undefined;
   if (roleOptions) {
     delete roleOptions.nth;
+    delete roleOptions.filter;
+    // Deserialize regex name
+    if (roleOptions.name && typeof roleOptions.name === 'object' && roleOptions.name.$regex) {
+      roleOptions.name = new RegExp(roleOptions.name.$regex, roleOptions.name.$flags);
+    }
   }
 
   let locator: PlaywrightLocator;
@@ -68,6 +73,14 @@ function getLocator(
     case "testId":
       locator = page.getByTestId(selectorValue);
       break;
+    case "or": {
+      // Composite locator: selectorValue is JSON array of [firstInfo, secondInfo]
+      const [firstInfo, secondInfo] = JSON.parse(selectorValue) as [[string, string, string | null], [string, string, string | null]];
+      const first = getLocator(page, firstInfo[0], firstInfo[1], firstInfo[2]);
+      const second = getLocator(page, secondInfo[0], secondInfo[1], secondInfo[2]);
+      locator = first.or(second);
+      break;
+    }
     default:
       locator = page.locator(selectorValue);
   }
@@ -75,6 +88,18 @@ function getLocator(
   // Apply nth if specified
   if (nthIndex !== undefined) {
     locator = locator.nth(nthIndex);
+  }
+
+  // Apply filter if specified
+  if (options?.filter) {
+    const filterOpts = { ...options.filter };
+    if (filterOpts.hasText && typeof filterOpts.hasText === 'object' && filterOpts.hasText.$regex) {
+      filterOpts.hasText = new RegExp(filterOpts.hasText.$regex, filterOpts.hasText.$flags);
+    }
+    if (filterOpts.hasNotText && typeof filterOpts.hasNotText === 'object' && filterOpts.hasNotText.$regex) {
+      filterOpts.hasNotText = new RegExp(filterOpts.hasNotText.$regex, filterOpts.hasNotText.$flags);
+    }
+    locator = locator.filter(filterOpts);
   }
 
   return locator;
@@ -136,6 +161,27 @@ async function executeLocatorAction(
       return await locator.isChecked();
     case "count":
       return await locator.count();
+    case "getAttribute":
+      return await locator.getAttribute(String(actionArg ?? ""), { timeout });
+    case "isDisabled":
+      return await locator.isDisabled();
+    case "isHidden":
+      return await locator.isHidden();
+    case "innerHTML":
+      return await locator.innerHTML({ timeout });
+    case "innerText":
+      return await locator.innerText({ timeout });
+    case "allTextContents":
+      return await locator.allTextContents();
+    case "allInnerTexts":
+      return await locator.allInnerTexts();
+    case "waitFor": {
+      const opts = actionArg && typeof actionArg === 'object' ? actionArg as Record<string, unknown> : {};
+      await locator.waitFor({ state: opts.state as any, timeout: (opts.timeout as number) ?? timeout });
+      return null;
+    }
+    case "boundingBox":
+      return await locator.boundingBox({ timeout });
     default:
       throw new Error(`Unknown action: ${action}`);
   }

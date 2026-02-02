@@ -130,6 +130,14 @@ function getLocator(
     case "testId":
       locator = page.getByTestId(selectorValue);
       break;
+    case "or": {
+      // Composite locator: selectorValue is JSON array of [firstInfo, secondInfo]
+      const [firstInfo, secondInfo] = JSON.parse(selectorValue) as [[string, string, string | null], [string, string, string | null]];
+      const first = getLocator(page, firstInfo[0], firstInfo[1], firstInfo[2]);
+      const second = getLocator(page, secondInfo[0], secondInfo[1], secondInfo[2]);
+      locator = first.or(second);
+      break;
+    }
     default:
       locator = page.locator(selectorValue);
   }
@@ -780,8 +788,10 @@ export async function setupPlaywright(
     getByRole(role, options) {
       if (options) {
         const serialized = { ...options };
-        if (options.name instanceof RegExp) {
-          serialized.name = { $regex: options.name.source, $flags: options.name.flags };
+        // Use duck-typing RegExp detection (instanceof fails across isolated-vm boundary)
+        const name = options.name;
+        if (name && typeof name === 'object' && typeof name.source === 'string' && typeof name.flags === 'string') {
+          serialized.name = { $regex: name.source, $flags: name.flags };
         }
         return new Locator("role", role, JSON.stringify(serialized));
       }
@@ -962,13 +972,22 @@ export async function setupPlaywright(
     filter(options) {
       const existingOpts = this.#options ? JSON.parse(this.#options) : {};
       const serializedFilter = { ...options };
-      if (options.hasText instanceof RegExp) {
-        serializedFilter.hasText = { $regex: options.hasText.source, $flags: options.hasText.flags };
+      // Use duck-typing RegExp detection (instanceof fails across isolated-vm boundary)
+      const hasText = options.hasText;
+      if (hasText && typeof hasText === 'object' && typeof hasText.source === 'string' && typeof hasText.flags === 'string') {
+        serializedFilter.hasText = { $regex: hasText.source, $flags: hasText.flags };
       }
-      if (options.hasNotText instanceof RegExp) {
-        serializedFilter.hasNotText = { $regex: options.hasNotText.source, $flags: options.hasNotText.flags };
+      const hasNotText = options.hasNotText;
+      if (hasNotText && typeof hasNotText === 'object' && typeof hasNotText.source === 'string' && typeof hasNotText.flags === 'string') {
+        serializedFilter.hasNotText = { $regex: hasNotText.source, $flags: hasNotText.flags };
       }
       return new Locator(this.#type, this.#value, JSON.stringify({ ...existingOpts, filter: serializedFilter }));
+    }
+    or(other) {
+      // Create a composite locator that matches either this or other
+      const thisInfo = this._getInfo();
+      const otherInfo = other._getInfo();
+      return new Locator("or", JSON.stringify([thisInfo, otherInfo]), null);
     }
   }
   globalThis.Locator = Locator;

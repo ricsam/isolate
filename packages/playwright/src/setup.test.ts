@@ -423,4 +423,52 @@ describe("playwright bridge", () => {
 
     handle.dispose();
   });
+
+  test("locator.or() method", async () => {
+    await setupTestEnvironment(context);
+    const handle = await setupPlaywright(context, { page });
+
+    await context.eval(`
+      describe("locator or", () => {
+        it("should support .or() with matching second locator", async () => {
+          await page.goto('https://example.com');
+          // Button doesn't exist, link does - .or() should find the link
+          const btnOrLink = page.getByRole('button', { name: 'NonExistent' })
+            .or(page.getByRole('link', { name: 'Learn more' }));
+          const isVisible = await btnOrLink.isVisible();
+          expect(isVisible).toBe(true);
+        });
+      });
+    `);
+
+    const results = await runTests(context);
+    assert.strictEqual(results.passed, 1, `Expected 1 passed test, got: ${JSON.stringify(results.tests)}`);
+    assert.strictEqual(results.failed, 0);
+
+    handle.dispose();
+  });
+
+  test("getByRole with regex name", async () => {
+    await setupTestEnvironment(context);
+    const handle = await setupPlaywright(context, { page });
+
+    await context.eval(`
+      describe("getByRole regex", () => {
+        it("should find button with regex name", async () => {
+          await page.goto('data:text/html,<button>Add Model</button><button>Delete</button>');
+          const btn = page.getByRole('button', { name: /add model/i });
+          const isVisible = await btn.isVisible();
+          expect(isVisible).toBe(true);
+          const text = await btn.textContent();
+          expect(text).toBe('Add Model');
+        });
+      });
+    `);
+
+    const results = await runTests(context);
+    assert.strictEqual(results.passed, 1, `Expected 1 passed test, got: ${JSON.stringify(results.tests)}`);
+    assert.strictEqual(results.failed, 0);
+
+    handle.dispose();
+  });
 });

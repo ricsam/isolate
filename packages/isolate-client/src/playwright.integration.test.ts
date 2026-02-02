@@ -296,4 +296,74 @@ describe("isolate-client playwright integration", () => {
       await browser.close();
     }
   });
+
+  it("should support getByRole with regex name option", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { page },
+    });
+
+    try {
+      await runtime.eval(`
+        test('getByRole with regex', async () => {
+          await page.goto('data:text/html,<button>Add Model</button><button>Delete</button>');
+
+          // This should find the "Add Model" button using regex
+          const btn = page.getByRole('button', { name: /add model/i });
+          const isVisible = await btn.isVisible();
+          expect(isVisible).toBe(true);
+
+          // Verify it found the right button
+          const text = await btn.textContent();
+          expect(text).toBe('Add Model');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("should support locator.or() method", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { page },
+    });
+
+    try {
+      await runtime.eval(`
+        test('locator or method', async () => {
+          await page.goto('https://example.com');
+
+          // Button doesn't exist, link does - .or() should find the link
+          const btnOrLink = page.getByRole('button', { name: 'NonExistent' })
+            .or(page.getByRole('link', { name: 'Learn more' }));
+
+          const isVisible = await btnOrLink.isVisible();
+          expect(isVisible).toBe(true);
+
+          // Verify it found the link
+          const text = await btnOrLink.textContent();
+          expect(text).toBe('Learn more');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
 });

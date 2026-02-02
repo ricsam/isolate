@@ -675,6 +675,121 @@ const runtime = await createRuntime({
 });
 ```
 
+## TypeScript Support
+
+Write TypeScript directly in `eval()` calls and module loaders. TypeScript is automatically transformed at runtime using Node.js's native `stripTypeScriptTypes` from `node:module`.
+
+**Requirements:** Node.js >= v24
+
+### Basic Usage
+
+TypeScript works automatically in `eval()`:
+
+```typescript
+await runtime.eval(`
+  interface User {
+    id: number;
+    name: string;
+  }
+
+  const user: User = { id: 1, name: "Alice" };
+  console.log(user.name);
+`);
+```
+
+### Modules with TypeScript
+
+The module loader also supports TypeScript:
+
+```typescript
+const runtime = await createRuntime({
+  moduleLoader: async (moduleName, importer) => {
+    if (moduleName === "@/types") {
+      return {
+        code: `
+          export interface Config {
+            apiUrl: string;
+            timeout: number;
+          }
+
+          export function createConfig(url: string): Config {
+            return { apiUrl: url, timeout: 5000 };
+          }
+        `,
+        resolveDir: "/modules",
+      };
+    }
+    throw new Error(`Unknown module: ${moduleName}`);
+  },
+});
+
+await runtime.eval(`
+  import { createConfig, type Config } from "@/types";
+
+  const config: Config = createConfig("https://api.example.com");
+  console.log(config.apiUrl);
+`);
+```
+
+### What Gets Transformed
+
+The runtime transformation handles:
+
+- **Type annotations** - `const x: number = 1` becomes `const x = 1`
+- **Interfaces and type aliases** - Removed entirely
+- **Type-only imports** - `import type { Foo }` and `import { type Foo }` are removed
+- **Generics** - `Array<string>` becomes `Array`
+
+The transformation uses "strip" mode which preserves line/column positions by replacing types with whitespace, ensuring accurate error stack traces.
+
+### Validations
+
+The following are not allowed in entry code (passed to `eval()`):
+
+- `require()` - Use ES module imports instead
+- Dynamic `import()` - Use static import statements
+- Top-level `return` - Code runs as a module
+
+### Source Map Support
+
+Error stack traces are automatically mapped back to the original TypeScript source:
+
+```typescript
+await runtime.eval(`
+  interface Data {
+    value: number;
+  }
+
+  function process(data: Data): void {
+    throw new Error("Something went wrong");
+  }
+
+  process({ value: 42 });
+`);
+// Error stack will reference correct line numbers in your TypeScript code
+```
+
+### Runtime vs Type Checking
+
+The runtime transformation only strips types - it does **not** perform type checking. For type safety, use `@ricsam/isolate-types` to typecheck code before execution:
+
+```typescript
+import { typecheckIsolateCode } from "@ricsam/isolate-types";
+
+const code = `
+  const x: string = 123; // Type error!
+`;
+
+// Check types first
+const result = typecheckIsolateCode(code);
+if (!result.success) {
+  console.error("Type errors:", result.errors);
+} else {
+  // Safe to run
+  await runtime.eval(code);
+}
+```
+
 ## Type Checking Untrusted Code
 
 The `@ricsam/isolate-types` package provides utilities to typecheck code before running it in the sandbox:
@@ -979,6 +1094,7 @@ await browser.close();
 | [@ricsam/isolate-test-environment](./packages/test-environment) | Test primitives (describe, it, expect) |
 | [@ricsam/isolate-playwright](./packages/playwright) | Playwright browser testing bridge |
 | [@ricsam/isolate-types](./packages/isolate-types) | Type definitions and type checking |
+| [@ricsam/isolate-transform](./packages/transform) | TypeScript transformation (requires Node.js >= v24) |
 | [@ricsam/isolate-test-utils](./packages/test-utils) | Testing utilities |
 
 ## Security
