@@ -216,18 +216,16 @@ async function executeExpectAssertion(
  */
 export function createPlaywrightHandler(
   page: Page,
-  options?: { timeout?: number; baseUrl?: string }
+  options?: { timeout?: number }
 ): PlaywrightCallback {
   const timeout = options?.timeout ?? 30000;
-  const baseUrl = options?.baseUrl;
 
   return async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
     try {
       switch (op.type) {
         case "goto": {
           const [url, waitUntil] = op.args as [string, string?];
-          const targetUrl = baseUrl && !url.startsWith("http") ? `${baseUrl}${url}` : url;
-          await page.goto(targetUrl, {
+          await page.goto(url, {
             timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
           });
@@ -300,7 +298,6 @@ export function createPlaywrightHandler(
             unknown,
             Record<string, string>?
           ];
-          const targetUrl = baseUrl && !url.startsWith("http") ? `${baseUrl}${url}` : url;
           const requestOptions: {
             method?: string;
             data?: unknown;
@@ -316,7 +313,7 @@ export function createPlaywrightHandler(
             requestOptions.data = data;
           }
 
-          const response = await page.request.fetch(targetUrl, {
+          const response = await page.request.fetch(url, {
             method: method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS",
             ...requestOptions,
           });

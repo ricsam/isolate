@@ -58,8 +58,6 @@ export interface PlaywrightSetupOptions {
   handler?: PlaywrightCallback;
   /** Default timeout for operations */
   timeout?: number;
-  /** Base URL for relative navigation */
-  baseUrl?: string;
   /** If true, browser console logs are printed to stdout */
   console?: boolean;
   /** Unified event callback for all playwright events */
@@ -72,7 +70,6 @@ export interface PlaywrightSetupOptions {
 export interface PlaywrightOptions {
   page: import("playwright").Page;
   timeout?: number;
-  baseUrl?: string;
   onNetworkRequest?: (info: NetworkRequestInfo) => void;
   onNetworkResponse?: (info: NetworkResponseInfo) => void;
 }

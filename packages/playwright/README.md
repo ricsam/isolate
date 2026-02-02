@@ -26,7 +26,6 @@ const page = await browser.newPage();
 const runtime = await createRuntime({
   playwright: {
     page,
-    baseUrl: "https://example.com",
     console: true, // Print browser console logs to stdout
   },
 });
@@ -61,7 +60,6 @@ const runtime = await createRuntime({
   testEnvironment: true, // Provides describe, it, expect
   playwright: {
     page,
-    baseUrl: "https://example.com",
     onBrowserConsoleLog: (entry) => console.log("[browser]", entry.level, entry.stdout),
     onNetworkRequest: (info) => console.log("Request:", info.url),
   },
@@ -113,7 +111,6 @@ await setupTestEnvironment(context);
 const handle = await setupPlaywright(context, {
   page,
   timeout: 30000,
-  baseUrl: "https://example.com",
   onNetworkRequest: (info) => console.log("Request:", info.url),
   onNetworkResponse: (info) => console.log("Response:", info.status),
   onBrowserConsoleLog: (entry) => console.log(`[${entry.level}]`, entry.stdout),
@@ -154,7 +151,6 @@ const browser = await chromium.launch();
 const page = await browser.newPage();
 const handler: PlaywrightCallback = createPlaywrightHandler(page, {
   timeout: 30000,
-  baseUrl: "https://example.com",
 });
 
 // On the daemon: setup playwright with handler (instead of page)
@@ -225,7 +221,6 @@ interface PlaywrightSetupOptions {
   page?: Page;                    // Direct page object (for local use)
   handler?: PlaywrightCallback;   // Handler callback (for remote use)
   timeout?: number;               // Default timeout for operations
-  baseUrl?: string;               // Base URL for relative navigation
   console?: boolean;              // Route browser console logs through console handler
   onEvent?: (event: PlaywrightEvent) => void;  // Unified event callback
 }

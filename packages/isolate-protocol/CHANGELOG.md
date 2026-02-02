@@ -1,5 +1,11 @@
 # @ricsam/isolate-protocol
 
+## 0.1.12
+
+### Patch Changes
+
+- remove baseUrl config option from playwright, that should be configured form the pw instance
+
 ## 0.1.11
 
 ### Patch Changes

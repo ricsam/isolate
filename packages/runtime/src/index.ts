@@ -881,7 +881,6 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     state.handles.playwright = await setupPlaywright(context, {
       page: opts.playwright.page,
       timeout: opts.playwright.timeout,
-      baseUrl: opts.playwright.baseUrl,
       // Don't print directly if routing through console handler
       console: opts.playwright.console && !opts.console?.onEntry,
       onEvent: eventCallback,

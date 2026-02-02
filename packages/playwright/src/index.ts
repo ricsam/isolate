@@ -57,8 +57,6 @@ export interface PlaywrightSetupOptions {
   handler?: PlaywrightCallback;
   /** Default timeout for operations */
   timeout?: number;
-  /** Base URL for relative navigation */
-  baseUrl?: string;
   /** If true, browser console logs are printed to stdout */
   console?: boolean;
   /** Unified event callback for all playwright events */
@@ -71,7 +69,6 @@ export interface PlaywrightSetupOptions {
 export interface PlaywrightOptions {
   page: Page;
   timeout?: number;
-  baseUrl?: string;
   onNetworkRequest?: (info: NetworkRequestInfo) => void;
   onNetworkResponse?: (info: NetworkResponseInfo) => void;
 }
@@ -411,18 +408,16 @@ async function executeExpectAssertion(
  */
 export function createPlaywrightHandler(
   page: Page,
-  options?: { timeout?: number; baseUrl?: string }
+  options?: { timeout?: number }
 ): PlaywrightCallback {
   const timeout = options?.timeout ?? 30000;
-  const baseUrl = options?.baseUrl;
 
   return async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
     try {
       switch (op.type) {
         case "goto": {
           const [url, waitUntil] = op.args as [string, string?];
-          const targetUrl = baseUrl && !url.startsWith("http") ? `${baseUrl}${url}` : url;
-          await page.goto(targetUrl, {
+          await page.goto(url, {
             timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
           });
@@ -500,7 +495,6 @@ export function createPlaywrightHandler(
             unknown,
             Record<string, string>?
           ];
-          const targetUrl = baseUrl && !url.startsWith("http") ? `${baseUrl}${url}` : url;
           const requestOptions: {
             method?: string;
             data?: unknown;
@@ -516,7 +510,7 @@ export function createPlaywrightHandler(
             requestOptions.data = data;
           }
 
-          const response = await page.request.fetch(targetUrl, {
+          const response = await page.request.fetch(url, {
             method: method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS",
             ...requestOptions,
           });
@@ -595,14 +589,13 @@ export async function setupPlaywright(
   options: PlaywrightSetupOptions | PlaywrightOptions
 ): Promise<PlaywrightHandle> {
   const timeout = options.timeout ?? 30000;
-  const baseUrl = options.baseUrl;
 
   // Determine if we have a page or handler
   const page = "page" in options ? options.page : undefined;
   const handler = "handler" in options ? options.handler : undefined;
 
   // Create handler from page if needed
-  const effectiveHandler = handler ?? (page ? createPlaywrightHandler(page, { timeout, baseUrl }) : undefined);
+  const effectiveHandler = handler ?? (page ? createPlaywrightHandler(page, { timeout }) : undefined);
 
   if (!effectiveHandler) {
     throw new Error("Either page or handler must be provided to setupPlaywright");

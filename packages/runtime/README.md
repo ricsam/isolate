@@ -122,7 +122,6 @@ interface RuntimeOptions {
 interface PlaywrightOptions {
   page: import("playwright").Page;
   timeout?: number;
-  baseUrl?: string;
   /** Print browser console logs to stdout */
   console?: boolean;
   /** Browser console log callback (from the page, not sandbox) */
@@ -324,7 +323,6 @@ const page = await browser.newPage();
 const runtime = await createRuntime({
   playwright: {
     page,
-    baseUrl: "https://example.com",
     console: true, // Print browser console to stdout
   },
 });
@@ -359,7 +357,6 @@ const runtime = await createRuntime({
   testEnvironment: true, // Provides describe, it, expect
   playwright: {
     page,
-    baseUrl: "https://example.com",
     onBrowserConsoleLog: (entry) => console.log("[browser]", entry.stdout),
   },
 });

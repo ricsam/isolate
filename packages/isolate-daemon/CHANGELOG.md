@@ -1,5 +1,15 @@
 # @ricsam/isolate-daemon
 
+## 0.1.13
+
+### Patch Changes
+
+- remove baseUrl config option from playwright, that should be configured form the pw instance
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.12
+  - @ricsam/isolate-playwright@0.1.12
+  - @ricsam/isolate-runtime@0.1.14
+
 ## 0.1.12
 
 ### Patch Changes

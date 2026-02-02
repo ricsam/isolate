@@ -13,7 +13,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert";
 import { connect } from "./connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { DaemonConnection } from "./types.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -46,6 +46,7 @@ describe("demo server tests", () => {
   let daemon: DaemonHandle;
   let client: DaemonConnection;
   let browser: Browser;
+  let browserContext: BrowserContext;
   let demoServer: ChildProcess;
 
   before(async () => {
@@ -55,8 +56,9 @@ describe("demo server tests", () => {
     // Connect client to daemon
     client = await connect({ socket: TEST_SOCKET });
 
-    // Launch browser
+    // Launch browser and create context with baseURL
     browser = await chromium.launch({ headless: true });
+    browserContext = await browser.newContext({ baseURL: DEMO_SERVER_URL });
 
     // Start demo server - use absolute path with CWD in demo/ folder
     // so it can find the dist/ folder for static files
@@ -91,6 +93,7 @@ describe("demo server tests", () => {
     }
 
     // Clean up
+    await browserContext.close();
     await browser.close();
     await client.close();
     await daemon.close();
@@ -101,10 +104,10 @@ describe("demo server tests", () => {
    */
   describe("HTTP API Tests", () => {
     it("GET /api/hello returns JSON from QuickJS", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -132,10 +135,10 @@ describe("demo server tests", () => {
     });
 
     it("POST /api/echo echoes body with timestamp", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -172,10 +175,10 @@ describe("demo server tests", () => {
     });
 
     it("Unknown endpoint returns 404", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -202,10 +205,10 @@ describe("demo server tests", () => {
    */
   describe("File Upload/Download Tests", () => {
     it("List files via /api/files", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -232,10 +235,10 @@ describe("demo server tests", () => {
     });
 
     it("Download nonexistent file returns 404", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -265,10 +268,10 @@ describe("demo server tests", () => {
    */
   describe("richie-rpc Standard CRUD Endpoints", () => {
     it("GET /rpc/items returns list", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -295,10 +298,10 @@ describe("demo server tests", () => {
     });
 
     it("POST /rpc/items creates a new item", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -334,10 +337,10 @@ describe("demo server tests", () => {
     });
 
     it("GET /rpc/items/:id returns 404 for non-existent item", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -362,10 +365,10 @@ describe("demo server tests", () => {
     });
 
     it("Full CRUD workflow", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -435,10 +438,10 @@ describe("demo server tests", () => {
    */
   describe("Streaming Tests", () => {
     it("GET /api/stream returns streaming response", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -484,10 +487,10 @@ describe("demo server tests", () => {
     });
 
     it("GET /api/stream-json returns NDJSON streaming response", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -542,10 +545,10 @@ describe("demo server tests", () => {
     });
 
     it("GET /api/events returns SSE stream", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -615,10 +618,10 @@ describe("demo server tests", () => {
    */
   describe("WebSocket Tests", () => {
     it("Connect and receive welcome message", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -663,10 +666,10 @@ describe("demo server tests", () => {
     });
 
     it("Send message and receive echo", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -722,10 +725,10 @@ describe("demo server tests", () => {
     });
 
     it("Clean disconnect", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -772,10 +775,10 @@ describe("demo server tests", () => {
     });
 
     it("UI WebSocket tester works", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL, timeout: 30000 },
+          testEnvironment: true, playwright: { page, timeout: 30000 },
         });
 
         try {
@@ -833,10 +836,10 @@ describe("demo server tests", () => {
   describe("richie-rpc WebSocket Tests", () => {
     describe("Chat Room (/rpc/ws/chat)", () => {
       it("join and receive userJoined", async () => {
-        const page = await browser.newPage();
+        const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page },
           });
 
           try {
@@ -889,10 +892,10 @@ describe("demo server tests", () => {
       });
 
       it("validation error for invalid message", async () => {
-        const page = await browser.newPage();
+        const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page },
           });
 
           try {
@@ -946,10 +949,10 @@ describe("demo server tests", () => {
 
     describe("RPC Style (/rpc/ws/rpc)", () => {
       it("echo request/response", async () => {
-        const page = await browser.newPage();
+        const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page },
           });
 
           try {
@@ -1005,10 +1008,10 @@ describe("demo server tests", () => {
       });
 
       it("getItems returns items list", async () => {
-        const page = await browser.newPage();
+        const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page },
           });
 
           try {
@@ -1064,10 +1067,10 @@ describe("demo server tests", () => {
       });
 
       it("createItem creates a new item", async () => {
-        const page = await browser.newPage();
+        const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page },
           });
 
           try {
@@ -1126,10 +1129,10 @@ describe("demo server tests", () => {
       });
 
       it("error response for unknown method", async () => {
-        const page = await browser.newPage();
+        const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page },
           });
 
           try {
@@ -1187,10 +1190,10 @@ describe("demo server tests", () => {
       });
 
       it("getItem returns error for non-existent item", async () => {
-        const page = await browser.newPage();
+        const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+            testEnvironment: true, playwright: { page },
           });
 
           try {
@@ -1254,10 +1257,10 @@ describe("demo server tests", () => {
    */
   describe("File Download Tests", () => {
     it("should download PNG file with correct content-type", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {
@@ -1300,10 +1303,10 @@ describe("demo server tests", () => {
     });
 
     it("should return 404 for non-existent file", async () => {
-      const page = await browser.newPage();
+      const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, baseUrl: DEMO_SERVER_URL },
+          testEnvironment: true, playwright: { page },
         });
 
         try {

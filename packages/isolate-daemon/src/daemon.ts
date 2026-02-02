@@ -1,5 +1,17 @@
 #!/usr/bin/env node
 
+// Suppress the ExperimentalWarning for stripTypeScriptTypes
+process.removeAllListeners("warning");
+process.on("warning", (warning) => {
+  if (
+    warning.name === "ExperimentalWarning" &&
+    warning.message.includes("stripTypeScriptTypes")
+  ) {
+    return; // Suppress this specific warning
+  }
+  console.warn(warning);
+});
+
 /**
  * CLI entry point for the isolate daemon.
  *

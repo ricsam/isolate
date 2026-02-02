@@ -282,29 +282,6 @@ describe("playwright bridge", () => {
     handle.dispose();
   });
 
-  test("handles baseUrl option", async () => {
-    await setupTestEnvironment(context);
-    const handle = await setupPlaywright(context, {
-      page,
-      baseUrl: "https://example.com",
-    });
-
-    await context.eval(`
-      describe("baseUrl", () => {
-        it("should use baseUrl for relative paths", async () => {
-          await page.goto("/");
-          const title = await page.title();
-          expect(title).toBe("Example Domain");
-        });
-      });
-    `);
-
-    const results = await runTests(context);
-    assert.strictEqual(results.passed, 1);
-
-    handle.dispose();
-  });
-
   test("locator getText and textContent", async () => {
     await setupTestEnvironment(context);
     const handle = await setupPlaywright(context, { page });

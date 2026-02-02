@@ -707,7 +707,6 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   if (options.playwright) {
     playwrightHandler = createPlaywrightHandler(options.playwright.page, {
       timeout: options.playwright.timeout,
-      baseUrl: options.playwright.baseUrl,
     });
 
     const handlerCallbackId = state.nextCallbackId++;

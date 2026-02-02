@@ -540,8 +540,6 @@ interface PlaywrightOptions {
   page: import("playwright").Page;
   /** Default timeout for operations in ms */
   timeout?: number;
-  /** Base URL for navigation */
-  baseUrl?: string;
   /** Route browser console logs through console handler (or print to stdout if no handler) */
   console?: boolean;
   /** Unified event callback for all playwright events */
@@ -878,7 +876,6 @@ const page = await browser.newPage();
 const runtime = await createRuntime({
   playwright: {
     page,
-    baseUrl: "https://example.com",
     onEvent: (event) => {
       // Unified event handler for all playwright events
       switch (event.type) {
@@ -935,7 +932,6 @@ const runtime = await createRuntime({
   testEnvironment: true, // Provides describe, it, expect
   playwright: {
     page,
-    baseUrl: "https://example.com",
     console: true, // Routes browser logs through the console handler above
   },
 });

@@ -872,8 +872,6 @@ export interface PlaywrightOptions {
   page: import("playwright").Page;
   /** Default timeout for operations in ms */
   timeout?: number;
-  /** Base URL for navigation */
-  baseUrl?: string;
   /** If true, browser console logs are routed through console handler (or printed to stdout if no handler) */
   console?: boolean;
   /** Unified event callback for all playwright events */

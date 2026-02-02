@@ -340,7 +340,6 @@ const page = await browser.newPage();
 const runtime = await client.createRuntime({
   playwright: {
     page,
-    baseUrl: "https://example.com",
     onEvent: (event) => {
       // Unified event handler for all playwright events
       if (event.type === "browserConsoleLog") {
@@ -393,7 +392,6 @@ const runtime = await client.createRuntime({
   testEnvironment: true, // Provides describe, it, expect
   playwright: {
     page,
-    baseUrl: "https://example.com",
     console: true, // Routes browser logs through the console handler above
   },
 });
