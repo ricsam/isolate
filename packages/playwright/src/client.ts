@@ -342,6 +342,34 @@ export function createPlaywrightHandler(
             },
           };
         }
+        case "goBack": {
+          const [waitUntil] = op.args as [string?];
+          await page.goBack({
+            timeout,
+            waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
+          });
+          return { ok: true };
+        }
+        case "goForward": {
+          const [waitUntil] = op.args as [string?];
+          await page.goForward({
+            timeout,
+            waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
+          });
+          return { ok: true };
+        }
+        case "waitForURL": {
+          const [url, customTimeout, waitUntil] = op.args as [string, number?, string?];
+          await page.waitForURL(url, {
+            timeout: customTimeout ?? timeout,
+            waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? undefined,
+          });
+          return { ok: true };
+        }
+        case "clearCookies": {
+          await page.context().clearCookies();
+          return { ok: true };
+        }
         default:
           return { ok: false, error: { name: "Error", message: `Unknown operation: ${(op as PlaywrightOperation).type}` } };
       }
