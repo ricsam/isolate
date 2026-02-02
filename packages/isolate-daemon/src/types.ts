@@ -7,6 +7,7 @@ import type ivm from "isolated-vm";
 import type { InternalRuntimeHandle } from "@ricsam/isolate-runtime";
 import type { CallbackRegistration } from "@ricsam/isolate-protocol";
 import type { PlaywrightHandle } from "@ricsam/isolate-playwright";
+import type { SourceMap } from "@ricsam/isolate-transform";
 
 /**
  * Options for starting the daemon.
@@ -68,6 +69,8 @@ export interface IsolateInstance {
   moduleToFilename?: Map<ivm.Module, string>;
   /** Pending callback promises for current eval */
   pendingCallbacks: Promise<unknown>[];
+  /** Source maps for error stack trace mapping */
+  sourceMaps?: Map<string, SourceMap>;
 
   // Registries for returned callbacks/promises/iterators from custom function calls
   /** Functions returned by custom function calls (callable from isolate) */

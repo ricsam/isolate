@@ -1,5 +1,14 @@
 # @ricsam/isolate-client
 
+## 0.1.13
+
+### Patch Changes
+
+- add typescript support
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.11
+  - @ricsam/isolate-playwright@0.1.11
+
 ## 0.1.12
 
 ### Patch Changes

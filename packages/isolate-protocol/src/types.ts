@@ -60,6 +60,7 @@ export const MessageType = {
   CALLBACK_STREAM_START: 0x92,
   CALLBACK_STREAM_CHUNK: 0x93,
   CALLBACK_STREAM_END: 0x94,
+  CALLBACK_STREAM_CANCEL: 0x95,
 
   // Bidirectional: Stream data
   STREAM_PUSH: 0xa0,
@@ -514,6 +515,16 @@ export interface CallbackStreamEnd extends BaseMessage {
   streamId: number;
 }
 
+/**
+ * Cancel a streaming callback response (daemon → client).
+ * Tells the client to stop reading the response body.
+ */
+export interface CallbackStreamCancel {
+  type: typeof MessageType.CALLBACK_STREAM_CANCEL;
+  /** The stream ID to cancel */
+  streamId: number;
+}
+
 // ============================================================================
 // Bidirectional: Stream Data
 // ============================================================================
@@ -648,6 +659,7 @@ export type ClientMessage =
   | CallbackStreamStart
   | CallbackStreamChunk
   | CallbackStreamEnd
+  | CallbackStreamCancel
   | StreamPush
   | StreamPull
   | StreamClose

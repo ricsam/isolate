@@ -709,7 +709,7 @@ describe("Multipart FormData", () => {
       assert.strictEqual(result.hasBoundary, true);
     });
 
-    test("Request with string-only FormData uses url-encoded", async () => {
+    test("Request with string-only FormData uses multipart per WHATWG spec", async () => {
       const data = await ctx.context.eval(
         `
         (async () => {
@@ -728,7 +728,10 @@ describe("Multipart FormData", () => {
         { promise: true }
       );
 
-      assert.strictEqual(data, "application/x-www-form-urlencoded");
+      assert.ok(
+        (data as string).startsWith("multipart/form-data; boundary="),
+        `Expected multipart/form-data content-type, got: ${data}`
+      );
     });
   });
 

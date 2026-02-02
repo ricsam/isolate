@@ -1,5 +1,13 @@
 # @ricsam/isolate-path
 
+## 0.1.11
+
+### Patch Changes
+
+- add typescript support
+- Updated dependencies
+  - @ricsam/isolate-core@0.1.11
+
 ## 0.1.10
 
 ### Patch Changes

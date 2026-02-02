@@ -59,6 +59,12 @@ export interface StreamStateRegistry {
 
   /** Clear all streams (context cleanup) */
   clear(): void;
+
+  /** Cancel a stream and call its cleanup function */
+  cancel(streamId: number): void;
+
+  /** Register a cleanup function for a stream */
+  setCleanup(streamId: number, cleanup: () => Promise<void>): void;
 }
 
 // ============================================================================
@@ -77,6 +83,7 @@ export const MAX_QUEUE_CHUNKS = 16;
 
 export function createStreamStateRegistry(): StreamStateRegistry {
   const streams = new Map<number, StreamState>();
+  const cleanups = new Map<number, () => Promise<void>>();
   let nextStreamId = 1;
 
   return {
@@ -207,12 +214,26 @@ export function createStreamStateRegistry(): StreamStateRegistry {
         state.pullReject(new Error("Stream deleted"));
       }
       streams.delete(streamId);
+      cleanups.delete(streamId);
     },
 
     clear(): void {
       for (const [streamId] of streams) {
         this.delete(streamId);
       }
+    },
+
+    cancel(streamId: number): void {
+      this.close(streamId);
+      const cleanup = cleanups.get(streamId);
+      if (cleanup) {
+        cleanup().catch(() => {});
+        cleanups.delete(streamId);
+      }
+    },
+
+    setCleanup(streamId: number, cleanup: () => Promise<void>): void {
+      cleanups.set(streamId, cleanup);
     },
   };
 }

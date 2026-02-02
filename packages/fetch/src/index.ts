@@ -106,6 +106,8 @@ interface ResponseState {
   url: string;
   redirected: boolean;
   streamId: number | null;
+  /** Whether this is a null-body response (204, 304, HEAD) */
+  nullBody?: boolean;
   /** Direct pass-through body for callback streams (bypasses registry for better streaming) */
   passthruBody?: ReadableStream<Uint8Array>;
 }
@@ -515,7 +517,15 @@ function setupStreamCallbacks(
     })
   );
 
-  // Pull chunk (async with applySyncPromise)
+  // Cancel stream (sync)
+  global.setSync(
+    "__Stream_cancel",
+    new ivm.Callback((streamId: number) => {
+      streamRegistry.cancel(streamId);
+    })
+  );
+
+  // Pull chunk (async)
   const pullRef = new ivm.Reference(async (streamId: number) => {
     const result = await streamRegistry.pull(streamId);
     if (result.done) {
@@ -571,7 +581,7 @@ const hostBackedStreamCode = `
         async pull(controller) {
           if (closed) return;
 
-          const resultJson = __Stream_pull_ref.applySyncPromise(undefined, [streamId]);
+          const resultJson = await __Stream_pull_ref.apply(undefined, [streamId], { result: { promise: true, copy: true } });
           const result = JSON.parse(resultJson);
 
           if (result.done) {
@@ -583,7 +593,7 @@ const hostBackedStreamCode = `
         },
         cancel(reason) {
           closed = true;
-          __Stream_error(streamId, String(reason || "cancelled"));
+          __Stream_cancel(streamId);
         }
       });
 
@@ -617,7 +627,8 @@ const hostBackedStreamCode = `
 
 function setupResponse(
   context: ivm.Context,
-  stateMap: Map<number, unknown>
+  stateMap: Map<number, unknown>,
+  streamRegistry: StreamStateRegistry
 ): void {
   const global = context.global;
 
@@ -765,6 +776,14 @@ function setupResponse(
   );
 
   global.setSync(
+    "__Response_get_nullBody",
+    new ivm.Callback((instanceId: number) => {
+      const state = stateMap.get(instanceId) as ResponseState | undefined;
+      return state?.nullBody ?? false;
+    })
+  );
+
+  global.setSync(
     "__Response_setType",
     new ivm.Callback((instanceId: number, type: string) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -817,6 +836,48 @@ function setupResponse(
       if (!state) {
         throw new Error("[TypeError]Cannot clone invalid Response");
       }
+
+      // If the response has a streamId with no buffered body, we need to
+      // create a duplicate stream for the clone via tee
+      if (state.streamId !== null) {
+        // Create two new streams for original and clone
+        const streamId1 = streamRegistry.create();
+        const streamId2 = streamRegistry.create();
+        const origStreamId = state.streamId;
+
+        // Pump data from original stream into both new streams
+        (async () => {
+          try {
+            while (true) {
+              const result = await streamRegistry.pull(origStreamId);
+              if (result.done) {
+                streamRegistry.close(streamId1);
+                streamRegistry.close(streamId2);
+                break;
+              }
+              streamRegistry.push(streamId1, new Uint8Array(result.value));
+              streamRegistry.push(streamId2, new Uint8Array(result.value));
+            }
+          } catch (err) {
+            streamRegistry.error(streamId1, err);
+            streamRegistry.error(streamId2, err);
+          }
+        })();
+
+        // Update original to use new stream
+        state.streamId = streamId1;
+
+        const newId = nextInstanceId++;
+        const newState: ResponseState = {
+          ...state,
+          streamId: streamId2,
+          body: state.body ? new Uint8Array(state.body) : null,
+          bodyUsed: false,
+        };
+        stateMap.set(newId, newState);
+        return newId;
+      }
+
       const newId = nextInstanceId++;
       const newState: ResponseState = {
         ...state,
@@ -1050,6 +1111,11 @@ function setupResponse(
     }
 
     get body() {
+      // Null-body responses (204, 304, HEAD) must return null
+      if (__Response_get_nullBody(this.#instanceId)) {
+        return null;
+      }
+
       // Return cached body if available (WHATWG spec requires same object on repeated access)
       if (this.#cachedBody !== null) {
         return this.#cachedBody;
@@ -1080,6 +1146,9 @@ function setupResponse(
         __Response_markBodyUsed(this.#instanceId);
       } catch (err) {
         throw __decodeError(err);
+      }
+      if (__Response_get_nullBody(this.#instanceId)) {
+        return "";
       }
       if (this.#streamId !== null) {
         const reader = this.body.getReader();
@@ -1442,30 +1511,10 @@ function setupRequest(
       return Array.from(new TextEncoder().encode(body.toString()));
     }
     if (body instanceof FormData) {
-      // Check if FormData has any File/Blob entries
-      let hasFiles = false;
-      for (const [, value] of body.entries()) {
-        if (value instanceof File || value instanceof Blob) {
-          hasFiles = true;
-          break;
-        }
-      }
-
-      if (hasFiles) {
-        // Serialize as multipart/form-data
-        const { body: bytes, contentType } = __serializeFormData(body);
-        globalThis.__pendingFormDataContentType = contentType;
-        return Array.from(bytes);
-      }
-
-      // URL-encoded for string-only FormData
-      const parts = [];
-      body.forEach((value, key) => {
-        if (typeof value === 'string') {
-          parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(value));
-        }
-      });
-      return Array.from(new TextEncoder().encode(parts.join('&')));
+      // Always serialize as multipart/form-data per spec
+      const { body: bytes, contentType } = __serializeFormData(body);
+      globalThis.__pendingFormDataContentType = contentType;
+      return Array.from(bytes);
     }
     // Try to convert to string
     return Array.from(new TextEncoder().encode(String(body)));
@@ -1563,7 +1612,7 @@ function setupRequest(
       if (globalThis.__pendingFormDataContentType) {
         headers.set('content-type', globalThis.__pendingFormDataContentType);
         delete globalThis.__pendingFormDataContentType;
-      } else if (body instanceof FormData && !headers.has('content-type')) {
+      } else if (body instanceof URLSearchParams && !headers.has('content-type')) {
         headers.set('content-type', 'application/x-www-form-urlencoded');
       }
 
@@ -1767,20 +1816,41 @@ function setupFetchFunction(
 ): void {
   const global = context.global;
 
-  // Create async fetch reference
-  // We use JSON serialization for complex data to avoid transfer issues
+  // Map of fetchId -> AbortController for in-flight fetches
+  const fetchAbortControllers = new Map<number, AbortController>();
+
+  // Host callback for aborting a fetch by ID
+  // Note: ivm.Callback runs on the isolate thread, but we need the abort to
+  // happen on the main thread where the native fetch is running
+  global.setSync(
+    "__fetch_abort",
+    new ivm.Callback((fetchId: number) => {
+      const controller = fetchAbortControllers.get(fetchId);
+      if (controller) {
+        // Schedule abort on main thread
+        setImmediate(() => controller.abort());
+      }
+    })
+  );
+
+
   const fetchRef = new ivm.Reference(
     async (
       url: string,
       method: string,
       headersJson: string,
       bodyJson: string | null,
-      signalAborted: boolean
+      signalAborted: boolean,
+      fetchId: number
     ) => {
       // Check if already aborted
       if (signalAborted) {
         throw new Error("[AbortError]The operation was aborted.");
       }
+
+      // Create host-side AbortController
+      const hostController = new AbortController();
+      fetchAbortControllers.set(fetchId, hostController);
 
       // Parse headers and body from JSON
       const headers = JSON.parse(headersJson) as [string, string][];
@@ -1792,70 +1862,93 @@ function setupFetchFunction(
         method,
         headers,
         body,
+        signal: hostController.signal,
       });
 
       // Call user's onFetch handler or default fetch
       const onFetch = options?.onFetch ?? fetch;
-      const nativeResponse = await onFetch(nativeRequest);
 
-      // Determine if we should stream the response
-      const contentLength = nativeResponse.headers.get("content-length");
-      const knownSize = contentLength ? parseInt(contentLength, 10) : null;
+      try {
+        // Race the fetch with abort signal detection
+        // The abort signal may not propagate through serialization (e.g., daemon socket),
+        // so we explicitly race with an abort promise
+        let cleanupAbort: (() => void) | undefined;
+        const abortPromise = new Promise<never>((_, reject) => {
+          if (hostController.signal.aborted) {
+            reject(Object.assign(new Error("The operation was aborted."), { name: "AbortError" }));
+            return;
+          }
+          const onAbort = () => {
+            reject(Object.assign(new Error("The operation was aborted."), { name: "AbortError" }));
+          };
+          hostController.signal.addEventListener("abort", onAbort, { once: true });
+          cleanupAbort = () => hostController.signal.removeEventListener("abort", onAbort);
+        });
+        // Prevent unhandled rejection if abort fires after fetch wins the race
+        abortPromise.catch(() => {});
 
-      // Check for callback stream marker (set by daemon's onFetch for streaming callback responses)
-      const isCallbackStream = (nativeResponse as Response & { __isCallbackStream?: boolean }).__isCallbackStream;
+        const nativeResponse = await Promise.race([onFetch(nativeRequest), abortPromise]);
+        // Fetch won the race — remove the abort listener so it never fires
+        cleanupAbort?.();
 
-      // Network responses have http/https URLs
-      const isNetworkResponse = nativeResponse.url && (nativeResponse.url.startsWith('http://') || nativeResponse.url.startsWith('https://'));
+        // Determine if this is a null-body response
+        const status = nativeResponse.status;
+        const isNullBody = status === 204 || status === 304 || method.toUpperCase() === 'HEAD';
 
-      // Only stream for callback streams (onFetch streaming responses).
-      // Regular fetch responses are always buffered to avoid deadlocks with applySyncPromise.
-      const shouldStream = nativeResponse.body && isCallbackStream;
+        // Check for callback stream marker
+        const isCallbackStream = (nativeResponse as Response & { __isCallbackStream?: boolean }).__isCallbackStream;
+        const isNetworkResponse = nativeResponse.url && (nativeResponse.url.startsWith('http://') || nativeResponse.url.startsWith('https://'));
+        const shouldStream = !isNullBody && nativeResponse.body && (isCallbackStream || isNetworkResponse);
 
-      if (shouldStream && nativeResponse.body) {
-        const streamId = streamRegistry.create();
+        if (shouldStream && nativeResponse.body) {
+          const streamId = streamRegistry.create();
+          const streamCleanupFn = startNativeStreamReader(nativeResponse.body, streamId, streamRegistry);
+          streamRegistry.setCleanup(streamId, streamCleanupFn);
 
-        // Pump native stream into registry so both isolate-side reads
-        // and dispatchRequest (via registry fallback) work
-        startNativeStreamReader(nativeResponse.body, streamId, streamRegistry);
+          const instanceId = nextInstanceId++;
+          const state: ResponseState = {
+            status: nativeResponse.status,
+            statusText: nativeResponse.statusText,
+            headers: Array.from(nativeResponse.headers.entries()),
+            body: new Uint8Array(0),
+            bodyUsed: false,
+            type: "default",
+            url: nativeResponse.url,
+            redirected: nativeResponse.redirected,
+            streamId,
+            nullBody: isNullBody,
+          };
+          stateMap.set(instanceId, state);
+          return instanceId;
+        }
+
+        // Buffered path
+        const responseBody = await nativeResponse.arrayBuffer();
+        const responseBodyArray = Array.from(new Uint8Array(responseBody));
 
         const instanceId = nextInstanceId++;
         const state: ResponseState = {
           status: nativeResponse.status,
           statusText: nativeResponse.statusText,
           headers: Array.from(nativeResponse.headers.entries()),
-          body: new Uint8Array(0), // Empty for streaming
+          body: new Uint8Array(responseBodyArray),
           bodyUsed: false,
           type: "default",
           url: nativeResponse.url,
           redirected: nativeResponse.redirected,
-          streamId, // Registry stream for isolate access
+          streamId: null,
+          nullBody: isNullBody,
         };
         stateMap.set(instanceId, state);
         return instanceId;
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          throw new Error("[AbortError]The operation was aborted.");
+        }
+        throw err;
+      } finally {
+        fetchAbortControllers.delete(fetchId);
       }
-
-      // Buffered path for small responses with known size
-      const responseBody = await nativeResponse.arrayBuffer();
-      const responseBodyArray = Array.from(new Uint8Array(responseBody));
-
-      // Store the response in the state map and return just the ID + metadata
-      const instanceId = nextInstanceId++;
-      const state: ResponseState = {
-        status: nativeResponse.status,
-        statusText: nativeResponse.statusText,
-        headers: Array.from(nativeResponse.headers.entries()),
-        body: new Uint8Array(responseBodyArray),
-        bodyUsed: false,
-        type: "default",
-        url: nativeResponse.url,
-        redirected: nativeResponse.redirected,
-        streamId: null,
-      };
-      stateMap.set(instanceId, state);
-
-      // Return only the instance ID - avoid complex object transfer
-      return instanceId;
     }
   );
 
@@ -1877,7 +1970,28 @@ function setupFetchFunction(
     return err;
   }
 
-  globalThis.fetch = function(input, init = {}) {
+  let __nextFetchId = 1;
+
+  globalThis.fetch = async function(input, init = {}) {
+    // Handle Blob and ReadableStream bodies before creating Request
+    if (init.body instanceof Blob && !(init.body instanceof File)) {
+      const buf = await init.body.arrayBuffer();
+      init = Object.assign({}, init, { body: new Uint8Array(buf) });
+    } else if (init.body instanceof ReadableStream) {
+      const reader = init.body.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const total = chunks.reduce((s, c) => s + c.length, 0);
+      const buf = new Uint8Array(total);
+      let off = 0;
+      for (const c of chunks) { buf.set(c, off); off += c.length; }
+      init = Object.assign({}, init, { body: buf });
+    }
+
     // Create Request from input
     const request = input instanceof Request ? input : new Request(input, init);
 
@@ -1885,20 +1999,34 @@ function setupFetchFunction(
     const signal = init.signal ?? request.signal;
     const signalAborted = signal?.aborted ?? false;
 
+    // Assign a fetch ID for abort tracking
+    const fetchId = __nextFetchId++;
+
+    // Register abort listener if signal exists
+    if (signal && !signalAborted) {
+      signal.addEventListener('abort', () => { __fetch_abort(fetchId); });
+    }
+
     // Serialize headers and body to JSON for transfer
     const headersJson = JSON.stringify(Array.from(request.headers.entries()));
     const bodyBytes = request._getBodyBytes();
     const bodyJson = bodyBytes ? JSON.stringify(bodyBytes) : null;
 
+    // Short-circuit: if signal is already aborted, throw without calling host
+    if (signalAborted) {
+      throw new DOMException('The operation was aborted.', 'AbortError');
+    }
+
     // Call host - returns just the response instance ID
     try {
-      const instanceId = __fetch_ref.applySyncPromise(undefined, [
+      const instanceId = await __fetch_ref.apply(undefined, [
         request.url,
         request.method,
         headersJson,
         bodyJson,
-        signalAborted
-      ]);
+        signalAborted,
+        fetchId
+      ], { result: { promise: true, copy: true } });
 
       // Construct Response from the instance ID
       return Response._fromInstanceId(instanceId);
@@ -2096,7 +2224,7 @@ export async function setupFetch(
   context.evalSync(hostBackedStreamCode);
 
   // Setup Response (host state + isolate class)
-  setupResponse(context, stateMap);
+  setupResponse(context, stateMap, streamRegistry);
 
   // Setup Request (host state + isolate class)
   setupRequest(context, stateMap);
@@ -2283,11 +2411,7 @@ export async function setupFetch(
             },
             cancel() {
               streamDone = true;
-              streamRegistry.error(
-                responseStreamId,
-                new Error("Stream cancelled")
-              );
-              streamRegistry.delete(responseStreamId);
+              streamRegistry.cancel(responseStreamId);
             },
           });
 

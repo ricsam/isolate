@@ -139,6 +139,8 @@ interface ConnectionState {
   uploadStreams: Map<number, StreamUploadSession>;
   /** Cache for module source code (shared across all runtimes in this connection) */
   moduleSourceCache: Map<string, string>;
+  /** Track active callback stream readers (for cancellation from daemon) */
+  callbackStreamReaders: Map<number, ReadableStreamDefaultReader<Uint8Array>>;
 }
 
 /**
@@ -159,6 +161,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
     streamResponses: new Map(),
     uploadStreams: new Map(),
     moduleSourceCache: new Map(),
+    callbackStreamReaders: new Map(),
   };
 
   const parser = createFrameParser();
@@ -311,6 +314,15 @@ function handleMessage(message: Message, state: ConnectionState): void {
     case MessageType.PONG:
       // Heartbeat response, ignore
       break;
+
+    case MessageType.CALLBACK_STREAM_CANCEL: {
+      const streamId = (message as { streamId: number }).streamId;
+      const reader = state.callbackStreamReaders.get(streamId);
+      if (reader) {
+        reader.cancel().catch(() => {});
+      }
+      break;
+    }
 
     case MessageType.WS_COMMAND: {
       const msg = message as WsCommandMessage;
@@ -1284,6 +1296,7 @@ async function streamCallbackResponseBody(
   body: ReadableStream<Uint8Array>
 ): Promise<void> {
   const reader = body.getReader();
+  state.callbackStreamReaders.set(streamId, reader);
 
   try {
     while (true) {
@@ -1311,13 +1324,17 @@ async function streamCallbackResponseBody(
       }
     }
   } catch (err) {
-    // Send error
-    sendMessage(state.socket, {
-      type: MessageType.STREAM_ERROR,
-      streamId,
-      error: (err as Error).message,
-    } as StreamError);
+    // Ignore cancellation errors
+    if (!(err instanceof Error && err.message.includes('cancel'))) {
+      // Send error
+      sendMessage(state.socket, {
+        type: MessageType.STREAM_ERROR,
+        streamId,
+        error: (err as Error).message,
+      } as StreamError);
+    }
   } finally {
+    state.callbackStreamReaders.delete(streamId);
     reader.releaseLock();
   }
 }

@@ -85,6 +85,13 @@ import {
   createInternalRuntime,
   type InternalRuntimeHandle,
 } from "@ricsam/isolate-runtime";
+import {
+  transformEntryCode,
+  transformModuleCode,
+  contentHash,
+  mapErrorStack,
+  type SourceMap,
+} from "@ricsam/isolate-transform";
 import type {
   DaemonState,
   ConnectionState,
@@ -1066,8 +1073,17 @@ async function handleEval(
     // Normalize filename to absolute path for module resolution
     const filename = normalizeEntryFilename(message.filename);
 
-    // Always use module mode - supports top-level await and ES module syntax
-    const mod = await instance.runtime.isolate.compileModule(message.code, {
+    // Transform entry code: strip types, validate, wrap in async function
+    const transformed = await transformEntryCode(message.code, filename);
+    if (transformed.sourceMap) {
+      if (!instance.sourceMaps) {
+        instance.sourceMaps = new Map();
+      }
+      instance.sourceMaps.set(filename, transformed.sourceMap);
+    }
+
+    // Compile as ES module
+    const mod = await instance.runtime.isolate.compileModule(transformed.code, {
       filename,
     });
 
@@ -1087,9 +1103,22 @@ async function handleEval(
       });
     }
 
-    // Evaluate the module with optional timeout
-    const timeout = message.maxExecutionMs;
-    await mod.evaluate(timeout ? { timeout } : undefined);
+    // Evaluate - only resolves imports and defines the default function (no timeout needed)
+    await mod.evaluate();
+
+    // Get the default export and run it with timeout
+    const ns = mod.namespace;
+    const runRef = await ns.get("default", { reference: true });
+    try {
+      await runRef.apply(undefined, [], {
+        result: { promise: true },
+        ...(message.maxExecutionMs
+          ? { timeout: message.maxExecutionMs }
+          : {}),
+      });
+    } finally {
+      runRef.release();
+    }
 
     // Wait for all pending callbacks (e.g., console.log) to complete
     // This ensures the client receives all callbacks before eval resolves
@@ -1100,6 +1129,10 @@ async function handleEval(
     sendOk(connection.socket, message.requestId, { value: undefined });
   } catch (err) {
     const error = err as Error;
+    // Map error stack through source maps
+    if (error.stack && instance.sourceMaps?.size) {
+      error.stack = mapErrorStack(error.stack, instance.sourceMaps);
+    }
     // Check if this is a timeout error from isolated-vm
     const isTimeoutError = error.message?.includes('Script execution timed out');
     sendError(
@@ -2346,8 +2379,23 @@ function createModuleResolver(
 
     const { code, resolveDir } = result;
 
+    // Check cache by content hash
+    const hash = contentHash(code);
+    const cacheKey = `${specifier}:${hash}`;
+    const hashCached = instance.moduleCache?.get(cacheKey);
+    if (hashCached) return hashCached;
+
+    // Transform module code (strip types)
+    const transformed = await transformModuleCode(code, specifier);
+    if (transformed.sourceMap) {
+      if (!instance.sourceMaps) {
+        instance.sourceMaps = new Map();
+      }
+      instance.sourceMaps.set(specifier, transformed.sourceMap);
+    }
+
     // Compile the module
-    const mod = await instance.runtime.isolate.compileModule(code, {
+    const mod = await instance.runtime.isolate.compileModule(transformed.code, {
       filename: specifier,
     });
 
@@ -2359,8 +2407,9 @@ function createModuleResolver(
     const resolver = createModuleResolver(instance, connection);
     await mod.instantiate(instance.runtime.context, resolver);
 
-    // Cache and return
+    // Cache and return (both specifier and specifier:hash for content-based invalidation)
     instance.moduleCache?.set(specifier, mod);
+    instance.moduleCache?.set(cacheKey, mod);
     return mod;
   };
 }
@@ -2605,6 +2654,13 @@ function handleCallbackStreamStart(
       }
 
       connection.callbackStreamReceivers.delete(message.streamId);
+
+      // Tell the client to stop streaming this response body
+      sendMessage(connection.socket, {
+        type: MessageType.CALLBACK_STREAM_CANCEL,
+        streamId: message.streamId,
+      });
+
       return Promise.resolve();
     },
   });

@@ -1,5 +1,13 @@
 # @ricsam/isolate-playwright
 
+## 0.1.11
+
+### Patch Changes
+
+- add typescript support
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.11
+
 ## 0.1.10
 
 ### Patch Changes

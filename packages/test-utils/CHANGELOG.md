@@ -1,5 +1,17 @@
 # @ricsam/isolate-test-utils
 
+## 0.1.12
+
+### Patch Changes
+
+- add typescript support
+- Updated dependencies
+  - @ricsam/isolate-runtime@0.1.13
+  - @ricsam/isolate-fetch@0.1.13
+  - @ricsam/isolate-console@0.1.12
+  - @ricsam/isolate-core@0.1.11
+  - @ricsam/isolate-fs@0.1.11
+
 ## 0.1.11
 
 ### Patch Changes

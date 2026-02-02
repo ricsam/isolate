@@ -1,5 +1,11 @@
 # @ricsam/isolate-types
 
+## 0.1.11
+
+### Patch Changes
+
+- add typescript support
+
 ## 0.1.10
 
 ### Patch Changes

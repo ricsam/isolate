@@ -2,6 +2,13 @@ import ivm from "isolated-vm";
 import path from "node:path";
 import { setupCore } from "@ricsam/isolate-core";
 import { normalizeEntryFilename } from "@ricsam/isolate-protocol";
+import {
+  transformEntryCode,
+  transformModuleCode,
+  contentHash,
+  mapErrorStack,
+  type SourceMap,
+} from "@ricsam/isolate-transform";
 
 // Re-export for convenience
 export { normalizeEntryFilename } from "@ricsam/isolate-protocol";
@@ -237,6 +244,7 @@ interface RuntimeState {
   customFnInvokeRef?: ivm.Reference<
     (name: string, argsJson: string) => Promise<string>
   >;
+  sourceMaps: Map<string, SourceMap>;
 }
 
 // Iterator session tracking for async iterator custom functions
@@ -681,7 +689,7 @@ function createModuleResolver(
     specifier: string,
     referrer: ivm.Module
   ): Promise<ivm.Module> => {
-    // Check cache first
+    // Check cache first by specifier (fast path - avoids calling module loader)
     const cached = state.moduleCache.get(specifier);
     if (cached) return cached;
 
@@ -701,8 +709,20 @@ function createModuleResolver(
       resolveDir: importerResolveDir,
     });
 
+    // Cache by specifier + content hash (allows invalidation when content changes)
+    const hash = contentHash(code);
+    const cacheKey = `${specifier}:${hash}`;
+    const hashCached = state.moduleCache.get(cacheKey);
+    if (hashCached) return hashCached;
+
+    // Transform module code (strip types)
+    const transformed = await transformModuleCode(code, specifier);
+    if (transformed.sourceMap) {
+      state.sourceMaps.set(specifier, transformed.sourceMap);
+    }
+
     // Compile the module
-    const mod = await state.isolate.compileModule(code, {
+    const mod = await state.isolate.compileModule(transformed.code, {
       filename: specifier,
     });
 
@@ -711,7 +731,9 @@ function createModuleResolver(
     state.moduleToFilename.set(mod, resolvedPath);
 
     // Cache before instantiation (for circular dependencies)
+    // Cache by both specifier (fast lookup) and specifier:hash (content-based invalidation)
     state.moduleCache.set(specifier, mod);
+    state.moduleCache.set(cacheKey, mod);
 
     // Instantiate with recursive resolver
     const resolver = createModuleResolver(state);
@@ -775,6 +797,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     handles: {},
     moduleCache: new Map(),
     moduleToFilename: new Map(),
+    sourceMaps: new Map(),
     moduleLoader: opts.moduleLoader,
     customFunctions: opts.customFunctions as CustomFunctions<Record<string, unknown[]>>,
   };
@@ -1026,24 +1049,48 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       // Normalize filename to absolute path for module resolution
       const filename = normalizeEntryFilename(options?.filename);
 
-      // Compile as ES module
-      const mod = await state.isolate.compileModule(code, {
-        filename,
-      });
+      try {
+        // Transform entry code: strip types, validate, wrap in async function
+        const transformed = await transformEntryCode(code, filename);
+        if (transformed.sourceMap) {
+          state.sourceMaps.set(filename, transformed.sourceMap);
+        }
 
-      // Track entry module filename for nested imports
-      state.moduleToFilename.set(mod, filename);
+        // Compile as ES module
+        const mod = await state.isolate.compileModule(transformed.code, {
+          filename,
+        });
 
-      // Instantiate with module resolver
-      const resolver = createModuleResolver(state);
-      await mod.instantiate(state.context, resolver);
+        // Track entry module filename for nested imports
+        state.moduleToFilename.set(mod, filename);
 
-      // Evaluate the module with optional timeout
-      await mod.evaluate(
-        options?.maxExecutionMs
-          ? { timeout: options.maxExecutionMs }
-          : undefined
-      );
+        // Instantiate with module resolver
+        const resolver = createModuleResolver(state);
+        await mod.instantiate(state.context, resolver);
+
+        // Evaluate - only resolves imports and defines the default function (no timeout needed)
+        await mod.evaluate();
+
+        // Get the default export and run it with timeout
+        const ns = mod.namespace;
+        const runRef = await ns.get("default", { reference: true });
+        try {
+          await runRef.apply(undefined, [], {
+            result: { promise: true },
+            ...(options?.maxExecutionMs
+              ? { timeout: options.maxExecutionMs }
+              : {}),
+          });
+        } finally {
+          runRef.release();
+        }
+      } catch (err) {
+        const error = err as Error;
+        if (error.stack && state.sourceMaps.size > 0) {
+          error.stack = mapErrorStack(error.stack, state.sourceMaps);
+        }
+        throw error;
+      }
     },
 
     async dispose(): Promise<void> {

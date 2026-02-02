@@ -18,6 +18,7 @@ const PACKAGES = [
   "fetch",
   "fs",
   "runtime",
+  "transform",
   "test-environment",
   "playwright",
   "isolate-protocol",

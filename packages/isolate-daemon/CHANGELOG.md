@@ -1,5 +1,18 @@
 # @ricsam/isolate-daemon
 
+## 0.1.12
+
+### Patch Changes
+
+- add typescript support
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.11
+  - @ricsam/isolate-runtime@0.1.13
+  - @ricsam/isolate-fs@0.1.11
+  - @ricsam/isolate-playwright@0.1.11
+  - @ricsam/isolate-test-environment@0.1.11
+  - @ricsam/isolate-transform@0.1.1
+
 ## 0.1.11
 
 ### Patch Changes
