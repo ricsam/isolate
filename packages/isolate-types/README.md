@@ -47,7 +47,7 @@ if (!result.success) {
 
 | Option | Description |
 |--------|-------------|
-| `include` | Which package types to include: `"core"`, `"fetch"`, `"fs"`, `"console"`, `"encoding"`, `"timers"`, `"testEnvironment"` (default: `["core", "fetch", "fs"]`) |
+| `include` | Which package types to include: `"core"`, `"fetch"`, `"fs"`, `"console"`, `"encoding"`, `"timers"`, `"testEnvironment"`, `"playwright"` (default: `["core", "fetch", "fs"]`) |
 | `compilerOptions` | Additional TypeScript compiler options |
 | `libraryTypes` | External library type definitions for import resolution |
 
@@ -73,16 +73,17 @@ The type definitions are exported as strings for custom use cases:
 
 ```typescript
 import {
-  CORE_TYPES,      // ReadableStream, Blob, File, URL, etc.
-  CONSOLE_TYPES,   // console.log, console.time, etc.
-  CRYPTO_TYPES,    // crypto.subtle, CryptoKey, etc.
-  ENCODING_TYPES,  // atob, btoa
-  FETCH_TYPES,     // fetch, Request, Response, serve, etc.
-  FS_TYPES,        // getDirectory, FileSystemHandle, etc.
-  PATH_TYPES,      // path.join, path.resolve, etc.
-  TEST_ENV_TYPES,  // describe, it, expect, etc.
-  TIMERS_TYPES,    // setTimeout, setInterval, etc.
-  TYPE_DEFINITIONS // All types as { core, fetch, fs, ... }
+  CORE_TYPES,       // ReadableStream, Blob, File, URL, etc.
+  CONSOLE_TYPES,    // console.log, console.time, etc.
+  CRYPTO_TYPES,     // crypto.subtle, CryptoKey, etc.
+  ENCODING_TYPES,   // atob, btoa
+  FETCH_TYPES,      // fetch, Request, Response, serve, etc.
+  FS_TYPES,         // getDirectory, FileSystemHandle, etc.
+  PATH_TYPES,       // path.join, path.resolve, etc.
+  TEST_ENV_TYPES,   // describe, it, expect, etc.
+  TIMERS_TYPES,     // setTimeout, setInterval, etc.
+  PLAYWRIGHT_TYPES, // page, context, browser, Locator, etc.
+  TYPE_DEFINITIONS  // All types as { core, fetch, fs, playwright, ... }
 } from "@ricsam/isolate-types";
 
 // Use with your own ts-morph project

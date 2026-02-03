@@ -1,5 +1,5 @@
 import ivm from "isolated-vm";
-import type { Page, Locator as PlaywrightLocator } from "playwright";
+import type { Page, Locator as PlaywrightLocator, BrowserContext, BrowserContextOptions } from "playwright";
 import type {
   PlaywrightOperation,
   PlaywrightResult,
@@ -69,6 +69,21 @@ export interface PlaywrightSetupOptions {
   console?: boolean;
   /** Unified event callback for all playwright events */
   onEvent?: (event: PlaywrightEvent) => void;
+  /**
+   * Callback invoked when context.newPage() is called from within the isolate.
+   * Host creates/configures the new page. If not provided, newPage() will throw an error.
+   * Receives the BrowserContext so you can call context.newPage().
+   * @param context - The BrowserContext that requested the new page
+   * @returns The new Page object
+   */
+  createPage?: (context: BrowserContext) => Promise<Page> | Page;
+  /**
+   * Callback invoked when browser.newContext() is called from within the isolate.
+   * Host creates/configures the new context. If not provided, newContext() will throw an error.
+   * @param options - Browser context options passed from the isolate
+   * @returns The new BrowserContext object
+   */
+  createContext?: (options?: BrowserContextOptions) => Promise<BrowserContext> | BrowserContext;
 }
 
 /**
@@ -895,6 +910,16 @@ async function executePageExpectAssertion(
 // ============================================================================
 
 /**
+ * Registry for tracking multiple pages and contexts.
+ */
+interface PlaywrightRegistry {
+  pages: Map<string, Page>;
+  contexts: Map<string, BrowserContext>;
+  nextPageId: number;
+  nextContextId: number;
+}
+
+/**
  * Create a playwright handler from a Page object.
  * This handler is called by the daemon (via callback) when sandbox needs page operations.
  * Used for remote runtime where the browser runs on the client.
@@ -907,6 +932,10 @@ export function createPlaywrightHandler(
     readFile?: ReadFileCallback;
     /** Callback to write files for screenshot()/pdf() with path option */
     writeFile?: WriteFileCallback;
+    /** Callback to create new pages when context.newPage() is called; receives the BrowserContext so you can call context.newPage() */
+    createPage?: (context: BrowserContext) => Promise<Page> | Page;
+    /** Callback to create new contexts when browser.newContext() is called */
+    createContext?: (options?: BrowserContextOptions) => Promise<BrowserContext> | BrowserContext;
   }
 ): PlaywrightCallback {
   const timeout = options?.timeout ?? 30000;
@@ -915,40 +944,105 @@ export function createPlaywrightHandler(
     writeFile: options?.writeFile,
   };
 
+  // Registry for tracking multiple pages and contexts
+  const registry: PlaywrightRegistry = {
+    pages: new Map<string, Page>([["page_0", page]]),
+    contexts: new Map<string, BrowserContext>([["ctx_0", page.context()]]),
+    nextPageId: 1,
+    nextContextId: 1,
+  };
+
   return async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
     try {
+      // Handle lifecycle operations first (they don't require existing page)
+      switch (op.type) {
+        case "newContext": {
+          if (!options?.createContext) {
+            return { ok: false, error: { name: "Error", message: "createContext callback not provided. Configure createContext in playwright options to enable browser.newContext()." } };
+          }
+          const [contextOptions] = op.args as [BrowserContextOptions?];
+          const newContext = await options.createContext(contextOptions);
+          const contextId = `ctx_${registry.nextContextId++}`;
+          registry.contexts.set(contextId, newContext);
+          return { ok: true, value: { contextId } };
+        }
+
+        case "newPage": {
+          if (!options?.createPage) {
+            return { ok: false, error: { name: "Error", message: "createPage callback not provided. Configure createPage in playwright options to enable context.newPage()." } };
+          }
+          const contextId = op.contextId ?? "ctx_0";
+          const targetContext = registry.contexts.get(contextId);
+          if (!targetContext) {
+            return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
+          }
+          const newPage = await options.createPage(targetContext);
+          const pageId = `page_${registry.nextPageId++}`;
+          registry.pages.set(pageId, newPage);
+          return { ok: true, value: { pageId } };
+        }
+
+        case "closeContext": {
+          const contextId = op.contextId ?? "ctx_0";
+          const context = registry.contexts.get(contextId);
+          if (!context) {
+            return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
+          }
+          await context.close();
+          registry.contexts.delete(contextId);
+          // Remove pages belonging to this context
+          for (const [pid, p] of registry.pages) {
+            if (p.context() === context) {
+              registry.pages.delete(pid);
+            }
+          }
+          return { ok: true };
+        }
+      }
+
+      // Resolve page from pageId for page-specific operations
+      const pageId = op.pageId ?? "page_0";
+      const targetPage = registry.pages.get(pageId);
+      if (!targetPage) {
+        return { ok: false, error: { name: "Error", message: `Page ${pageId} not found` } };
+      }
+
+      // Resolve context from contextId for context-specific operations
+      const contextId = op.contextId ?? "ctx_0";
+      const targetContext = registry.contexts.get(contextId);
+
       switch (op.type) {
         case "goto": {
           const [url, waitUntil] = op.args as [string, string?];
-          await page.goto(url, {
+          await targetPage.goto(url, {
             timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
           });
           return { ok: true };
         }
         case "reload":
-          await page.reload({ timeout });
+          await targetPage.reload({ timeout });
           return { ok: true };
         case "url":
-          return { ok: true, value: page.url() };
+          return { ok: true, value: targetPage.url() };
         case "title":
-          return { ok: true, value: await page.title() };
+          return { ok: true, value: await targetPage.title() };
         case "content":
-          return { ok: true, value: await page.content() };
+          return { ok: true, value: await targetPage.content() };
         case "waitForSelector": {
           const [selector, optionsJson] = op.args as [string, string?];
           const opts = optionsJson ? JSON.parse(optionsJson) : {};
-          await page.waitForSelector(selector, { timeout, ...opts });
+          await targetPage.waitForSelector(selector, { timeout, ...opts });
           return { ok: true };
         }
         case "waitForTimeout": {
           const [ms] = op.args as [number];
-          await page.waitForTimeout(ms);
+          await targetPage.waitForTimeout(ms);
           return { ok: true };
         }
         case "waitForLoadState": {
           const [state] = op.args as [string?];
-          await page.waitForLoadState(
+          await targetPage.waitForLoadState(
             (state as "load" | "domcontentloaded" | "networkidle") ?? "load",
             { timeout }
           );
@@ -958,10 +1052,10 @@ export function createPlaywrightHandler(
           const [script, arg] = op.args as [string, unknown];
           if (op.args.length > 1) {
             const fn = new Function('return (' + script + ')')();
-            const result = await page.evaluate(fn, arg);
+            const result = await targetPage.evaluate(fn, arg);
             return { ok: true, value: result };
           }
-          const result = await page.evaluate(script);
+          const result = await targetPage.evaluate(script);
           return { ok: true, value: result };
         }
         case "locatorAction": {
@@ -972,7 +1066,7 @@ export function createPlaywrightHandler(
             string,
             unknown
           ];
-          const locator = getLocator(page, selectorType, selectorValue, roleOptions);
+          const locator = getLocator(targetPage, selectorType, selectorValue, roleOptions);
           const result = await executeLocatorAction(locator, action, actionArg, timeout, fileIO);
           return { ok: true, value: result };
         }
@@ -986,7 +1080,7 @@ export function createPlaywrightHandler(
             boolean,
             number?
           ];
-          const locator = getLocator(page, selectorType, selectorValue, roleOptions);
+          const locator = getLocator(targetPage, selectorType, selectorValue, roleOptions);
           const effectiveTimeout = customTimeout ?? timeout;
           await executeExpectAssertion(locator, matcher, expected, negated ?? false, effectiveTimeout);
           return { ok: true };
@@ -999,7 +1093,7 @@ export function createPlaywrightHandler(
             number?
           ];
           const effectiveTimeout = customTimeout ?? timeout;
-          await executePageExpectAssertion(page, matcher, expected, negated ?? false, effectiveTimeout);
+          await executePageExpectAssertion(targetPage, matcher, expected, negated ?? false, effectiveTimeout);
           return { ok: true };
         }
         case "request": {
@@ -1024,7 +1118,7 @@ export function createPlaywrightHandler(
             requestOptions.data = data;
           }
 
-          const response = await page.request.fetch(url, {
+          const response = await targetPage.request.fetch(url, {
             method: method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS",
             ...requestOptions,
           });
@@ -1052,7 +1146,7 @@ export function createPlaywrightHandler(
         }
         case "goBack": {
           const [waitUntil] = op.args as [string?];
-          await page.goBack({
+          await targetPage.goBack({
             timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
           });
@@ -1060,7 +1154,7 @@ export function createPlaywrightHandler(
         }
         case "goForward": {
           const [waitUntil] = op.args as [string?];
-          await page.goForward({
+          await targetPage.goForward({
             timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
           });
@@ -1076,14 +1170,16 @@ export function createPlaywrightHandler(
           const url = urlArg && typeof urlArg === 'object' && '$regex' in urlArg
             ? new RegExp(urlArg.$regex, urlArg.$flags)
             : urlArg;
-          await page.waitForURL(url, {
+          await targetPage.waitForURL(url, {
             timeout: customTimeout ?? timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? undefined,
           });
           return { ok: true };
         }
         case "clearCookies": {
-          await page.context().clearCookies();
+          // Use contextId for cookie operations
+          const ctx = targetContext ?? targetPage.context();
+          await ctx.clearCookies();
           return { ok: true };
         }
         case "screenshot": {
@@ -1095,7 +1191,7 @@ export function createPlaywrightHandler(
             clip?: { x: number; y: number; width: number; height: number };
           }?];
           // Don't pass path to Playwright - we handle file writing through callback
-          const buffer = await page.screenshot({
+          const buffer = await targetPage.screenshot({
             type: screenshotOptions?.type,
             quality: screenshotOptions?.quality,
             fullPage: screenshotOptions?.fullPage,
@@ -1116,80 +1212,82 @@ export function createPlaywrightHandler(
         }
         case "setViewportSize": {
           const [size] = op.args as [{ width: number; height: number }];
-          await page.setViewportSize(size);
+          await targetPage.setViewportSize(size);
           return { ok: true };
         }
         case "viewportSize": {
-          return { ok: true, value: page.viewportSize() };
+          return { ok: true, value: targetPage.viewportSize() };
         }
         case "keyboardType": {
           const [text, typeOptions] = op.args as [string, { delay?: number }?];
-          await page.keyboard.type(text, typeOptions);
+          await targetPage.keyboard.type(text, typeOptions);
           return { ok: true };
         }
         case "keyboardPress": {
           const [key, pressOptions] = op.args as [string, { delay?: number }?];
-          await page.keyboard.press(key, pressOptions);
+          await targetPage.keyboard.press(key, pressOptions);
           return { ok: true };
         }
         case "keyboardDown": {
           const [key] = op.args as [string];
-          await page.keyboard.down(key);
+          await targetPage.keyboard.down(key);
           return { ok: true };
         }
         case "keyboardUp": {
           const [key] = op.args as [string];
-          await page.keyboard.up(key);
+          await targetPage.keyboard.up(key);
           return { ok: true };
         }
         case "keyboardInsertText": {
           const [text] = op.args as [string];
-          await page.keyboard.insertText(text);
+          await targetPage.keyboard.insertText(text);
           return { ok: true };
         }
         case "mouseMove": {
           const [x, y, moveOptions] = op.args as [number, number, { steps?: number }?];
-          await page.mouse.move(x, y, moveOptions);
+          await targetPage.mouse.move(x, y, moveOptions);
           return { ok: true };
         }
         case "mouseClick": {
           const [x, y, clickOptions] = op.args as [number, number, { button?: 'left' | 'right' | 'middle'; clickCount?: number; delay?: number }?];
-          await page.mouse.click(x, y, clickOptions);
+          await targetPage.mouse.click(x, y, clickOptions);
           return { ok: true };
         }
         case "mouseDown": {
           const [downOptions] = op.args as [{ button?: 'left' | 'right' | 'middle'; clickCount?: number }?];
-          await page.mouse.down(downOptions);
+          await targetPage.mouse.down(downOptions);
           return { ok: true };
         }
         case "mouseUp": {
           const [upOptions] = op.args as [{ button?: 'left' | 'right' | 'middle'; clickCount?: number }?];
-          await page.mouse.up(upOptions);
+          await targetPage.mouse.up(upOptions);
           return { ok: true };
         }
         case "mouseWheel": {
           const [deltaX, deltaY] = op.args as [number, number];
-          await page.mouse.wheel(deltaX, deltaY);
+          await targetPage.mouse.wheel(deltaX, deltaY);
           return { ok: true };
         }
         case "frames": {
-          const frames = page.frames();
+          const frames = targetPage.frames();
           return { ok: true, value: frames.map(f => ({ name: f.name(), url: f.url() })) };
         }
         case "mainFrame": {
-          const mainFrame = page.mainFrame();
+          const mainFrame = targetPage.mainFrame();
           return { ok: true, value: { name: mainFrame.name(), url: mainFrame.url() } };
         }
         case "bringToFront": {
-          await page.bringToFront();
+          await targetPage.bringToFront();
           return { ok: true };
         }
         case "close": {
-          await page.close();
+          await targetPage.close();
+          // Remove from registry
+          registry.pages.delete(pageId);
           return { ok: true };
         }
         case "isClosed": {
-          return { ok: true, value: page.isClosed() };
+          return { ok: true, value: targetPage.isClosed() };
         }
         case "pdf": {
           const [pdfOptions] = op.args as [{
@@ -1208,7 +1306,7 @@ export function createPlaywrightHandler(
           }?];
           // Don't pass path to Playwright - we handle file writing through callback
           const { path: pdfPath, ...restPdfOptions } = pdfOptions ?? {};
-          const buffer = await page.pdf(restPdfOptions);
+          const buffer = await targetPage.pdf(restPdfOptions);
           // If path is specified, use writeFile callback
           if (pdfPath) {
             if (!fileIO.writeFile) {
@@ -1224,7 +1322,7 @@ export function createPlaywrightHandler(
         }
         case "emulateMedia": {
           const [mediaOptions] = op.args as [{ media?: 'screen' | 'print' | null; colorScheme?: 'light' | 'dark' | 'no-preference' | null; reducedMotion?: 'reduce' | 'no-preference' | null; forcedColors?: 'active' | 'none' | null }?];
-          await page.emulateMedia(mediaOptions);
+          await targetPage.emulateMedia(mediaOptions);
           return { ok: true };
         }
         case "addCookies": {
@@ -1238,21 +1336,25 @@ export function createPlaywrightHandler(
             secure?: boolean;
             sameSite?: 'Strict' | 'Lax' | 'None';
           }>];
-          await page.context().addCookies(cookies);
+          // Use contextId for cookie operations
+          const ctx = targetContext ?? targetPage.context();
+          await ctx.addCookies(cookies);
           return { ok: true };
         }
         case "cookies": {
           const [urls] = op.args as [string[]?];
-          const cookies = await page.context().cookies(urls);
+          // Use contextId for cookie operations
+          const ctx = targetContext ?? targetPage.context();
+          const cookies = await ctx.cookies(urls);
           return { ok: true, value: cookies };
         }
         case "setExtraHTTPHeaders": {
           const [headers] = op.args as [Record<string, string>];
-          await page.setExtraHTTPHeaders(headers);
+          await targetPage.setExtraHTTPHeaders(headers);
           return { ok: true };
         }
         case "pause": {
-          await page.pause();
+          await targetPage.pause();
           return { ok: true };
         }
         default:
@@ -1285,8 +1387,16 @@ export async function setupPlaywright(
   const page = "page" in options ? options.page : undefined;
   const handler = "handler" in options ? options.handler : undefined;
 
+  // Get lifecycle callbacks
+  const createPage = "createPage" in options ? options.createPage : undefined;
+  const createContext = "createContext" in options ? options.createContext : undefined;
+
   // Create handler from page if needed
-  const effectiveHandler = handler ?? (page ? createPlaywrightHandler(page, { timeout }) : undefined);
+  const effectiveHandler = handler ?? (page ? createPlaywrightHandler(page, {
+    timeout,
+    createPage,
+    createContext,
+  }) : undefined);
 
   if (!effectiveHandler) {
     throw new Error("Either page or handler must be provided to setupPlaywright");
@@ -1408,8 +1518,8 @@ export async function setupPlaywright(
   // Helper function to invoke handler and handle errors
   context.evalSync(`
 (function() {
-  globalThis.__pw_invoke = async function(type, args) {
-    const op = JSON.stringify({ type, args });
+  globalThis.__pw_invoke = async function(type, args, options) {
+    const op = JSON.stringify({ type, args, pageId: options?.pageId, contextId: options?.contextId });
     const resultJson = __Playwright_handler_ref.applySyncPromise(undefined, [op]);
     const result = JSON.parse(resultJson);
     if (result.ok) {
@@ -1423,234 +1533,190 @@ export async function setupPlaywright(
 })();
 `);
 
-  // Page object
+  // IsolatePage class and page/context/browser globals
   context.evalSync(`
 (function() {
-  let __pw_currentUrl = '';
-  globalThis.page = {
-    __isPage: true,
+  // IsolatePage class - represents a page with a specific pageId
+  class IsolatePage {
+    #pageId; #contextId; #currentUrl = '';
+    constructor(pageId, contextId) {
+      this.#pageId = pageId;
+      this.#contextId = contextId;
+    }
+    get __isPage() { return true; }
+    get __pageId() { return this.#pageId; }
+    get __contextId() { return this.#contextId; }
+
     async goto(url, options) {
-      const result = await __pw_invoke("goto", [url, options?.waitUntil || null]);
-      const resolvedUrl = await __pw_invoke("url", []);
-      __pw_currentUrl = resolvedUrl || url;
-      return result;
-    },
+      await __pw_invoke("goto", [url, options?.waitUntil || null], { pageId: this.#pageId });
+      const resolvedUrl = await __pw_invoke("url", [], { pageId: this.#pageId });
+      this.#currentUrl = resolvedUrl || url;
+    }
     async reload() {
-      const result = await __pw_invoke("reload", []);
-      const resolvedUrl = await __pw_invoke("url", []);
-      if (resolvedUrl) __pw_currentUrl = resolvedUrl;
-      return result;
-    },
-    url() {
-      return __pw_currentUrl;
-    },
-    async title() {
-      return __pw_invoke("title", []);
-    },
-    async content() {
-      return __pw_invoke("content", []);
-    },
+      await __pw_invoke("reload", [], { pageId: this.#pageId });
+      const resolvedUrl = await __pw_invoke("url", [], { pageId: this.#pageId });
+      if (resolvedUrl) this.#currentUrl = resolvedUrl;
+    }
+    url() { return this.#currentUrl; }
+    async title() { return __pw_invoke("title", [], { pageId: this.#pageId }); }
+    async content() { return __pw_invoke("content", [], { pageId: this.#pageId }); }
     async waitForSelector(selector, options) {
-      return __pw_invoke("waitForSelector", [selector, options ? JSON.stringify(options) : null]);
-    },
-    async waitForTimeout(ms) {
-      return __pw_invoke("waitForTimeout", [ms]);
-    },
-    async waitForLoadState(state) {
-      return __pw_invoke("waitForLoadState", [state || null]);
-    },
+      return __pw_invoke("waitForSelector", [selector, options ? JSON.stringify(options) : null], { pageId: this.#pageId });
+    }
+    async waitForTimeout(ms) { return __pw_invoke("waitForTimeout", [ms], { pageId: this.#pageId }); }
+    async waitForLoadState(state) { return __pw_invoke("waitForLoadState", [state || null], { pageId: this.#pageId }); }
     async evaluate(script, arg) {
       const hasArg = arguments.length > 1;
       if (hasArg) {
         const serialized = typeof script === "function" ? script.toString() : script;
-        return __pw_invoke("evaluate", [serialized, arg]);
+        return __pw_invoke("evaluate", [serialized, arg], { pageId: this.#pageId });
       }
       const serialized = typeof script === "function" ? "(" + script.toString() + ")()" : script;
-      return __pw_invoke("evaluate", [serialized]);
-    },
-    locator(selector) { return new Locator("css", selector, null); },
+      return __pw_invoke("evaluate", [serialized], { pageId: this.#pageId });
+    }
+    locator(selector) { return new Locator("css", selector, null, this.#pageId); }
     getByRole(role, options) {
       if (options) {
         const serialized = { ...options };
-        // Use duck-typing RegExp detection (instanceof fails across isolated-vm boundary)
         const name = options.name;
         if (name && typeof name === 'object' && typeof name.source === 'string' && typeof name.flags === 'string') {
           serialized.name = { $regex: name.source, $flags: name.flags };
         }
-        return new Locator("role", role, JSON.stringify(serialized));
+        return new Locator("role", role, JSON.stringify(serialized), this.#pageId);
       }
-      return new Locator("role", role, null);
-    },
-    getByText(text) { return new Locator("text", text, null); },
-    getByLabel(label) { return new Locator("label", label, null); },
-    getByPlaceholder(p) { return new Locator("placeholder", p, null); },
-    getByTestId(id) { return new Locator("testId", id, null); },
-    getByAltText(alt) { return new Locator("altText", alt, null); },
-    getByTitle(title) { return new Locator("title", title, null); },
+      return new Locator("role", role, null, this.#pageId);
+    }
+    getByText(text) { return new Locator("text", text, null, this.#pageId); }
+    getByLabel(label) { return new Locator("label", label, null, this.#pageId); }
+    getByPlaceholder(p) { return new Locator("placeholder", p, null, this.#pageId); }
+    getByTestId(id) { return new Locator("testId", id, null, this.#pageId); }
+    getByAltText(alt) { return new Locator("altText", alt, null, this.#pageId); }
+    getByTitle(title) { return new Locator("title", title, null, this.#pageId); }
     frameLocator(selector) {
-      // Return a FrameLocator-like object
+      const pageId = this.#pageId;
       return {
-        locator(innerSelector) {
-          return new Locator("frame", JSON.stringify([["css", selector, null], ["css", innerSelector, null]]), null);
-        },
-        getByRole(role, options) {
-          const serialized = options ? JSON.stringify(options) : null;
-          return new Locator("frame", JSON.stringify([["css", selector, null], ["role", role, serialized]]), null);
-        },
-        getByText(text) {
-          return new Locator("frame", JSON.stringify([["css", selector, null], ["text", text, null]]), null);
-        },
-        getByLabel(label) {
-          return new Locator("frame", JSON.stringify([["css", selector, null], ["label", label, null]]), null);
-        },
-        getByPlaceholder(placeholder) {
-          return new Locator("frame", JSON.stringify([["css", selector, null], ["placeholder", placeholder, null]]), null);
-        },
-        getByTestId(testId) {
-          return new Locator("frame", JSON.stringify([["css", selector, null], ["testId", testId, null]]), null);
-        },
-        getByAltText(alt) {
-          return new Locator("frame", JSON.stringify([["css", selector, null], ["altText", alt, null]]), null);
-        },
-        getByTitle(title) {
-          return new Locator("frame", JSON.stringify([["css", selector, null], ["title", title, null]]), null);
-        },
+        locator(innerSelector) { return new Locator("frame", JSON.stringify([["css", selector, null], ["css", innerSelector, null]]), null, pageId); },
+        getByRole(role, options) { return new Locator("frame", JSON.stringify([["css", selector, null], ["role", role, options ? JSON.stringify(options) : null]]), null, pageId); },
+        getByText(text) { return new Locator("frame", JSON.stringify([["css", selector, null], ["text", text, null]]), null, pageId); },
+        getByLabel(label) { return new Locator("frame", JSON.stringify([["css", selector, null], ["label", label, null]]), null, pageId); },
+        getByPlaceholder(placeholder) { return new Locator("frame", JSON.stringify([["css", selector, null], ["placeholder", placeholder, null]]), null, pageId); },
+        getByTestId(testId) { return new Locator("frame", JSON.stringify([["css", selector, null], ["testId", testId, null]]), null, pageId); },
+        getByAltText(alt) { return new Locator("frame", JSON.stringify([["css", selector, null], ["altText", alt, null]]), null, pageId); },
+        getByTitle(title) { return new Locator("frame", JSON.stringify([["css", selector, null], ["title", title, null]]), null, pageId); },
       };
-    },
+    }
     async goBack(options) {
-      await __pw_invoke("goBack", [options?.waitUntil || null]);
-      const resolvedUrl = await __pw_invoke("url", []);
-      if (resolvedUrl) __pw_currentUrl = resolvedUrl;
-    },
+      await __pw_invoke("goBack", [options?.waitUntil || null], { pageId: this.#pageId });
+      const resolvedUrl = await __pw_invoke("url", [], { pageId: this.#pageId });
+      if (resolvedUrl) this.#currentUrl = resolvedUrl;
+    }
     async goForward(options) {
-      await __pw_invoke("goForward", [options?.waitUntil || null]);
-      const resolvedUrl = await __pw_invoke("url", []);
-      if (resolvedUrl) __pw_currentUrl = resolvedUrl;
-    },
+      await __pw_invoke("goForward", [options?.waitUntil || null], { pageId: this.#pageId });
+      const resolvedUrl = await __pw_invoke("url", [], { pageId: this.#pageId });
+      if (resolvedUrl) this.#currentUrl = resolvedUrl;
+    }
     async waitForURL(url, options) {
       let serializedUrl = url;
-      // Use duck-typing RegExp detection (instanceof fails across isolated-vm boundary)
       if (url && typeof url === 'object' && typeof url.source === 'string' && typeof url.flags === 'string') {
         serializedUrl = { $regex: url.source, $flags: url.flags };
       }
-      return __pw_invoke("waitForURL", [serializedUrl, options?.timeout || null, options?.waitUntil || null]);
-    },
+      return __pw_invoke("waitForURL", [serializedUrl, options?.timeout || null, options?.waitUntil || null], { pageId: this.#pageId });
+    }
     context() {
+      const contextId = this.#contextId;
+      return new IsolateContext(contextId);
+    }
+    async click(selector) { return this.locator(selector).click(); }
+    async fill(selector, value) { return this.locator(selector).fill(value); }
+    async screenshot(options) { return __pw_invoke("screenshot", [options || {}], { pageId: this.#pageId }); }
+    async setViewportSize(size) { return __pw_invoke("setViewportSize", [size], { pageId: this.#pageId }); }
+    async viewportSize() { return __pw_invoke("viewportSize", [], { pageId: this.#pageId }); }
+    async emulateMedia(options) { return __pw_invoke("emulateMedia", [options], { pageId: this.#pageId }); }
+    async setExtraHTTPHeaders(headers) { return __pw_invoke("setExtraHTTPHeaders", [headers], { pageId: this.#pageId }); }
+    async bringToFront() { return __pw_invoke("bringToFront", [], { pageId: this.#pageId }); }
+    async close() { return __pw_invoke("close", [], { pageId: this.#pageId }); }
+    async isClosed() { return __pw_invoke("isClosed", [], { pageId: this.#pageId }); }
+    async pdf(options) { return __pw_invoke("pdf", [options || {}], { pageId: this.#pageId }); }
+    async pause() { return __pw_invoke("pause", [], { pageId: this.#pageId }); }
+    async frames() { return __pw_invoke("frames", [], { pageId: this.#pageId }); }
+    async mainFrame() { return __pw_invoke("mainFrame", [], { pageId: this.#pageId }); }
+    get keyboard() {
+      const pageId = this.#pageId;
       return {
-        async clearCookies() {
-          return __pw_invoke("clearCookies", []);
-        },
-        async addCookies(cookies) {
-          return __pw_invoke("addCookies", [cookies]);
-        },
-        async cookies(urls) {
-          return __pw_invoke("cookies", [urls]);
-        }
+        async type(text, options) { return __pw_invoke("keyboardType", [text, options], { pageId }); },
+        async press(key, options) { return __pw_invoke("keyboardPress", [key, options], { pageId }); },
+        async down(key) { return __pw_invoke("keyboardDown", [key], { pageId }); },
+        async up(key) { return __pw_invoke("keyboardUp", [key], { pageId }); },
+        async insertText(text) { return __pw_invoke("keyboardInsertText", [text], { pageId }); }
       };
-    },
-    async click(selector) { return this.locator(selector).click(); },
-    async fill(selector, value) { return this.locator(selector).fill(value); },
-    async screenshot(options) {
-      const base64 = await __pw_invoke("screenshot", [options || {}]);
-      return base64;
-    },
-    async setViewportSize(size) {
-      return __pw_invoke("setViewportSize", [size]);
-    },
-    async viewportSize() {
-      return __pw_invoke("viewportSize", []);
-    },
-    async emulateMedia(options) {
-      return __pw_invoke("emulateMedia", [options]);
-    },
-    async setExtraHTTPHeaders(headers) {
-      return __pw_invoke("setExtraHTTPHeaders", [headers]);
-    },
-    async bringToFront() {
-      return __pw_invoke("bringToFront", []);
-    },
-    async close() {
-      return __pw_invoke("close", []);
-    },
-    async isClosed() {
-      return __pw_invoke("isClosed", []);
-    },
-    async pdf(options) {
-      return __pw_invoke("pdf", [options || {}]);
-    },
-    async pause() {
-      return __pw_invoke("pause", []);
-    },
-    async frames() {
-      return __pw_invoke("frames", []);
-    },
-    async mainFrame() {
-      return __pw_invoke("mainFrame", []);
-    },
-    keyboard: {
-      async type(text, options) {
-        return __pw_invoke("keyboardType", [text, options]);
-      },
-      async press(key, options) {
-        return __pw_invoke("keyboardPress", [key, options]);
-      },
-      async down(key) {
-        return __pw_invoke("keyboardDown", [key]);
-      },
-      async up(key) {
-        return __pw_invoke("keyboardUp", [key]);
-      },
-      async insertText(text) {
-        return __pw_invoke("keyboardInsertText", [text]);
-      }
-    },
-    mouse: {
-      async move(x, y, options) {
-        return __pw_invoke("mouseMove", [x, y, options]);
-      },
-      async click(x, y, options) {
-        return __pw_invoke("mouseClick", [x, y, options]);
-      },
-      async down(options) {
-        return __pw_invoke("mouseDown", [options]);
-      },
-      async up(options) {
-        return __pw_invoke("mouseUp", [options]);
-      },
-      async wheel(deltaX, deltaY) {
-        return __pw_invoke("mouseWheel", [deltaX, deltaY]);
-      }
-    },
-    request: {
-      async fetch(url, options) {
-        const result = await __pw_invoke("request", [url, options?.method || "GET", options?.data, options?.headers]);
-        return {
-          status: () => result.status,
-          ok: () => result.ok,
-          headers: () => result.headers,
-          json: async () => result.json,
-          text: async () => result.text,
-          body: async () => result.body,
-        };
-      },
-      async get(url, options) {
-        return this.fetch(url, { ...options, method: "GET" });
-      },
-      async post(url, options) {
-        return this.fetch(url, { ...options, method: "POST" });
-      },
-      async put(url, options) {
-        return this.fetch(url, { ...options, method: "PUT" });
-      },
-      async delete(url, options) {
-        return this.fetch(url, { ...options, method: "DELETE" });
-      },
-    },
+    }
+    get mouse() {
+      const pageId = this.#pageId;
+      return {
+        async move(x, y, options) { return __pw_invoke("mouseMove", [x, y, options], { pageId }); },
+        async click(x, y, options) { return __pw_invoke("mouseClick", [x, y, options], { pageId }); },
+        async down(options) { return __pw_invoke("mouseDown", [options], { pageId }); },
+        async up(options) { return __pw_invoke("mouseUp", [options], { pageId }); },
+        async wheel(deltaX, deltaY) { return __pw_invoke("mouseWheel", [deltaX, deltaY], { pageId }); }
+      };
+    }
+    get request() {
+      const pageId = this.#pageId;
+      return {
+        async fetch(url, options) {
+          const result = await __pw_invoke("request", [url, options?.method || "GET", options?.data, options?.headers], { pageId });
+          return {
+            status: () => result.status,
+            ok: () => result.ok,
+            headers: () => result.headers,
+            json: async () => result.json,
+            text: async () => result.text,
+            body: async () => result.body,
+          };
+        },
+        async get(url, options) { return this.fetch(url, { ...options, method: "GET" }); },
+        async post(url, options) { return this.fetch(url, { ...options, method: "POST" }); },
+        async put(url, options) { return this.fetch(url, { ...options, method: "PUT" }); },
+        async delete(url, options) { return this.fetch(url, { ...options, method: "DELETE" }); },
+      };
+    }
+  }
+  globalThis.IsolatePage = IsolatePage;
+
+  // IsolateContext class - represents a browser context with a specific contextId
+  class IsolateContext {
+    #contextId;
+    constructor(contextId) { this.#contextId = contextId; }
+    get __contextId() { return this.#contextId; }
+
+    async newPage() {
+      const result = await __pw_invoke("newPage", [], { contextId: this.#contextId });
+      return new IsolatePage(result.pageId, this.#contextId);
+    }
+    async close() { return __pw_invoke("closeContext", [], { contextId: this.#contextId }); }
+    async clearCookies() { return __pw_invoke("clearCookies", [], { contextId: this.#contextId }); }
+    async addCookies(cookies) { return __pw_invoke("addCookies", [cookies], { contextId: this.#contextId }); }
+    async cookies(urls) { return __pw_invoke("cookies", [urls], { contextId: this.#contextId }); }
+  }
+  globalThis.IsolateContext = IsolateContext;
+
+  // browser global - for creating new contexts
+  globalThis.browser = {
+    async newContext(options) {
+      const result = await __pw_invoke("newContext", [options || null]);
+      return new IsolateContext(result.contextId);
+    }
   };
+
+  // context global - represents the default context
+  globalThis.context = new IsolateContext("ctx_0");
+
+  // page global - represents the default page
+  globalThis.page = new IsolatePage("page_0", "ctx_0");
 })();
 `);
 
-  // Locator class
+  // Locator class with pageId support
   context.evalSync(`
 (function() {
   // Helper to serialize options including RegExp
@@ -1664,99 +1730,101 @@ export async function setupPlaywright(
   }
 
   class Locator {
-    #type; #value; #options;
-    constructor(type, value, options) {
+    #type; #value; #options; #pageId;
+    constructor(type, value, options, pageId) {
       this.#type = type;
       this.#value = value;
       this.#options = options;
+      this.#pageId = pageId || "page_0"; // Default to page_0 for backward compatibility
     }
 
     _getInfo() { return [this.#type, this.#value, this.#options]; }
+    _getPageId() { return this.#pageId; }
 
     // Helper to create a chained locator
     _chain(childType, childValue, childOptions) {
       const parentInfo = this._getInfo();
       const childInfo = [childType, childValue, childOptions];
-      return new Locator("chained", JSON.stringify([parentInfo, childInfo]), null);
+      return new Locator("chained", JSON.stringify([parentInfo, childInfo]), null, this.#pageId);
     }
 
     async click() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "click", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "click", null], { pageId: this.#pageId });
     }
     async dblclick() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "dblclick", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "dblclick", null], { pageId: this.#pageId });
     }
     async fill(text) {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "fill", text]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "fill", text], { pageId: this.#pageId });
     }
     async type(text) {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "type", text]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "type", text], { pageId: this.#pageId });
     }
     async check() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "check", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "check", null], { pageId: this.#pageId });
     }
     async uncheck() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "uncheck", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "uncheck", null], { pageId: this.#pageId });
     }
     async selectOption(value) {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "selectOption", value]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "selectOption", value], { pageId: this.#pageId });
     }
     async clear() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "clear", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "clear", null], { pageId: this.#pageId });
     }
     async press(key) {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "press", key]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "press", key], { pageId: this.#pageId });
     }
     async hover() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "hover", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "hover", null], { pageId: this.#pageId });
     }
     async focus() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "focus", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "focus", null], { pageId: this.#pageId });
     }
     async textContent() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "getText", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "getText", null], { pageId: this.#pageId });
     }
     async inputValue() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "getValue", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "getValue", null], { pageId: this.#pageId });
     }
     async isVisible() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "isVisible", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "isVisible", null], { pageId: this.#pageId });
     }
     async isEnabled() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "isEnabled", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "isEnabled", null], { pageId: this.#pageId });
     }
     async isChecked() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "isChecked", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "isChecked", null], { pageId: this.#pageId });
     }
     async count() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "count", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "count", null], { pageId: this.#pageId });
     }
     async getAttribute(name) {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "getAttribute", name]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "getAttribute", name], { pageId: this.#pageId });
     }
     async isDisabled() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "isDisabled", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "isDisabled", null], { pageId: this.#pageId });
     }
     async isHidden() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "isHidden", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "isHidden", null], { pageId: this.#pageId });
     }
     async innerHTML() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "innerHTML", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "innerHTML", null], { pageId: this.#pageId });
     }
     async innerText() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "innerText", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "innerText", null], { pageId: this.#pageId });
     }
     async allTextContents() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "allTextContents", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "allTextContents", null], { pageId: this.#pageId });
     }
     async allInnerTexts() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "allInnerTexts", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "allInnerTexts", null], { pageId: this.#pageId });
     }
     async waitFor(options) {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "waitFor", options || {}]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "waitFor", options || {}], { pageId: this.#pageId });
     }
     async boundingBox() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "boundingBox", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "boundingBox", null], { pageId: this.#pageId });
     }
     async setInputFiles(files) {
       // Serialize files - if they have buffers, convert to base64
@@ -1768,29 +1836,29 @@ export async function setupPlaywright(
           buffer: typeof f.buffer === 'string' ? f.buffer : btoa(String.fromCharCode(...new Uint8Array(f.buffer)))
         }));
       }
-      return __pw_invoke("locatorAction", [...this._getInfo(), "setInputFiles", serializedFiles]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "setInputFiles", serializedFiles], { pageId: this.#pageId });
     }
     async screenshot(options) {
-      const base64 = await __pw_invoke("locatorAction", [...this._getInfo(), "screenshot", options || {}]);
+      const base64 = await __pw_invoke("locatorAction", [...this._getInfo(), "screenshot", options || {}], { pageId: this.#pageId });
       return base64;
     }
     async dragTo(target) {
       const targetInfo = target._getInfo();
-      return __pw_invoke("locatorAction", [...this._getInfo(), "dragTo", targetInfo]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "dragTo", targetInfo], { pageId: this.#pageId });
     }
     async scrollIntoViewIfNeeded() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "scrollIntoViewIfNeeded", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "scrollIntoViewIfNeeded", null], { pageId: this.#pageId });
     }
     async highlight() {
-      return __pw_invoke("locatorAction", [...this._getInfo(), "highlight", null]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "highlight", null], { pageId: this.#pageId });
     }
     async evaluate(fn, arg) {
       const fnString = typeof fn === 'function' ? fn.toString() : fn;
-      return __pw_invoke("locatorAction", [...this._getInfo(), "evaluate", [fnString, arg]]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "evaluate", [fnString, arg]], { pageId: this.#pageId });
     }
     async evaluateAll(fn, arg) {
       const fnString = typeof fn === 'function' ? fn.toString() : fn;
-      return __pw_invoke("locatorAction", [...this._getInfo(), "evaluateAll", [fnString, arg]]);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "evaluateAll", [fnString, arg]], { pageId: this.#pageId });
     }
     locator(selector) {
       return this._chain("css", selector, null);
@@ -1827,7 +1895,7 @@ export async function setupPlaywright(
     }
     nth(index) {
       const existingOpts = this.#options ? JSON.parse(this.#options) : {};
-      return new Locator(this.#type, this.#value, JSON.stringify({ ...existingOpts, nth: index }));
+      return new Locator(this.#type, this.#value, JSON.stringify({ ...existingOpts, nth: index }), this.#pageId);
     }
     first() {
       return this.nth(0);
@@ -1856,19 +1924,19 @@ export async function setupPlaywright(
       if (hasNot && typeof hasNot === 'object' && typeof hasNot._getInfo === 'function') {
         serializedFilter.hasNot = { $locator: hasNot._getInfo() };
       }
-      return new Locator(this.#type, this.#value, JSON.stringify({ ...existingOpts, filter: serializedFilter }));
+      return new Locator(this.#type, this.#value, JSON.stringify({ ...existingOpts, filter: serializedFilter }), this.#pageId);
     }
     or(other) {
       // Create a composite locator that matches either this or other
       const thisInfo = this._getInfo();
       const otherInfo = other._getInfo();
-      return new Locator("or", JSON.stringify([thisInfo, otherInfo]), null);
+      return new Locator("or", JSON.stringify([thisInfo, otherInfo]), null, this.#pageId);
     }
     and(other) {
       // Create a composite locator that matches both this and other
       const thisInfo = this._getInfo();
       const otherInfo = other._getInfo();
-      return new Locator("and", JSON.stringify([thisInfo, otherInfo]), null);
+      return new Locator("and", JSON.stringify([thisInfo, otherInfo]), null, this.#pageId);
     }
   }
   globalThis.Locator = Locator;
@@ -1881,6 +1949,7 @@ export async function setupPlaywright(
   // Helper to create locator matchers
   function createLocatorMatchers(locator, baseMatchers) {
     const info = locator._getInfo();
+    const pageId = locator._getPageId ? locator._getPageId() : "page_0";
 
     // Helper for serializing regex values
     function serializeExpected(expected) {
@@ -1892,145 +1961,145 @@ export async function setupPlaywright(
 
     const locatorMatchers = {
       async toBeVisible(options) {
-        return __pw_invoke("expectLocator", [...info, "toBeVisible", null, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toBeVisible", null, false, options?.timeout], { pageId });
       },
       async toContainText(expected, options) {
-        return __pw_invoke("expectLocator", [...info, "toContainText", serializeExpected(expected), false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toContainText", serializeExpected(expected), false, options?.timeout], { pageId });
       },
       async toHaveValue(expected, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, false, options?.timeout], { pageId });
       },
       async toBeEnabled(options) {
-        return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, false, options?.timeout], { pageId });
       },
       async toBeChecked(options) {
-        return __pw_invoke("expectLocator", [...info, "toBeChecked", null, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toBeChecked", null, false, options?.timeout], { pageId });
       },
       async toHaveAttribute(name, value, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveAttribute", { name, value: serializeExpected(value) }, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveAttribute", { name, value: serializeExpected(value) }, false, options?.timeout], { pageId });
       },
       async toHaveText(expected, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveText", serializeExpected(expected), false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveText", serializeExpected(expected), false, options?.timeout], { pageId });
       },
       async toHaveCount(count, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveCount", count, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveCount", count, false, options?.timeout], { pageId });
       },
       async toBeHidden(options) {
-        return __pw_invoke("expectLocator", [...info, "toBeHidden", null, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toBeHidden", null, false, options?.timeout], { pageId });
       },
       async toBeDisabled(options) {
-        return __pw_invoke("expectLocator", [...info, "toBeDisabled", null, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toBeDisabled", null, false, options?.timeout], { pageId });
       },
       async toBeFocused(options) {
-        return __pw_invoke("expectLocator", [...info, "toBeFocused", null, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toBeFocused", null, false, options?.timeout], { pageId });
       },
       async toBeEmpty(options) {
-        return __pw_invoke("expectLocator", [...info, "toBeEmpty", null, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toBeEmpty", null, false, options?.timeout], { pageId });
       },
       // New matchers
       async toBeAttached(options) {
-        return __pw_invoke("expectLocator", [...info, "toBeAttached", null, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toBeAttached", null, false, options?.timeout], { pageId });
       },
       async toBeEditable(options) {
-        return __pw_invoke("expectLocator", [...info, "toBeEditable", null, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toBeEditable", null, false, options?.timeout], { pageId });
       },
       async toHaveClass(expected, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveClass", serializeExpected(expected), false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveClass", serializeExpected(expected), false, options?.timeout], { pageId });
       },
       async toContainClass(expected, options) {
-        return __pw_invoke("expectLocator", [...info, "toContainClass", expected, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toContainClass", expected, false, options?.timeout], { pageId });
       },
       async toHaveId(expected, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveId", expected, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveId", expected, false, options?.timeout], { pageId });
       },
       async toBeInViewport(options) {
-        return __pw_invoke("expectLocator", [...info, "toBeInViewport", null, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toBeInViewport", null, false, options?.timeout], { pageId });
       },
       async toHaveCSS(name, value, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveCSS", { name, value: serializeExpected(value) }, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveCSS", { name, value: serializeExpected(value) }, false, options?.timeout], { pageId });
       },
       async toHaveJSProperty(name, value, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveJSProperty", { name, value }, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveJSProperty", { name, value }, false, options?.timeout], { pageId });
       },
       async toHaveAccessibleName(expected, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveAccessibleName", serializeExpected(expected), false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveAccessibleName", serializeExpected(expected), false, options?.timeout], { pageId });
       },
       async toHaveAccessibleDescription(expected, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveAccessibleDescription", serializeExpected(expected), false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveAccessibleDescription", serializeExpected(expected), false, options?.timeout], { pageId });
       },
       async toHaveRole(expected, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveRole", expected, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveRole", expected, false, options?.timeout], { pageId });
       },
       not: {
         async toBeVisible(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeVisible", null, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toBeVisible", null, true, options?.timeout], { pageId });
         },
         async toContainText(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toContainText", serializeExpected(expected), true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toContainText", serializeExpected(expected), true, options?.timeout], { pageId });
         },
         async toHaveValue(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, true, options?.timeout], { pageId });
         },
         async toBeEnabled(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toBeEnabled", null, true, options?.timeout], { pageId });
         },
         async toBeChecked(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeChecked", null, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toBeChecked", null, true, options?.timeout], { pageId });
         },
         async toHaveAttribute(name, value, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveAttribute", { name, value: serializeExpected(value) }, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveAttribute", { name, value: serializeExpected(value) }, true, options?.timeout], { pageId });
         },
         async toHaveText(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveText", serializeExpected(expected), true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveText", serializeExpected(expected), true, options?.timeout], { pageId });
         },
         async toHaveCount(count, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveCount", count, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveCount", count, true, options?.timeout], { pageId });
         },
         async toBeHidden(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeHidden", null, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toBeHidden", null, true, options?.timeout], { pageId });
         },
         async toBeDisabled(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeDisabled", null, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toBeDisabled", null, true, options?.timeout], { pageId });
         },
         async toBeFocused(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeFocused", null, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toBeFocused", null, true, options?.timeout], { pageId });
         },
         async toBeEmpty(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeEmpty", null, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toBeEmpty", null, true, options?.timeout], { pageId });
         },
         // New negated matchers
         async toBeAttached(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeAttached", null, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toBeAttached", null, true, options?.timeout], { pageId });
         },
         async toBeEditable(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeEditable", null, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toBeEditable", null, true, options?.timeout], { pageId });
         },
         async toHaveClass(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveClass", serializeExpected(expected), true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveClass", serializeExpected(expected), true, options?.timeout], { pageId });
         },
         async toContainClass(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toContainClass", expected, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toContainClass", expected, true, options?.timeout], { pageId });
         },
         async toHaveId(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveId", expected, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveId", expected, true, options?.timeout], { pageId });
         },
         async toBeInViewport(options) {
-          return __pw_invoke("expectLocator", [...info, "toBeInViewport", null, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toBeInViewport", null, true, options?.timeout], { pageId });
         },
         async toHaveCSS(name, value, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveCSS", { name, value: serializeExpected(value) }, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveCSS", { name, value: serializeExpected(value) }, true, options?.timeout], { pageId });
         },
         async toHaveJSProperty(name, value, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveJSProperty", { name, value }, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveJSProperty", { name, value }, true, options?.timeout], { pageId });
         },
         async toHaveAccessibleName(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveAccessibleName", serializeExpected(expected), true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveAccessibleName", serializeExpected(expected), true, options?.timeout], { pageId });
         },
         async toHaveAccessibleDescription(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveAccessibleDescription", serializeExpected(expected), true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveAccessibleDescription", serializeExpected(expected), true, options?.timeout], { pageId });
         },
         async toHaveRole(expected, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveRole", expected, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveRole", expected, true, options?.timeout], { pageId });
         },
       }
     };
@@ -2047,7 +2116,9 @@ export async function setupPlaywright(
   }
 
   // Helper to create page matchers
-  function createPageMatchers(baseMatchers) {
+  function createPageMatchers(page, baseMatchers) {
+    const pageId = page.__pageId || "page_0";
+
     function serializeExpected(expected) {
       if (expected instanceof RegExp) {
         return { $regex: expected.source, $flags: expected.flags };
@@ -2057,17 +2128,17 @@ export async function setupPlaywright(
 
     const pageMatchers = {
       async toHaveURL(expected, options) {
-        return __pw_invoke("expectPage", ["toHaveURL", serializeExpected(expected), false, options?.timeout]);
+        return __pw_invoke("expectPage", ["toHaveURL", serializeExpected(expected), false, options?.timeout], { pageId });
       },
       async toHaveTitle(expected, options) {
-        return __pw_invoke("expectPage", ["toHaveTitle", serializeExpected(expected), false, options?.timeout]);
+        return __pw_invoke("expectPage", ["toHaveTitle", serializeExpected(expected), false, options?.timeout], { pageId });
       },
       not: {
         async toHaveURL(expected, options) {
-          return __pw_invoke("expectPage", ["toHaveURL", serializeExpected(expected), true, options?.timeout]);
+          return __pw_invoke("expectPage", ["toHaveURL", serializeExpected(expected), true, options?.timeout], { pageId });
         },
         async toHaveTitle(expected, options) {
-          return __pw_invoke("expectPage", ["toHaveTitle", serializeExpected(expected), true, options?.timeout]);
+          return __pw_invoke("expectPage", ["toHaveTitle", serializeExpected(expected), true, options?.timeout], { pageId });
         },
       }
     };
@@ -2091,9 +2162,9 @@ export async function setupPlaywright(
       if (actual && actual.constructor && actual.constructor.name === 'Locator') {
         return createLocatorMatchers(actual, baseMatchers);
       }
-      // If actual is the page object, add page-specific matchers
+      // If actual is the page object (IsolatePage), add page-specific matchers
       if (actual && actual.__isPage === true) {
-        return createPageMatchers(baseMatchers);
+        return createPageMatchers(actual, baseMatchers);
       }
       return baseMatchers;
     };

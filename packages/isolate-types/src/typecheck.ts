@@ -88,7 +88,7 @@ export interface TypecheckOptions {
    * Which isolate global types to include.
    * @default ["core", "fetch", "fs"]
    */
-  include?: Array<"core" | "fetch" | "fs" | "console" | "encoding" | "timers" | "testEnvironment">;
+  include?: Array<"core" | "fetch" | "fs" | "console" | "encoding" | "timers" | "testEnvironment" | "playwright">;
 
   /**
    * Library type definitions to inject for import resolution.

@@ -1991,6 +1991,413 @@ declare global {
 `;
 
 /**
+ * Playwright types for isolated-vm.
+ *
+ * These types define the globals injected by setupPlaywright() into an isolated-vm context.
+ * Playwright brings 3 globals: page, context, and browser.
+ */
+export const PLAYWRIGHT_TYPES = `
+/**
+ * Locator represents an element or group of elements in the page.
+ */
+declare class Locator {
+  /** Click the element */
+  click(): Promise<void>;
+  /** Double-click the element */
+  dblclick(): Promise<void>;
+  /** Fill an input element with text */
+  fill(text: string): Promise<void>;
+  /** Type text into an element (key by key) */
+  type(text: string): Promise<void>;
+  /** Check a checkbox or radio */
+  check(): Promise<void>;
+  /** Uncheck a checkbox */
+  uncheck(): Promise<void>;
+  /** Select an option in a dropdown */
+  selectOption(value: string | string[]): Promise<void>;
+  /** Clear an input element */
+  clear(): Promise<void>;
+  /** Press a key */
+  press(key: string): Promise<void>;
+  /** Hover over the element */
+  hover(): Promise<void>;
+  /** Focus the element */
+  focus(): Promise<void>;
+  /** Get text content of the element */
+  textContent(): Promise<string | null>;
+  /** Get the value of an input element */
+  inputValue(): Promise<string>;
+  /** Check if the element is visible */
+  isVisible(): Promise<boolean>;
+  /** Check if the element is enabled */
+  isEnabled(): Promise<boolean>;
+  /** Check if the element is checked */
+  isChecked(): Promise<boolean>;
+  /** Check if the element is disabled */
+  isDisabled(): Promise<boolean>;
+  /** Check if the element is hidden */
+  isHidden(): Promise<boolean>;
+  /** Get the count of matching elements */
+  count(): Promise<number>;
+  /** Get an attribute value */
+  getAttribute(name: string): Promise<string | null>;
+  /** Get innerHTML */
+  innerHTML(): Promise<string>;
+  /** Get innerText */
+  innerText(): Promise<string>;
+  /** Get all text contents */
+  allTextContents(): Promise<string[]>;
+  /** Get all inner texts */
+  allInnerTexts(): Promise<string[]>;
+  /** Wait for the element to match a state */
+  waitFor(options?: { state?: "attached" | "detached" | "visible" | "hidden"; timeout?: number }): Promise<void>;
+  /** Get bounding box */
+  boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null>;
+  /** Set input files for a file input */
+  setInputFiles(files: string | string[] | { name: string; mimeType: string; buffer: ArrayBuffer | Uint8Array | string }[]): Promise<void>;
+  /** Take a screenshot of the element */
+  screenshot(options?: { path?: string; type?: "png" | "jpeg"; quality?: number }): Promise<string>;
+  /** Drag to another element */
+  dragTo(target: Locator): Promise<void>;
+  /** Scroll element into view */
+  scrollIntoViewIfNeeded(): Promise<void>;
+  /** Highlight the element for debugging */
+  highlight(): Promise<void>;
+  /** Evaluate a function in the context of the element */
+  evaluate<R>(fn: (el: Element, arg?: unknown) => R, arg?: unknown): Promise<R>;
+  /** Evaluate a function for all matching elements */
+  evaluateAll<R>(fn: (els: Element[], arg?: unknown) => R, arg?: unknown): Promise<R>;
+
+  // Chaining methods
+  /** Chain with another CSS selector */
+  locator(selector: string): Locator;
+  /** Chain with getByRole */
+  getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator;
+  /** Chain with getByText */
+  getByText(text: string | RegExp): Locator;
+  /** Chain with getByLabel */
+  getByLabel(label: string | RegExp): Locator;
+  /** Chain with getByPlaceholder */
+  getByPlaceholder(placeholder: string | RegExp): Locator;
+  /** Chain with getByTestId */
+  getByTestId(testId: string): Locator;
+  /** Chain with getByAltText */
+  getByAltText(alt: string | RegExp): Locator;
+  /** Chain with getByTitle */
+  getByTitle(title: string | RegExp): Locator;
+
+  // Subset selection
+  /** Get all matching locators as an array */
+  all(): Promise<Locator[]>;
+  /** Get the nth matching element */
+  nth(index: number): Locator;
+  /** Get the first matching element */
+  first(): Locator;
+  /** Get the last matching element */
+  last(): Locator;
+
+  // Filtering
+  /** Filter locators by additional criteria */
+  filter(options: { hasText?: string | RegExp; hasNotText?: string | RegExp; has?: Locator; hasNot?: Locator }): Locator;
+  /** Create a locator matching either this or the other locator */
+  or(other: Locator): Locator;
+  /** Create a locator matching both this and the other locator */
+  and(other: Locator): Locator;
+}
+
+/**
+ * FrameLocator for interacting with elements inside iframes.
+ */
+interface FrameLocator {
+  locator(selector: string): Locator;
+  getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator;
+  getByText(text: string | RegExp): Locator;
+  getByLabel(label: string | RegExp): Locator;
+  getByPlaceholder(placeholder: string | RegExp): Locator;
+  getByTestId(testId: string): Locator;
+  getByAltText(alt: string | RegExp): Locator;
+  getByTitle(title: string | RegExp): Locator;
+}
+
+/**
+ * Keyboard API for simulating keyboard input.
+ */
+interface Keyboard {
+  type(text: string, options?: { delay?: number }): Promise<void>;
+  press(key: string, options?: { delay?: number }): Promise<void>;
+  down(key: string): Promise<void>;
+  up(key: string): Promise<void>;
+  insertText(text: string): Promise<void>;
+}
+
+/**
+ * Mouse API for simulating mouse input.
+ */
+interface Mouse {
+  move(x: number, y: number, options?: { steps?: number }): Promise<void>;
+  click(x: number, y: number, options?: { button?: "left" | "right" | "middle"; clickCount?: number; delay?: number }): Promise<void>;
+  down(options?: { button?: "left" | "right" | "middle"; clickCount?: number }): Promise<void>;
+  up(options?: { button?: "left" | "right" | "middle"; clickCount?: number }): Promise<void>;
+  wheel(deltaX: number, deltaY: number): Promise<void>;
+}
+
+/**
+ * API Response from page.request methods.
+ */
+interface APIResponse {
+  status(): number;
+  ok(): boolean;
+  headers(): Record<string, string>;
+  json(): Promise<unknown>;
+  text(): Promise<string>;
+  body(): Promise<ArrayBuffer>;
+}
+
+/**
+ * Request API for making HTTP requests with page cookies.
+ */
+interface APIRequestContext {
+  fetch(url: string, options?: { method?: string; data?: unknown; headers?: Record<string, string> }): Promise<APIResponse>;
+  get(url: string, options?: { headers?: Record<string, string> }): Promise<APIResponse>;
+  post(url: string, options?: { data?: unknown; headers?: Record<string, string> }): Promise<APIResponse>;
+  put(url: string, options?: { data?: unknown; headers?: Record<string, string> }): Promise<APIResponse>;
+  delete(url: string, options?: { headers?: Record<string, string> }): Promise<APIResponse>;
+}
+
+/**
+ * Frame information.
+ */
+interface FrameInfo {
+  name: string;
+  url: string;
+}
+
+/**
+ * Cookie data.
+ */
+interface Cookie {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+}
+
+/**
+ * IsolatePage - represents a browser page in the isolate.
+ */
+declare class IsolatePage {
+  /** Navigate to a URL */
+  goto(url: string, options?: { waitUntil?: "load" | "domcontentloaded" | "networkidle" }): Promise<void>;
+  /** Reload the page */
+  reload(): Promise<void>;
+  /** Get the current URL (synchronous) */
+  url(): string;
+  /** Get the page title */
+  title(): Promise<string>;
+  /** Get the page HTML content */
+  content(): Promise<string>;
+  /** Wait for a selector to appear */
+  waitForSelector(selector: string, options?: { state?: "attached" | "detached" | "visible" | "hidden"; timeout?: number }): Promise<void>;
+  /** Wait for a specified time */
+  waitForTimeout(ms: number): Promise<void>;
+  /** Wait for a load state */
+  waitForLoadState(state?: "load" | "domcontentloaded" | "networkidle"): Promise<void>;
+  /** Wait for the URL to match */
+  waitForURL(url: string | RegExp, options?: { timeout?: number; waitUntil?: "load" | "domcontentloaded" | "networkidle" }): Promise<void>;
+  /** Evaluate JavaScript in the browser context */
+  evaluate<R>(script: string | (() => R) | ((arg: unknown) => R), arg?: unknown): Promise<R>;
+  /** Create a locator by CSS selector */
+  locator(selector: string): Locator;
+  /** Create a locator by ARIA role */
+  getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator;
+  /** Create a locator by text content */
+  getByText(text: string | RegExp): Locator;
+  /** Create a locator by label */
+  getByLabel(label: string | RegExp): Locator;
+  /** Create a locator by placeholder */
+  getByPlaceholder(placeholder: string | RegExp): Locator;
+  /** Create a locator by test ID */
+  getByTestId(testId: string): Locator;
+  /** Create a locator by alt text */
+  getByAltText(alt: string | RegExp): Locator;
+  /** Create a locator by title */
+  getByTitle(title: string | RegExp): Locator;
+  /** Create a frame locator */
+  frameLocator(selector: string): FrameLocator;
+  /** Navigate back */
+  goBack(options?: { waitUntil?: "load" | "domcontentloaded" | "networkidle" }): Promise<void>;
+  /** Navigate forward */
+  goForward(options?: { waitUntil?: "load" | "domcontentloaded" | "networkidle" }): Promise<void>;
+  /** Click an element (shorthand) */
+  click(selector: string): Promise<void>;
+  /** Fill an input (shorthand) */
+  fill(selector: string, value: string): Promise<void>;
+  /** Take a screenshot */
+  screenshot(options?: { path?: string; fullPage?: boolean; type?: "png" | "jpeg"; quality?: number }): Promise<string>;
+  /** Generate a PDF (Chromium only) */
+  pdf(options?: { path?: string; format?: string; landscape?: boolean; margin?: { top?: string; bottom?: string; left?: string; right?: string } }): Promise<string>;
+  /** Set the viewport size */
+  setViewportSize(size: { width: number; height: number }): Promise<void>;
+  /** Get the viewport size */
+  viewportSize(): Promise<{ width: number; height: number } | null>;
+  /** Emulate media type or color scheme */
+  emulateMedia(options: { media?: "screen" | "print" | null; colorScheme?: "light" | "dark" | "no-preference" | null }): Promise<void>;
+  /** Set extra HTTP headers */
+  setExtraHTTPHeaders(headers: Record<string, string>): Promise<void>;
+  /** Bring the page to front */
+  bringToFront(): Promise<void>;
+  /** Close the page */
+  close(): Promise<void>;
+  /** Check if the page is closed */
+  isClosed(): Promise<boolean>;
+  /** Pause execution (for debugging) */
+  pause(): Promise<void>;
+  /** Get all frames */
+  frames(): Promise<FrameInfo[]>;
+  /** Get the main frame */
+  mainFrame(): Promise<FrameInfo>;
+  /** Get the browser context for this page */
+  context(): IsolateContext;
+  /** Keyboard API */
+  readonly keyboard: Keyboard;
+  /** Mouse API */
+  readonly mouse: Mouse;
+  /** Request API for making HTTP requests */
+  readonly request: APIRequestContext;
+}
+
+/**
+ * IsolateContext - represents a browser context in the isolate.
+ */
+declare class IsolateContext {
+  /** Create a new page in this context (requires createPage callback) */
+  newPage(): Promise<IsolatePage>;
+  /** Close this context and all its pages */
+  close(): Promise<void>;
+  /** Clear all cookies */
+  clearCookies(): Promise<void>;
+  /** Add cookies */
+  addCookies(cookies: Cookie[]): Promise<void>;
+  /** Get cookies */
+  cookies(urls?: string | string[]): Promise<Cookie[]>;
+}
+
+/**
+ * Browser object for creating new contexts.
+ */
+interface IsolateBrowser {
+  /** Create a new browser context (requires createContext callback) */
+  newContext(options?: {
+    viewport?: { width: number; height: number } | null;
+    userAgent?: string;
+    locale?: string;
+    timezoneId?: string;
+    geolocation?: { latitude: number; longitude: number; accuracy?: number };
+    permissions?: string[];
+    colorScheme?: "light" | "dark" | "no-preference";
+  }): Promise<IsolateContext>;
+}
+
+/**
+ * The default page object.
+ */
+declare const page: IsolatePage;
+
+/**
+ * The default browser context.
+ */
+declare const context: IsolateContext;
+
+/**
+ * Browser object for creating new contexts.
+ */
+declare const browser: IsolateBrowser;
+
+// ============================================================================
+// Playwright Expect Matchers (extends test-environment expect)
+// ============================================================================
+
+/**
+ * Options for locator assertion timeouts.
+ */
+interface LocatorAssertionOptions {
+  timeout?: number;
+}
+
+/**
+ * Locator-specific assertion matchers (added to expect when using Playwright).
+ * These are available when calling expect(locator).
+ */
+interface PlaywrightLocatorMatchers {
+  /** Assert element is visible */
+  toBeVisible(options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element is hidden */
+  toBeHidden(options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element is enabled */
+  toBeEnabled(options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element is disabled */
+  toBeDisabled(options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element is checked */
+  toBeChecked(options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element is focused */
+  toBeFocused(options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element is empty */
+  toBeEmpty(options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element is attached to DOM */
+  toBeAttached(options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element is editable */
+  toBeEditable(options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element is in viewport */
+  toBeInViewport(options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element contains text */
+  toContainText(expected: string | RegExp, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element has exact text */
+  toHaveText(expected: string | RegExp, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element has value (for inputs) */
+  toHaveValue(expected: string, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element has attribute */
+  toHaveAttribute(name: string, value?: string | RegExp, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element count */
+  toHaveCount(count: number, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element has class */
+  toHaveClass(expected: string | RegExp, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element contains class */
+  toContainClass(expected: string, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element has id */
+  toHaveId(expected: string, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element has CSS property */
+  toHaveCSS(name: string, value: string | RegExp, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element has JavaScript property */
+  toHaveJSProperty(name: string, value: unknown, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element has accessible name */
+  toHaveAccessibleName(expected: string | RegExp, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element has accessible description */
+  toHaveAccessibleDescription(expected: string | RegExp, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert element has ARIA role */
+  toHaveRole(expected: string, options?: LocatorAssertionOptions): Promise<void>;
+  /** Negated matchers */
+  not: PlaywrightLocatorMatchers;
+}
+
+/**
+ * Page-specific assertion matchers (added to expect when using Playwright).
+ * These are available when calling expect(page).
+ */
+interface PlaywrightPageMatchers {
+  /** Assert page has URL */
+  toHaveURL(expected: string | RegExp, options?: LocatorAssertionOptions): Promise<void>;
+  /** Assert page has title */
+  toHaveTitle(expected: string | RegExp, options?: LocatorAssertionOptions): Promise<void>;
+  /** Negated matchers */
+  not: PlaywrightPageMatchers;
+}
+`;
+
+/**
  * Map of package names to their type definitions.
  */
 export const TYPE_DEFINITIONS = {
@@ -2003,6 +2410,7 @@ export const TYPE_DEFINITIONS = {
   path: PATH_TYPES,
   testEnvironment: TEST_ENV_TYPES,
   timers: TIMERS_TYPES,
+  playwright: PLAYWRIGHT_TYPES,
 } as const;
 
 /**

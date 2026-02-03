@@ -548,6 +548,10 @@ interface PlaywrightOptions {
   console?: boolean;
   /** Unified event callback for all playwright events */
   onEvent?: (event: PlaywrightEvent) => void;
+  /** Callback to create new pages when context.newPage() is called; receives the BrowserContext so you can call context.newPage() */
+  createPage?: (context: BrowserContext) => Promise<Page> | Page;
+  /** Callback to create new contexts when browser.newContext() is called */
+  createContext?: (options?: BrowserContextOptions) => Promise<BrowserContext> | BrowserContext;
 }
 
 type PlaywrightEvent =
@@ -891,6 +895,7 @@ interface TypecheckOptions {
     | "encoding"    // atob(), btoa()
     | "timers"      // setTimeout, setInterval, etc.
     | "testEnvironment" // describe(), it(), expect()
+    | "playwright"      // page, context, browser, Locator matchers
   >;
 
   /**
@@ -944,6 +949,7 @@ import { TYPE_DEFINITIONS } from "@ricsam/isolate-types";
 // - TYPE_DEFINITIONS.fs
 // - TYPE_DEFINITIONS.path
 // - TYPE_DEFINITIONS.testEnvironment
+// - TYPE_DEFINITIONS.playwright
 // - TYPE_DEFINITIONS.timers
 
 // Use with ts-morph

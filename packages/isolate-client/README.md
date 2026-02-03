@@ -576,6 +576,67 @@ await runtime.eval(`
 - `setInputFiles('/path')` without `readFile`: Throws error
 - `setInputFiles([{ name, mimeType, buffer }])`: Works without callback (inline data)
 
+### Multi-Page Testing
+
+For tests that need multiple pages or browser contexts, provide `createPage` and/or `createContext` callbacks:
+
+```typescript
+import { chromium } from "playwright";
+
+const browser = await chromium.launch({ headless: true });
+const browserContext = await browser.newContext();
+const page = await browserContext.newPage();
+
+const runtime = await client.createRuntime({
+  testEnvironment: true,
+  playwright: {
+    page,
+    // Called when isolate code calls context.newPage(); receive the BrowserContext and call context.newPage()
+    createPage: async (context) => context.newPage(),
+    // Called when isolate code calls browser.newContext()
+    createContext: async (options) => browser.newContext(options),
+  },
+});
+
+await runtime.eval(`
+  test('multi-page test', async () => {
+    // Create additional pages
+    const page2 = await context.newPage();
+
+    // Navigate independently
+    await page.goto('https://example.com/page1');
+    await page2.goto('https://example.com/page2');
+
+    // Work with multiple pages
+    await page.locator('#button').click();
+    await page2.locator('#input').fill('text');
+
+    await page2.close();
+  });
+
+  test('multi-context test', async () => {
+    // Create isolated context (separate cookies, storage)
+    const ctx2 = await browser.newContext();
+    const page2 = await ctx2.newPage();
+
+    // Cookies are isolated between contexts
+    await context.addCookies([{ name: 'test', value: '1', domain: 'example.com', path: '/' }]);
+    const ctx1Cookies = await context.cookies();
+    const ctx2Cookies = await ctx2.cookies();
+
+    expect(ctx1Cookies.some(c => c.name === 'test')).toBe(true);
+    expect(ctx2Cookies.some(c => c.name === 'test')).toBe(false);
+
+    await ctx2.close();
+  });
+`);
+```
+
+**Behavior without lifecycle callbacks:**
+- `context.newPage()` without `createPage`: Throws error
+- `browser.newContext()` without `createContext`: Throws error
+- `context.cookies()`, `context.addCookies()`, `context.clearCookies()`: Work without callbacks
+
 ## Runtime Interface
 
 ```typescript

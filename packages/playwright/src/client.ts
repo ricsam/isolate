@@ -3,7 +3,7 @@
  * This module can be imported without loading isolated-vm
  */
 
-import type { Page, Locator as PlaywrightLocator } from "playwright";
+import type { Page, Locator as PlaywrightLocator, BrowserContext, BrowserContextOptions } from "playwright";
 import type {
   PlaywrightOperation,
   PlaywrightResult,
@@ -851,6 +851,16 @@ async function executePageExpectAssertion(
 // ============================================================================
 
 /**
+ * Registry for tracking multiple pages and contexts.
+ */
+interface PlaywrightRegistry {
+  pages: Map<string, Page>;
+  contexts: Map<string, BrowserContext>;
+  nextPageId: number;
+  nextContextId: number;
+}
+
+/**
  * Create a playwright handler from a Page object.
  * This handler is called by the daemon (via callback) when sandbox needs page operations.
  * Used for remote runtime where the browser runs on the client.
@@ -863,6 +873,10 @@ export function createPlaywrightHandler(
     readFile?: ReadFileCallback;
     /** Callback to write files for screenshot()/pdf() with path option */
     writeFile?: WriteFileCallback;
+    /** Callback to create new pages when context.newPage() is called; receives the BrowserContext so you can call context.newPage() */
+    createPage?: (context: BrowserContext) => Promise<Page> | Page;
+    /** Callback to create new contexts when browser.newContext() is called */
+    createContext?: (options?: BrowserContextOptions) => Promise<BrowserContext> | BrowserContext;
   }
 ): PlaywrightCallback {
   const timeout = options?.timeout ?? 30000;
@@ -871,40 +885,105 @@ export function createPlaywrightHandler(
     writeFile: options?.writeFile,
   };
 
+  // Registry for tracking multiple pages and contexts
+  const registry: PlaywrightRegistry = {
+    pages: new Map<string, Page>([["page_0", page]]),
+    contexts: new Map<string, BrowserContext>([["ctx_0", page.context()]]),
+    nextPageId: 1,
+    nextContextId: 1,
+  };
+
   return async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
     try {
+      // Handle lifecycle operations first (they don't require existing page)
+      switch (op.type) {
+        case "newContext": {
+          if (!options?.createContext) {
+            return { ok: false, error: { name: "Error", message: "createContext callback not provided. Configure createContext in playwright options to enable browser.newContext()." } };
+          }
+          const [contextOptions] = op.args as [BrowserContextOptions?];
+          const newContext = await options.createContext(contextOptions);
+          const contextId = `ctx_${registry.nextContextId++}`;
+          registry.contexts.set(contextId, newContext);
+          return { ok: true, value: { contextId } };
+        }
+
+        case "newPage": {
+          if (!options?.createPage) {
+            return { ok: false, error: { name: "Error", message: "createPage callback not provided. Configure createPage in playwright options to enable context.newPage()." } };
+          }
+          const contextId = op.contextId ?? "ctx_0";
+          const targetContext = registry.contexts.get(contextId);
+          if (!targetContext) {
+            return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
+          }
+          const newPage = await options.createPage(targetContext);
+          const pageId = `page_${registry.nextPageId++}`;
+          registry.pages.set(pageId, newPage);
+          return { ok: true, value: { pageId } };
+        }
+
+        case "closeContext": {
+          const contextId = op.contextId ?? "ctx_0";
+          const context = registry.contexts.get(contextId);
+          if (!context) {
+            return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
+          }
+          await context.close();
+          registry.contexts.delete(contextId);
+          // Remove pages belonging to this context
+          for (const [pid, p] of registry.pages) {
+            if (p.context() === context) {
+              registry.pages.delete(pid);
+            }
+          }
+          return { ok: true };
+        }
+      }
+
+      // Resolve page from pageId for page-specific operations
+      const pageId = op.pageId ?? "page_0";
+      const targetPage = registry.pages.get(pageId);
+      if (!targetPage) {
+        return { ok: false, error: { name: "Error", message: `Page ${pageId} not found` } };
+      }
+
+      // Resolve context from contextId for context-specific operations
+      const contextId = op.contextId ?? "ctx_0";
+      const targetContext = registry.contexts.get(contextId);
+
       switch (op.type) {
         case "goto": {
           const [url, waitUntil] = op.args as [string, string?];
-          await page.goto(url, {
+          await targetPage.goto(url, {
             timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
           });
           return { ok: true };
         }
         case "reload":
-          await page.reload({ timeout });
+          await targetPage.reload({ timeout });
           return { ok: true };
         case "url":
-          return { ok: true, value: page.url() };
+          return { ok: true, value: targetPage.url() };
         case "title":
-          return { ok: true, value: await page.title() };
+          return { ok: true, value: await targetPage.title() };
         case "content":
-          return { ok: true, value: await page.content() };
+          return { ok: true, value: await targetPage.content() };
         case "waitForSelector": {
           const [selector, optionsJson] = op.args as [string, string?];
           const opts = optionsJson ? JSON.parse(optionsJson) : {};
-          await page.waitForSelector(selector, { timeout, ...opts });
+          await targetPage.waitForSelector(selector, { timeout, ...opts });
           return { ok: true };
         }
         case "waitForTimeout": {
           const [ms] = op.args as [number];
-          await page.waitForTimeout(ms);
+          await targetPage.waitForTimeout(ms);
           return { ok: true };
         }
         case "waitForLoadState": {
           const [state] = op.args as [string?];
-          await page.waitForLoadState(
+          await targetPage.waitForLoadState(
             (state as "load" | "domcontentloaded" | "networkidle") ?? "load",
             { timeout }
           );
@@ -914,10 +993,10 @@ export function createPlaywrightHandler(
           const [script, arg] = op.args as [string, unknown];
           if (op.args.length > 1) {
             const fn = new Function('return (' + script + ')')();
-            const result = await page.evaluate(fn, arg);
+            const result = await targetPage.evaluate(fn, arg);
             return { ok: true, value: result };
           }
-          const result = await page.evaluate(script);
+          const result = await targetPage.evaluate(script);
           return { ok: true, value: result };
         }
         case "locatorAction": {
@@ -928,7 +1007,7 @@ export function createPlaywrightHandler(
             string,
             unknown
           ];
-          const locator = getLocator(page, selectorType, selectorValue, roleOptions);
+          const locator = getLocator(targetPage, selectorType, selectorValue, roleOptions);
           const result = await executeLocatorAction(locator, action, actionArg, timeout, fileIO);
           return { ok: true, value: result };
         }
@@ -942,7 +1021,7 @@ export function createPlaywrightHandler(
             boolean,
             number?
           ];
-          const locator = getLocator(page, selectorType, selectorValue, roleOptions);
+          const locator = getLocator(targetPage, selectorType, selectorValue, roleOptions);
           const effectiveTimeout = customTimeout ?? timeout;
           await executeExpectAssertion(locator, matcher, expected, negated ?? false, effectiveTimeout);
           return { ok: true };
@@ -955,7 +1034,7 @@ export function createPlaywrightHandler(
             number?
           ];
           const effectiveTimeout = customTimeout ?? timeout;
-          await executePageExpectAssertion(page, matcher, expected, negated ?? false, effectiveTimeout);
+          await executePageExpectAssertion(targetPage, matcher, expected, negated ?? false, effectiveTimeout);
           return { ok: true };
         }
         case "request": {
@@ -980,7 +1059,7 @@ export function createPlaywrightHandler(
             requestOptions.data = data;
           }
 
-          const response = await page.request.fetch(url, {
+          const response = await targetPage.request.fetch(url, {
             method: method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS",
             ...requestOptions,
           });
@@ -1008,7 +1087,7 @@ export function createPlaywrightHandler(
         }
         case "goBack": {
           const [waitUntil] = op.args as [string?];
-          await page.goBack({
+          await targetPage.goBack({
             timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
           });
@@ -1016,7 +1095,7 @@ export function createPlaywrightHandler(
         }
         case "goForward": {
           const [waitUntil] = op.args as [string?];
-          await page.goForward({
+          await targetPage.goForward({
             timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? "load",
           });
@@ -1032,14 +1111,16 @@ export function createPlaywrightHandler(
           const url = urlArg && typeof urlArg === 'object' && '$regex' in urlArg
             ? new RegExp(urlArg.$regex, urlArg.$flags)
             : urlArg;
-          await page.waitForURL(url, {
+          await targetPage.waitForURL(url, {
             timeout: customTimeout ?? timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? undefined,
           });
           return { ok: true };
         }
         case "clearCookies": {
-          await page.context().clearCookies();
+          // Use contextId for cookie operations
+          const ctx = targetContext ?? targetPage.context();
+          await ctx.clearCookies();
           return { ok: true };
         }
         case "screenshot": {
@@ -1051,7 +1132,7 @@ export function createPlaywrightHandler(
             clip?: { x: number; y: number; width: number; height: number };
           }?];
           // Don't pass path to Playwright - we handle file writing through callback
-          const buffer = await page.screenshot({
+          const buffer = await targetPage.screenshot({
             type: screenshotOptions?.type,
             quality: screenshotOptions?.quality,
             fullPage: screenshotOptions?.fullPage,
@@ -1072,88 +1153,90 @@ export function createPlaywrightHandler(
         }
         case "setViewportSize": {
           const [size] = op.args as [{ width: number; height: number }];
-          await page.setViewportSize(size);
+          await targetPage.setViewportSize(size);
           return { ok: true };
         }
         case "viewportSize": {
-          return { ok: true, value: page.viewportSize() };
+          return { ok: true, value: targetPage.viewportSize() };
         }
         case "keyboardType": {
           const [text, typeOptions] = op.args as [string, { delay?: number }?];
-          await page.keyboard.type(text, typeOptions);
+          await targetPage.keyboard.type(text, typeOptions);
           return { ok: true };
         }
         case "keyboardPress": {
           const [key, pressOptions] = op.args as [string, { delay?: number }?];
-          await page.keyboard.press(key, pressOptions);
+          await targetPage.keyboard.press(key, pressOptions);
           return { ok: true };
         }
         case "keyboardDown": {
           const [key] = op.args as [string];
-          await page.keyboard.down(key);
+          await targetPage.keyboard.down(key);
           return { ok: true };
         }
         case "keyboardUp": {
           const [key] = op.args as [string];
-          await page.keyboard.up(key);
+          await targetPage.keyboard.up(key);
           return { ok: true };
         }
         case "keyboardInsertText": {
           const [text] = op.args as [string];
-          await page.keyboard.insertText(text);
+          await targetPage.keyboard.insertText(text);
           return { ok: true };
         }
         case "mouseMove": {
           const [x, y, moveOptions] = op.args as [number, number, { steps?: number }?];
-          await page.mouse.move(x, y, moveOptions);
+          await targetPage.mouse.move(x, y, moveOptions);
           return { ok: true };
         }
         case "mouseClick": {
           const [x, y, clickOptions] = op.args as [number, number, { button?: 'left' | 'right' | 'middle'; clickCount?: number; delay?: number }?];
-          await page.mouse.click(x, y, clickOptions);
+          await targetPage.mouse.click(x, y, clickOptions);
           return { ok: true };
         }
         case "mouseDown": {
           const [downOptions] = op.args as [{ button?: 'left' | 'right' | 'middle'; clickCount?: number }?];
           if (downOptions) {
-            await page.mouse.down(downOptions);
+            await targetPage.mouse.down(downOptions);
           } else {
-            await page.mouse.down();
+            await targetPage.mouse.down();
           }
           return { ok: true };
         }
         case "mouseUp": {
           const [upOptions] = op.args as [{ button?: 'left' | 'right' | 'middle'; clickCount?: number }?];
           if (upOptions) {
-            await page.mouse.up(upOptions);
+            await targetPage.mouse.up(upOptions);
           } else {
-            await page.mouse.up();
+            await targetPage.mouse.up();
           }
           return { ok: true };
         }
         case "mouseWheel": {
           const [deltaX, deltaY] = op.args as [number, number];
-          await page.mouse.wheel(deltaX, deltaY);
+          await targetPage.mouse.wheel(deltaX, deltaY);
           return { ok: true };
         }
         case "frames": {
-          const frames = page.frames();
+          const frames = targetPage.frames();
           return { ok: true, value: frames.map(f => ({ name: f.name(), url: f.url() })) };
         }
         case "mainFrame": {
-          const mainFrame = page.mainFrame();
+          const mainFrame = targetPage.mainFrame();
           return { ok: true, value: { name: mainFrame.name(), url: mainFrame.url() } };
         }
         case "bringToFront": {
-          await page.bringToFront();
+          await targetPage.bringToFront();
           return { ok: true };
         }
         case "close": {
-          await page.close();
+          await targetPage.close();
+          // Remove from registry
+          registry.pages.delete(pageId);
           return { ok: true };
         }
         case "isClosed": {
-          return { ok: true, value: page.isClosed() };
+          return { ok: true, value: targetPage.isClosed() };
         }
         case "pdf": {
           const [pdfOptions] = op.args as [{
@@ -1172,7 +1255,7 @@ export function createPlaywrightHandler(
           }?];
           // Don't pass path to Playwright - we handle file writing through callback
           const { path: pdfPath, ...restPdfOptions } = pdfOptions ?? {};
-          const buffer = await page.pdf(restPdfOptions);
+          const buffer = await targetPage.pdf(restPdfOptions);
           // If path is specified, use writeFile callback
           if (pdfPath) {
             if (!fileIO.writeFile) {
@@ -1188,7 +1271,7 @@ export function createPlaywrightHandler(
         }
         case "emulateMedia": {
           const [mediaOptions] = op.args as [{ media?: 'screen' | 'print' | null; colorScheme?: 'light' | 'dark' | 'no-preference' | null; reducedMotion?: 'reduce' | 'no-preference' | null; forcedColors?: 'active' | 'none' | null }?];
-          await page.emulateMedia(mediaOptions);
+          await targetPage.emulateMedia(mediaOptions);
           return { ok: true };
         }
         case "addCookies": {
@@ -1202,21 +1285,25 @@ export function createPlaywrightHandler(
             secure?: boolean;
             sameSite?: 'Strict' | 'Lax' | 'None';
           }>];
-          await page.context().addCookies(cookies);
+          // Use contextId for cookie operations
+          const ctx = targetContext ?? targetPage.context();
+          await ctx.addCookies(cookies);
           return { ok: true };
         }
         case "cookies": {
           const [urls] = op.args as [string[]?];
-          const cookies = await page.context().cookies(urls);
+          // Use contextId for cookie operations
+          const ctx = targetContext ?? targetPage.context();
+          const cookies = await ctx.cookies(urls);
           return { ok: true, value: cookies };
         }
         case "setExtraHTTPHeaders": {
           const [headers] = op.args as [Record<string, string>];
-          await page.setExtraHTTPHeaders(headers);
+          await targetPage.setExtraHTTPHeaders(headers);
           return { ok: true };
         }
         case "pause": {
-          await page.pause();
+          await targetPage.pause();
           return { ok: true };
         }
         default:

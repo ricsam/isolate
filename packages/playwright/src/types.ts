@@ -75,6 +75,21 @@ export interface PlaywrightSetupOptions {
    * If not provided, screenshot()/pdf() with path option will throw an error.
    */
   writeFile?: (filePath: string, data: Buffer) => Promise<void> | void;
+  /**
+   * Callback invoked when context.newPage() is called from within the isolate.
+   * Host creates/configures the new page. If not provided, newPage() will throw an error.
+   * Receives the BrowserContext so you can call context.newPage().
+   * @param context - The BrowserContext that requested the new page
+   * @returns The new Page object
+   */
+  createPage?: (context: import("playwright").BrowserContext) => Promise<import("playwright").Page> | import("playwright").Page;
+  /**
+   * Callback invoked when browser.newContext() is called from within the isolate.
+   * Host creates/configures the new context. If not provided, newContext() will throw an error.
+   * @param options - Browser context options passed from the isolate
+   * @returns The new BrowserContext object
+   */
+  createContext?: (options?: import("playwright").BrowserContextOptions) => Promise<import("playwright").BrowserContext> | import("playwright").BrowserContext;
 }
 
 /**

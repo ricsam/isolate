@@ -15,6 +15,7 @@ export {
   PATH_TYPES,
   TEST_ENV_TYPES,
   TIMERS_TYPES,
+  PLAYWRIGHT_TYPES,
   TYPE_DEFINITIONS,
   type TypeDefinitionKey,
 } from "./isolate-types.ts";

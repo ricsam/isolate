@@ -886,6 +886,8 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       // Don't print directly if routing through console handler
       console: opts.playwright.console && !opts.console?.onEntry,
       onEvent: eventCallback,
+      createPage: opts.playwright.createPage,
+      createContext: opts.playwright.createContext,
     });
   }
 

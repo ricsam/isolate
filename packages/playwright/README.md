@@ -163,6 +163,8 @@ const handle = await setupPlaywright(context, {
 ## Injected Globals (in isolate)
 
 - `page` - Page object with navigation and locator methods
+- `context` - BrowserContext object with `newPage()`, cookie methods
+- `browser` - Browser object with `newContext()` method
 - `Locator` - Locator class for element interactions
 - `expect` - Extended with locator matchers (only if test-environment is loaded first)
 
@@ -192,6 +194,20 @@ const handle = await setupPlaywright(context, {
 - `page.pdf(options?)` - Generate PDF (Chromium only), returns base64
 - `page.request.get(url)` - HTTP GET request with page cookies
 - `page.request.post(url, options?)` - HTTP POST request with page cookies
+- `page.context()` - Get the context object for this page
+- `page.close()` - Close the page
+
+## Context Methods
+
+- `context.newPage()` - Create a new page (requires `createPage` callback)
+- `context.close()` - Close the context
+- `context.cookies(urls?)` - Get cookies
+- `context.addCookies(cookies)` - Add cookies
+- `context.clearCookies()` - Clear cookies
+
+## Browser Methods
+
+- `browser.newContext(options?)` - Create a new context (requires `createContext` callback)
 
 ## Locator Methods
 
@@ -235,6 +251,9 @@ interface PlaywrightSetupOptions {
   // Security callbacks for file operations
   readFile?: (filePath: string) => Promise<FileData> | FileData;
   writeFile?: (filePath: string, data: Buffer) => Promise<void> | void;
+  // Multi-page lifecycle callbacks
+  createPage?: (context: BrowserContext) => Promise<Page> | Page;
+  createContext?: (options?: BrowserContextOptions) => Promise<BrowserContext> | BrowserContext;
 }
 
 interface FileData {
@@ -247,6 +266,75 @@ type PlaywrightEvent =
   | { type: "browserConsoleLog"; level: string; stdout: string; timestamp: number }
   | { type: "networkRequest"; url: string; method: string; headers: Record<string, string>; ... }
   | { type: "networkResponse"; url: string; status: number; headers: Record<string, string>; ... };
+```
+
+## Multi-Page Testing
+
+For tests that need multiple pages or contexts, provide the `createPage` and/or `createContext` callbacks:
+
+```typescript
+import { createRuntime } from "@ricsam/isolate-runtime";
+import { chromium } from "playwright";
+
+const browser = await chromium.launch({ headless: true });
+const browserContext = await browser.newContext();
+const page = await browserContext.newPage();
+
+const runtime = await createRuntime({
+  testEnvironment: true,
+  playwright: {
+    page,
+    // Called when isolate code calls context.newPage(); receive the BrowserContext and call context.newPage()
+    createPage: async (context) => context.newPage(),
+    // Called when isolate code calls browser.newContext()
+    createContext: async (options) => browser.newContext(options),
+  },
+});
+
+await runtime.eval(`
+  describe("multi-page tests", () => {
+    it("can work with multiple pages", async () => {
+      // Create a second page in the same context
+      const page2 = await context.newPage();
+
+      // Navigate both pages
+      await page.goto("https://example.com/page1");
+      await page2.goto("https://example.com/page2");
+
+      // Each page maintains its own state
+      expect(page.url()).toContain("page1");
+      expect(page2.url()).toContain("page2");
+
+      // Interact with elements on different pages
+      await page.locator("#button1").click();
+      await page2.locator("#button2").click();
+
+      await page2.close();
+    });
+
+    it("can work with multiple contexts", async () => {
+      // Create an isolated context (separate cookies, storage)
+      const ctx2 = await browser.newContext();
+      const page2 = await ctx2.newPage();
+
+      await page2.goto("https://example.com");
+
+      // Cookies are isolated between contexts
+      await context.addCookies([{ name: "test", value: "1", domain: "example.com", path: "/" }]);
+      const ctx1Cookies = await context.cookies();
+      const ctx2Cookies = await ctx2.cookies();
+
+      expect(ctx1Cookies.some(c => c.name === "test")).toBe(true);
+      expect(ctx2Cookies.some(c => c.name === "test")).toBe(false);
+
+      await ctx2.close();
+    });
+  });
+`);
+
+const results = await runtime.testEnvironment.runTests();
+await runtime.dispose();
+await browser.close();
 ```
 
 ## File Operations

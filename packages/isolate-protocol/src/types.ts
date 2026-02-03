@@ -191,6 +191,7 @@ export interface PlaywrightOperation {
     | "evaluate"
     | "locatorAction"
     | "expectLocator"
+    | "expectPage"
     | "request"
     | "goBack"
     | "goForward"
@@ -223,8 +224,16 @@ export interface PlaywrightOperation {
     | "mouseWheel"
     // Cookie operations
     | "addCookies"
-    | "cookies";
+    | "cookies"
+    // Browser/Context lifecycle operations
+    | "newContext"
+    | "newPage"
+    | "closeContext";
   args: unknown[];
+  /** Target page ID (undefined = default page "page_0") */
+  pageId?: string;
+  /** Target context ID (undefined = default context "ctx_0") */
+  contextId?: string;
 }
 
 /**
@@ -1050,6 +1059,24 @@ export interface PlaywrightOptions {
    * @throws If the file should not be written to this location
    */
   writeFile?: (filePath: string, data: Buffer) => Promise<void> | void;
+  /**
+   * Callback to create new pages when context.newPage() is called from within the isolate.
+   * This allows the host to control page creation for multi-page testing scenarios.
+   * If not provided, context.newPage() will throw an error.
+   *
+   * @param context - The BrowserContext that requested the new page; call context.newPage() to create it
+   * @returns The newly created Page object
+   */
+  createPage?: (context: import("playwright").BrowserContext) => Promise<import("playwright").Page> | import("playwright").Page;
+  /**
+   * Callback to create new browser contexts when browser.newContext() is called from within the isolate.
+   * This allows the host to control context creation for multi-context testing scenarios.
+   * If not provided, browser.newContext() will throw an error.
+   *
+   * @param options - Browser context options passed from the isolate
+   * @returns The newly created BrowserContext object
+   */
+  createContext?: (options?: import("playwright").BrowserContextOptions) => Promise<import("playwright").BrowserContext> | import("playwright").BrowserContext;
 }
 
 /**

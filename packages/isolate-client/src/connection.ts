@@ -744,6 +744,8 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       timeout: options.playwright.timeout,
       readFile: options.playwright.readFile,
       writeFile: options.playwright.writeFile,
+      createPage: options.playwright.createPage,
+      createContext: options.playwright.createContext,
     });
 
     const handlerCallbackId = state.nextCallbackId++;

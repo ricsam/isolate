@@ -128,6 +128,10 @@ interface PlaywrightOptions {
   onBrowserConsoleLog?: (entry: { level: string; stdout: string; timestamp: number }) => void;
   onNetworkRequest?: (info: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
   onNetworkResponse?: (info: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
+  /** Callback to create new pages when context.newPage() is called */
+  createPage?: (context: BrowserContext) => Promise<Page> | Page;
+  /** Callback to create new contexts when browser.newContext() is called */
+  createContext?: (options?: BrowserContextOptions) => Promise<BrowserContext> | BrowserContext;
 }
 ```
 
@@ -382,6 +386,72 @@ console.log("Browser logs:", data.browserConsoleLogs);
 await runtime.dispose();
 await browser.close();
 ```
+
+### Multi-Page Testing
+
+For tests that need multiple pages or browser contexts, provide `createPage` and/or `createContext` callbacks:
+
+```typescript
+import { createRuntime } from "@ricsam/isolate-runtime";
+import { chromium } from "playwright";
+
+const browser = await chromium.launch({ headless: true });
+const browserContext = await browser.newContext();
+const page = await browserContext.newPage();
+
+const runtime = await createRuntime({
+  testEnvironment: true,
+  playwright: {
+    page,
+    // Called when isolate code calls context.newPage()
+    createPage: async (context) => context.newPage(),
+    // Called when isolate code calls browser.newContext()
+    createContext: async (options) => browser.newContext(options),
+  },
+});
+
+await runtime.eval(`
+  test('multi-page test', async () => {
+    // Create additional pages
+    const page2 = await context.newPage();
+
+    // Navigate independently
+    await page.goto('https://example.com/page1');
+    await page2.goto('https://example.com/page2');
+
+    // Work with multiple pages
+    await page.locator('#button').click();
+    await page2.locator('#input').fill('text');
+
+    await page2.close();
+  });
+
+  test('multi-context test', async () => {
+    // Create isolated context (separate cookies, storage)
+    const ctx2 = await browser.newContext();
+    const page2 = await ctx2.newPage();
+
+    // Cookies are isolated between contexts
+    await context.addCookies([{ name: 'test', value: '1', domain: 'example.com', path: '/' }]);
+    const ctx1Cookies = await context.cookies();
+    const ctx2Cookies = await ctx2.cookies();
+
+    expect(ctx1Cookies.some(c => c.name === 'test')).toBe(true);
+    expect(ctx2Cookies.some(c => c.name === 'test')).toBe(false);
+
+    await ctx2.close();
+  });
+`);
+
+const results = await runtime.testEnvironment.runTests();
+await runtime.dispose();
+await browser.close();
+```
+
+**Behavior without lifecycle callbacks:**
+- `context.newPage()` without `createPage`: Throws error
+- `browser.newContext()` without `createContext`: Throws error
+- `context.cookies()`, `context.addCookies()`, `context.clearCookies()`: Work without callbacks
 
 ## Included APIs
 
