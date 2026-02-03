@@ -829,6 +829,68 @@ async function executeExpectAssertion(
 }
 
 // ============================================================================
+// Helper: Execute page expect assertion
+// ============================================================================
+
+async function executePageExpectAssertion(
+  page: Page,
+  matcher: string,
+  expected: unknown,
+  negated: boolean,
+  timeout: number
+): Promise<void> {
+  // Deserialize regex if needed
+  let expectedValue = expected;
+  if (expected && typeof expected === 'object' && (expected as { $regex?: string }).$regex) {
+    expectedValue = new RegExp(
+      (expected as { $regex: string }).$regex,
+      (expected as { $flags?: string }).$flags
+    );
+  }
+
+  switch (matcher) {
+    case "toHaveURL": {
+      const expectedUrl = expectedValue as string | RegExp;
+      const startTime = Date.now();
+      let lastUrl = "";
+      while (Date.now() - startTime < timeout) {
+        lastUrl = page.url();
+        const matches = expectedUrl instanceof RegExp
+          ? expectedUrl.test(lastUrl)
+          : lastUrl === expectedUrl;
+        if (negated ? !matches : matches) return;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (negated) {
+        throw new Error(`Expected URL to not match "${expectedUrl}", but got "${lastUrl}"`);
+      } else {
+        throw new Error(`Expected URL to be "${expectedUrl}", but got "${lastUrl}"`);
+      }
+    }
+    case "toHaveTitle": {
+      const expectedTitle = expectedValue as string | RegExp;
+      const startTime = Date.now();
+      let lastTitle = "";
+      while (Date.now() - startTime < timeout) {
+        lastTitle = await page.title();
+        const matches = expectedTitle instanceof RegExp
+          ? expectedTitle.test(lastTitle)
+          : lastTitle === expectedTitle;
+        if (negated ? !matches : matches) return;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (negated) {
+        throw new Error(`Expected title to not match "${expectedTitle}", but got "${lastTitle}"`);
+      } else {
+        throw new Error(`Expected title to be "${expectedTitle}", but got "${lastTitle}"`);
+      }
+    }
+    default:
+      throw new Error(`Unknown page matcher: ${matcher}`);
+  }
+}
+
+// ============================================================================
 // Create Playwright Handler (for remote use)
 // ============================================================================
 
@@ -927,6 +989,17 @@ export function createPlaywrightHandler(
           const locator = getLocator(page, selectorType, selectorValue, roleOptions);
           const effectiveTimeout = customTimeout ?? timeout;
           await executeExpectAssertion(locator, matcher, expected, negated ?? false, effectiveTimeout);
+          return { ok: true };
+        }
+        case "expectPage": {
+          const [matcher, expected, negated, customTimeout] = op.args as [
+            string,
+            unknown,
+            boolean,
+            number?
+          ];
+          const effectiveTimeout = customTimeout ?? timeout;
+          await executePageExpectAssertion(page, matcher, expected, negated ?? false, effectiveTimeout);
           return { ok: true };
         }
         case "request": {
@@ -1355,6 +1428,7 @@ export async function setupPlaywright(
 (function() {
   let __pw_currentUrl = '';
   globalThis.page = {
+    __isPage: true,
     async goto(url, options) {
       const result = await __pw_invoke("goto", [url, options?.waitUntil || null]);
       const resolvedUrl = await __pw_invoke("url", []);
@@ -1972,6 +2046,42 @@ export async function setupPlaywright(
     return locatorMatchers;
   }
 
+  // Helper to create page matchers
+  function createPageMatchers(baseMatchers) {
+    function serializeExpected(expected) {
+      if (expected instanceof RegExp) {
+        return { $regex: expected.source, $flags: expected.flags };
+      }
+      return expected;
+    }
+
+    const pageMatchers = {
+      async toHaveURL(expected, options) {
+        return __pw_invoke("expectPage", ["toHaveURL", serializeExpected(expected), false, options?.timeout]);
+      },
+      async toHaveTitle(expected, options) {
+        return __pw_invoke("expectPage", ["toHaveTitle", serializeExpected(expected), false, options?.timeout]);
+      },
+      not: {
+        async toHaveURL(expected, options) {
+          return __pw_invoke("expectPage", ["toHaveURL", serializeExpected(expected), true, options?.timeout]);
+        },
+        async toHaveTitle(expected, options) {
+          return __pw_invoke("expectPage", ["toHaveTitle", serializeExpected(expected), true, options?.timeout]);
+        },
+      }
+    };
+
+    if (baseMatchers) {
+      return {
+        ...baseMatchers,
+        ...pageMatchers,
+        not: { ...baseMatchers.not, ...pageMatchers.not }
+      };
+    }
+    return pageMatchers;
+  }
+
   // Only extend expect if test-environment already defined it
   if (typeof globalThis.expect === 'function') {
     const originalExpect = globalThis.expect;
@@ -1980,6 +2090,10 @@ export async function setupPlaywright(
       // If actual is a Locator, add locator-specific matchers
       if (actual && actual.constructor && actual.constructor.name === 'Locator') {
         return createLocatorMatchers(actual, baseMatchers);
+      }
+      // If actual is the page object, add page-specific matchers
+      if (actual && actual.__isPage === true) {
+        return createPageMatchers(baseMatchers);
       }
       return baseMatchers;
     };
