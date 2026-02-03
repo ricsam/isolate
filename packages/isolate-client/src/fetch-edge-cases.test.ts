@@ -107,7 +107,7 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("204 No Content - passthrough", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -139,7 +139,7 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("204 No Content - in-isolate", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {
@@ -166,7 +166,7 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("304 Not Modified - passthrough", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -200,7 +200,7 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("HEAD request - passthrough", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -234,7 +234,7 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("HEAD request - in-isolate", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {
@@ -264,7 +264,7 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("10 concurrent requests - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -305,7 +305,7 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("10 concurrent requests - in-isolate", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {
@@ -437,7 +437,7 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("Multiple Set-Cookie - passthrough", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -472,7 +472,7 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("Multiple Set-Cookie - in-isolate", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {
@@ -500,7 +500,7 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("Large header - passthrough", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`

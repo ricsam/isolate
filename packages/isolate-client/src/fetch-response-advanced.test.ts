@@ -109,7 +109,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("ReadableStream getReader - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -152,7 +152,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("ReadableStream getReader - in-isolate", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {
@@ -188,7 +188,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("ReadableStream async iteration - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -230,7 +230,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("Response.clone() buffered - passthrough", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -263,7 +263,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("Response.clone() buffered - in-isolate", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {
@@ -292,7 +292,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("Response.clone() streaming - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -329,7 +329,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("Response.formData() urlencoded - passthrough", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -364,7 +364,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("Response.formData() urlencoded - in-isolate", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {
@@ -394,7 +394,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("Abort slow request - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -431,7 +431,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("Abort slow request - in-isolate", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {
@@ -465,7 +465,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("Error midstream - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -511,7 +511,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("Early cancellation - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -551,7 +551,7 @@ describe("Fetch response advanced (daemon/client)", () => {
 
   it("Backpressure slow consumer - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`

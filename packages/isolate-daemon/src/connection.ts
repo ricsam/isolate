@@ -782,7 +782,7 @@ async function handleCreateRuntime(
             url,
             method: init.method,
             headers: init.headers,
-            body: init.body,
+            body: init.rawBody,
           };
           const result = await invokeClientCallback(
             conn,

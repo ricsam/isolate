@@ -76,7 +76,7 @@ describe("Fetch chunked response (daemon/client)", () => {
 
   it("chunked response - text()", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -104,7 +104,7 @@ describe("Fetch chunked response (daemon/client)", () => {
 
   it("chunked response - arrayBuffer()", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -133,7 +133,7 @@ describe("Fetch chunked response (daemon/client)", () => {
 
   it("chunked response - json()", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -225,7 +225,7 @@ describe("Fetch chunked response (daemon/client)", () => {
 
   it("streaming large download - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -250,7 +250,7 @@ describe("Fetch chunked response (daemon/client)", () => {
 
   it("streaming large download - in-isolate", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {
@@ -273,7 +273,7 @@ describe("Fetch chunked response (daemon/client)", () => {
 
   it("SSE streaming - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -300,7 +300,7 @@ describe("Fetch chunked response (daemon/client)", () => {
 
   it("SSE streaming - in-isolate", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {
@@ -325,7 +325,7 @@ describe("Fetch chunked response (daemon/client)", () => {
 
   it("POST response streaming - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -353,7 +353,7 @@ describe("Fetch chunked response (daemon/client)", () => {
 
   it("POST response streaming - in-isolate", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {

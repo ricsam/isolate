@@ -111,7 +111,7 @@ describe("Fetch response (daemon/client)", () => {
     for (const method of ["POST", "PUT", "DELETE", "PATCH"] as const) {
       it(`${method} request`, { timeout: 5000 }, async () => {
         const runtime = await connection.createRuntime({
-          fetch: async (request) => fetch(request),
+          fetch: async (url, init) => fetch(url, init),
         });
         try {
           const hasBody = method !== "DELETE";
@@ -152,7 +152,7 @@ describe("Fetch response (daemon/client)", () => {
     for (const code of [201, 204, 400, 404, 500]) {
       it(`status ${code}`, { timeout: 5000 }, async () => {
         const runtime = await connection.createRuntime({
-          fetch: async (request) => fetch(request),
+          fetch: async (url, init) => fetch(url, init),
         });
         try {
           await runtime.eval(`
@@ -193,7 +193,7 @@ describe("Fetch response (daemon/client)", () => {
   describe("Headers", () => {
     it("custom request headers forwarded", { timeout: 5000 }, async () => {
       const runtime = await connection.createRuntime({
-        fetch: async (request) => fetch(request),
+        fetch: async (url, init) => fetch(url, init),
       });
       try {
         await runtime.eval(`
@@ -223,7 +223,7 @@ describe("Fetch response (daemon/client)", () => {
 
     it("response headers readable", { timeout: 5000 }, async () => {
       const runtime = await connection.createRuntime({
-        fetch: async (request) => fetch(request),
+        fetch: async (url, init) => fetch(url, init),
       });
       try {
         await runtime.eval(`
@@ -252,7 +252,7 @@ describe("Fetch response (daemon/client)", () => {
 
     it("content-type preserved", { timeout: 5000 }, async () => {
       const runtime = await connection.createRuntime({
-        fetch: async (request) => fetch(request),
+        fetch: async (url, init) => fetch(url, init),
       });
       try {
         await runtime.eval(`
@@ -285,7 +285,7 @@ describe("Fetch response (daemon/client)", () => {
   describe("Response body methods", () => {
     it("res.text()", { timeout: 5000 }, async () => {
       const runtime = await connection.createRuntime({
-        fetch: async (request) => fetch(request),
+        fetch: async (url, init) => fetch(url, init),
       });
       try {
         await runtime.eval(`
@@ -312,7 +312,7 @@ describe("Fetch response (daemon/client)", () => {
 
     it("res.json()", { timeout: 5000 }, async () => {
       const runtime = await connection.createRuntime({
-        fetch: async (request) => fetch(request),
+        fetch: async (url, init) => fetch(url, init),
       });
       try {
         await runtime.eval(`
@@ -340,7 +340,7 @@ describe("Fetch response (daemon/client)", () => {
 
     it("res.arrayBuffer()", { timeout: 5000 }, async () => {
       const runtime = await connection.createRuntime({
-        fetch: async (request) => fetch(request),
+        fetch: async (url, init) => fetch(url, init),
       });
       try {
         await runtime.eval(`
@@ -372,7 +372,7 @@ describe("Fetch response (daemon/client)", () => {
 
     it("res.blob()", { timeout: 5000 }, async () => {
       const runtime = await connection.createRuntime({
-        fetch: async (request) => fetch(request),
+        fetch: async (url, init) => fetch(url, init),
       });
       try {
         await runtime.eval(`
@@ -408,7 +408,7 @@ describe("Fetch response (daemon/client)", () => {
   describe("Error responses", () => {
     it("4xx with JSON error body", { timeout: 5000 }, async () => {
       const runtime = await connection.createRuntime({
-        fetch: async (request) => fetch(request),
+        fetch: async (url, init) => fetch(url, init),
       });
       try {
         await runtime.eval(`
@@ -440,7 +440,7 @@ describe("Fetch response (daemon/client)", () => {
 
     it("5xx with text error body", { timeout: 5000 }, async () => {
       const runtime = await connection.createRuntime({
-        fetch: async (request) => fetch(request),
+        fetch: async (url, init) => fetch(url, init),
       });
       try {
         await runtime.eval(`

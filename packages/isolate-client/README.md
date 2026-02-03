@@ -37,7 +37,7 @@ const runtime = await client.createRuntime({
   console: {
     onEntry: (entry) => console.log("[isolate]", entry),
   },
-  fetch: async (request) => fetch(request),
+  fetch: async (url, init) => fetch(url, init),
 });
 
 // Execute code (always ES module mode)

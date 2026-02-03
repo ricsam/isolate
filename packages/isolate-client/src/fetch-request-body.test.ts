@@ -73,7 +73,7 @@ describe("Fetch request body (daemon/client)", () => {
 
   it("FormData body", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -110,7 +110,7 @@ describe("Fetch request body (daemon/client)", () => {
 
   it("ArrayBuffer body", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -144,7 +144,7 @@ describe("Fetch request body (daemon/client)", () => {
 
   it("Uint8Array body", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -174,7 +174,7 @@ describe("Fetch request body (daemon/client)", () => {
 
   it("URLSearchParams body", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -215,7 +215,7 @@ describe("Fetch request body (daemon/client)", () => {
 
   it("Blob body", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -245,7 +245,7 @@ describe("Fetch request body (daemon/client)", () => {
 
   it("ReadableStream body", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -287,7 +287,7 @@ describe("Fetch request body (daemon/client)", () => {
 
   it("Large body 2MB - passthrough", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
     });
     try {
       await runtime.eval(`
@@ -318,7 +318,7 @@ describe("Fetch request body (daemon/client)", () => {
 
   it("Large body 2MB - in-isolate", { timeout: 10000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => fetch(request),
+      fetch: async (url, init) => fetch(url, init),
       testEnvironment: true,
     });
     try {

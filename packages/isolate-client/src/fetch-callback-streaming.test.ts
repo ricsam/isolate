@@ -70,9 +70,9 @@ describe("Fetch Callback Streaming", () => {
 
   it("should detect that external fetch responses are buffered (not streaming)", async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => {
+      fetch: async (url, init) => {
         // Forward fetch to real network
-        return fetch(request);
+        return fetch(url, init);
       },
     });
 
@@ -141,8 +141,8 @@ describe("Fetch Callback Streaming", () => {
 
   it("should show timing difference between internal stream (works) and external fetch (buffered)", async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => {
-        return fetch(request);
+      fetch: async (url, init) => {
+        return fetch(url, init);
       },
     });
 
