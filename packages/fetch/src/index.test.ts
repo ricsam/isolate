@@ -72,11 +72,11 @@ describe("@ricsam/isolate-fetch Integration", () => {
 
   describe("fetch function", () => {
     test("calls onFetch handler", async () => {
-      let requestReceived: Request | null = null;
+      let receivedUrl: string | null = null;
 
       await setupFetch(context, {
-        onFetch: async (request) => {
-          requestReceived = request;
+        onFetch: async (url) => {
+          receivedUrl = url;
           return new Response("OK");
         },
       });
@@ -90,8 +90,8 @@ describe("@ricsam/isolate-fetch Integration", () => {
         { promise: true }
       );
 
-      assert.notStrictEqual(requestReceived, null);
-      assert.strictEqual(requestReceived!.url, "https://example.com/api");
+      assert.notStrictEqual(receivedUrl, null);
+      assert.strictEqual(receivedUrl, "https://example.com/api");
     });
 
     test("returns Response from handler", async () => {
@@ -125,12 +125,12 @@ describe("@ricsam/isolate-fetch Integration", () => {
 
     test("passes request method and headers to handler", async () => {
       let receivedMethod = "";
-      let receivedHeaders: Headers | null = null;
+      let receivedHeaders: [string, string][] | null = null;
 
       await setupFetch(context, {
-        onFetch: async (request) => {
-          receivedMethod = request.method;
-          receivedHeaders = request.headers;
+        onFetch: async (url, init) => {
+          receivedMethod = init.method;
+          receivedHeaders = init.headers;
           return new Response("OK");
         },
       });
@@ -149,8 +149,10 @@ describe("@ricsam/isolate-fetch Integration", () => {
 
       assert.strictEqual(receivedMethod, "POST");
       assert.ok(receivedHeaders !== null);
-      assert.strictEqual((receivedHeaders as Headers).get("content-type"), "application/json");
-      assert.strictEqual((receivedHeaders as Headers).get("x-custom"), "value");
+      const headers = receivedHeaders as [string, string][];
+      const headersMap = new Map(headers.map(([k, v]) => [k.toLowerCase(), v]));
+      assert.strictEqual(headersMap.get("content-type"), "application/json");
+      assert.strictEqual(headersMap.get("x-custom"), "value");
     });
 
     test("supports abort signal", async () => {
@@ -206,9 +208,9 @@ describe("@ricsam/isolate-fetch Integration", () => {
       let receivedMethod = "";
 
       await setupFetch(context, {
-        onFetch: async (request) => {
-          receivedUrl = request.url;
-          receivedMethod = request.method;
+        onFetch: async (url, init) => {
+          receivedUrl = url;
+          receivedMethod = init.method;
           return new Response("OK");
         },
       });

@@ -402,7 +402,15 @@ export function createPlaywrightHandler(
           return { ok: true };
         }
         case "waitForURL": {
-          const [url, customTimeout, waitUntil] = op.args as [string, number?, string?];
+          const [urlArg, customTimeout, waitUntil] = op.args as [
+            string | { $regex: string; $flags: string },
+            number?,
+            string?
+          ];
+          // Deserialize regex URL pattern
+          const url = urlArg && typeof urlArg === 'object' && '$regex' in urlArg
+            ? new RegExp(urlArg.$regex, urlArg.$flags)
+            : urlArg;
           await page.waitForURL(url, {
             timeout: customTimeout ?? timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? undefined,

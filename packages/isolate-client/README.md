@@ -270,6 +270,93 @@ const runtime = await client.createRuntime({
 });
 ```
 
+## WebSocket Client Callback
+
+Control outbound WebSocket connections from isolate code. The callback lets you allow, block, or proxy WebSocket connections:
+
+```typescript
+const runtime = await client.createRuntime({
+  webSocket: async (url: string, protocols: string[]) => {
+    // Block connections to certain hosts
+    if (url.includes("blocked.com")) {
+      return null; // Connection blocked
+    }
+
+    // Proxy to a different server
+    if (url.includes("internal")) {
+      return new WebSocket("wss://proxy.example.com" + new URL(url).pathname);
+    }
+
+    // Allow connection normally
+    return new WebSocket(url, protocols.length > 0 ? protocols : undefined);
+  },
+});
+
+// Isolate code can now use WHATWG WebSocket API
+await runtime.eval(`
+  const ws = new WebSocket("wss://api.example.com/stream");
+
+  ws.onopen = () => {
+    console.log("Connected!");
+    ws.send("Hello server");
+  };
+
+  ws.onmessage = (event) => {
+    console.log("Received:", event.data);
+  };
+
+  ws.onclose = (event) => {
+    console.log("Closed:", event.code, event.reason);
+  };
+`);
+```
+
+### WebSocket Callback Behavior
+
+| Return Value | Behavior |
+|--------------|----------|
+| `WebSocket` instance | Use this WebSocket for the connection |
+| `null` | Block the connection (isolate receives error + close events) |
+| `Promise<WebSocket>` | Async - wait for WebSocket |
+| `Promise<null>` | Async - block the connection |
+| Throws/rejects | Block the connection with error |
+
+### What "Blocked" Looks Like in the Isolate
+
+When a connection is blocked, the isolate sees it as a failed connection (similar to server unreachable):
+
+```javascript
+const ws = new WebSocket("wss://blocked.com");
+
+ws.onerror = (event) => {
+  // Fires first
+  console.log("Connection failed");
+};
+
+ws.onclose = (event) => {
+  // Then fires with:
+  console.log(event.code);      // 1006 (Abnormal Closure)
+  console.log(event.reason);    // "Connection blocked"
+  console.log(event.wasClean);  // false
+};
+
+// ws.onopen never fires
+```
+
+### Default Behavior
+
+If no `webSocket` callback is provided, connections are allowed automatically:
+
+```typescript
+// No callback - all WebSocket connections are auto-allowed
+const runtime = await client.createRuntime({});
+
+await runtime.eval(`
+  // This will connect directly
+  const ws = new WebSocket("wss://echo.websocket.org");
+`);
+```
+
 ## Test Environment
 
 Enable test environment to run tests inside the sandbox:

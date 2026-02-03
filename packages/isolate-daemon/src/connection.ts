@@ -60,6 +60,14 @@ import {
   type CallbackStreamStart,
   type CallbackStreamChunk,
   type CallbackStreamEnd,
+  type ClientWsConnectRequest,
+  type ClientWsSendRequest,
+  type ClientWsCloseRequest,
+  type ClientWsOpenedMessage,
+  type ClientWsMessageMessage,
+  type ClientWsClosedMessage,
+  type ClientWsErrorMessage,
+  type FetchRequestInit,
   encodeValue,
   decodeValue,
   marshalValue,
@@ -427,6 +435,23 @@ async function handleMessage(
       handleCallbackStreamEnd(message as CallbackStreamEnd, connection);
       break;
 
+    // Client WebSocket events (from client, forwarded to isolate)
+    case MessageType.CLIENT_WS_OPENED:
+      handleClientWsOpened(message as ClientWsOpenedMessage, connection, state);
+      break;
+
+    case MessageType.CLIENT_WS_MESSAGE:
+      handleClientWsMessage(message as ClientWsMessageMessage, connection, state);
+      break;
+
+    case MessageType.CLIENT_WS_CLOSED:
+      handleClientWsClosed(message as ClientWsClosedMessage, connection, state);
+      break;
+
+    case MessageType.CLIENT_WS_ERROR:
+      handleClientWsError(message as ClientWsErrorMessage, connection, state);
+      break;
+
     default:
       sendError(
         connection.socket,
@@ -745,7 +770,7 @@ async function handleCreateRuntime(
       },
       // Always create fetch handler to support adding callbacks on reuse
       fetch: {
-        onFetch: async (request) => {
+        onFetch: async (url: string, init: FetchRequestInit) => {
           // Use callback context for dynamic lookup (supports runtime reuse)
           const conn = callbackContext.connection;
           const callbackId = callbackContext.fetch;
@@ -753,7 +778,12 @@ async function handleCreateRuntime(
             throw new Error("Fetch callback not available");
           }
 
-          const serialized = await serializeRequest(request);
+          const serialized: SerializedRequestData = {
+            url,
+            method: init.method,
+            headers: init.headers,
+            body: init.body,
+          };
           const result = await invokeClientCallback(
             conn,
             callbackId,
@@ -971,6 +1001,47 @@ async function handleCreateRuntime(
         },
       };
       sendMessage(connection.socket, wsCommandMsg);
+    });
+
+    // Forward client WebSocket commands from isolate to client
+    instance.runtime.fetch.onClientWebSocketCommand((cmd) => {
+      // Convert ArrayBuffer to Uint8Array if needed for protocol
+      let data: string | Uint8Array | undefined;
+      if (cmd.data instanceof ArrayBuffer) {
+        data = new Uint8Array(cmd.data);
+      } else {
+        data = cmd.data as string | undefined;
+      }
+      if (cmd.type === "connect") {
+        const msg: ClientWsConnectRequest = {
+          type: MessageType.CLIENT_WS_CONNECT,
+          requestId: 0, // No response expected
+          isolateId,
+          socketId: cmd.socketId,
+          url: cmd.url!,
+          protocols: cmd.protocols,
+        };
+        sendMessage(connection.socket, msg);
+      } else if (cmd.type === "send") {
+        const msg: ClientWsSendRequest = {
+          type: MessageType.CLIENT_WS_SEND,
+          requestId: 0,
+          isolateId,
+          socketId: cmd.socketId,
+          data: data!,
+        };
+        sendMessage(connection.socket, msg);
+      } else if (cmd.type === "close") {
+        const msg: ClientWsCloseRequest = {
+          type: MessageType.CLIENT_WS_CLOSE,
+          requestId: 0,
+          isolateId,
+          socketId: cmd.socketId,
+          code: cmd.code,
+          reason: cmd.reason,
+        };
+        sendMessage(connection.socket, msg);
+      }
     });
 
     sendOk(connection.socket, message.requestId, { isolateId, reused: false });
@@ -1365,6 +1436,92 @@ async function handleWsClose(
       { name: error.name, stack: error.stack }
     );
   }
+}
+
+// ============================================================================
+// Client WebSocket Event Handlers (outbound connections from isolate)
+// ============================================================================
+
+/**
+ * Handle CLIENT_WS_OPENED message from client.
+ * Dispatches open event to the WebSocket instance in the isolate.
+ */
+function handleClientWsOpened(
+  message: ClientWsOpenedMessage,
+  connection: ConnectionState,
+  state: DaemonState
+): void {
+  const instance = state.isolates.get(message.isolateId);
+  if (!instance) return;
+
+  instance.lastActivity = Date.now();
+  instance.runtime.fetch.dispatchClientWebSocketOpen(
+    message.socketId,
+    message.protocol,
+    message.extensions
+  );
+}
+
+/**
+ * Handle CLIENT_WS_MESSAGE message from client.
+ * Dispatches message event to the WebSocket instance in the isolate.
+ */
+function handleClientWsMessage(
+  message: ClientWsMessageMessage,
+  connection: ConnectionState,
+  state: DaemonState
+): void {
+  const instance = state.isolates.get(message.isolateId);
+  if (!instance) return;
+
+  instance.lastActivity = Date.now();
+
+  // Convert Uint8Array to ArrayBuffer if needed
+  const data = message.data instanceof Uint8Array
+    ? message.data.buffer.slice(
+        message.data.byteOffset,
+        message.data.byteOffset + message.data.byteLength
+      ) as ArrayBuffer
+    : message.data;
+
+  instance.runtime.fetch.dispatchClientWebSocketMessage(message.socketId, data);
+}
+
+/**
+ * Handle CLIENT_WS_CLOSED message from client.
+ * Dispatches close event to the WebSocket instance in the isolate.
+ */
+function handleClientWsClosed(
+  message: ClientWsClosedMessage,
+  connection: ConnectionState,
+  state: DaemonState
+): void {
+  const instance = state.isolates.get(message.isolateId);
+  if (!instance) return;
+
+  instance.lastActivity = Date.now();
+  instance.runtime.fetch.dispatchClientWebSocketClose(
+    message.socketId,
+    message.code,
+    message.reason,
+    message.wasClean
+  );
+}
+
+/**
+ * Handle CLIENT_WS_ERROR message from client.
+ * Dispatches error event to the WebSocket instance in the isolate.
+ */
+function handleClientWsError(
+  message: ClientWsErrorMessage,
+  connection: ConnectionState,
+  state: DaemonState
+): void {
+  const instance = state.isolates.get(message.isolateId);
+  if (!instance) return;
+
+  instance.lastActivity = Date.now();
+  instance.runtime.fetch.dispatchClientWebSocketError(message.socketId);
 }
 
 // ============================================================================

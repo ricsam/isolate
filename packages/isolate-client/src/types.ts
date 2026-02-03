@@ -20,6 +20,7 @@ import type {
   BaseRuntimeOptions,
   ConsoleCallbacks,
   FetchCallback,
+  WebSocketCallback,
   FileSystemCallbacks,
   ModuleLoaderCallback,
   CustomFunction,
@@ -48,6 +49,7 @@ export type PlaywrightOptions = ProtocolPlaywrightOptions;
 export type {
   ConsoleCallbacks,
   FetchCallback,
+  WebSocketCallback,
   FileSystemCallbacks,
   ModuleLoaderCallback,
   CustomFunction,

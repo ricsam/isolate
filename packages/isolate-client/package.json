@@ -22,8 +22,10 @@
   "devDependencies": {
     "@ricsam/isolate-daemon": "*",
     "@types/node": "^24",
+    "@types/ws": "^8",
     "playwright": "^1",
-    "typescript": "^5"
+    "typescript": "^5",
+    "ws": "^8"
   },
   "peerDependencies": {
     "playwright": ">=1.40.0"

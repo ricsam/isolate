@@ -561,7 +561,15 @@ export function createPlaywrightHandler(
           return { ok: true };
         }
         case "waitForURL": {
-          const [url, customTimeout, waitUntil] = op.args as [string, number?, string?];
+          const [urlArg, customTimeout, waitUntil] = op.args as [
+            string | { $regex: string; $flags: string },
+            number?,
+            string?
+          ];
+          // Deserialize regex URL pattern
+          const url = urlArg && typeof urlArg === 'object' && '$regex' in urlArg
+            ? new RegExp(urlArg.$regex, urlArg.$flags)
+            : urlArg;
           await page.waitForURL(url, {
             timeout: customTimeout ?? timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? undefined,
@@ -812,7 +820,12 @@ export async function setupPlaywright(
       if (resolvedUrl) __pw_currentUrl = resolvedUrl;
     },
     async waitForURL(url, options) {
-      return __pw_invoke("waitForURL", [url, options?.timeout || null, options?.waitUntil || null]);
+      let serializedUrl = url;
+      // Use duck-typing RegExp detection (instanceof fails across isolated-vm boundary)
+      if (url && typeof url === 'object' && typeof url.source === 'string' && typeof url.flags === 'string') {
+        serializedUrl = { $regex: url.source, $flags: url.flags };
+      }
+      return __pw_invoke("waitForURL", [serializedUrl, options?.timeout || null, options?.waitUntil || null]);
     },
     context() {
       return {

@@ -68,10 +68,21 @@ export const MessageType = {
   STREAM_CLOSE: 0xa2,
   STREAM_ERROR: 0xa3,
 
+  // Client → Daemon: Client WebSocket operations (outbound connections from isolate)
+  CLIENT_WS_CONNECT: 0x40,
+  CLIENT_WS_SEND: 0x41,
+  CLIENT_WS_CLOSE: 0x42,
+
   // Daemon → Client: Events
   PLAYWRIGHT_EVENT: 0xb0,
   TEST_EVENT: 0xb1,
   WS_COMMAND: 0xb2,
+
+  // Daemon → Client: Client WebSocket events
+  CLIENT_WS_OPENED: 0xb8,
+  CLIENT_WS_MESSAGE: 0xb9,
+  CLIENT_WS_CLOSED: 0xba,
+  CLIENT_WS_ERROR: 0xbb,
 
   // Heartbeat
   PING: 0xf0,
@@ -586,6 +597,81 @@ export interface WsCommandMessage {
   };
 }
 
+// ============================================================================
+// Client WebSocket Messages (outbound connections from isolate)
+// ============================================================================
+
+/** Client WebSocket command from isolate to host */
+export interface ClientWebSocketCommand {
+  type: "connect" | "send" | "close";
+  socketId: string;
+  url?: string;
+  protocols?: string[];
+  data?: string | Uint8Array;
+  code?: number;
+  reason?: string;
+}
+
+/** Message sent when isolate wants to create a WebSocket connection */
+export interface ClientWsConnectRequest extends BaseMessage {
+  type: typeof MessageType.CLIENT_WS_CONNECT;
+  isolateId: string;
+  socketId: string;
+  url: string;
+  protocols?: string[];
+}
+
+/** Message sent when isolate wants to send data on a WebSocket */
+export interface ClientWsSendRequest extends BaseMessage {
+  type: typeof MessageType.CLIENT_WS_SEND;
+  isolateId: string;
+  socketId: string;
+  data: string | Uint8Array;
+}
+
+/** Message sent when isolate wants to close a WebSocket */
+export interface ClientWsCloseRequest extends BaseMessage {
+  type: typeof MessageType.CLIENT_WS_CLOSE;
+  isolateId: string;
+  socketId: string;
+  code?: number;
+  reason?: string;
+}
+
+/** Event sent when a client WebSocket connection is opened */
+export interface ClientWsOpenedMessage {
+  type: typeof MessageType.CLIENT_WS_OPENED;
+  isolateId: string;
+  socketId: string;
+  protocol: string;
+  extensions: string;
+}
+
+/** Event sent when a client WebSocket receives a message */
+export interface ClientWsMessageMessage {
+  type: typeof MessageType.CLIENT_WS_MESSAGE;
+  isolateId: string;
+  socketId: string;
+  data: string | Uint8Array;
+}
+
+/** Event sent when a client WebSocket is closed */
+export interface ClientWsClosedMessage {
+  type: typeof MessageType.CLIENT_WS_CLOSED;
+  isolateId: string;
+  socketId: string;
+  code: number;
+  reason: string;
+  wasClean: boolean;
+}
+
+/** Event sent when a client WebSocket has an error */
+export interface ClientWsErrorMessage {
+  type: typeof MessageType.CLIENT_WS_ERROR;
+  isolateId: string;
+  socketId: string;
+}
+
 /**
  * Unified playwright event type for the onEvent callback.
  */
@@ -664,6 +750,10 @@ export type ClientMessage =
   | StreamPull
   | StreamClose
   | StreamError
+  | ClientWsOpenedMessage
+  | ClientWsMessageMessage
+  | ClientWsClosedMessage
+  | ClientWsErrorMessage
   | PingMessage;
 
 export type DaemonMessage =
@@ -680,6 +770,9 @@ export type DaemonMessage =
   | PlaywrightEventMessage
   | TestEventMessage
   | WsCommandMessage
+  | ClientWsConnectRequest
+  | ClientWsSendRequest
+  | ClientWsCloseRequest
   | PongMessage;
 
 export type Message = ClientMessage | DaemonMessage;
@@ -811,9 +904,26 @@ export interface ConsoleCallbacks {
 }
 
 /**
+ * Fetch request init type.
+ */
+export interface FetchRequestInit {
+  method: string;
+  headers: [string, string][];
+  body: Uint8Array | null;
+  signal: AbortSignal;
+}
+
+/**
  * Fetch callback type.
  */
-export type FetchCallback = (request: Request) => Response | Promise<Response>;
+export type FetchCallback = (url: string, init: FetchRequestInit) => Response | Promise<Response>;
+
+/**
+ * WebSocket callback type.
+ * Called when isolate code creates an outbound WebSocket connection.
+ * Return a WebSocket to proxy the connection, or null to block it.
+ */
+export type WebSocketCallback = (url: string, protocols: string[]) => WebSocket | Promise<WebSocket | null> | null;
 
 /**
  * File system callback handlers.
@@ -889,6 +999,8 @@ export interface BaseRuntimeOptions<T extends Record<string, any[]> = Record<str
   console?: ConsoleCallbacks;
   /** Fetch callback handler */
   fetch?: FetchCallback;
+  /** WebSocket callback handler for outbound connections from isolate */
+  webSocket?: WebSocketCallback;
   /** Module loader callback for resolving dynamic imports */
   moduleLoader?: ModuleLoaderCallback;
   /** Custom functions callable from within the isolate */

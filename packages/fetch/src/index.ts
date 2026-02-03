@@ -8,9 +8,16 @@ import type { StreamStateRegistry } from "./stream-state.ts";
 
 export { clearAllInstanceState };
 
+export interface FetchRequestInit {
+  method: string;
+  headers: [string, string][];
+  body: Uint8Array | null;
+  signal: AbortSignal;
+}
+
 export interface FetchOptions {
   /** Handler for fetch requests from the isolate */
-  onFetch?: (request: Request) => Promise<Response>;
+  onFetch?: (url: string, init: FetchRequestInit) => Promise<Response>;
 }
 
 // ============================================================================
@@ -25,6 +32,16 @@ export interface UpgradeRequest {
 export interface WebSocketCommand {
   type: "message" | "close";
   connectionId: string;
+  data?: string | ArrayBuffer;
+  code?: number;
+  reason?: string;
+}
+
+export interface ClientWebSocketCommand {
+  type: "connect" | "send" | "close";
+  socketId: string;
+  url?: string;
+  protocols?: string[];
   data?: string | ArrayBuffer;
   code?: number;
   reason?: string;
@@ -59,6 +76,18 @@ export interface FetchHandle {
   hasServeHandler(): boolean;
   /** Check if there are active WebSocket connections */
   hasActiveConnections(): boolean;
+
+  // Client WebSocket (outbound connections from isolate)
+  /** Dispatch open event to a client WebSocket in the isolate */
+  dispatchClientWebSocketOpen(socketId: string, protocol: string, extensions: string): void;
+  /** Dispatch message event to a client WebSocket in the isolate */
+  dispatchClientWebSocketMessage(socketId: string, data: string | ArrayBuffer): void;
+  /** Dispatch close event to a client WebSocket in the isolate */
+  dispatchClientWebSocketClose(socketId: string, code: number, reason: string, wasClean: boolean): void;
+  /** Dispatch error event to a client WebSocket in the isolate */
+  dispatchClientWebSocketError(socketId: string): void;
+  /** Register callback for client WebSocket commands from isolate */
+  onClientWebSocketCommand(callback: (cmd: ClientWebSocketCommand) => void): () => void;
 }
 
 // ============================================================================
@@ -1856,17 +1885,22 @@ function setupFetchFunction(
       const headers = JSON.parse(headersJson) as [string, string][];
       const bodyBytes = bodyJson ? JSON.parse(bodyJson) as number[] : null;
 
-      // Construct native Request
+      // Construct init object for onFetch
       const body = bodyBytes ? new Uint8Array(bodyBytes) : null;
-      const nativeRequest = new Request(url, {
+      const init: FetchRequestInit = {
         method,
         headers,
         body,
         signal: hostController.signal,
-      });
+      };
 
       // Call user's onFetch handler or default fetch
-      const onFetch = options?.onFetch ?? fetch;
+      const onFetch = options?.onFetch ?? ((url: string, init: FetchRequestInit) => fetch(url, {
+        method: init.method,
+        headers: init.headers,
+        body: init.body as BodyInit | null,
+        signal: init.signal,
+      }));
 
       try {
         // Race the fetch with abort signal detection
@@ -1887,7 +1921,7 @@ function setupFetchFunction(
         // Prevent unhandled rejection if abort fires after fetch wins the race
         abortPromise.catch(() => {});
 
-        const nativeResponse = await Promise.race([onFetch(nativeRequest), abortPromise]);
+        const nativeResponse = await Promise.race([onFetch(url, init), abortPromise]);
         // Fetch won the race — remove the abort listener so it never fires
         cleanupAbort?.();
 
@@ -2159,6 +2193,395 @@ function setupServerWebSocket(
 }
 
 // ============================================================================
+// Client WebSocket Implementation (outbound connections from isolate)
+// ============================================================================
+
+function setupClientWebSocket(
+  context: ivm.Context,
+  clientWsCommandCallbacks: Set<(cmd: ClientWebSocketCommand) => void>
+): void {
+  const global = context.global;
+
+  // Host callback for ws.connect (called from constructor)
+  global.setSync(
+    "__WebSocket_connect",
+    new ivm.Callback((socketId: string, url: string, protocols: string[]) => {
+      const cmd: ClientWebSocketCommand = {
+        type: "connect",
+        socketId,
+        url,
+        protocols,
+      };
+      for (const cb of clientWsCommandCallbacks) cb(cmd);
+    })
+  );
+
+  // Host callback for ws.send
+  global.setSync(
+    "__WebSocket_send",
+    new ivm.Callback((socketId: string, data: string) => {
+      const cmd: ClientWebSocketCommand = { type: "send", socketId, data };
+      for (const cb of clientWsCommandCallbacks) cb(cmd);
+    })
+  );
+
+  // Host callback for ws.close
+  global.setSync(
+    "__WebSocket_close",
+    new ivm.Callback((socketId: string, code?: number, reason?: string) => {
+      const cmd: ClientWebSocketCommand = { type: "close", socketId, code, reason };
+      for (const cb of clientWsCommandCallbacks) cb(cmd);
+    })
+  );
+
+  // Pure JS WebSocket class (WHATWG-compliant)
+  context.evalSync(`
+(function() {
+  // Socket ID counter
+  let __nextSocketId = 1;
+
+  // Active sockets registry
+  const __clientWebSockets = new Map();
+
+  // Simple Event class (if not defined globally)
+  const _Event = globalThis.Event || class Event {
+    constructor(type, options = {}) {
+      this.type = type;
+      this.bubbles = options.bubbles || false;
+      this.cancelable = options.cancelable || false;
+      this.defaultPrevented = false;
+      this.timeStamp = Date.now();
+      this.target = null;
+      this.currentTarget = null;
+    }
+    preventDefault() {
+      if (this.cancelable) this.defaultPrevented = true;
+    }
+    stopPropagation() {}
+    stopImmediatePropagation() {}
+  };
+
+  // MessageEvent class for WebSocket messages
+  const _MessageEvent = globalThis.MessageEvent || class MessageEvent extends _Event {
+    constructor(type, options = {}) {
+      super(type, options);
+      this.data = options.data !== undefined ? options.data : null;
+      this.origin = options.origin || '';
+      this.lastEventId = options.lastEventId || '';
+      this.source = options.source || null;
+      this.ports = options.ports || [];
+    }
+  };
+
+  // CloseEvent class for WebSocket close
+  const _CloseEvent = globalThis.CloseEvent || class CloseEvent extends _Event {
+    constructor(type, options = {}) {
+      super(type, options);
+      this.code = options.code !== undefined ? options.code : 0;
+      this.reason = options.reason !== undefined ? options.reason : '';
+      this.wasClean = options.wasClean !== undefined ? options.wasClean : false;
+    }
+  };
+
+  // Helper to dispatch events
+  function dispatchEvent(ws, event) {
+    const listeners = ws._listeners.get(event.type) || [];
+    for (const listener of listeners) {
+      try {
+        listener.call(ws, event);
+      } catch (e) {
+        console.error('WebSocket event listener error:', e);
+      }
+    }
+    // Also call on* handler if set
+    const handler = ws['on' + event.type];
+    if (typeof handler === 'function') {
+      try {
+        handler.call(ws, event);
+      } catch (e) {
+        console.error('WebSocket handler error:', e);
+      }
+    }
+  }
+
+  class WebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+
+    #socketId;
+    #url;
+    #readyState = WebSocket.CONNECTING;
+    #bufferedAmount = 0;
+    #extensions = '';
+    #protocol = '';
+    #binaryType = 'blob';
+    _listeners = new Map();
+
+    // Event handlers
+    onopen = null;
+    onmessage = null;
+    onerror = null;
+    onclose = null;
+
+    constructor(url, protocols) {
+      // Validate URL
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(url);
+      } catch (e) {
+        throw new DOMException("Failed to construct 'WebSocket': The URL '" + url + "' is invalid.", 'SyntaxError');
+      }
+
+      if (parsedUrl.protocol !== 'ws:' && parsedUrl.protocol !== 'wss:') {
+        throw new DOMException("Failed to construct 'WebSocket': The URL's scheme must be either 'ws' or 'wss'.", 'SyntaxError');
+      }
+
+      // Per WHATWG spec, fragments must be stripped from WebSocket URLs
+      parsedUrl.hash = '';
+      this.#url = parsedUrl.href;
+      this.#socketId = String(__nextSocketId++);
+
+      // Normalize protocols to array
+      let protocolArray = [];
+      if (protocols !== undefined) {
+        if (typeof protocols === 'string') {
+          protocolArray = [protocols];
+        } else if (Array.isArray(protocols)) {
+          protocolArray = protocols;
+        } else {
+          protocolArray = [String(protocols)];
+        }
+      }
+
+      // Check for duplicate protocols
+      const seen = new Set();
+      for (const p of protocolArray) {
+        if (seen.has(p)) {
+          throw new DOMException("Failed to construct 'WebSocket': The subprotocol '" + p + "' is duplicated.", 'SyntaxError');
+        }
+        seen.add(p);
+      }
+
+      // Register socket
+      __clientWebSockets.set(this.#socketId, this);
+
+      // Call host to create connection
+      __WebSocket_connect(this.#socketId, this.#url, protocolArray);
+    }
+
+    get url() {
+      return this.#url;
+    }
+
+    get readyState() {
+      return this.#readyState;
+    }
+
+    get bufferedAmount() {
+      return this.#bufferedAmount;
+    }
+
+    get extensions() {
+      return this.#extensions;
+    }
+
+    get protocol() {
+      return this.#protocol;
+    }
+
+    get binaryType() {
+      return this.#binaryType;
+    }
+
+    set binaryType(value) {
+      if (value !== 'blob' && value !== 'arraybuffer') {
+        throw new DOMException("Failed to set the 'binaryType' property: '" + value + "' is not a valid value.", 'SyntaxError');
+      }
+      this.#binaryType = value;
+    }
+
+    // ReadyState constants
+    get CONNECTING() { return WebSocket.CONNECTING; }
+    get OPEN() { return WebSocket.OPEN; }
+    get CLOSING() { return WebSocket.CLOSING; }
+    get CLOSED() { return WebSocket.CLOSED; }
+
+    send(data) {
+      if (this.#readyState === WebSocket.CONNECTING) {
+        throw new DOMException("Failed to execute 'send' on 'WebSocket': Still in CONNECTING state.", 'InvalidStateError');
+      }
+
+      if (this.#readyState !== WebSocket.OPEN) {
+        // Silently discard if not open (per spec)
+        return;
+      }
+
+      // Convert data to string for transfer
+      let dataStr;
+      if (typeof data === 'string') {
+        dataStr = data;
+      } else if (data instanceof ArrayBuffer) {
+        // Convert ArrayBuffer to base64 for transfer
+        const bytes = new Uint8Array(data);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        dataStr = '__BINARY__' + btoa(binary);
+      } else if (ArrayBuffer.isView(data)) {
+        const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        dataStr = '__BINARY__' + btoa(binary);
+      } else if (data instanceof Blob) {
+        // Blob.arrayBuffer() is async, but send() is sync
+        // For now, throw - this is a limitation
+        throw new DOMException("Failed to execute 'send' on 'WebSocket': Blob data is not supported in this environment.", 'NotSupportedError');
+      } else {
+        dataStr = String(data);
+      }
+
+      __WebSocket_send(this.#socketId, dataStr);
+    }
+
+    close(code, reason) {
+      if (code !== undefined) {
+        if (typeof code !== 'number' || code !== Math.floor(code)) {
+          throw new DOMException("Failed to execute 'close' on 'WebSocket': The code must be an integer.", 'InvalidAccessError');
+        }
+        if (code !== 1000 && (code < 3000 || code > 4999)) {
+          throw new DOMException("Failed to execute 'close' on 'WebSocket': The code must be either 1000, or between 3000 and 4999.", 'InvalidAccessError');
+        }
+      }
+
+      if (reason !== undefined) {
+        const encoder = new TextEncoder();
+        if (encoder.encode(reason).byteLength > 123) {
+          throw new DOMException("Failed to execute 'close' on 'WebSocket': The message must not be greater than 123 bytes.", 'SyntaxError');
+        }
+      }
+
+      if (this.#readyState === WebSocket.CLOSING || this.#readyState === WebSocket.CLOSED) {
+        return;
+      }
+
+      this.#readyState = WebSocket.CLOSING;
+      __WebSocket_close(this.#socketId, code ?? 1000, reason ?? '');
+    }
+
+    // EventTarget interface
+    addEventListener(type, listener, options) {
+      if (typeof listener !== 'function') return;
+      let listeners = this._listeners.get(type);
+      if (!listeners) {
+        listeners = [];
+        this._listeners.set(type, listeners);
+      }
+      if (!listeners.includes(listener)) {
+        listeners.push(listener);
+      }
+    }
+
+    removeEventListener(type, listener, options) {
+      const listeners = this._listeners.get(type);
+      if (!listeners) return;
+      const index = listeners.indexOf(listener);
+      if (index !== -1) {
+        listeners.splice(index, 1);
+      }
+    }
+
+    dispatchEvent(event) {
+      dispatchEvent(this, event);
+      return !event.defaultPrevented;
+    }
+
+    // Internal methods called from host
+    _setProtocol(protocol) {
+      this.#protocol = protocol;
+    }
+
+    _setExtensions(extensions) {
+      this.#extensions = extensions;
+    }
+
+    _setReadyState(state) {
+      this.#readyState = state;
+    }
+
+    _dispatchOpen() {
+      this.#readyState = WebSocket.OPEN;
+      const event = new _Event('open');
+      dispatchEvent(this, event);
+    }
+
+    _dispatchMessage(data) {
+      // Handle binary data
+      let messageData = data;
+      if (typeof data === 'string' && data.startsWith('__BINARY__')) {
+        const base64 = data.slice(10);
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        if (this.#binaryType === 'arraybuffer') {
+          messageData = bytes.buffer;
+        } else {
+          messageData = new Blob([bytes]);
+        }
+      }
+
+      const event = new _MessageEvent('message', { data: messageData });
+      dispatchEvent(this, event);
+    }
+
+    _dispatchError() {
+      const event = new _Event('error');
+      dispatchEvent(this, event);
+    }
+
+    _dispatchClose(code, reason, wasClean) {
+      this.#readyState = WebSocket.CLOSED;
+      const event = new _CloseEvent('close', { code, reason, wasClean });
+      dispatchEvent(this, event);
+      __clientWebSockets.delete(this.#socketId);
+    }
+  }
+
+  // Helper to dispatch events from host to a socket by ID
+  globalThis.__dispatchClientWebSocketEvent = function(socketId, eventType, data) {
+    const ws = __clientWebSockets.get(socketId);
+    if (!ws) return;
+
+    switch (eventType) {
+      case 'open':
+        ws._setProtocol(data.protocol || '');
+        ws._setExtensions(data.extensions || '');
+        ws._dispatchOpen();
+        break;
+      case 'message':
+        ws._dispatchMessage(data.data);
+        break;
+      case 'error':
+        ws._dispatchError();
+        break;
+      case 'close':
+        ws._dispatchClose(data.code, data.reason, data.wasClean);
+        break;
+    }
+  };
+
+  globalThis.WebSocket = WebSocket;
+})();
+  `);
+}
+
+// ============================================================================
 // serve() Function Implementation
 // ============================================================================
 
@@ -2189,9 +2612,9 @@ function setupServe(context: ivm.Context): void {
  *
  * @example
  * const handle = await setupFetch(context, {
- *   onFetch: async (request) => {
+ *   onFetch: async (url, init) => {
  *     // Proxy fetch requests to the host
- *     return fetch(request);
+ *     return fetch(url, init);
  *   }
  * });
  *
@@ -2241,6 +2664,9 @@ export async function setupFetch(
   // Setup WebSocket command callbacks
   const wsCommandCallbacks = new Set<(cmd: WebSocketCommand) => void>();
 
+  // Setup client WebSocket command callbacks (outbound connections)
+  const clientWsCommandCallbacks = new Set<(cmd: ClientWebSocketCommand) => void>();
+
   // Setup Server class
   setupServer(context, serveState);
 
@@ -2249,6 +2675,9 @@ export async function setupFetch(
 
   // Setup serve function
   setupServe(context);
+
+  // Setup client WebSocket class (outbound connections from isolate)
+  setupClientWebSocket(context, clientWsCommandCallbacks);
 
   return {
     dispose() {
@@ -2613,6 +3042,65 @@ export async function setupFetch(
 
     hasActiveConnections(): boolean {
       return serveState.activeConnections.size > 0;
+    },
+
+    // Client WebSocket methods (outbound connections from isolate)
+    dispatchClientWebSocketOpen(socketId: string, protocol: string, extensions: string): void {
+      const safeProtocol = protocol.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const safeExtensions = extensions.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      context.evalSync(`
+        __dispatchClientWebSocketEvent("${socketId}", "open", {
+          protocol: "${safeProtocol}",
+          extensions: "${safeExtensions}"
+        });
+      `);
+    },
+
+    dispatchClientWebSocketMessage(socketId: string, data: string | ArrayBuffer): void {
+      if (typeof data === "string") {
+        // Escape the string for safe eval
+        const safeData = data
+          .replace(/\\/g, "\\\\")
+          .replace(/"/g, '\\"')
+          .replace(/\n/g, "\\n")
+          .replace(/\r/g, "\\r");
+        context.evalSync(`
+          __dispatchClientWebSocketEvent("${socketId}", "message", { data: "${safeData}" });
+        `);
+      } else {
+        // ArrayBuffer - convert to base64 with marker
+        const bytes = new Uint8Array(data);
+        let binary = "";
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]!);
+        }
+        const base64 = Buffer.from(binary, "binary").toString("base64");
+        context.evalSync(`
+          __dispatchClientWebSocketEvent("${socketId}", "message", { data: "__BINARY__${base64}" });
+        `);
+      }
+    },
+
+    dispatchClientWebSocketClose(socketId: string, code: number, reason: string, wasClean: boolean): void {
+      const safeReason = reason.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+      context.evalSync(`
+        __dispatchClientWebSocketEvent("${socketId}", "close", {
+          code: ${code},
+          reason: "${safeReason}",
+          wasClean: ${wasClean}
+        });
+      `);
+    },
+
+    dispatchClientWebSocketError(socketId: string): void {
+      context.evalSync(`
+        __dispatchClientWebSocketEvent("${socketId}", "error", {});
+      `);
+    },
+
+    onClientWebSocketCommand(callback: (cmd: ClientWebSocketCommand) => void): () => void {
+      clientWsCommandCallbacks.add(callback);
+      return () => clientWsCommandCallbacks.delete(callback);
     },
   };
 }

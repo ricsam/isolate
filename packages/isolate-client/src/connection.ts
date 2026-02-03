@@ -58,6 +58,13 @@ import {
   type CallbackStreamStart,
   type CallbackStreamChunk,
   type CallbackStreamEnd,
+  type ClientWsConnectRequest,
+  type ClientWsSendRequest,
+  type ClientWsCloseRequest,
+  type ClientWsOpenedMessage,
+  type ClientWsMessageMessage,
+  type ClientWsClosedMessage,
+  type ClientWsErrorMessage,
   marshalValue,
   type MarshalContext,
 } from "@ricsam/isolate-protocol";
@@ -89,6 +96,15 @@ const DEFAULT_TIMEOUT = 30000;
 
 // Track WebSocket command callbacks per isolate for handling WS_COMMAND messages
 const isolateWsCallbacks = new Map<string, Set<(cmd: WebSocketCommand) => void>>();
+
+// Track client WebSockets per isolate (outbound connections from isolate)
+// Map: isolateId -> Map<socketId -> WebSocket>
+const isolateClientWebSockets = new Map<string, Map<string, WebSocket>>();
+
+// Track WebSocket callbacks per isolate for handling outbound WebSocket connections
+// Map: isolateId -> WebSocketCallback
+import type { WebSocketCallback } from "@ricsam/isolate-protocol";
+const isolateWebSocketCallbacks = new Map<string, WebSocketCallback>();
 
 interface PendingRequest {
   resolve: (data: unknown) => void;
@@ -349,6 +365,25 @@ function handleMessage(message: Message, state: ConnectionState): void {
           cb(cmd);
         }
       }
+      break;
+    }
+
+    // Client WebSocket commands (outbound connections from isolate)
+    case MessageType.CLIENT_WS_CONNECT: {
+      const msg = message as ClientWsConnectRequest;
+      handleClientWsConnect(msg, state);
+      break;
+    }
+
+    case MessageType.CLIENT_WS_SEND: {
+      const msg = message as ClientWsSendRequest;
+      handleClientWsSend(msg, state);
+      break;
+    }
+
+    case MessageType.CLIENT_WS_CLOSE: {
+      const msg = message as ClientWsCloseRequest;
+      handleClientWsClose(msg, state);
       break;
     }
 
@@ -845,6 +880,11 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   const wsCommandCallbacks: Set<(cmd: WebSocketCommand) => void> = new Set();
   isolateWsCallbacks.set(isolateId, wsCommandCallbacks);
 
+  // Store WebSocket callback if provided (for outbound connections from isolate)
+  if (options.webSocket) {
+    isolateWebSocketCallbacks.set(isolateId, options.webSocket);
+  }
+
   // Create fetch handle
   const fetchHandle: RemoteFetchHandle = {
     async dispatchRequest(req: Request, opts?: DispatchOptions) {
@@ -1169,6 +1209,18 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       }
       // Clean up WebSocket callbacks
       isolateWsCallbacks.delete(isolateId);
+      isolateWebSocketCallbacks.delete(isolateId);
+
+      // Clean up client WebSockets (close all open connections)
+      const clientSockets = isolateClientWebSockets.get(isolateId);
+      if (clientSockets) {
+        for (const ws of clientSockets.values()) {
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close(1000, "Isolate disposed");
+          }
+        }
+        isolateClientWebSockets.delete(isolateId);
+      }
 
       const reqId = state.nextRequestId++;
       const req: DisposeRuntimeRequest = {
@@ -1234,8 +1286,16 @@ function registerFetchCallback(
 
   // Register a callback that returns a special marker for streaming responses
   state.callbacks.set(callbackId, async (serialized: unknown, requestId: unknown) => {
-    const request = deserializeRequest(serialized as SerializedRequestData);
-    const response = await callback(request);
+    const data = serialized as SerializedRequestData;
+    // Create a FetchRequestInit from the serialized data
+    // Note: signal is not serialized over the wire, so we create a dummy one
+    const init = {
+      method: data.method,
+      headers: data.headers,
+      body: data.body,
+      signal: new AbortController().signal,
+    };
+    const response = await callback(data.url, init);
 
     // Determine if we should stream the response
     const contentLength = response.headers.get("content-length");
@@ -1955,5 +2015,221 @@ async function sendBodyStream(
   } finally {
     reader.releaseLock();
     state.uploadStreams.delete(streamId);
+  }
+}
+
+// ============================================================================
+// Client WebSocket Handlers (outbound connections from isolate)
+// ============================================================================
+
+/**
+ * Handle CLIENT_WS_CONNECT command from daemon.
+ * Creates a real WebSocket connection and sets up event handlers.
+ * If a WebSocket callback is registered, it's used to create/proxy the connection.
+ */
+function handleClientWsConnect(
+  message: ClientWsConnectRequest,
+  state: ConnectionState
+): void {
+  const { isolateId, socketId, url, protocols } = message;
+
+  // Get or create the WebSocket map for this isolate
+  let sockets = isolateClientWebSockets.get(isolateId);
+  if (!sockets) {
+    sockets = new Map();
+    isolateClientWebSockets.set(isolateId, sockets);
+  }
+
+  // Helper to set up event handlers on a WebSocket
+  const setupWebSocket = (ws: WebSocket) => {
+    // Track the socket
+    sockets!.set(socketId, ws);
+
+    // Set up event handlers
+    ws.onopen = () => {
+      const msg: ClientWsOpenedMessage = {
+        type: MessageType.CLIENT_WS_OPENED,
+        isolateId,
+        socketId,
+        protocol: ws.protocol || "",
+        extensions: ws.extensions || "",
+      };
+      sendMessage(state.socket, msg);
+    };
+
+    ws.onmessage = (event) => {
+      let data: string | Uint8Array;
+      if (typeof event.data === "string") {
+        data = event.data;
+      } else if (event.data instanceof ArrayBuffer) {
+        data = new Uint8Array(event.data);
+      } else if (event.data instanceof Blob) {
+        // Read blob asynchronously
+        event.data.arrayBuffer().then((buffer) => {
+          const msg: ClientWsMessageMessage = {
+            type: MessageType.CLIENT_WS_MESSAGE,
+            isolateId,
+            socketId,
+            data: new Uint8Array(buffer),
+          };
+          sendMessage(state.socket, msg);
+        });
+        return;
+      } else {
+        // Unknown data type, convert to string
+        data = String(event.data);
+      }
+
+      const msg: ClientWsMessageMessage = {
+        type: MessageType.CLIENT_WS_MESSAGE,
+        isolateId,
+        socketId,
+        data,
+      };
+      sendMessage(state.socket, msg);
+    };
+
+    ws.onerror = () => {
+      const msg: ClientWsErrorMessage = {
+        type: MessageType.CLIENT_WS_ERROR,
+        isolateId,
+        socketId,
+      };
+      sendMessage(state.socket, msg);
+    };
+
+    ws.onclose = (event) => {
+      const msg: ClientWsClosedMessage = {
+        type: MessageType.CLIENT_WS_CLOSED,
+        isolateId,
+        socketId,
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean,
+      };
+      sendMessage(state.socket, msg);
+
+      // Clean up the socket
+      sockets?.delete(socketId);
+      if (sockets?.size === 0) {
+        isolateClientWebSockets.delete(isolateId);
+      }
+    };
+  };
+
+  // Helper to send connection blocked/failed events
+  const sendConnectionFailed = (reason: string) => {
+    const errorMsg: ClientWsErrorMessage = {
+      type: MessageType.CLIENT_WS_ERROR,
+      isolateId,
+      socketId,
+    };
+    sendMessage(state.socket, errorMsg);
+
+    const closeMsg: ClientWsClosedMessage = {
+      type: MessageType.CLIENT_WS_CLOSED,
+      isolateId,
+      socketId,
+      code: 1006,
+      reason,
+      wasClean: false,
+    };
+    sendMessage(state.socket, closeMsg);
+  };
+
+  // Check if a WebSocket callback is registered for this isolate
+  const callback = isolateWebSocketCallbacks.get(isolateId);
+
+  if (callback) {
+    // Use the callback to create/proxy the WebSocket
+    try {
+      const result = callback(url, protocols || []);
+
+      if (result instanceof Promise) {
+        // Handle async callback
+        result
+          .then((ws) => {
+            if (ws === null) {
+              // Connection blocked by callback
+              sendConnectionFailed("Connection blocked");
+            } else {
+              setupWebSocket(ws);
+            }
+          })
+          .catch(() => {
+            sendConnectionFailed("Callback error");
+          });
+      } else if (result === null) {
+        // Connection blocked by callback
+        sendConnectionFailed("Connection blocked");
+      } else {
+        // Callback returned a WebSocket synchronously
+        setupWebSocket(result);
+      }
+    } catch {
+      sendConnectionFailed("Callback error");
+    }
+  } else {
+    // No callback, create WebSocket directly (default behavior)
+    try {
+      const ws =
+        protocols && protocols.length > 0
+          ? new WebSocket(url, protocols)
+          : new WebSocket(url);
+      setupWebSocket(ws);
+    } catch {
+      sendConnectionFailed("Connection failed");
+    }
+  }
+}
+
+/**
+ * Handle CLIENT_WS_SEND command from daemon.
+ * Sends data on an existing WebSocket connection.
+ */
+function handleClientWsSend(
+  message: ClientWsSendRequest,
+  state: ConnectionState
+): void {
+  const { isolateId, socketId, data } = message;
+
+  const sockets = isolateClientWebSockets.get(isolateId);
+  const ws = sockets?.get(socketId);
+
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return; // Silently ignore if socket not found or not open
+  }
+
+  // Handle binary data (check for __BINARY__ marker from isolate)
+  if (typeof data === "string" && data.startsWith("__BINARY__")) {
+    const base64 = data.slice(10);
+    const binary = Buffer.from(base64, "base64");
+    ws.send(binary);
+  } else if (data instanceof Uint8Array) {
+    ws.send(data);
+  } else {
+    ws.send(data as string);
+  }
+}
+
+/**
+ * Handle CLIENT_WS_CLOSE command from daemon.
+ * Closes an existing WebSocket connection.
+ */
+function handleClientWsClose(
+  message: ClientWsCloseRequest,
+  state: ConnectionState
+): void {
+  const { isolateId, socketId, code, reason } = message;
+
+  const sockets = isolateClientWebSockets.get(isolateId);
+  const ws = sockets?.get(socketId);
+
+  if (!ws) {
+    return; // Silently ignore if socket not found
+  }
+
+  if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+    ws.close(code ?? 1000, reason ?? "");
   }
 }

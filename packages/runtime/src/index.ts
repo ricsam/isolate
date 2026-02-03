@@ -63,6 +63,7 @@ import type {
   ConsoleCallbacks,
   ConsoleEntry,
   FetchCallback,
+  FetchRequestInit,
   ModuleLoaderCallback,
   CustomFunctionDefinition,
   CustomFunctions,
@@ -82,6 +83,7 @@ export type {
   ConsoleCallbacks,
   ConsoleEntry,
   FetchCallback,
+  FetchRequestInit,
   ModuleLoaderCallback,
   CustomFunction,
   CustomFunctionDefinition,
@@ -751,9 +753,9 @@ function convertFetchCallback(callback?: FetchCallback): FetchOptions {
     return {};
   }
   return {
-    onFetch: async (request: Request): Promise<Response> => {
+    onFetch: async (url: string, init: FetchRequestInit): Promise<Response> => {
       // Wrap the result in a Promise to handle both sync and async callbacks
-      return Promise.resolve(callback(request));
+      return Promise.resolve(callback(url, init));
     },
   };
 }

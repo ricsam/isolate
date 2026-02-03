@@ -14,10 +14,10 @@ npm add @ricsam/isolate-fetch
 import { setupFetch } from "@ricsam/isolate-fetch";
 
 const handle = await setupFetch(context, {
-  onFetch: async (request) => {
+  onFetch: async (url, init) => {
     // Handle outbound fetch() calls from the isolate
-    console.log(`Fetching: ${request.url}`);
-    return fetch(request);
+    console.log(`Fetching: ${url}`);
+    return fetch(url, init);
   },
 });
 ```
@@ -26,6 +26,7 @@ const handle = await setupFetch(context, {
 
 - `fetch`, `Request`, `Response`, `Headers`
 - `FormData`, `AbortController`, `AbortSignal`
+- `WebSocket` (WHATWG WebSocket client)
 - `serve` (HTTP server handler)
 
 ## Usage in Isolate
@@ -197,6 +198,132 @@ serve({
 });
 ```
 
+## WebSocket Client (Outbound Connections)
+
+The isolate has access to a WHATWG-compliant `WebSocket` class for making outbound WebSocket connections. This is separate from the `serve()` WebSocket handler (which handles *inbound* connections).
+
+### Basic Usage
+
+```javascript
+// In isolate code
+const ws = new WebSocket("wss://api.example.com/stream");
+
+ws.onopen = () => {
+  console.log("Connected!");
+  ws.send("Hello server");
+};
+
+ws.onmessage = (event) => {
+  console.log("Received:", event.data);
+};
+
+ws.onerror = (event) => {
+  console.error("WebSocket error");
+};
+
+ws.onclose = (event) => {
+  console.log("Closed:", event.code, event.reason);
+};
+```
+
+### WHATWG WebSocket API
+
+The WebSocket class implements the full WHATWG WebSocket specification:
+
+**Constructor:**
+```javascript
+new WebSocket(url)
+new WebSocket(url, protocols)
+new WebSocket(url, protocol)  // Single protocol as string
+```
+
+**Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `url` | `string` | The URL the WebSocket is connected to |
+| `readyState` | `number` | Connection state (0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED) |
+| `bufferedAmount` | `number` | Bytes queued for transmission |
+| `protocol` | `string` | Server-selected subprotocol |
+| `extensions` | `string` | Server-selected extensions |
+| `binaryType` | `string` | Binary data type: `"blob"` (default) or `"arraybuffer"` |
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `send(data)` | Send data (string, ArrayBuffer, Uint8Array, Blob) |
+| `close(code?, reason?)` | Close the connection |
+
+**Events:**
+
+| Event | Type | Description |
+|-------|------|-------------|
+| `open` | `Event` | Connection established |
+| `message` | `MessageEvent` | Message received (`event.data` contains the message) |
+| `error` | `Event` | Error occurred |
+| `close` | `CloseEvent` | Connection closed (`event.code`, `event.reason`, `event.wasClean`) |
+
+**EventTarget Interface:**
+```javascript
+ws.addEventListener("message", handler);
+ws.removeEventListener("message", handler);
+```
+
+### Binary Data
+
+```javascript
+const ws = new WebSocket("wss://api.example.com/binary");
+
+// Set binaryType before receiving messages
+ws.binaryType = "arraybuffer";  // or "blob" (default)
+
+ws.onmessage = (event) => {
+  if (event.data instanceof ArrayBuffer) {
+    const bytes = new Uint8Array(event.data);
+    console.log("Received binary:", bytes.length, "bytes");
+  }
+};
+
+// Send binary data
+ws.onopen = () => {
+  const data = new Uint8Array([1, 2, 3, 4]);
+  ws.send(data);
+};
+```
+
+### Protocol Negotiation
+
+```javascript
+// Request specific subprotocols
+const ws = new WebSocket("wss://api.example.com", ["graphql-ws", "subscriptions-transport-ws"]);
+
+ws.onopen = () => {
+  // Check which protocol the server selected
+  console.log("Using protocol:", ws.protocol);
+};
+```
+
+### Host-Side Control
+
+The host can control outbound WebSocket connections via the `webSocket` callback:
+
+```typescript
+// When creating a runtime (via @ricsam/isolate-client)
+const runtime = await client.createRuntime({
+  webSocket: async (url, protocols) => {
+    // Block certain hosts
+    if (url.includes("blocked.com")) {
+      return null;
+    }
+    // Allow connection
+    return new WebSocket(url, protocols.length > 0 ? protocols : undefined);
+  },
+});
+```
+
+See the [@ricsam/isolate-client README](../isolate-client/README.md) for more details on the WebSocket callback.
+
 ## Host-Side API
 
 The host dispatches requests and WebSocket events to the isolate.
@@ -293,7 +420,7 @@ interface WebSocketCommand {
 import { setupFetch } from "@ricsam/isolate-fetch";
 
 const handle = await setupFetch(context, {
-  onFetch: async (request) => fetch(request),
+  onFetch: async (url, init) => fetch(url, init),
 });
 
 // Set up serve handler in isolate

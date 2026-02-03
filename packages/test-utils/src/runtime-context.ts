@@ -102,12 +102,12 @@ export async function createRuntimeTestContext(
         }
       },
     },
-    fetch: async (request: Request) => {
+    fetch: async (url: string, init) => {
       // Capture fetch call
       fetchCalls.push({
-        url: request.url,
-        method: request.method,
-        headers: [...request.headers.entries()],
+        url,
+        method: init.method,
+        headers: init.headers,
       });
 
       // Return mock response

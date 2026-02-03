@@ -156,10 +156,10 @@ describe("isolate-client integration", () => {
     const fetchRequests: { url: string; method: string }[] = [];
 
     const runtime = await client.createRuntime({
-      fetch: async (request) => {
+      fetch: async (url, init) => {
         fetchRequests.push({
-          url: request.url,
-          method: request.method,
+          url,
+          method: init.method,
         });
         return new Response(JSON.stringify({ mocked: true }), {
           status: 200,

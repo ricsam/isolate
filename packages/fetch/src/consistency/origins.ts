@@ -162,7 +162,7 @@ export async function createConsistencyTestContext(): Promise<ConsistencyTestCon
   let pendingURL: URL | null = null;
 
   const runtime = await createRuntime({
-    fetch: async (request: Request) => {
+    fetch: async () => {
       // Return mock response
       return new Response(mockResponse.body ?? "", {
         status: mockResponse.status ?? 200,

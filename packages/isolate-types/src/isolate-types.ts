@@ -117,7 +117,7 @@ declare global {
 /**
  * Type definitions for @ricsam/isolate-fetch globals.
  *
- * Includes: Headers, Request, Response, AbortController, AbortSignal, FormData, fetch, serve, Server, ServerWebSocket
+ * Includes: Headers, Request, Response, AbortController, AbortSignal, FormData, fetch, serve, Server, ServerWebSocket, WebSocket
  */
 export const FETCH_TYPES = `/**
  * Global Type Definitions for @ricsam/isolate-fetch
@@ -385,6 +385,239 @@ declare global {
    * });
    */
   function serve<T = unknown>(options: ServeOptions<T>): void;
+
+  // ============================================
+  // Client WebSocket API (outbound connections)
+  // ============================================
+
+  /**
+   * The type for WebSocket binary data handling.
+   */
+  type BinaryType = "blob" | "arraybuffer";
+
+  /**
+   * Event fired when a WebSocket connection is closed.
+   * @see https://developer.mozilla.org/en-US/docs/Web/API/CloseEvent
+   */
+  interface CloseEvent extends Event {
+    /**
+     * The close code sent by the server.
+     */
+    readonly code: number;
+
+    /**
+     * The close reason sent by the server.
+     */
+    readonly reason: string;
+
+    /**
+     * Whether the connection was closed cleanly.
+     */
+    readonly wasClean: boolean;
+  }
+
+  /**
+   * Event fired when a WebSocket receives a message.
+   * @see https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent
+   */
+  interface MessageEvent<T = any> extends Event {
+    /**
+     * The data sent by the message emitter.
+     */
+    readonly data: T;
+
+    /**
+     * The origin of the message emitter.
+     */
+    readonly origin: string;
+
+    /**
+     * The last event ID (for Server-Sent Events).
+     */
+    readonly lastEventId: string;
+
+    /**
+     * The MessagePort array sent with the message (if any).
+     */
+    readonly ports: ReadonlyArray<MessagePort>;
+
+    /**
+     * The source of the message (if applicable).
+     */
+    readonly source: MessageEventSource | null;
+  }
+
+  /**
+   * WHATWG WebSocket client for making outbound WebSocket connections.
+   * @see https://developer.mozilla.org/en-US/docs/Web/API/WebSocket
+   *
+   * @example
+   * const ws = new WebSocket("wss://echo.websocket.org");
+   *
+   * ws.onopen = () => {
+   *   console.log("Connected!");
+   *   ws.send("Hello, server!");
+   * };
+   *
+   * ws.onmessage = (event) => {
+   *   console.log("Received:", event.data);
+   * };
+   *
+   * ws.onclose = (event) => {
+   *   console.log("Closed:", event.code, event.reason);
+   * };
+   *
+   * ws.onerror = () => {
+   *   console.log("Error occurred");
+   * };
+   */
+  interface WebSocket extends EventTarget {
+    /**
+     * The URL of the WebSocket connection.
+     */
+    readonly url: string;
+
+    /**
+     * The current state of the connection.
+     * - 0: CONNECTING
+     * - 1: OPEN
+     * - 2: CLOSING
+     * - 3: CLOSED
+     */
+    readonly readyState: number;
+
+    /**
+     * The number of bytes of data that have been queued but not yet transmitted.
+     */
+    readonly bufferedAmount: number;
+
+    /**
+     * The extensions selected by the server.
+     */
+    readonly extensions: string;
+
+    /**
+     * The subprotocol selected by the server.
+     */
+    readonly protocol: string;
+
+    /**
+     * The type of binary data being transmitted.
+     * Can be "blob" or "arraybuffer".
+     */
+    binaryType: BinaryType;
+
+    /**
+     * Send data through the WebSocket connection.
+     *
+     * @param data - The data to send
+     * @throws InvalidStateError if the connection is not open
+     *
+     * @example
+     * ws.send("Hello!");
+     * ws.send(new Uint8Array([1, 2, 3]));
+     */
+    send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
+
+    /**
+     * Close the WebSocket connection.
+     *
+     * @param code - The close code (default: 1000)
+     * @param reason - The close reason (max 123 bytes UTF-8)
+     *
+     * @example
+     * ws.close();
+     * ws.close(1000, "Normal closure");
+     */
+    close(code?: number, reason?: string): void;
+
+    /**
+     * Event handler for when the connection is established.
+     */
+    onopen: ((this: WebSocket, ev: Event) => any) | null;
+
+    /**
+     * Event handler for when a message is received.
+     */
+    onmessage: ((this: WebSocket, ev: MessageEvent) => any) | null;
+
+    /**
+     * Event handler for when an error occurs.
+     */
+    onerror: ((this: WebSocket, ev: Event) => any) | null;
+
+    /**
+     * Event handler for when the connection is closed.
+     */
+    onclose: ((this: WebSocket, ev: CloseEvent) => any) | null;
+
+    /**
+     * Connection is being established.
+     */
+    readonly CONNECTING: 0;
+
+    /**
+     * Connection is open and ready to communicate.
+     */
+    readonly OPEN: 1;
+
+    /**
+     * Connection is in the process of closing.
+     */
+    readonly CLOSING: 2;
+
+    /**
+     * Connection is closed or couldn't be opened.
+     */
+    readonly CLOSED: 3;
+  }
+
+  /**
+   * WebSocket constructor.
+   * @see https://developer.mozilla.org/en-US/docs/Web/API/WebSocket/WebSocket
+   */
+  interface WebSocketConstructor {
+    /**
+     * Create a new WebSocket connection.
+     *
+     * @param url - The URL to connect to (must be ws:// or wss://)
+     * @param protocols - Optional subprotocol(s) to request
+     * @throws SyntaxError if the URL is invalid
+     *
+     * @example
+     * const ws = new WebSocket("wss://example.com/socket");
+     * const ws = new WebSocket("wss://example.com/socket", "graphql-ws");
+     * const ws = new WebSocket("wss://example.com/socket", ["protocol1", "protocol2"]);
+     */
+    new (url: string | URL, protocols?: string | string[]): WebSocket;
+
+    readonly prototype: WebSocket;
+
+    /**
+     * Connection is being established.
+     */
+    readonly CONNECTING: 0;
+
+    /**
+     * Connection is open and ready to communicate.
+     */
+    readonly OPEN: 1;
+
+    /**
+     * Connection is in the process of closing.
+     */
+    readonly CLOSING: 2;
+
+    /**
+     * Connection is closed or couldn't be opened.
+     */
+    readonly CLOSED: 3;
+  }
+
+  /**
+   * WHATWG WebSocket client for making outbound WebSocket connections.
+   */
+  const WebSocket: WebSocketConstructor;
 }
 `;
 

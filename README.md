@@ -6,6 +6,7 @@ A WHATWG-compliant JavaScript sandbox built on [isolated-vm](https://github.com/
 
 - **Fetch API** - `fetch()`, `Request`, `Response`, `Headers`, `FormData`, `AbortController`
 - **HTTP Server** - `serve()` with WebSocket support (Bun-compatible API) - [detailed docs](./packages/fetch/README.md)
+- **WebSocket Client** - WHATWG-compliant `WebSocket` class for outbound connections
 - **File System** - OPFS-compatible API with `FileSystemDirectoryHandle`, `FileSystemFileHandle`
 - **Streams** - `ReadableStream`, `WritableStream`, `TransformStream`
 - **Blob/File** - Full `Blob` and `File` implementations
@@ -46,7 +47,7 @@ const runtime = await createRuntime({
       }
     },
   },
-  fetch: async (request) => fetch(request),
+  fetch: async (url, init) => fetch(url, init),
 });
 
 // Run code as ES module (supports top-level await)
@@ -113,7 +114,7 @@ const runtime = await createRuntime({
       if (entry.type === "output") console.log(entry.stdout);
     },
   },
-  fetch: async (req) => fetch(req),
+  fetch: async (url, init) => fetch(url, init),
 });
 
 await runtime.eval(`
@@ -286,7 +287,7 @@ const runtime = await client.createRuntime({
       }
     },
   },
-  fetch: async (request) => fetch(request),
+  fetch: async (url, init) => fetch(url, init),
   fs: {
     readFile: async (path) => Bun.file(path).arrayBuffer(),
     writeFile: async (path, data) => Bun.write(path, data),
@@ -516,6 +517,9 @@ interface RuntimeOptions {
   /** Fetch callback - handles all fetch() calls from the isolate */
   fetch?: FetchCallback;
 
+  /** WebSocket callback - controls outbound WebSocket connections */
+  webSocket?: WebSocketCallback;
+
   /** File system callbacks - handles OPFS-style file operations */
   fs?: FileSystemCallbacks;
 
@@ -595,8 +599,55 @@ const runtime = await createRuntime({
 Handle all `fetch()` calls. Without this callback, fetch is unavailable in the isolate:
 
 ```typescript
-type FetchCallback = (request: Request) => Response | Promise<Response>;
+interface FetchRequestInit {
+  method: string;
+  headers: [string, string][];
+  body: Uint8Array | null;
+  signal: AbortSignal;
+}
+
+type FetchCallback = (url: string, init: FetchRequestInit) => Response | Promise<Response>;
 ```
+
+The callback receives the raw URL string as passed by the isolate code (before any normalization) and an init object with the request details.
+
+### WebSocket Callback
+
+Control outbound WebSocket connections from isolate code:
+
+```typescript
+type WebSocketCallback = (
+  url: string,
+  protocols: string[]
+) => WebSocket | Promise<WebSocket | null> | null;
+```
+
+Return values:
+- `WebSocket` instance: Use this WebSocket for the connection
+- `null`: Block the connection (isolate sees it as a failed connection with `onerror` then `onclose` with code 1006)
+- `Promise<WebSocket>`: Async - wait for WebSocket
+- `Promise<null>`: Async - block the connection
+
+Example:
+
+```typescript
+const runtime = await createRuntime({
+  webSocket: async (url, protocols) => {
+    // Block certain hosts
+    if (url.includes("blocked.com")) {
+      return null;
+    }
+    // Proxy to different server
+    if (url.includes("internal")) {
+      return new WebSocket("wss://proxy.example.com" + new URL(url).pathname);
+    }
+    // Allow normally
+    return new WebSocket(url, protocols.length > 0 ? protocols : undefined);
+  },
+});
+```
+
+If no callback is provided, all WebSocket connections are auto-allowed.
 
 ### File System Callbacks
 

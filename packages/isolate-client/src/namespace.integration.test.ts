@@ -383,8 +383,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       // First runtime
       const fetches1: string[] = [];
       const runtime1 = await namespace.createRuntime({
-        fetch: async (request) => {
-          fetches1.push(request.url);
+        fetch: async (url) => {
+          fetches1.push(url);
           return new Response("from callback 1");
         },
       });
@@ -393,8 +393,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       // Second runtime with different fetch callback
       const fetches2: string[] = [];
       const runtime2 = await namespace.createRuntime({
-        fetch: async (request) => {
-          fetches2.push(request.url);
+        fetch: async (url) => {
+          fetches2.push(url);
           return new Response("from callback 2");
         },
       });

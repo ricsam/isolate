@@ -586,8 +586,8 @@ describe("@ricsam/isolate-runtime", () => {
             }
           },
         },
-        fetch: async (request) => {
-          capturedUrl = request.url;
+        fetch: async (url) => {
+          capturedUrl = url;
           return new Response(JSON.stringify({ message: "mocked" }), {
             status: 200,
             headers: { "Content-Type": "application/json" },

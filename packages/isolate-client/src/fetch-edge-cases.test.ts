@@ -533,13 +533,15 @@ describe("Fetch edge cases (daemon/client)", () => {
 
   it("Request properties lost - passthrough", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
-      fetch: async (request) => {
+      fetch: async (url, init) => {
+        // Note: mode, credentials, cache, redirect are not available in FetchRequestInit
+        // They would need to be passed explicitly if needed
         return new Response(
           JSON.stringify({
-            mode: request.mode,
-            credentials: request.credentials,
-            cache: request.cache,
-            redirect: request.redirect,
+            mode: undefined,
+            credentials: undefined,
+            cache: undefined,
+            redirect: undefined,
           }),
           { headers: { "Content-Type": "application/json" } }
         );
