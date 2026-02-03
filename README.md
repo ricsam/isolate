@@ -602,14 +602,17 @@ Handle all `fetch()` calls. Without this callback, fetch is unavailable in the i
 interface FetchRequestInit {
   method: string;
   headers: [string, string][];
-  body: Uint8Array | null;
+  /** Raw body bytes - use this if you need direct access to the body data */
+  rawBody: Uint8Array | null;
+  /** Body ready for use with fetch() - same data as rawBody but typed as BodyInit */
+  body: BodyInit | null;
   signal: AbortSignal;
 }
 
 type FetchCallback = (url: string, init: FetchRequestInit) => Response | Promise<Response>;
 ```
 
-The callback receives the raw URL string as passed by the isolate code (before any normalization) and an init object with the request details.
+The callback receives the raw URL string as passed by the isolate code (before any normalization) and an init object with the request details. Use `init.body` directly with `fetch()`, or `init.rawBody` if you need to inspect/modify the raw bytes.
 
 ### WebSocket Callback
 

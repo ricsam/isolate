@@ -11,7 +11,8 @@ export { clearAllInstanceState };
 export interface FetchRequestInit {
   method: string;
   headers: [string, string][];
-  body: Uint8Array | null;
+  rawBody: Uint8Array | null;
+  body: BodyInit | null;
   signal: AbortSignal;
 }
 
@@ -1886,11 +1887,12 @@ function setupFetchFunction(
       const bodyBytes = bodyJson ? JSON.parse(bodyJson) as number[] : null;
 
       // Construct init object for onFetch
-      const body = bodyBytes ? new Uint8Array(bodyBytes) : null;
+      const rawBody = bodyBytes ? new Uint8Array(bodyBytes) : null;
       const init: FetchRequestInit = {
         method,
         headers,
-        body,
+        rawBody,
+        body: rawBody as BodyInit | null,
         signal: hostController.signal,
       };
 
@@ -1898,7 +1900,7 @@ function setupFetchFunction(
       const onFetch = options?.onFetch ?? ((url: string, init: FetchRequestInit) => fetch(url, {
         method: init.method,
         headers: init.headers,
-        body: init.body as BodyInit | null,
+        body: init.body,
         signal: init.signal,
       }));
 

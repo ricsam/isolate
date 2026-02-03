@@ -909,7 +909,10 @@ export interface ConsoleCallbacks {
 export interface FetchRequestInit {
   method: string;
   headers: [string, string][];
-  body: Uint8Array | null;
+  /** Raw body bytes - use this if you need direct access to the body data */
+  rawBody: Uint8Array | null;
+  /** Body ready for use with fetch() - same data as rawBody but typed as BodyInit */
+  body: BodyInit | null;
   signal: AbortSignal;
 }
 

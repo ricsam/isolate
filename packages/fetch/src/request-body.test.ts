@@ -171,7 +171,7 @@ describe("Request.body with GET/HEAD methods", () => {
     const handle = await setupFetch(context, {
       onFetch: async (url, init) => {
         receivedMethod = init.method;
-        receivedBody = init.body ? new TextDecoder().decode(init.body) : null;
+        receivedBody = init.rawBody ? new TextDecoder().decode(init.rawBody) : null;
         return new Response("ok");
       },
     });

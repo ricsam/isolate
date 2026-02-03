@@ -1292,7 +1292,8 @@ function registerFetchCallback(
     const init = {
       method: data.method,
       headers: data.headers,
-      body: data.body,
+      rawBody: data.body,
+      body: data.body as BodyInit | null,
       signal: new AbortController().signal,
     };
     const response = await callback(data.url, init);
