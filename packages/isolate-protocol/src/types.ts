@@ -195,7 +195,35 @@ export interface PlaywrightOperation {
     | "goBack"
     | "goForward"
     | "waitForURL"
-    | "clearCookies";
+    | "clearCookies"
+    // Page-level operations
+    | "screenshot"
+    | "setViewportSize"
+    | "viewportSize"
+    | "emulateMedia"
+    | "setExtraHTTPHeaders"
+    | "bringToFront"
+    | "close"
+    | "isClosed"
+    | "pdf"
+    | "pause"
+    | "frames"
+    | "mainFrame"
+    // Keyboard operations
+    | "keyboardType"
+    | "keyboardPress"
+    | "keyboardDown"
+    | "keyboardUp"
+    | "keyboardInsertText"
+    // Mouse operations
+    | "mouseMove"
+    | "mouseClick"
+    | "mouseDown"
+    | "mouseUp"
+    | "mouseWheel"
+    // Cookie operations
+    | "addCookies"
+    | "cookies";
   args: unknown[];
 }
 
@@ -977,6 +1005,18 @@ export interface TestEnvironmentOptions {
 }
 
 /**
+ * File data for setInputFiles operations.
+ */
+export interface PlaywrightFileData {
+  /** File name */
+  name: string;
+  /** MIME type */
+  mimeType: string;
+  /** File contents as Buffer */
+  buffer: Buffer;
+}
+
+/**
  * Options for Playwright integration.
  * User provides the page object - client owns the browser.
  */
@@ -989,6 +1029,27 @@ export interface PlaywrightOptions {
   console?: boolean;
   /** Unified event callback for all playwright events */
   onEvent?: (event: PlaywrightEvent) => void;
+  /**
+   * Callback to read files for setInputFiles() operations.
+   * This allows the host to control which files the isolate can access.
+   * If not provided, setInputFiles() with file paths will throw an error.
+   *
+   * @param filePath - The file path requested by the isolate
+   * @returns File data with name, mimeType, and buffer contents
+   * @throws If the file should not be accessible
+   */
+  readFile?: (filePath: string) => Promise<PlaywrightFileData> | PlaywrightFileData;
+  /**
+   * Callback to write files for screenshot() and pdf() operations with path option.
+   * This allows the host to control where files are written.
+   * If not provided, screenshot()/pdf() with path option will throw an error
+   * (but the base64 data will still be returned).
+   *
+   * @param filePath - The file path requested by the isolate
+   * @param data - The file contents as Buffer
+   * @throws If the file should not be written to this location
+   */
+  writeFile?: (filePath: string, data: Buffer) => Promise<void> | void;
 }
 
 /**

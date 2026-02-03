@@ -4,10 +4,18 @@ import type {
   PlaywrightOperation,
   PlaywrightResult,
   PlaywrightEvent,
+  PlaywrightFileData,
 } from "@ricsam/isolate-protocol";
 
 // Re-export protocol types
-export type { PlaywrightOperation, PlaywrightResult, PlaywrightEvent } from "@ricsam/isolate-protocol";
+export type { PlaywrightOperation, PlaywrightResult, PlaywrightEvent, PlaywrightFileData } from "@ricsam/isolate-protocol";
+
+// ============================================================================
+// File I/O Callback Types (for secure file access)
+// ============================================================================
+
+export type ReadFileCallback = (filePath: string) => Promise<PlaywrightFileData> | PlaywrightFileData;
+export type WriteFileCallback = (filePath: string, data: Buffer) => Promise<void> | void;
 
 // ============================================================================
 // Types and Interfaces
@@ -138,6 +146,158 @@ function getLocator(
       locator = first.or(second);
       break;
     }
+    case "and": {
+      // Composite locator: selectorValue is JSON array of [firstInfo, secondInfo]
+      const [firstInfo, secondInfo] = JSON.parse(selectorValue) as [[string, string, string | null], [string, string, string | null]];
+      const first = getLocator(page, firstInfo[0], firstInfo[1], firstInfo[2]);
+      const second = getLocator(page, secondInfo[0], secondInfo[1], secondInfo[2]);
+      locator = first.and(second);
+      break;
+    }
+    case "chained": {
+      // Chained locator: selectorValue is JSON array of [parentInfo, childInfo]
+      const [parentInfo, childInfo] = JSON.parse(selectorValue) as [[string, string, string | null], [string, string, string | null]];
+      const parent = getLocator(page, parentInfo[0], parentInfo[1], parentInfo[2]);
+      // Resolve child relative to parent
+      const childType = childInfo[0];
+      const childValue = childInfo[1];
+      const childOptionsJson = childInfo[2];
+      const childOptions = childOptionsJson ? JSON.parse(childOptionsJson) : undefined;
+
+      // For chained locators, we need to get a locator within the parent
+      switch (childType) {
+        case "css":
+          locator = parent.locator(childValue);
+          break;
+        case "role": {
+          const roleOpts = childOptions ? { ...childOptions } : undefined;
+          if (roleOpts) {
+            delete roleOpts.nth;
+            delete roleOpts.filter;
+            if (roleOpts.name && typeof roleOpts.name === 'object' && roleOpts.name.$regex) {
+              roleOpts.name = new RegExp(roleOpts.name.$regex, roleOpts.name.$flags);
+            }
+          }
+          locator = parent.getByRole(
+            childValue as Parameters<PlaywrightLocator["getByRole"]>[0],
+            roleOpts && Object.keys(roleOpts).length > 0 ? roleOpts : undefined
+          );
+          break;
+        }
+        case "text":
+          locator = parent.getByText(childValue);
+          break;
+        case "label":
+          locator = parent.getByLabel(childValue);
+          break;
+        case "placeholder":
+          locator = parent.getByPlaceholder(childValue);
+          break;
+        case "testId":
+          locator = parent.getByTestId(childValue);
+          break;
+        case "altText":
+          locator = parent.getByAltText(childValue);
+          break;
+        case "title":
+          locator = parent.getByTitle(childValue);
+          break;
+        default:
+          locator = parent.locator(childValue);
+      }
+
+      // Apply nth to the child if specified
+      if (childOptions?.nth !== undefined) {
+        locator = locator.nth(childOptions.nth);
+      }
+      // Apply filter to the child if specified
+      if (childOptions?.filter) {
+        const filterOpts = { ...childOptions.filter };
+        if (filterOpts.hasText && typeof filterOpts.hasText === 'object' && filterOpts.hasText.$regex) {
+          filterOpts.hasText = new RegExp(filterOpts.hasText.$regex, filterOpts.hasText.$flags);
+        }
+        if (filterOpts.hasNotText && typeof filterOpts.hasNotText === 'object' && filterOpts.hasNotText.$regex) {
+          filterOpts.hasNotText = new RegExp(filterOpts.hasNotText.$regex, filterOpts.hasNotText.$flags);
+        }
+        locator = locator.filter(filterOpts);
+      }
+      break;
+    }
+    case "altText":
+      locator = page.getByAltText(selectorValue);
+      break;
+    case "title":
+      locator = page.getByTitle(selectorValue);
+      break;
+    case "frame": {
+      // Frame locator: selectorValue is JSON [frameSelectorInfo, innerLocatorInfo]
+      const [frameSelectorInfo, innerLocatorInfo] = JSON.parse(selectorValue) as [[string, string, string | null], [string, string, string | null]];
+      const frameSelector = frameSelectorInfo[1]; // CSS selector for the iframe
+      const frame = page.frameLocator(frameSelector);
+      // Get the inner locator
+      const innerType = innerLocatorInfo[0];
+      const innerValue = innerLocatorInfo[1];
+      const innerOptionsJson = innerLocatorInfo[2];
+      const innerOptions = innerOptionsJson ? JSON.parse(innerOptionsJson) : undefined;
+
+      switch (innerType) {
+        case "css":
+          locator = frame.locator(innerValue);
+          break;
+        case "role": {
+          const roleOpts = innerOptions ? { ...innerOptions } : undefined;
+          if (roleOpts) {
+            delete roleOpts.nth;
+            delete roleOpts.filter;
+            if (roleOpts.name && typeof roleOpts.name === 'object' && roleOpts.name.$regex) {
+              roleOpts.name = new RegExp(roleOpts.name.$regex, roleOpts.name.$flags);
+            }
+          }
+          locator = frame.getByRole(
+            innerValue as Parameters<PlaywrightLocator["getByRole"]>[0],
+            roleOpts && Object.keys(roleOpts).length > 0 ? roleOpts : undefined
+          );
+          break;
+        }
+        case "text":
+          locator = frame.getByText(innerValue);
+          break;
+        case "label":
+          locator = frame.getByLabel(innerValue);
+          break;
+        case "placeholder":
+          locator = frame.getByPlaceholder(innerValue);
+          break;
+        case "testId":
+          locator = frame.getByTestId(innerValue);
+          break;
+        case "altText":
+          locator = frame.getByAltText(innerValue);
+          break;
+        case "title":
+          locator = frame.getByTitle(innerValue);
+          break;
+        default:
+          locator = frame.locator(innerValue);
+      }
+
+      // Apply nth to the inner locator if specified
+      if (innerOptions?.nth !== undefined) {
+        locator = locator.nth(innerOptions.nth);
+      }
+      // Apply filter to the inner locator if specified
+      if (innerOptions?.filter) {
+        const filterOpts = { ...innerOptions.filter };
+        if (filterOpts.hasText && typeof filterOpts.hasText === 'object' && filterOpts.hasText.$regex) {
+          filterOpts.hasText = new RegExp(filterOpts.hasText.$regex, filterOpts.hasText.$flags);
+        }
+        if (filterOpts.hasNotText && typeof filterOpts.hasNotText === 'object' && filterOpts.hasNotText.$regex) {
+          filterOpts.hasNotText = new RegExp(filterOpts.hasNotText.$regex, filterOpts.hasNotText.$flags);
+        }
+        locator = locator.filter(filterOpts);
+      }
+      break;
+    }
     default:
       locator = page.locator(selectorValue);
   }
@@ -166,11 +326,17 @@ function getLocator(
 // Helper: Execute locator action
 // ============================================================================
 
+interface FileIOCallbacks {
+  readFile?: ReadFileCallback;
+  writeFile?: WriteFileCallback;
+}
+
 async function executeLocatorAction(
   locator: PlaywrightLocator,
   action: string,
   actionArg: unknown,
-  timeout: number
+  timeout: number,
+  fileIO?: FileIOCallbacks
 ): Promise<unknown> {
   switch (action) {
     case "click":
@@ -239,6 +405,95 @@ async function executeLocatorAction(
     }
     case "boundingBox":
       return await locator.boundingBox({ timeout });
+    case "setInputFiles": {
+      const files = actionArg as string | string[] | { name: string; mimeType: string; buffer: string }[];
+
+      // Case 1: Already have buffer data (base64 encoded from isolate)
+      if (Array.isArray(files) && files.length > 0 && typeof files[0] === 'object' && 'buffer' in files[0]) {
+        const fileBuffers = (files as { name: string; mimeType: string; buffer: string }[]).map(f => ({
+          name: f.name,
+          mimeType: f.mimeType,
+          buffer: Buffer.from(f.buffer, 'base64'),
+        }));
+        await locator.setInputFiles(fileBuffers, { timeout });
+        return null;
+      }
+
+      // Case 2: File paths - need to use readFile callback for security
+      const filePaths = Array.isArray(files) ? files as string[] : [files as string];
+
+      if (!fileIO?.readFile) {
+        throw new Error(
+          'setInputFiles() with file paths requires a readFile callback in PlaywrightOptions. ' +
+          'Either provide file data directly using { name, mimeType, buffer } format, or ' +
+          'configure a readFile callback to control file access from the isolate.'
+        );
+      }
+
+      // Read files through the callback
+      const fileBuffers = await Promise.all(
+        filePaths.map(async (filePath) => {
+          const fileData = await fileIO.readFile!(filePath);
+          return {
+            name: fileData.name,
+            mimeType: fileData.mimeType,
+            buffer: fileData.buffer,
+          };
+        })
+      );
+
+      await locator.setInputFiles(fileBuffers, { timeout });
+      return null;
+    }
+    case "screenshot": {
+      const opts = actionArg as { type?: 'png' | 'jpeg'; quality?: number; path?: string } | undefined;
+
+      // Take screenshot (without path - we handle file writing separately)
+      const buffer = await locator.screenshot({
+        timeout,
+        type: opts?.type,
+        quality: opts?.quality,
+      });
+
+      // If path is specified, use writeFile callback
+      if (opts?.path) {
+        if (!fileIO?.writeFile) {
+          throw new Error(
+            'screenshot() with path option requires a writeFile callback in PlaywrightOptions. ' +
+            'Either omit the path option (screenshot returns base64 data), or ' +
+            'configure a writeFile callback to control file writing from the isolate.'
+          );
+        }
+        await fileIO.writeFile(opts.path, buffer);
+      }
+
+      return buffer.toString('base64');
+    }
+    case "dragTo": {
+      const targetInfo = actionArg as [string, string, string | null];
+      // We need to resolve the target locator on the page
+      // This is a workaround since we can't pass locator objects directly
+      // The target info is passed as selector info tuple
+      const targetLocator = getLocator(locator.page(), targetInfo[0], targetInfo[1], targetInfo[2]);
+      await locator.dragTo(targetLocator, { timeout });
+      return null;
+    }
+    case "scrollIntoViewIfNeeded":
+      await locator.scrollIntoViewIfNeeded({ timeout });
+      return null;
+    case "highlight":
+      await locator.highlight();
+      return null;
+    case "evaluate": {
+      const [fnString, arg] = actionArg as [string, unknown];
+      const fn = new Function('return (' + fnString + ')')();
+      return await locator.evaluate(fn, arg);
+    }
+    case "evaluateAll": {
+      const [fnString, arg] = actionArg as [string, unknown];
+      const fn = new Function('return (' + fnString + ')')();
+      return await locator.evaluateAll(fn, arg);
+    }
     default:
       throw new Error(`Unknown action: ${action}`);
   }
@@ -400,6 +655,174 @@ async function executeExpectAssertion(
       }
       break;
     }
+    case "toBeAttached": {
+      const count = await locator.count();
+      const isAttached = count > 0;
+      if (negated) {
+        if (isAttached) throw new Error("Expected element to not be attached to DOM, but it was");
+      } else {
+        if (!isAttached) throw new Error("Expected element to be attached to DOM, but it was not");
+      }
+      break;
+    }
+    case "toBeEditable": {
+      const isEditable = await locator.isEditable({ timeout });
+      if (negated) {
+        if (isEditable) throw new Error("Expected element to not be editable, but it was");
+      } else {
+        if (!isEditable) throw new Error("Expected element to be editable, but it was not");
+      }
+      break;
+    }
+    case "toHaveClass": {
+      const classAttr = await locator.getAttribute('class', { timeout }) ?? '';
+      const classes = classAttr.split(/\s+/).filter(Boolean);
+      let matches: boolean;
+      let expectedDisplay: string;
+      if (expected && typeof expected === 'object' && (expected as any).$regex) {
+        const regex = new RegExp((expected as any).$regex, (expected as any).$flags);
+        matches = regex.test(classAttr);
+        expectedDisplay = String(regex);
+      } else if (Array.isArray(expected)) {
+        matches = expected.every(c => classes.includes(c));
+        expectedDisplay = JSON.stringify(expected);
+      } else {
+        // Exact match for string
+        matches = classAttr === String(expected) || classes.includes(String(expected));
+        expectedDisplay = String(expected);
+      }
+      if (negated) {
+        if (matches) throw new Error(`Expected class to not match ${expectedDisplay}, but got "${classAttr}"`);
+      } else {
+        if (!matches) throw new Error(`Expected class to match ${expectedDisplay}, but got "${classAttr}"`);
+      }
+      break;
+    }
+    case "toContainClass": {
+      const classAttr = await locator.getAttribute('class', { timeout }) ?? '';
+      const classes = classAttr.split(/\s+/).filter(Boolean);
+      const expectedClass = String(expected);
+      const hasClass = classes.includes(expectedClass);
+      if (negated) {
+        if (hasClass) throw new Error(`Expected element to not contain class "${expectedClass}", but it does`);
+      } else {
+        if (!hasClass) throw new Error(`Expected element to contain class "${expectedClass}", but classes are "${classAttr}"`);
+      }
+      break;
+    }
+    case "toHaveId": {
+      const id = await locator.getAttribute('id', { timeout });
+      const matches = id === String(expected);
+      if (negated) {
+        if (matches) throw new Error(`Expected id to not be "${expected}", but it was`);
+      } else {
+        if (!matches) throw new Error(`Expected id to be "${expected}", but got "${id}"`);
+      }
+      break;
+    }
+    case "toBeInViewport": {
+      // Use Intersection Observer API via evaluate to check if element is in viewport
+      const isInViewport = await locator.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        return (
+          rect.top < window.innerHeight &&
+          rect.bottom > 0 &&
+          rect.left < window.innerWidth &&
+          rect.right > 0
+        );
+      });
+      if (negated) {
+        if (isInViewport) throw new Error("Expected element to not be in viewport, but it was");
+      } else {
+        if (!isInViewport) throw new Error("Expected element to be in viewport, but it was not");
+      }
+      break;
+    }
+    case "toHaveCSS": {
+      const { name, value } = expected as { name: string; value: unknown };
+      const actual = await locator.evaluate((el, propName) => {
+        return getComputedStyle(el).getPropertyValue(propName);
+      }, name);
+      let matches: boolean;
+      if (value && typeof value === 'object' && (value as any).$regex) {
+        const regex = new RegExp((value as any).$regex, (value as any).$flags);
+        matches = regex.test(actual);
+      } else {
+        matches = actual === String(value);
+      }
+      if (negated) {
+        if (matches) throw new Error(`Expected CSS "${name}" to not be "${value}", but it was`);
+      } else {
+        if (!matches) throw new Error(`Expected CSS "${name}" to be "${value}", but got "${actual}"`);
+      }
+      break;
+    }
+    case "toHaveJSProperty": {
+      const { name, value } = expected as { name: string; value: unknown };
+      const actual = await locator.evaluate((el, propName) => {
+        return (el as any)[propName];
+      }, name);
+      const matches = JSON.stringify(actual) === JSON.stringify(value);
+      if (negated) {
+        if (matches) throw new Error(`Expected JS property "${name}" to not be ${JSON.stringify(value)}, but it was`);
+      } else {
+        if (!matches) throw new Error(`Expected JS property "${name}" to be ${JSON.stringify(value)}, but got ${JSON.stringify(actual)}`);
+      }
+      break;
+    }
+    case "toHaveAccessibleName": {
+      const accessibleName = await locator.evaluate((el) => {
+        return el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || (el as HTMLElement).innerText || '';
+      });
+      let matches: boolean;
+      if (expected && typeof expected === 'object' && (expected as any).$regex) {
+        const regex = new RegExp((expected as any).$regex, (expected as any).$flags);
+        matches = regex.test(accessibleName);
+      } else {
+        matches = accessibleName === String(expected);
+      }
+      if (negated) {
+        if (matches) throw new Error(`Expected accessible name to not be "${expected}", but it was`);
+      } else {
+        if (!matches) throw new Error(`Expected accessible name to be "${expected}", but got "${accessibleName}"`);
+      }
+      break;
+    }
+    case "toHaveAccessibleDescription": {
+      const accessibleDesc = await locator.evaluate((el) => {
+        const describedby = el.getAttribute('aria-describedby');
+        if (describedby) {
+          const descEl = document.getElementById(describedby);
+          return descEl?.textContent || '';
+        }
+        return el.getAttribute('aria-description') || '';
+      });
+      let matches: boolean;
+      if (expected && typeof expected === 'object' && (expected as any).$regex) {
+        const regex = new RegExp((expected as any).$regex, (expected as any).$flags);
+        matches = regex.test(accessibleDesc);
+      } else {
+        matches = accessibleDesc === String(expected);
+      }
+      if (negated) {
+        if (matches) throw new Error(`Expected accessible description to not be "${expected}", but it was`);
+      } else {
+        if (!matches) throw new Error(`Expected accessible description to be "${expected}", but got "${accessibleDesc}"`);
+      }
+      break;
+    }
+    case "toHaveRole": {
+      const role = await locator.evaluate((el) => {
+        return el.getAttribute('role') || el.tagName.toLowerCase();
+      });
+      const matches = role === String(expected);
+      if (negated) {
+        if (matches) throw new Error(`Expected role to not be "${expected}", but it was`);
+      } else {
+        if (!matches) throw new Error(`Expected role to be "${expected}", but got "${role}"`);
+      }
+      break;
+    }
     default:
       throw new Error(`Unknown matcher: ${matcher}`);
   }
@@ -416,9 +839,19 @@ async function executeExpectAssertion(
  */
 export function createPlaywrightHandler(
   page: Page,
-  options?: { timeout?: number }
+  options?: {
+    timeout?: number;
+    /** Callback to read files for setInputFiles() with file paths */
+    readFile?: ReadFileCallback;
+    /** Callback to write files for screenshot()/pdf() with path option */
+    writeFile?: WriteFileCallback;
+  }
 ): PlaywrightCallback {
   const timeout = options?.timeout ?? 30000;
+  const fileIO: FileIOCallbacks = {
+    readFile: options?.readFile,
+    writeFile: options?.writeFile,
+  };
 
   return async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
     try {
@@ -478,7 +911,7 @@ export function createPlaywrightHandler(
             unknown
           ];
           const locator = getLocator(page, selectorType, selectorValue, roleOptions);
-          const result = await executeLocatorAction(locator, action, actionArg, timeout);
+          const result = await executeLocatorAction(locator, action, actionArg, timeout, fileIO);
           return { ok: true, value: result };
         }
         case "expectLocator": {
@@ -578,6 +1011,175 @@ export function createPlaywrightHandler(
         }
         case "clearCookies": {
           await page.context().clearCookies();
+          return { ok: true };
+        }
+        case "screenshot": {
+          const [screenshotOptions] = op.args as [{
+            path?: string;
+            type?: 'png' | 'jpeg';
+            quality?: number;
+            fullPage?: boolean;
+            clip?: { x: number; y: number; width: number; height: number };
+          }?];
+          // Don't pass path to Playwright - we handle file writing through callback
+          const buffer = await page.screenshot({
+            type: screenshotOptions?.type,
+            quality: screenshotOptions?.quality,
+            fullPage: screenshotOptions?.fullPage,
+            clip: screenshotOptions?.clip,
+          });
+          // If path is specified, use writeFile callback
+          if (screenshotOptions?.path) {
+            if (!fileIO.writeFile) {
+              throw new Error(
+                "screenshot() with path option requires a writeFile callback to be provided. " +
+                "Either provide a writeFile callback in PlaywrightOptions, or omit the path option " +
+                "and handle the returned base64 data yourself."
+              );
+            }
+            await fileIO.writeFile(screenshotOptions.path, buffer);
+          }
+          return { ok: true, value: buffer.toString('base64') };
+        }
+        case "setViewportSize": {
+          const [size] = op.args as [{ width: number; height: number }];
+          await page.setViewportSize(size);
+          return { ok: true };
+        }
+        case "viewportSize": {
+          return { ok: true, value: page.viewportSize() };
+        }
+        case "keyboardType": {
+          const [text, typeOptions] = op.args as [string, { delay?: number }?];
+          await page.keyboard.type(text, typeOptions);
+          return { ok: true };
+        }
+        case "keyboardPress": {
+          const [key, pressOptions] = op.args as [string, { delay?: number }?];
+          await page.keyboard.press(key, pressOptions);
+          return { ok: true };
+        }
+        case "keyboardDown": {
+          const [key] = op.args as [string];
+          await page.keyboard.down(key);
+          return { ok: true };
+        }
+        case "keyboardUp": {
+          const [key] = op.args as [string];
+          await page.keyboard.up(key);
+          return { ok: true };
+        }
+        case "keyboardInsertText": {
+          const [text] = op.args as [string];
+          await page.keyboard.insertText(text);
+          return { ok: true };
+        }
+        case "mouseMove": {
+          const [x, y, moveOptions] = op.args as [number, number, { steps?: number }?];
+          await page.mouse.move(x, y, moveOptions);
+          return { ok: true };
+        }
+        case "mouseClick": {
+          const [x, y, clickOptions] = op.args as [number, number, { button?: 'left' | 'right' | 'middle'; clickCount?: number; delay?: number }?];
+          await page.mouse.click(x, y, clickOptions);
+          return { ok: true };
+        }
+        case "mouseDown": {
+          const [downOptions] = op.args as [{ button?: 'left' | 'right' | 'middle'; clickCount?: number }?];
+          await page.mouse.down(downOptions);
+          return { ok: true };
+        }
+        case "mouseUp": {
+          const [upOptions] = op.args as [{ button?: 'left' | 'right' | 'middle'; clickCount?: number }?];
+          await page.mouse.up(upOptions);
+          return { ok: true };
+        }
+        case "mouseWheel": {
+          const [deltaX, deltaY] = op.args as [number, number];
+          await page.mouse.wheel(deltaX, deltaY);
+          return { ok: true };
+        }
+        case "frames": {
+          const frames = page.frames();
+          return { ok: true, value: frames.map(f => ({ name: f.name(), url: f.url() })) };
+        }
+        case "mainFrame": {
+          const mainFrame = page.mainFrame();
+          return { ok: true, value: { name: mainFrame.name(), url: mainFrame.url() } };
+        }
+        case "bringToFront": {
+          await page.bringToFront();
+          return { ok: true };
+        }
+        case "close": {
+          await page.close();
+          return { ok: true };
+        }
+        case "isClosed": {
+          return { ok: true, value: page.isClosed() };
+        }
+        case "pdf": {
+          const [pdfOptions] = op.args as [{
+            path?: string;
+            scale?: number;
+            displayHeaderFooter?: boolean;
+            headerTemplate?: string;
+            footerTemplate?: string;
+            printBackground?: boolean;
+            landscape?: boolean;
+            pageRanges?: string;
+            format?: string;
+            width?: string | number;
+            height?: string | number;
+            margin?: { top?: string | number; right?: string | number; bottom?: string | number; left?: string | number };
+          }?];
+          // Don't pass path to Playwright - we handle file writing through callback
+          const { path: pdfPath, ...restPdfOptions } = pdfOptions ?? {};
+          const buffer = await page.pdf(restPdfOptions);
+          // If path is specified, use writeFile callback
+          if (pdfPath) {
+            if (!fileIO.writeFile) {
+              throw new Error(
+                "pdf() with path option requires a writeFile callback to be provided. " +
+                "Either provide a writeFile callback in PlaywrightOptions, or omit the path option " +
+                "and handle the returned base64 data yourself."
+              );
+            }
+            await fileIO.writeFile(pdfPath, buffer);
+          }
+          return { ok: true, value: buffer.toString('base64') };
+        }
+        case "emulateMedia": {
+          const [mediaOptions] = op.args as [{ media?: 'screen' | 'print' | null; colorScheme?: 'light' | 'dark' | 'no-preference' | null; reducedMotion?: 'reduce' | 'no-preference' | null; forcedColors?: 'active' | 'none' | null }?];
+          await page.emulateMedia(mediaOptions);
+          return { ok: true };
+        }
+        case "addCookies": {
+          const [cookies] = op.args as [Array<{
+            name: string;
+            value: string;
+            domain?: string;
+            path?: string;
+            expires?: number;
+            httpOnly?: boolean;
+            secure?: boolean;
+            sameSite?: 'Strict' | 'Lax' | 'None';
+          }>];
+          await page.context().addCookies(cookies);
+          return { ok: true };
+        }
+        case "cookies": {
+          const [urls] = op.args as [string[]?];
+          const cookies = await page.context().cookies(urls);
+          return { ok: true, value: cookies };
+        }
+        case "setExtraHTTPHeaders": {
+          const [headers] = op.args as [Record<string, string>];
+          await page.setExtraHTTPHeaders(headers);
+          return { ok: true };
+        }
+        case "pause": {
+          await page.pause();
           return { ok: true };
         }
         default:
@@ -809,6 +1411,38 @@ export async function setupPlaywright(
     getByLabel(label) { return new Locator("label", label, null); },
     getByPlaceholder(p) { return new Locator("placeholder", p, null); },
     getByTestId(id) { return new Locator("testId", id, null); },
+    getByAltText(alt) { return new Locator("altText", alt, null); },
+    getByTitle(title) { return new Locator("title", title, null); },
+    frameLocator(selector) {
+      // Return a FrameLocator-like object
+      return {
+        locator(innerSelector) {
+          return new Locator("frame", JSON.stringify([["css", selector, null], ["css", innerSelector, null]]), null);
+        },
+        getByRole(role, options) {
+          const serialized = options ? JSON.stringify(options) : null;
+          return new Locator("frame", JSON.stringify([["css", selector, null], ["role", role, serialized]]), null);
+        },
+        getByText(text) {
+          return new Locator("frame", JSON.stringify([["css", selector, null], ["text", text, null]]), null);
+        },
+        getByLabel(label) {
+          return new Locator("frame", JSON.stringify([["css", selector, null], ["label", label, null]]), null);
+        },
+        getByPlaceholder(placeholder) {
+          return new Locator("frame", JSON.stringify([["css", selector, null], ["placeholder", placeholder, null]]), null);
+        },
+        getByTestId(testId) {
+          return new Locator("frame", JSON.stringify([["css", selector, null], ["testId", testId, null]]), null);
+        },
+        getByAltText(alt) {
+          return new Locator("frame", JSON.stringify([["css", selector, null], ["altText", alt, null]]), null);
+        },
+        getByTitle(title) {
+          return new Locator("frame", JSON.stringify([["css", selector, null], ["title", title, null]]), null);
+        },
+      };
+    },
     async goBack(options) {
       await __pw_invoke("goBack", [options?.waitUntil || null]);
       const resolvedUrl = await __pw_invoke("url", []);
@@ -831,11 +1465,88 @@ export async function setupPlaywright(
       return {
         async clearCookies() {
           return __pw_invoke("clearCookies", []);
+        },
+        async addCookies(cookies) {
+          return __pw_invoke("addCookies", [cookies]);
+        },
+        async cookies(urls) {
+          return __pw_invoke("cookies", [urls]);
         }
       };
     },
     async click(selector) { return this.locator(selector).click(); },
     async fill(selector, value) { return this.locator(selector).fill(value); },
+    async screenshot(options) {
+      const base64 = await __pw_invoke("screenshot", [options || {}]);
+      return base64;
+    },
+    async setViewportSize(size) {
+      return __pw_invoke("setViewportSize", [size]);
+    },
+    async viewportSize() {
+      return __pw_invoke("viewportSize", []);
+    },
+    async emulateMedia(options) {
+      return __pw_invoke("emulateMedia", [options]);
+    },
+    async setExtraHTTPHeaders(headers) {
+      return __pw_invoke("setExtraHTTPHeaders", [headers]);
+    },
+    async bringToFront() {
+      return __pw_invoke("bringToFront", []);
+    },
+    async close() {
+      return __pw_invoke("close", []);
+    },
+    async isClosed() {
+      return __pw_invoke("isClosed", []);
+    },
+    async pdf(options) {
+      return __pw_invoke("pdf", [options || {}]);
+    },
+    async pause() {
+      return __pw_invoke("pause", []);
+    },
+    async frames() {
+      return __pw_invoke("frames", []);
+    },
+    async mainFrame() {
+      return __pw_invoke("mainFrame", []);
+    },
+    keyboard: {
+      async type(text, options) {
+        return __pw_invoke("keyboardType", [text, options]);
+      },
+      async press(key, options) {
+        return __pw_invoke("keyboardPress", [key, options]);
+      },
+      async down(key) {
+        return __pw_invoke("keyboardDown", [key]);
+      },
+      async up(key) {
+        return __pw_invoke("keyboardUp", [key]);
+      },
+      async insertText(text) {
+        return __pw_invoke("keyboardInsertText", [text]);
+      }
+    },
+    mouse: {
+      async move(x, y, options) {
+        return __pw_invoke("mouseMove", [x, y, options]);
+      },
+      async click(x, y, options) {
+        return __pw_invoke("mouseClick", [x, y, options]);
+      },
+      async down(options) {
+        return __pw_invoke("mouseDown", [options]);
+      },
+      async up(options) {
+        return __pw_invoke("mouseUp", [options]);
+      },
+      async wheel(deltaX, deltaY) {
+        return __pw_invoke("mouseWheel", [deltaX, deltaY]);
+      }
+    },
     request: {
       async fetch(url, options) {
         const result = await __pw_invoke("request", [url, options?.method || "GET", options?.data, options?.headers]);
@@ -868,6 +1579,16 @@ export async function setupPlaywright(
   // Locator class
   context.evalSync(`
 (function() {
+  // Helper to serialize options including RegExp
+  function serializeOptions(options) {
+    if (!options) return null;
+    const serialized = { ...options };
+    if (options.name && typeof options.name === 'object' && typeof options.name.source === 'string' && typeof options.name.flags === 'string') {
+      serialized.name = { $regex: options.name.source, $flags: options.name.flags };
+    }
+    return JSON.stringify(serialized);
+  }
+
   class Locator {
     #type; #value; #options;
     constructor(type, value, options) {
@@ -877,6 +1598,13 @@ export async function setupPlaywright(
     }
 
     _getInfo() { return [this.#type, this.#value, this.#options]; }
+
+    // Helper to create a chained locator
+    _chain(childType, childValue, childOptions) {
+      const parentInfo = this._getInfo();
+      const childInfo = [childType, childValue, childOptions];
+      return new Locator("chained", JSON.stringify([parentInfo, childInfo]), null);
+    }
 
     async click() {
       return __pw_invoke("locatorAction", [...this._getInfo(), "click", null]);
@@ -956,13 +1684,64 @@ export async function setupPlaywright(
     async boundingBox() {
       return __pw_invoke("locatorAction", [...this._getInfo(), "boundingBox", null]);
     }
-    locator(selector) {
-      const parentSelector = this.#type === 'css' ? this.#value : null;
-      if (parentSelector) {
-        return new Locator("css", parentSelector + " " + selector, this.#options);
+    async setInputFiles(files) {
+      // Serialize files - if they have buffers, convert to base64
+      let serializedFiles = files;
+      if (Array.isArray(files) && files.length > 0 && typeof files[0] === 'object' && files[0].buffer) {
+        serializedFiles = files.map(f => ({
+          name: f.name,
+          mimeType: f.mimeType,
+          buffer: typeof f.buffer === 'string' ? f.buffer : btoa(String.fromCharCode(...new Uint8Array(f.buffer)))
+        }));
       }
-      // For non-css locators, use css with the combined approach
-      return new Locator("css", selector, this.#options);
+      return __pw_invoke("locatorAction", [...this._getInfo(), "setInputFiles", serializedFiles]);
+    }
+    async screenshot(options) {
+      const base64 = await __pw_invoke("locatorAction", [...this._getInfo(), "screenshot", options || {}]);
+      return base64;
+    }
+    async dragTo(target) {
+      const targetInfo = target._getInfo();
+      return __pw_invoke("locatorAction", [...this._getInfo(), "dragTo", targetInfo]);
+    }
+    async scrollIntoViewIfNeeded() {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "scrollIntoViewIfNeeded", null]);
+    }
+    async highlight() {
+      return __pw_invoke("locatorAction", [...this._getInfo(), "highlight", null]);
+    }
+    async evaluate(fn, arg) {
+      const fnString = typeof fn === 'function' ? fn.toString() : fn;
+      return __pw_invoke("locatorAction", [...this._getInfo(), "evaluate", [fnString, arg]]);
+    }
+    async evaluateAll(fn, arg) {
+      const fnString = typeof fn === 'function' ? fn.toString() : fn;
+      return __pw_invoke("locatorAction", [...this._getInfo(), "evaluateAll", [fnString, arg]]);
+    }
+    locator(selector) {
+      return this._chain("css", selector, null);
+    }
+    // Chaining: getBy* methods within a locator
+    getByRole(role, options) {
+      return this._chain("role", role, serializeOptions(options));
+    }
+    getByText(text) {
+      return this._chain("text", text, null);
+    }
+    getByLabel(label) {
+      return this._chain("label", label, null);
+    }
+    getByPlaceholder(placeholder) {
+      return this._chain("placeholder", placeholder, null);
+    }
+    getByTestId(testId) {
+      return this._chain("testId", testId, null);
+    }
+    getByAltText(altText) {
+      return this._chain("altText", altText, null);
+    }
+    getByTitle(title) {
+      return this._chain("title", title, null);
     }
     async all() {
       const n = await this.count();
@@ -1002,6 +1781,12 @@ export async function setupPlaywright(
       const otherInfo = other._getInfo();
       return new Locator("or", JSON.stringify([thisInfo, otherInfo]), null);
     }
+    and(other) {
+      // Create a composite locator that matches both this and other
+      const thisInfo = this._getInfo();
+      const otherInfo = other._getInfo();
+      return new Locator("and", JSON.stringify([thisInfo, otherInfo]), null);
+    }
   }
   globalThis.Locator = Locator;
 })();
@@ -1014,13 +1799,20 @@ export async function setupPlaywright(
   function createLocatorMatchers(locator, baseMatchers) {
     const info = locator._getInfo();
 
+    // Helper for serializing regex values
+    function serializeExpected(expected) {
+      if (expected instanceof RegExp) {
+        return { $regex: expected.source, $flags: expected.flags };
+      }
+      return expected;
+    }
+
     const locatorMatchers = {
       async toBeVisible(options) {
         return __pw_invoke("expectLocator", [...info, "toBeVisible", null, false, options?.timeout]);
       },
       async toContainText(expected, options) {
-        const serialized = expected instanceof RegExp ? { $regex: expected.source, $flags: expected.flags } : expected;
-        return __pw_invoke("expectLocator", [...info, "toContainText", serialized, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toContainText", serializeExpected(expected), false, options?.timeout]);
       },
       async toHaveValue(expected, options) {
         return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, false, options?.timeout]);
@@ -1032,11 +1824,10 @@ export async function setupPlaywright(
         return __pw_invoke("expectLocator", [...info, "toBeChecked", null, false, options?.timeout]);
       },
       async toHaveAttribute(name, value, options) {
-        return __pw_invoke("expectLocator", [...info, "toHaveAttribute", { name, value }, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveAttribute", { name, value: serializeExpected(value) }, false, options?.timeout]);
       },
       async toHaveText(expected, options) {
-        const serialized = expected instanceof RegExp ? { $regex: expected.source, $flags: expected.flags } : expected;
-        return __pw_invoke("expectLocator", [...info, "toHaveText", serialized, false, options?.timeout]);
+        return __pw_invoke("expectLocator", [...info, "toHaveText", serializeExpected(expected), false, options?.timeout]);
       },
       async toHaveCount(count, options) {
         return __pw_invoke("expectLocator", [...info, "toHaveCount", count, false, options?.timeout]);
@@ -1053,13 +1844,46 @@ export async function setupPlaywright(
       async toBeEmpty(options) {
         return __pw_invoke("expectLocator", [...info, "toBeEmpty", null, false, options?.timeout]);
       },
+      // New matchers
+      async toBeAttached(options) {
+        return __pw_invoke("expectLocator", [...info, "toBeAttached", null, false, options?.timeout]);
+      },
+      async toBeEditable(options) {
+        return __pw_invoke("expectLocator", [...info, "toBeEditable", null, false, options?.timeout]);
+      },
+      async toHaveClass(expected, options) {
+        return __pw_invoke("expectLocator", [...info, "toHaveClass", serializeExpected(expected), false, options?.timeout]);
+      },
+      async toContainClass(expected, options) {
+        return __pw_invoke("expectLocator", [...info, "toContainClass", expected, false, options?.timeout]);
+      },
+      async toHaveId(expected, options) {
+        return __pw_invoke("expectLocator", [...info, "toHaveId", expected, false, options?.timeout]);
+      },
+      async toBeInViewport(options) {
+        return __pw_invoke("expectLocator", [...info, "toBeInViewport", null, false, options?.timeout]);
+      },
+      async toHaveCSS(name, value, options) {
+        return __pw_invoke("expectLocator", [...info, "toHaveCSS", { name, value: serializeExpected(value) }, false, options?.timeout]);
+      },
+      async toHaveJSProperty(name, value, options) {
+        return __pw_invoke("expectLocator", [...info, "toHaveJSProperty", { name, value }, false, options?.timeout]);
+      },
+      async toHaveAccessibleName(expected, options) {
+        return __pw_invoke("expectLocator", [...info, "toHaveAccessibleName", serializeExpected(expected), false, options?.timeout]);
+      },
+      async toHaveAccessibleDescription(expected, options) {
+        return __pw_invoke("expectLocator", [...info, "toHaveAccessibleDescription", serializeExpected(expected), false, options?.timeout]);
+      },
+      async toHaveRole(expected, options) {
+        return __pw_invoke("expectLocator", [...info, "toHaveRole", expected, false, options?.timeout]);
+      },
       not: {
         async toBeVisible(options) {
           return __pw_invoke("expectLocator", [...info, "toBeVisible", null, true, options?.timeout]);
         },
         async toContainText(expected, options) {
-          const serialized = expected instanceof RegExp ? { $regex: expected.source, $flags: expected.flags } : expected;
-          return __pw_invoke("expectLocator", [...info, "toContainText", serialized, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toContainText", serializeExpected(expected), true, options?.timeout]);
         },
         async toHaveValue(expected, options) {
           return __pw_invoke("expectLocator", [...info, "toHaveValue", expected, true, options?.timeout]);
@@ -1071,11 +1895,10 @@ export async function setupPlaywright(
           return __pw_invoke("expectLocator", [...info, "toBeChecked", null, true, options?.timeout]);
         },
         async toHaveAttribute(name, value, options) {
-          return __pw_invoke("expectLocator", [...info, "toHaveAttribute", { name, value }, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveAttribute", { name, value: serializeExpected(value) }, true, options?.timeout]);
         },
         async toHaveText(expected, options) {
-          const serialized = expected instanceof RegExp ? { $regex: expected.source, $flags: expected.flags } : expected;
-          return __pw_invoke("expectLocator", [...info, "toHaveText", serialized, true, options?.timeout]);
+          return __pw_invoke("expectLocator", [...info, "toHaveText", serializeExpected(expected), true, options?.timeout]);
         },
         async toHaveCount(count, options) {
           return __pw_invoke("expectLocator", [...info, "toHaveCount", count, true, options?.timeout]);
@@ -1091,6 +1914,40 @@ export async function setupPlaywright(
         },
         async toBeEmpty(options) {
           return __pw_invoke("expectLocator", [...info, "toBeEmpty", null, true, options?.timeout]);
+        },
+        // New negated matchers
+        async toBeAttached(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeAttached", null, true, options?.timeout]);
+        },
+        async toBeEditable(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeEditable", null, true, options?.timeout]);
+        },
+        async toHaveClass(expected, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveClass", serializeExpected(expected), true, options?.timeout]);
+        },
+        async toContainClass(expected, options) {
+          return __pw_invoke("expectLocator", [...info, "toContainClass", expected, true, options?.timeout]);
+        },
+        async toHaveId(expected, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveId", expected, true, options?.timeout]);
+        },
+        async toBeInViewport(options) {
+          return __pw_invoke("expectLocator", [...info, "toBeInViewport", null, true, options?.timeout]);
+        },
+        async toHaveCSS(name, value, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveCSS", { name, value: serializeExpected(value) }, true, options?.timeout]);
+        },
+        async toHaveJSProperty(name, value, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveJSProperty", { name, value }, true, options?.timeout]);
+        },
+        async toHaveAccessibleName(expected, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveAccessibleName", serializeExpected(expected), true, options?.timeout]);
+        },
+        async toHaveAccessibleDescription(expected, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveAccessibleDescription", serializeExpected(expected), true, options?.timeout]);
+        },
+        async toHaveRole(expected, options) {
+          return __pw_invoke("expectLocator", [...info, "toHaveRole", expected, true, options?.timeout]);
         },
       }
     };

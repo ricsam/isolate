@@ -8,6 +8,7 @@ export type {
   PlaywrightOperation,
   PlaywrightResult,
   PlaywrightEvent,
+  PlaywrightFileData,
 } from "@ricsam/isolate-protocol";
 
 // ============================================================================
@@ -62,6 +63,18 @@ export interface PlaywrightSetupOptions {
   console?: boolean;
   /** Unified event callback for all playwright events */
   onEvent?: (event: import("@ricsam/isolate-protocol").PlaywrightEvent) => void;
+  /**
+   * Callback to read files for setInputFiles() operations.
+   * This allows the host to control which files the isolate can access.
+   * If not provided, setInputFiles() with file paths will throw an error.
+   */
+  readFile?: (filePath: string) => Promise<import("@ricsam/isolate-protocol").PlaywrightFileData> | import("@ricsam/isolate-protocol").PlaywrightFileData;
+  /**
+   * Callback to write files for screenshot() and pdf() operations with path option.
+   * This allows the host to control where files are written.
+   * If not provided, screenshot()/pdf() with path option will throw an error.
+   */
+  writeFile?: (filePath: string, data: Buffer) => Promise<void> | void;
 }
 
 /**
