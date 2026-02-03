@@ -69,13 +69,15 @@ describe("playwright page API enhancements", () => {
       });
 
       try {
+        const isMac = process.platform === "darwin";
+        const selectAllKey = isMac ? "Meta+a" : "Control+a";
         await runtime.eval(`
           test('keyboard.press', async () => {
             await page.goto('data:text/html,<input id="input" value="test" />');
 
             await page.locator('#input').focus();
             // Use Meta+a on macOS, Control+a on other platforms
-            await page.keyboard.press('Meta+a');
+            await page.keyboard.press('${selectAllKey}');
             await page.keyboard.press('Backspace');
 
             const value = await page.locator('#input').inputValue();
