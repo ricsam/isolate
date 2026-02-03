@@ -1,9 +1,10 @@
 /**
- * Tests for the 4 original Playwright issues:
+ * Tests for the 5 original Playwright issues:
  * 1. toHaveAttribute - not available
  * 2. getByLabel(...).getByText(...) fails - locator chaining
  * 3. Locator chaining produces invalid selectors
  * 4. page.evaluate with parameters returns undefined
+ * 5. filter({ has: locator }) throws frame error
  */
 
 import { describe, it, before, after } from "node:test";
@@ -545,6 +546,66 @@ describe("original playwright issues", () => {
         await runtime.dispose();
         await browser.close();
         server.close();
+      }
+    });
+  });
+
+  describe("Issue 5: filter({ has: locator }) throws frame error", () => {
+    it("should support filter with has locator", async () => {
+      const browser = await chromium.launch({ headless: true });
+      const browserContext = await browser.newContext();
+      const page = await browserContext.newPage();
+
+      const runtime = await client.createRuntime({
+        testEnvironment: true,
+        playwright: { page },
+      });
+
+      try {
+        await runtime.eval(`
+          test('filter with has locator', async () => {
+            await page.goto('data:text/html,<div class="item"><span>Item 1</span></div><div class="item"><span>Item 2</span><button>Click</button></div>');
+
+            const item = page.locator('.item').filter({ has: page.locator('button') });
+            const text = await item.locator('span').textContent();
+            expect(text).toBe('Item 2');
+          });
+        `);
+
+        const results = await runtime.testEnvironment.runTests();
+        assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+      } finally {
+        await runtime.dispose();
+        await browser.close();
+      }
+    });
+
+    it("should support filter with hasNot locator", async () => {
+      const browser = await chromium.launch({ headless: true });
+      const browserContext = await browser.newContext();
+      const page = await browserContext.newPage();
+
+      const runtime = await client.createRuntime({
+        testEnvironment: true,
+        playwright: { page },
+      });
+
+      try {
+        await runtime.eval(`
+          test('filter with hasNot locator', async () => {
+            await page.goto('data:text/html,<div class="item"><span>Item 1</span></div><div class="item"><span>Item 2</span><button>Click</button></div>');
+
+            const item = page.locator('.item').filter({ hasNot: page.locator('button') });
+            const text = await item.locator('span').textContent();
+            expect(text).toBe('Item 1');
+          });
+        `);
+
+        const results = await runtime.testEnvironment.runTests();
+        assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+      } finally {
+        await runtime.dispose();
+        await browser.close();
       }
     });
   });

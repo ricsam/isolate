@@ -427,6 +427,7 @@ const page = await browser.newPage();
 const runtime = await client.createRuntime({
   playwright: {
     page,
+    timeout: 30000, // Default timeout for operations
     onEvent: (event) => {
       // Unified event handler for all playwright events
       if (event.type === "browserConsoleLog") {
@@ -504,6 +505,76 @@ console.log("Browser logs:", data.browserConsoleLogs);
 await runtime.dispose();
 await browser.close();
 ```
+
+### File Operations (Screenshots, PDFs, File Uploads)
+
+For security, file system access requires explicit callbacks. Without these callbacks, operations with file paths will throw errors:
+
+```typescript
+import { chromium } from "playwright";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage();
+
+const runtime = await client.createRuntime({
+  testEnvironment: true,
+  playwright: {
+    page,
+    // Callback for writing screenshots and PDFs to disk
+    writeFile: async (filePath: string, data: Buffer) => {
+      // Validate path, then write
+      if (!filePath.startsWith("/allowed/output/")) {
+        throw new Error("Write not allowed to this path");
+      }
+      await fs.writeFile(filePath, data);
+    },
+    // Callback for reading files for setInputFiles()
+    readFile: async (filePath: string) => {
+      // Validate path, then read
+      if (!filePath.startsWith("/allowed/uploads/")) {
+        throw new Error("Read not allowed from this path");
+      }
+      const buffer = await fs.readFile(filePath);
+      return {
+        name: path.basename(filePath),
+        mimeType: "application/octet-stream", // Determine from extension
+        buffer,
+      };
+    },
+  },
+});
+
+await runtime.eval(`
+  test('file operations', async () => {
+    await page.goto('data:text/html,<input type="file" id="upload" />');
+
+    // Screenshot with path - calls writeFile callback
+    const base64 = await page.screenshot({ path: '/allowed/output/screenshot.png' });
+    // base64 is always returned, writeFile is called additionally
+
+    // PDF with path - calls writeFile callback
+    await page.pdf({ path: '/allowed/output/document.pdf' });
+
+    // File upload with path - calls readFile callback
+    await page.locator('#upload').setInputFiles('/allowed/uploads/test.txt');
+
+    // File upload with buffer data - no callback needed
+    await page.locator('#upload').setInputFiles([{
+      name: 'inline.txt',
+      mimeType: 'text/plain',
+      buffer: new TextEncoder().encode('Hello, World!'),
+    }]);
+  });
+`);
+```
+
+**Behavior without callbacks:**
+- `screenshot()` / `pdf()` without path: Returns base64 string (works without callback)
+- `screenshot({ path })` / `pdf({ path })` without `writeFile`: Throws error
+- `setInputFiles('/path')` without `readFile`: Throws error
+- `setInputFiles([{ name, mimeType, buffer }])`: Works without callback (inline data)
 
 ## Runtime Interface
 

@@ -1773,6 +1773,15 @@ export async function setupPlaywright(
       if (hasNotText && typeof hasNotText === 'object' && typeof hasNotText.source === 'string' && typeof hasNotText.flags === 'string') {
         serializedFilter.hasNotText = { $regex: hasNotText.source, $flags: hasNotText.flags };
       }
+      // Serialize has/hasNot locators using duck-typing
+      const has = options.has;
+      if (has && typeof has === 'object' && typeof has._getInfo === 'function') {
+        serializedFilter.has = { $locator: has._getInfo() };
+      }
+      const hasNot = options.hasNot;
+      if (hasNot && typeof hasNot === 'object' && typeof hasNot._getInfo === 'function') {
+        serializedFilter.hasNot = { $locator: hasNot._getInfo() };
+      }
       return new Locator(this.#type, this.#value, JSON.stringify({ ...existingOpts, filter: serializedFilter }));
     }
     or(other) {

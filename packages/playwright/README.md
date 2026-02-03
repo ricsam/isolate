@@ -170,6 +170,8 @@ const handle = await setupPlaywright(context, {
 
 - `page.goto(url, options?)` - Navigate to URL
 - `page.reload()` - Reload page
+- `page.goBack()` - Navigate back
+- `page.goForward()` - Navigate forward
 - `page.url()` - Get current URL (sync)
 - `page.title()` - Get page title
 - `page.content()` - Get page HTML
@@ -178,13 +180,16 @@ const handle = await setupPlaywright(context, {
 - `page.waitForSelector(selector, options?)` - Wait for element
 - `page.waitForTimeout(ms)` - Wait for milliseconds
 - `page.waitForLoadState(state?)` - Wait for load state
-- `page.evaluate(script)` - Evaluate JS in browser context
+- `page.waitForURL(url, options?)` - Wait for URL match
+- `page.evaluate(script, arg?)` - Evaluate JS in browser context
 - `page.locator(selector)` - Get locator by CSS selector
 - `page.getByRole(role, options?)` - Get locator by ARIA role
 - `page.getByText(text)` - Get locator by text content
 - `page.getByLabel(label)` - Get locator by label
 - `page.getByPlaceholder(text)` - Get locator by placeholder
 - `page.getByTestId(id)` - Get locator by test ID
+- `page.screenshot(options?)` - Take screenshot, returns base64
+- `page.pdf(options?)` - Generate PDF (Chromium only), returns base64
 - `page.request.get(url)` - HTTP GET request with page cookies
 - `page.request.post(url, options?)` - HTTP POST request with page cookies
 
@@ -193,9 +198,13 @@ const handle = await setupPlaywright(context, {
 - `click()`, `dblclick()`, `hover()`, `focus()`
 - `fill(text)`, `type(text)`, `clear()`, `press(key)`
 - `check()`, `uncheck()`, `selectOption(value)`
-- `textContent()`, `inputValue()`
+- `setInputFiles(files)` - Set files for file input (paths or inline data)
+- `screenshot(options?)` - Take element screenshot, returns base64
+- `textContent()`, `inputValue()`, `getAttribute(name)`
 - `isVisible()`, `isEnabled()`, `isChecked()`, `count()`
-- `nth(index)` - Get nth matching element
+- `nth(index)`, `first()`, `last()` - Get specific matching element
+- `locator(selector)` - Chain with another selector
+- `getByRole()`, `getByText()`, `getByLabel()`, etc. - Chain with getBy* methods
 
 ## Expect Matchers (for Locators)
 
@@ -223,12 +232,89 @@ interface PlaywrightSetupOptions {
   timeout?: number;               // Default timeout for operations
   console?: boolean;              // Route browser console logs through console handler
   onEvent?: (event: PlaywrightEvent) => void;  // Unified event callback
+  // Security callbacks for file operations
+  readFile?: (filePath: string) => Promise<FileData> | FileData;
+  writeFile?: (filePath: string, data: Buffer) => Promise<void> | void;
+}
+
+interface FileData {
+  name: string;      // File name
+  mimeType: string;  // MIME type
+  buffer: Buffer;    // File contents
 }
 
 type PlaywrightEvent =
   | { type: "browserConsoleLog"; level: string; stdout: string; timestamp: number }
   | { type: "networkRequest"; url: string; method: string; headers: Record<string, string>; ... }
   | { type: "networkResponse"; url: string; status: number; headers: Record<string, string>; ... };
+```
+
+## File Operations
+
+### Screenshots and PDFs
+
+Screenshots and PDFs return base64-encoded data by default. To save to disk, provide a `writeFile` callback:
+
+```typescript
+const handle = await setupPlaywright(context, {
+  page,
+  writeFile: async (filePath, data) => {
+    // Validate and write file
+    await fs.writeFile(filePath, data);
+  },
+});
+
+// In isolate code:
+await context.eval(`
+  // Returns base64, no file written
+  const base64 = await page.screenshot();
+
+  // Returns base64 AND calls writeFile callback
+  const base64WithSave = await page.screenshot({ path: '/output/screenshot.png' });
+
+  // PDF works the same way
+  const pdfBase64 = await page.pdf({ path: '/output/document.pdf' });
+`);
+```
+
+### File Uploads (setInputFiles)
+
+File uploads support both inline data and file paths:
+
+```typescript
+const handle = await setupPlaywright(context, {
+  page,
+  readFile: async (filePath) => {
+    const buffer = await fs.readFile(filePath);
+    return {
+      name: path.basename(filePath),
+      mimeType: 'application/octet-stream',
+      buffer,
+    };
+  },
+});
+
+// In isolate code:
+await context.eval(`
+  // Inline data - no callback needed
+  await page.locator('#upload').setInputFiles([{
+    name: 'test.txt',
+    mimeType: 'text/plain',
+    buffer: new TextEncoder().encode('Hello!'),
+  }]);
+
+  // File path - calls readFile callback
+  await page.locator('#upload').setInputFiles('/uploads/document.pdf');
+
+  // Multiple files
+  await page.locator('#upload').setInputFiles([
+    '/uploads/file1.pdf',
+    '/uploads/file2.pdf',
+  ]);
+
+  // Clear files
+  await page.locator('#upload').setInputFiles([]);
+`);
 ```
 
 ## License

@@ -166,6 +166,15 @@ function getLocator(
         if (filterOpts.hasNotText && typeof filterOpts.hasNotText === 'object' && filterOpts.hasNotText.$regex) {
           filterOpts.hasNotText = new RegExp(filterOpts.hasNotText.$regex, filterOpts.hasNotText.$flags);
         }
+        // Deserialize has/hasNot locators
+        if (filterOpts.has && typeof filterOpts.has === 'object' && filterOpts.has.$locator) {
+          const [type, value, opts] = filterOpts.has.$locator;
+          filterOpts.has = getLocator(page, type, value, opts);
+        }
+        if (filterOpts.hasNot && typeof filterOpts.hasNot === 'object' && filterOpts.hasNot.$locator) {
+          const [type, value, opts] = filterOpts.hasNot.$locator;
+          filterOpts.hasNot = getLocator(page, type, value, opts);
+        }
         locator = locator.filter(filterOpts);
       }
       break;
@@ -262,6 +271,15 @@ function getLocator(
     }
     if (filterOpts.hasNotText && typeof filterOpts.hasNotText === 'object' && filterOpts.hasNotText.$regex) {
       filterOpts.hasNotText = new RegExp(filterOpts.hasNotText.$regex, filterOpts.hasNotText.$flags);
+    }
+    // Deserialize has/hasNot locators
+    if (filterOpts.has && typeof filterOpts.has === 'object' && filterOpts.has.$locator) {
+      const [type, value, opts] = filterOpts.has.$locator;
+      filterOpts.has = getLocator(page, type, value, opts);
+    }
+    if (filterOpts.hasNot && typeof filterOpts.hasNot === 'object' && filterOpts.hasNot.$locator) {
+      const [type, value, opts] = filterOpts.hasNot.$locator;
+      filterOpts.hasNot = getLocator(page, type, value, opts);
     }
     locator = locator.filter(filterOpts);
   }
