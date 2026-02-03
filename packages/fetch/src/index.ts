@@ -217,25 +217,32 @@ const headersCode = `
     }
 
     forEach(callback, thisArg) {
-      for (const [key, [originalName, values]] of this.#headers) {
-        callback.call(thisArg, values.join(', '), originalName, this);
+      const sortedKeys = [...this.#headers.keys()].sort();
+      for (const key of sortedKeys) {
+        const [, values] = this.#headers.get(key);
+        callback.call(thisArg, values.join(', '), key, this);
       }
     }
 
     *entries() {
-      for (const [key, [name, values]] of this.#headers) {
-        yield [name, values.join(', ')];
+      const sortedKeys = [...this.#headers.keys()].sort();
+      for (const key of sortedKeys) {
+        const [, values] = this.#headers.get(key);
+        yield [key, values.join(', ')];
       }
     }
 
     *keys() {
-      for (const [key, [name]] of this.#headers) {
-        yield name;
+      const sortedKeys = [...this.#headers.keys()].sort();
+      for (const key of sortedKeys) {
+        yield key;
       }
     }
 
     *values() {
-      for (const [key, [name, values]] of this.#headers) {
+      const sortedKeys = [...this.#headers.keys()].sort();
+      for (const key of sortedKeys) {
+        const [, values] = this.#headers.get(key);
         yield values.join(', ');
       }
     }

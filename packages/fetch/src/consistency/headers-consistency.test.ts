@@ -303,9 +303,10 @@ describe("Headers Consistency", () => {
           setResult(entries.sort((a, b) => a[0].localeCompare(b[0])));
         `);
         const result = ctx.getResult() as [string, string][];
+        // Per WHATWG spec, iterator keys are lowercase and sorted
         assert.deepStrictEqual(result, [
-          ["X-One", "1"],
-          ["X-Two", "2"],
+          ["x-one", "1"],
+          ["x-two", "2"],
         ]);
       });
 
@@ -319,7 +320,8 @@ describe("Headers Consistency", () => {
           setResult(keys.sort());
         `);
         const result = ctx.getResult() as string[];
-        assert.deepStrictEqual(result, ["X-One", "X-Two"]);
+        // Per WHATWG spec, iterator keys are lowercase and sorted
+        assert.deepStrictEqual(result, ["x-one", "x-two"]);
       });
 
       test(`values() iterates over all values when from ${origin}`, async () => {
@@ -345,9 +347,10 @@ describe("Headers Consistency", () => {
           setResult(entries.sort((a, b) => a[0].localeCompare(b[0])));
         `);
         const result = ctx.getResult() as [string, string][];
+        // Per WHATWG spec, iterator keys are lowercase and sorted
         assert.deepStrictEqual(result, [
-          ["X-One", "1"],
-          ["X-Two", "2"],
+          ["x-one", "1"],
+          ["x-two", "2"],
         ]);
       });
 
@@ -361,9 +364,10 @@ describe("Headers Consistency", () => {
           setResult(entries.sort((a, b) => a[0].localeCompare(b[0])));
         `);
         const result = ctx.getResult() as [string, string][];
+        // Per WHATWG spec, iterator keys are lowercase and sorted
         assert.deepStrictEqual(result, [
-          ["X-One", "1"],
-          ["X-Two", "2"],
+          ["x-one", "1"],
+          ["x-two", "2"],
         ]);
       });
     }

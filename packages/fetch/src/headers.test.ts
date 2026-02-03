@@ -222,6 +222,124 @@ describe("Headers", () => {
     assert.strictEqual(result.originalContentType, "application/json");
     assert.strictEqual(result.copiedContentType, "application/json");
   });
+
+  describe("WHATWG Fetch spec compliance - lowercase and sorted iteration", () => {
+    test("keys() returns lowercase header names", () => {
+      const data = evalCode<string>(
+        ctx.context,
+        `
+        const headers = new Headers({ "Content-Type": "json", "Accept": "html" });
+        JSON.stringify(Array.from(headers.keys()))
+        `
+      );
+      const keys = JSON.parse(data) as string[];
+
+      // All keys should be lowercase
+      assert.ok(keys.every(k => k === k.toLowerCase()), "All keys should be lowercase");
+      assert.ok(keys.includes("content-type"));
+      assert.ok(keys.includes("accept"));
+    });
+
+    test("keys() returns headers in sorted alphabetical order", () => {
+      const data = evalCode<string>(
+        ctx.context,
+        `
+        const headers = new Headers({ "Z-Header": "z", "A-Header": "a", "M-Header": "m" });
+        JSON.stringify(Array.from(headers.keys()))
+        `
+      );
+      const keys = JSON.parse(data) as string[];
+
+      assert.deepStrictEqual(keys, ["a-header", "m-header", "z-header"]);
+    });
+
+    test("entries() returns lowercase header names in sorted order", () => {
+      const data = evalCode<string>(
+        ctx.context,
+        `
+        const headers = new Headers({ "Content-Type": "json", "Accept": "html" });
+        JSON.stringify(Array.from(headers.entries()))
+        `
+      );
+      const entries = JSON.parse(data) as Array<[string, string]>;
+
+      // Should be sorted alphabetically: accept before content-type
+      assert.deepStrictEqual(entries, [
+        ["accept", "html"],
+        ["content-type", "json"],
+      ]);
+    });
+
+    test("forEach() passes lowercase header names in sorted order", () => {
+      const data = evalCode<string>(
+        ctx.context,
+        `
+        const headers = new Headers({ "Content-Type": "json", "Accept": "html" });
+        const collected = [];
+        headers.forEach((value, key) => {
+          collected.push([key, value]);
+        });
+        JSON.stringify(collected)
+        `
+      );
+      const collected = JSON.parse(data) as Array<[string, string]>;
+
+      // Should be sorted alphabetically: accept before content-type
+      assert.deepStrictEqual(collected, [
+        ["accept", "html"],
+        ["content-type", "json"],
+      ]);
+    });
+
+    test("values() returns values in key-sorted order", () => {
+      const data = evalCode<string>(
+        ctx.context,
+        `
+        const headers = new Headers({ "Z-Header": "zvalue", "A-Header": "avalue" });
+        JSON.stringify(Array.from(headers.values()))
+        `
+      );
+      const values = JSON.parse(data) as string[];
+
+      // Values should be in order of sorted keys (a-header, z-header)
+      assert.deepStrictEqual(values, ["avalue", "zvalue"]);
+    });
+
+    test("Symbol.iterator returns entries in sorted order", () => {
+      const data = evalCode<string>(
+        ctx.context,
+        `
+        const headers = new Headers({ "Content-Type": "json", "Accept": "html" });
+        const entries = [];
+        for (const entry of headers) {
+          entries.push(entry);
+        }
+        JSON.stringify(entries)
+        `
+      );
+      const entries = JSON.parse(data) as Array<[string, string]>;
+
+      assert.deepStrictEqual(entries, [
+        ["accept", "html"],
+        ["content-type", "json"],
+      ]);
+    });
+
+    test("iteration order matches WHATWG spec example", () => {
+      // This test verifies the exact behavior described in the plan
+      const data = evalCode<string>(
+        ctx.context,
+        `
+        const h = new Headers({ "Content-Type": "json", "Accept": "html" });
+        JSON.stringify(Array.from(h.keys()))
+        `
+      );
+      const keys = JSON.parse(data) as string[];
+
+      // Expected: lowercase, sorted alphabetically
+      assert.deepStrictEqual(keys, ["accept", "content-type"]);
+    });
+  });
 });
 
 /**

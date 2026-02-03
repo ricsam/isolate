@@ -198,6 +198,47 @@ describe("isolate-client integration", () => {
     }
   });
 
+  it("should preserve URL encoding in fetch callback (raw URL)", async () => {
+    let receivedUrl = "";
+
+    const runtime = await client.createRuntime({
+      fetch: async (url, init) => {
+        receivedUrl = url;
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    try {
+      // The URL contains %3A which is the encoded form of ':'
+      // WHATWG URL normalization would decode this to 'test:value'
+      // We want to verify the raw URL is passed through unchanged
+      await runtime.eval(`
+        serve({
+          fetch: async (request) => {
+            const response = await fetch("https://httpbin.org/anything/model/test%3Avalue/invoke");
+            return new Response(await response.text(), {
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        });
+      `);
+
+      await runtime.fetch.dispatchRequest(new Request("http://localhost/trigger"));
+
+      // The URL should preserve the %3A encoding, not decode it to ':'
+      assert.strictEqual(
+        receivedUrl,
+        "https://httpbin.org/anything/model/test%3Avalue/invoke",
+        "URL encoding should be preserved - %3A should not be decoded to ':'"
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it("should report daemon stats", async () => {
     const stats = daemon.getStats();
     assert.ok(stats.totalIsolatesCreated >= 0);
