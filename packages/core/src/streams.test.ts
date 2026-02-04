@@ -8,7 +8,6 @@ import { test, describe } from "node:test";
 import assert from "node:assert";
 import ivm from "isolated-vm";
 import { setupCore } from "./index.ts";
-import { setupTimers } from "@ricsam/isolate-timers";
 
 describe("WritableStreamDefaultWriter.releaseLock()", () => {
   test("releaseLock() after close() does not reject closed promise", async () => {
@@ -16,7 +15,6 @@ describe("WritableStreamDefaultWriter.releaseLock()", () => {
     const context = await isolate.createContext();
 
     const coreHandle = await setupCore(context);
-    const timersHandle = await setupTimers(context);
 
     try {
       const resultJson = await context.eval(
@@ -41,14 +39,14 @@ describe("WritableStreamDefaultWriter.releaseLock()", () => {
           await writer.write("test");
           await writer.close();
 
-          // Give time for the closed promise to settle
-          await new Promise(r => setTimeout(r, 0));
+          // Yield for microtasks so the closed promise settles
+          await Promise.resolve();
 
           // This should not reject the already-resolved closed promise
           writer.releaseLock();
 
-          // Give time for any potential rejection
-          await new Promise(r => setTimeout(r, 0));
+          // Yield for any potential rejection microtask
+          await Promise.resolve();
 
           return JSON.stringify({
             closedResolved,
@@ -67,7 +65,6 @@ describe("WritableStreamDefaultWriter.releaseLock()", () => {
       assert.strictEqual(result.chunksLength, 1, "Should have one chunk");
       assert.strictEqual(result.firstChunk, "test", "Data should have been written");
     } finally {
-      timersHandle.dispose();
       coreHandle.dispose();
       isolate.dispose();
     }
@@ -78,7 +75,6 @@ describe("WritableStreamDefaultWriter.releaseLock()", () => {
     const context = await isolate.createContext();
 
     const coreHandle = await setupCore(context);
-    const timersHandle = await setupTimers(context);
 
     try {
       const resultJson = await context.eval(
@@ -104,8 +100,11 @@ describe("WritableStreamDefaultWriter.releaseLock()", () => {
           // Release without closing
           writer.releaseLock();
 
-          // Give time for the rejection
-          await new Promise(r => setTimeout(r, 0));
+          // Yield multiple microtask ticks for the rejection to propagate
+          // through the stream internals
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
 
           return JSON.stringify({
             closedResolved,
@@ -122,7 +121,6 @@ describe("WritableStreamDefaultWriter.releaseLock()", () => {
       assert.strictEqual(result.closedRejected, true, "closed should have been rejected");
       assert.ok(result.rejectError.includes("released"), "Error should mention release");
     } finally {
-      timersHandle.dispose();
       coreHandle.dispose();
       isolate.dispose();
     }
@@ -178,7 +176,6 @@ describe("WritableStreamDefaultWriter.releaseLock()", () => {
     const context = await isolate.createContext();
 
     const coreHandle = await setupCore(context);
-    const timersHandle = await setupTimers(context);
 
     try {
       const resultJson = await context.eval(
@@ -200,16 +197,16 @@ describe("WritableStreamDefaultWriter.releaseLock()", () => {
 
           await writer.abort(new Error("test abort"));
 
-          // Give time for any rejection from abort
-          await new Promise(r => setTimeout(r, 0));
+          // Yield for any rejection microtask from abort
+          await Promise.resolve();
 
           const rejectionCountAfterAbort = rejectionCount;
 
           // This should not cause a new rejection
           writer.releaseLock();
 
-          // Give time for any potential re-rejection
-          await new Promise(r => setTimeout(r, 0));
+          // Yield for any potential re-rejection microtask
+          await Promise.resolve();
 
           return JSON.stringify({
             rejectionCountAfterAbort,
@@ -237,7 +234,6 @@ describe("WritableStreamDefaultWriter.releaseLock()", () => {
         );
       }
     } finally {
-      timersHandle.dispose();
       coreHandle.dispose();
       isolate.dispose();
     }
