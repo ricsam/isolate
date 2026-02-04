@@ -1364,7 +1364,7 @@ declare global {
 /**
  * Type definitions for @ricsam/isolate-encoding globals.
  *
- * Includes: atob, btoa
+ * Includes: atob, btoa, Buffer
  */
 export const ENCODING_TYPES = `/**
  * Global Type Definitions for @ricsam/isolate-encoding
@@ -1399,6 +1399,164 @@ declare global {
    * btoa("Hello"); // "SGVsbG8="
    */
   function btoa(stringToEncode: string): string;
+
+  // ============================================
+  // Buffer
+  // ============================================
+
+  /**
+   * Buffer encoding types supported by the isolate Buffer implementation.
+   */
+  type BufferEncoding = "utf8" | "utf-8" | "base64" | "hex";
+
+  /**
+   * Buffer class for working with binary data.
+   * Extends Uint8Array for compatibility.
+   * @see https://nodejs.org/api/buffer.html
+   */
+  interface Buffer extends Uint8Array {
+    /**
+     * Convert the buffer to a string.
+     *
+     * @param encoding - The encoding to use (default: "utf8")
+     * @returns The string representation
+     *
+     * @example
+     * const buf = Buffer.from("hello");
+     * buf.toString(); // "hello"
+     * buf.toString("hex"); // "68656c6c6f"
+     * buf.toString("base64"); // "aGVsbG8="
+     */
+    toString(encoding?: BufferEncoding): string;
+
+    /**
+     * Returns a new Buffer that references the same memory as the original,
+     * but offset and cropped by the start and end indices.
+     *
+     * @param start - Start index (default: 0)
+     * @param end - End index (default: buffer.length)
+     * @returns A new Buffer instance
+     *
+     * @example
+     * const buf = Buffer.from("hello");
+     * buf.slice(1, 4).toString(); // "ell"
+     */
+    slice(start?: number, end?: number): Buffer;
+
+    /**
+     * Returns a new Buffer that references the same memory as the original,
+     * but offset and cropped by the start and end indices.
+     *
+     * @param start - Start index (default: 0)
+     * @param end - End index (default: buffer.length)
+     * @returns A new Buffer instance
+     */
+    subarray(start?: number, end?: number): Buffer;
+  }
+
+  /**
+   * Buffer constructor interface.
+   */
+  interface BufferConstructor {
+    /**
+     * Creates a new Buffer from a string, array, ArrayBuffer, or another Buffer.
+     *
+     * @param value - The value to create a buffer from
+     * @param encodingOrOffset - Encoding for strings, or byte offset for ArrayBuffer
+     * @param length - Length for ArrayBuffer (when offset is provided)
+     * @returns A new Buffer instance
+     *
+     * @example
+     * Buffer.from("hello"); // UTF-8 encoded
+     * Buffer.from("aGVsbG8=", "base64"); // base64 decoded
+     * Buffer.from("68656c6c6f", "hex"); // hex decoded
+     * Buffer.from([104, 101, 108, 108, 111]); // from array
+     */
+    from(value: string, encoding?: BufferEncoding): Buffer;
+    from(value: ArrayBuffer, byteOffset?: number, length?: number): Buffer;
+    from(value: Uint8Array | ReadonlyArray<number>): Buffer;
+    from(value: Iterable<number>): Buffer;
+
+    /**
+     * Allocates a new Buffer of the specified size, filled with zeros or the specified fill value.
+     *
+     * @param size - The size of the buffer in bytes
+     * @param fill - Value to fill the buffer with (default: 0)
+     * @param encoding - Encoding for string fill values
+     * @returns A new Buffer instance
+     *
+     * @example
+     * Buffer.alloc(5); // <Buffer 00 00 00 00 00>
+     * Buffer.alloc(5, 1); // <Buffer 01 01 01 01 01>
+     * Buffer.alloc(5, "ab"); // <Buffer 61 62 61 62 61>
+     */
+    alloc(size: number, fill?: number | string | Buffer, encoding?: BufferEncoding): Buffer;
+
+    /**
+     * Allocates a new Buffer of the specified size without initializing the memory.
+     * The contents are unknown and may contain sensitive data.
+     *
+     * @param size - The size of the buffer in bytes
+     * @returns A new Buffer instance
+     */
+    allocUnsafe(size: number): Buffer;
+
+    /**
+     * Concatenates a list of Buffers.
+     *
+     * @param list - Array of Buffer instances to concatenate
+     * @param totalLength - Total length of the buffers (optional)
+     * @returns A new Buffer instance
+     *
+     * @example
+     * const buf1 = Buffer.from("hel");
+     * const buf2 = Buffer.from("lo");
+     * Buffer.concat([buf1, buf2]).toString(); // "hello"
+     */
+    concat(list: ReadonlyArray<Uint8Array>, totalLength?: number): Buffer;
+
+    /**
+     * Returns true if the given object is a Buffer.
+     *
+     * @param obj - Object to test
+     * @returns true if obj is a Buffer
+     *
+     * @example
+     * Buffer.isBuffer(Buffer.from("test")); // true
+     * Buffer.isBuffer(new Uint8Array(5)); // false
+     */
+    isBuffer(obj: unknown): obj is Buffer;
+
+    /**
+     * Returns the byte length of a string when encoded.
+     *
+     * @param string - The string to measure
+     * @param encoding - The encoding (default: "utf8")
+     * @returns The byte length
+     *
+     * @example
+     * Buffer.byteLength("hello"); // 5
+     * Buffer.byteLength("aGVsbG8=", "base64"); // 5 (decoded length)
+     */
+    byteLength(string: string, encoding?: BufferEncoding): number;
+    byteLength(buffer: ArrayBufferView | ArrayBuffer): number;
+
+    /**
+     * Returns true if the encoding is a valid buffer encoding.
+     *
+     * @param encoding - The encoding to check
+     * @returns true if the encoding is supported
+     */
+    isEncoding(encoding: string): encoding is BufferEncoding;
+
+    readonly prototype: Buffer;
+  }
+
+  /**
+   * Buffer class for working with binary data.
+   * @see https://nodejs.org/api/buffer.html
+   */
+  const Buffer: BufferConstructor;
 }
 `;
 

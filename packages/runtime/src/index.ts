@@ -811,7 +811,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
   // Console
   state.handles.console = await setupConsole(context, opts.console);
 
-  // Encoding (btoa/atob)
+  // Encoding (btoa/atob) and Buffer
   state.handles.encoding = await setupEncoding(context);
 
   // Timers (setTimeout, setInterval)

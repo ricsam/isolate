@@ -1628,6 +1628,16 @@ export async function setupPlaywright(
     }
     async click(selector) { return this.locator(selector).click(); }
     async fill(selector, value) { return this.locator(selector).fill(value); }
+    async textContent(selector) { return this.locator(selector).textContent(); }
+    async innerText(selector) { return this.locator(selector).innerText(); }
+    async innerHTML(selector) { return this.locator(selector).innerHTML(); }
+    async getAttribute(selector, name) { return this.locator(selector).getAttribute(name); }
+    async inputValue(selector) { return this.locator(selector).inputValue(); }
+    async isVisible(selector) { return this.locator(selector).isVisible(); }
+    async isEnabled(selector) { return this.locator(selector).isEnabled(); }
+    async isChecked(selector) { return this.locator(selector).isChecked(); }
+    async isHidden(selector) { return this.locator(selector).isHidden(); }
+    async isDisabled(selector) { return this.locator(selector).isDisabled(); }
     async screenshot(options) { return __pw_invoke("screenshot", [options || {}], { pageId: this.#pageId }); }
     async setViewportSize(size) { return __pw_invoke("setViewportSize", [size], { pageId: this.#pageId }); }
     async viewportSize() { return __pw_invoke("viewportSize", [], { pageId: this.#pageId }); }
