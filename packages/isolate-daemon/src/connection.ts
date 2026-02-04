@@ -929,7 +929,10 @@ async function handleCreateRuntime(
           const resultJson = await invokeClientCallback(
             connection,
             playwrightCallbacks.handlerCallbackId,
-            [JSON.stringify(op)]
+            [JSON.stringify(op)],
+            // Playwright operations (goto, newPage, etc.) involve browser I/O
+            // and can be slow under load, so use a longer timeout
+            60000
           );
           return JSON.parse(resultJson as string) as PlaywrightResult;
         } catch (err) {
