@@ -2518,10 +2518,6 @@ function createModuleResolver(
   connection: ConnectionState
 ): (specifier: string, referrer: ivm.Module) => Promise<ivm.Module> {
   return async (specifier: string, referrer: ivm.Module): Promise<ivm.Module> => {
-    // Check cache first
-    const cached = instance.moduleCache?.get(specifier);
-    if (cached) return cached;
-
     if (!instance.moduleLoaderCallbackId) {
       throw new Error(`Module not found: ${specifier}`);
     }
@@ -2563,13 +2559,13 @@ function createModuleResolver(
     const resolvedPath = path.posix.join(resolveDir, path.posix.basename(specifier));
     instance.moduleToFilename?.set(mod, resolvedPath);
 
+    // Cache before instantiation (for circular dependencies)
+    instance.moduleCache?.set(cacheKey, mod);
+
     // Instantiate with recursive resolver
     const resolver = createModuleResolver(instance, connection);
     await mod.instantiate(instance.runtime.context, resolver);
 
-    // Cache and return (both specifier and specifier:hash for content-based invalidation)
-    instance.moduleCache?.set(specifier, mod);
-    instance.moduleCache?.set(cacheKey, mod);
     return mod;
   };
 }

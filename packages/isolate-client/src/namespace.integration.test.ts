@@ -145,9 +145,76 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           console.log("module value:", value);
         `);
 
-        // Module loader should not have been called again
-        assert.strictEqual(loadCount, 1);
+        // Module loader is called again (to fetch content for hashing), but recompilation is avoided
+        assert.strictEqual(loadCount, 2);
         assert.ok(logs1.some((l) => l.includes("module value:") && l.includes("cached")));
+      } finally {
+        await runtime2.dispose();
+      }
+    });
+
+    it("should pick up content changes across namespace reuse", async () => {
+      const namespace = client.createNamespace("module-content-change-1");
+
+      // First runtime - load module with version 1
+      const logs1: string[] = [];
+      const runtime1 = await namespace.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs1.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName: string, importer) => {
+          if (moduleName === "@/config") {
+            return {
+              code: `export const version = 1;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      await runtime1.eval(`
+        import { version } from "@/config";
+        console.log("version:", version);
+      `);
+      assert.ok(logs1.some((l) => l.includes("version:") && l.includes("1")));
+      await runtime1.dispose();
+
+      // Second runtime - module loader now returns version 2
+      const logs2: string[] = [];
+      const runtime2 = await namespace.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs2.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName: string, importer) => {
+          if (moduleName === "@/config") {
+            return {
+              code: `export const version = 2;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        assert.strictEqual(runtime2.reused, true);
+
+        await runtime2.eval(`
+          import { version } from "@/config";
+          console.log("version:", version);
+        `);
+
+        // Should see version 2, not stale version 1
+        assert.ok(logs2.some((l) => l.includes("version:") && l.includes("2")));
       } finally {
         await runtime2.dispose();
       }

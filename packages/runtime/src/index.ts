@@ -691,7 +691,8 @@ function createModuleResolver(
     specifier: string,
     referrer: ivm.Module
   ): Promise<ivm.Module> => {
-    // Check cache first by specifier (fast path - avoids calling module loader)
+    // Specifier-only fast path is safe here: each local runtime gets a fresh cache,
+    // so there's no cross-lifecycle staleness (unlike the daemon where caches persist across namespace reuse).
     const cached = state.moduleCache.get(specifier);
     if (cached) return cached;
 

@@ -3092,7 +3092,7 @@ export async function setupFetch(
 
     dispatchClientWebSocketClose(socketId: string, code: number, reason: string, wasClean: boolean): void {
       const safeReason = reason.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
-      context.evalSync(`
+      context.evalIgnored(`
         __dispatchClientWebSocketEvent("${socketId}", "close", {
           code: ${code},
           reason: "${safeReason}",
@@ -3102,7 +3102,7 @@ export async function setupFetch(
     },
 
     dispatchClientWebSocketError(socketId: string): void {
-      context.evalSync(`
+      context.evalIgnored(`
         __dispatchClientWebSocketEvent("${socketId}", "error", {});
       `);
     },
