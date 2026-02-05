@@ -19,13 +19,14 @@ Run browser automation scripts without a test framework:
 ```typescript
 import { createRuntime } from "@ricsam/isolate-runtime";
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 
 const runtime = await createRuntime({
   playwright: {
-    page,
+    handler: defaultPlaywrightHandler(page),
     console: true, // Print browser console logs to stdout
   },
 });
@@ -52,6 +53,7 @@ For tests, enable `testEnvironment` which provides `describe`, `it`, and `expect
 ```typescript
 import { createRuntime } from "@ricsam/isolate-runtime";
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
@@ -59,9 +61,14 @@ const page = await browser.newPage();
 const runtime = await createRuntime({
   testEnvironment: true, // Provides describe, it, expect
   playwright: {
-    page,
-    onBrowserConsoleLog: (entry) => console.log("[browser]", entry.level, entry.stdout),
-    onNetworkRequest: (info) => console.log("Request:", info.url),
+    handler: defaultPlaywrightHandler(page),
+    onEvent: (event) => {
+      if (event.type === "browserConsoleLog") {
+        console.log("[browser]", event.level, event.stdout);
+      } else if (event.type === "networkRequest") {
+        console.log("Request:", event.url);
+      }
+    },
   },
 });
 
@@ -111,9 +118,15 @@ await setupTestEnvironment(context);
 const handle = await setupPlaywright(context, {
   page,
   timeout: 30000,
-  onNetworkRequest: (info) => console.log("Request:", info.url),
-  onNetworkResponse: (info) => console.log("Response:", info.status),
-  onBrowserConsoleLog: (entry) => console.log(`[${entry.level}]`, entry.stdout),
+  onEvent: (event) => {
+    if (event.type === "networkRequest") {
+      console.log("Request:", event.url);
+    } else if (event.type === "networkResponse") {
+      console.log("Response:", event.status);
+    } else if (event.type === "browserConsoleLog") {
+      console.log(`[${event.level}]`, event.stdout);
+    }
+  },
 });
 
 // Load and run untrusted test code
@@ -140,23 +153,24 @@ await browser.close();
 
 ## Handler-based API (for Remote Execution)
 
-For daemon/client architectures where the browser runs on the client:
+For daemon/client architectures where the browser runs on the client, use the
+handler-first contract (`playwright.handler`):
 
 ```typescript
-import { createPlaywrightHandler, setupPlaywright, type PlaywrightCallback } from "@ricsam/isolate-playwright";
+import { defaultPlaywrightHandler, setupPlaywright, type PlaywrightCallback } from "@ricsam/isolate-playwright";
 import { chromium } from "playwright";
 
 // On the client: create handler from page
 const browser = await chromium.launch();
 const page = await browser.newPage();
-const handler: PlaywrightCallback = createPlaywrightHandler(page, {
+const handler: PlaywrightCallback = defaultPlaywrightHandler(page, {
   timeout: 30000,
 });
 
 // On the daemon: setup playwright with handler (instead of page)
 const handle = await setupPlaywright(context, {
-  handler, // Handler callback instead of direct page
-  onBrowserConsoleLog: (entry) => sendToClient("browserConsoleLog", entry),
+  handler,
+  onEvent: (event) => sendToClient("playwright-event", event),
 });
 ```
 
@@ -241,6 +255,10 @@ These matchers are available when using playwright with test-environment:
 
 ## Setup Options
 
+`@ricsam/isolate-runtime` and `@ricsam/isolate-client` expose a handler-first
+public contract (`playwright.handler`). The `page` field below is for low-level
+`setupPlaywright(...)` usage.
+
 ```typescript
 interface PlaywrightSetupOptions {
   page?: Page;                    // Direct page object (for local use)
@@ -275,6 +293,7 @@ For tests that need multiple pages or contexts, provide the `createPage` and/or 
 ```typescript
 import { createRuntime } from "@ricsam/isolate-runtime";
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const browserContext = await browser.newContext();
@@ -283,11 +302,12 @@ const page = await browserContext.newPage();
 const runtime = await createRuntime({
   testEnvironment: true,
   playwright: {
-    page,
-    // Called when isolate code calls context.newPage(); receive the BrowserContext and call context.newPage()
-    createPage: async (context) => context.newPage(),
-    // Called when isolate code calls browser.newContext()
-    createContext: async (options) => browser.newContext(options),
+    handler: defaultPlaywrightHandler(page, {
+      // Called when isolate code calls context.newPage(); receive the BrowserContext and call context.newPage()
+      createPage: async (context) => context.newPage(),
+      // Called when isolate code calls browser.newContext()
+      createContext: async (options) => browser.newContext(options),
+    }),
   },
 });
 

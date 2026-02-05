@@ -9,6 +9,7 @@ import { connect } from "./connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import { chromium, type Browser, type Page } from "playwright";
 import type { DaemonConnection } from "./types.ts";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const TEST_SOCKET = "/tmp/isolate-test-env-daemon.sock";
 
@@ -659,7 +660,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -690,7 +691,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -717,7 +718,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -751,7 +752,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -785,7 +786,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -816,7 +817,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -849,7 +850,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -883,7 +884,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -917,7 +918,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -954,7 +955,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -988,7 +989,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1021,7 +1022,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1053,7 +1054,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1100,7 +1101,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1138,7 +1139,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1172,7 +1173,7 @@ describe("playwright feature", () => {
       try {
         const logs: string[] = [];
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           console: {
             onEntry: (entry) => {
               if (entry.type === "output" && entry.level === "log") {
@@ -1205,7 +1206,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -1234,7 +1235,7 @@ describe("playwright feature", () => {
       const page = await browser.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -1268,14 +1269,11 @@ describe("playwright feature", () => {
       try {
         const runtime = await client.createRuntime({
           testEnvironment: true,
-          playwright: {
-            page,
-            onEvent: (event) => {
+          playwright: { handler: defaultPlaywrightHandler(page), onEvent: (event) => {
               if (event.type === "browserConsoleLog") {
                 receivedLogs.push({ level: event.level, stdout: event.stdout });
               }
-            },
-          },
+            } },
         });
 
         try {

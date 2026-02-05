@@ -31,9 +31,7 @@ describe("isolate-client integration", () => {
 
   it("should create and dispose runtime", async () => {
     const runtime = await client.createRuntime();
-    assert.ok(runtime.isolateId);
-    assert.ok(runtime.id); // New id property
-    assert.strictEqual(runtime.id, runtime.isolateId); // Should be equal
+    assert.ok(runtime.id);
     await runtime.dispose();
   });
 
@@ -933,7 +931,7 @@ describe("isolate-client integration", () => {
         import { add, multiply } from "@/utils";
         console.log("sum:", add(2, 3));
         console.log("product:", multiply(4, 5));
-      `); // module: true is now default
+      `);
       // No delay needed - eval waits for callbacks to complete
       assert.ok(logs.some((l) => l.includes("sum: 5")));
       assert.ok(logs.some((l) => l.includes("product: 20")));
@@ -981,7 +979,7 @@ describe("isolate-client integration", () => {
       await runtime.eval(`
         import { sumOfSquares } from "@/calc";
         console.log("result:", sumOfSquares(3, 4));
-      `); // module: true is now default
+      `);
       // No delay needed - eval waits for callbacks to complete
       assert.ok(logs.some((l) => l.includes("result: 25")));
     } finally {
@@ -1018,7 +1016,7 @@ describe("isolate-client integration", () => {
         import { value as v1 } from "@/counter";
         import { value as v2 } from "@/counter";
         console.log("values:", v1, v2);
-      `); // module: true is now default
+      `);
       // No delay needed - eval waits for callbacks to complete
       // Module should be cached, so both imports get the same value
       assert.strictEqual(loadCount, 1);
@@ -1039,7 +1037,7 @@ describe("isolate-client integration", () => {
       await assert.rejects(async () => {
         await runtime.eval(`
             import { foo } from "@/nonexistent";
-          `); // module: true is now default
+          `);
       }, /Module not found/);
     } finally {
       await runtime.dispose();
@@ -1053,7 +1051,7 @@ describe("isolate-client integration", () => {
       await assert.rejects(async () => {
         await runtime.eval(`
             import { foo } from "@/some-module";
-          `); // module: true is now default
+          `);
       }, /No module loader registered/);
     } finally {
       await runtime.dispose();
@@ -1330,7 +1328,7 @@ describe("isolate-client integration", () => {
         import { logMessage } from "@/logger";
         logMessage("Started");
         console.log("Direct log");
-      `); // module: true is now default
+      `);
       // No delay needed - eval waits for callbacks to complete
       assert.ok(
         logs.some((l) => l.includes("[MODULE]") && l.includes("Started"))

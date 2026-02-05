@@ -42,8 +42,6 @@ export const MessageType = {
   GET_TEST_COUNT: 0x24,
 
   // Client → Daemon: Playwright
-  RUN_PLAYWRIGHT_TESTS: 0x31,
-  RESET_PLAYWRIGHT_TESTS: 0x32,
   GET_COLLECTED_DATA: 0x33,
   CLEAR_COLLECTED_DATA: 0x34,
 
@@ -314,11 +312,6 @@ export interface EvalRequest extends BaseMessage {
   filename?: string;
   /** Maximum execution time in milliseconds. If exceeded, throws a timeout error. */
   maxExecutionMs?: number;
-  /**
-   * @deprecated Always uses module mode now. This field is ignored.
-   * All code is evaluated as ES modules with support for top-level await.
-   */
-  module?: boolean;
 }
 
 export interface SerializedRequest {
@@ -429,18 +422,6 @@ export interface HasTestsRequest extends BaseMessage {
 
 export interface GetTestCountRequest extends BaseMessage {
   type: typeof MessageType.GET_TEST_COUNT;
-  isolateId: string;
-}
-
-// Playwright messages
-export interface RunPlaywrightTestsRequest extends BaseMessage {
-  type: typeof MessageType.RUN_PLAYWRIGHT_TESTS;
-  isolateId: string;
-  timeout?: number;
-}
-
-export interface ResetPlaywrightTestsRequest extends BaseMessage {
-  type: typeof MessageType.RESET_PLAYWRIGHT_TESTS;
   isolateId: string;
 }
 
@@ -774,8 +755,6 @@ export type ClientMessage =
   | ResetTestEnvRequest
   | HasTestsRequest
   | GetTestCountRequest
-  | RunPlaywrightTestsRequest
-  | ResetPlaywrightTestsRequest
   | GetCollectedDataRequest
   | ClearCollectedDataRequest
   | CallbackResponseMsg
@@ -1005,10 +984,6 @@ export interface EvalOptions {
   filename?: string;
   /** Maximum execution time in milliseconds. If exceeded, throws a timeout error. */
   maxExecutionMs?: number;
-  /**
-   * @deprecated Always uses module mode now. This option is ignored.
-   */
-  module?: boolean;
 }
 
 /**
@@ -1035,56 +1010,19 @@ export interface PlaywrightFileData {
 
 /**
  * Options for Playwright integration.
- * User provides the page object - client owns the browser.
+ *
+ * Public API is handler-first: host-specific page wiring should be done by
+ * creating a handler (for example via `defaultPlaywrightHandler(page)`).
  */
 export interface PlaywrightOptions {
-  /** Playwright page object */
-  page: import("playwright").Page;
+  /** Handler callback for Playwright operations (required when playwright is enabled) */
+  handler: (op: PlaywrightOperation) => Promise<PlaywrightResult>;
   /** Default timeout for operations in ms */
   timeout?: number;
   /** If true, browser console logs are routed through console handler (or printed to stdout if no handler) */
   console?: boolean;
   /** Unified event callback for all playwright events */
   onEvent?: (event: PlaywrightEvent) => void;
-  /**
-   * Callback to read files for setInputFiles() operations.
-   * This allows the host to control which files the isolate can access.
-   * If not provided, setInputFiles() with file paths will throw an error.
-   *
-   * @param filePath - The file path requested by the isolate
-   * @returns File data with name, mimeType, and buffer contents
-   * @throws If the file should not be accessible
-   */
-  readFile?: (filePath: string) => Promise<PlaywrightFileData> | PlaywrightFileData;
-  /**
-   * Callback to write files for screenshot() and pdf() operations with path option.
-   * This allows the host to control where files are written.
-   * If not provided, screenshot()/pdf() with path option will throw an error
-   * (but the base64 data will still be returned).
-   *
-   * @param filePath - The file path requested by the isolate
-   * @param data - The file contents as Buffer
-   * @throws If the file should not be written to this location
-   */
-  writeFile?: (filePath: string, data: Buffer) => Promise<void> | void;
-  /**
-   * Callback to create new pages when context.newPage() is called from within the isolate.
-   * This allows the host to control page creation for multi-page testing scenarios.
-   * If not provided, context.newPage() will throw an error.
-   *
-   * @param context - The BrowserContext that requested the new page; call context.newPage() to create it
-   * @returns The newly created Page object
-   */
-  createPage?: (context: import("playwright").BrowserContext) => Promise<import("playwright").Page> | import("playwright").Page;
-  /**
-   * Callback to create new browser contexts when browser.newContext() is called from within the isolate.
-   * This allows the host to control context creation for multi-context testing scenarios.
-   * If not provided, browser.newContext() will throw an error.
-   *
-   * @param options - Browser context options passed from the isolate
-   * @returns The newly created BrowserContext object
-   */
-  createContext?: (options?: import("playwright").BrowserContextOptions) => Promise<import("playwright").BrowserContext> | import("playwright").BrowserContext;
 }
 
 /**
@@ -1108,7 +1046,7 @@ export interface BaseRuntimeOptions<T extends Record<string, any[]> = Record<str
   cwd?: string;
   /** Enable test environment (describe, it, expect, etc.) */
   testEnvironment?: boolean | TestEnvironmentOptions;
-  /** Playwright options - user provides page */
+  /** Playwright options (handler-first API) */
   playwright?: PlaywrightOptions;
 }
 

@@ -14,13 +14,22 @@ export type {
   NetworkRequestInfo,
   NetworkResponseInfo,
   BrowserConsoleLogEntry,
+  DefaultPlaywrightHandler,
+  DefaultPlaywrightHandlerMetadata,
+  DefaultPlaywrightHandlerOptions,
   PlaywrightSetupOptions,
-  PlaywrightOptions,
   PlaywrightHandle,
 } from "./types.ts";
 
 // Import PlaywrightCallback for use in function return type
-import type { PlaywrightCallback, PlaywrightSetupOptions } from "./types.ts";
+import {
+  DEFAULT_PLAYWRIGHT_HANDLER_META,
+  type DefaultPlaywrightHandler,
+  type DefaultPlaywrightHandlerMetadata,
+  type DefaultPlaywrightHandlerOptions,
+  type PlaywrightCallback,
+  type PlaywrightSetupOptions,
+} from "./types.ts";
 export type { PlaywrightCallback };
 
 export type { PlaywrightOperation, PlaywrightResult, PlaywrightEvent, PlaywrightFileData } from "@ricsam/isolate-protocol";
@@ -387,7 +396,7 @@ async function executeLocatorAction(
       if (!fileIO?.readFile) {
         throw new Error(
           "setInputFiles() with file paths requires a readFile callback to be provided. " +
-          "Either provide a readFile callback in PlaywrightOptions, or pass file data directly " +
+          "Either provide a readFile callback in defaultPlaywrightHandler options, or pass file data directly " +
           "as { name, mimeType, buffer } objects."
         );
       }
@@ -418,7 +427,7 @@ async function executeLocatorAction(
         if (!fileIO?.writeFile) {
           throw new Error(
             "screenshot() with path option requires a writeFile callback to be provided. " +
-            "Either provide a writeFile callback in PlaywrightOptions, or omit the path option " +
+            "Either provide a writeFile callback in defaultPlaywrightHandler options, or omit the path option " +
             "and handle the returned base64 data yourself."
           );
         }
@@ -867,17 +876,7 @@ interface PlaywrightRegistry {
  */
 export function createPlaywrightHandler(
   page: Page,
-  options?: {
-    timeout?: number;
-    /** Callback to read files for setInputFiles() with file paths */
-    readFile?: ReadFileCallback;
-    /** Callback to write files for screenshot()/pdf() with path option */
-    writeFile?: WriteFileCallback;
-    /** Callback to create new pages when context.newPage() is called; receives the BrowserContext so you can call context.newPage() */
-    createPage?: (context: BrowserContext) => Promise<Page> | Page;
-    /** Callback to create new contexts when browser.newContext() is called */
-    createContext?: (options?: BrowserContextOptions) => Promise<BrowserContext> | BrowserContext;
-  }
+  options?: DefaultPlaywrightHandlerOptions
 ): PlaywrightCallback {
   const timeout = options?.timeout ?? 30000;
   const fileIO: FileIOCallbacks = {
@@ -1143,7 +1142,7 @@ export function createPlaywrightHandler(
             if (!fileIO.writeFile) {
               throw new Error(
                 "screenshot() with path option requires a writeFile callback to be provided. " +
-                "Either provide a writeFile callback in PlaywrightOptions, or omit the path option " +
+                "Either provide a writeFile callback in defaultPlaywrightHandler options, or omit the path option " +
                 "and handle the returned base64 data yourself."
               );
             }
@@ -1261,7 +1260,7 @@ export function createPlaywrightHandler(
             if (!fileIO.writeFile) {
               throw new Error(
                 "pdf() with path option requires a writeFile callback to be provided. " +
-                "Either provide a writeFile callback in PlaywrightOptions, or omit the path option " +
+                "Either provide a writeFile callback in defaultPlaywrightHandler options, or omit the path option " +
                 "and handle the returned base64 data yourself."
               );
             }
@@ -1314,4 +1313,26 @@ export function createPlaywrightHandler(
       return { ok: false, error: { name: error.name, message: error.message } };
     }
   };
+}
+
+/**
+ * Public helper for handler-first runtime options.
+ * Adds metadata used by adapters for local event capture and collected data.
+ */
+export function defaultPlaywrightHandler(
+  page: Page,
+  options?: DefaultPlaywrightHandlerOptions
+): PlaywrightCallback {
+  const handler = createPlaywrightHandler(page, options) as DefaultPlaywrightHandler;
+  handler[DEFAULT_PLAYWRIGHT_HANDLER_META] = { page, options };
+  return handler;
+}
+
+/**
+ * Extract metadata from handlers created by defaultPlaywrightHandler().
+ */
+export function getDefaultPlaywrightHandlerMetadata(
+  handler: PlaywrightCallback
+): DefaultPlaywrightHandlerMetadata | undefined {
+  return (handler as DefaultPlaywrightHandler)[DEFAULT_PLAYWRIGHT_HANDLER_META];
 }

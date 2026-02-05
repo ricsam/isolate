@@ -414,19 +414,26 @@ type TestEvent =
 
 ## Playwright Integration
 
-Run browser automation with untrusted code. **The client owns the browser** - you provide the Playwright page object:
+Run browser automation with untrusted code. Public API is handler-first:
+
+```typescript
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
+
+playwright: { handler: defaultPlaywrightHandler(page) }
+```
 
 ### Script Mode (No Tests)
 
 ```typescript
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 
 const runtime = await client.createRuntime({
   playwright: {
-    page,
+    handler: defaultPlaywrightHandler(page),
     timeout: 30000, // Default timeout for operations
     onEvent: (event) => {
       // Unified event handler for all playwright events
@@ -462,6 +469,7 @@ Combine `testEnvironment` and `playwright` for browser testing. Playwright exten
 
 ```typescript
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
@@ -479,7 +487,7 @@ const runtime = await client.createRuntime({
   },
   testEnvironment: true, // Provides describe, it, expect
   playwright: {
-    page,
+    handler: defaultPlaywrightHandler(page),
     console: true, // Routes browser logs through the console handler above
   },
 });
@@ -514,6 +522,7 @@ For security, file system access requires explicit callbacks. Without these call
 import { chromium } from "playwright";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
@@ -521,28 +530,29 @@ const page = await browser.newPage();
 const runtime = await client.createRuntime({
   testEnvironment: true,
   playwright: {
-    page,
-    // Callback for writing screenshots and PDFs to disk
-    writeFile: async (filePath: string, data: Buffer) => {
-      // Validate path, then write
-      if (!filePath.startsWith("/allowed/output/")) {
-        throw new Error("Write not allowed to this path");
-      }
-      await fs.writeFile(filePath, data);
-    },
-    // Callback for reading files for setInputFiles()
-    readFile: async (filePath: string) => {
-      // Validate path, then read
-      if (!filePath.startsWith("/allowed/uploads/")) {
-        throw new Error("Read not allowed from this path");
-      }
-      const buffer = await fs.readFile(filePath);
-      return {
-        name: path.basename(filePath),
-        mimeType: "application/octet-stream", // Determine from extension
-        buffer,
-      };
-    },
+    handler: defaultPlaywrightHandler(page, {
+      // Callback for writing screenshots and PDFs to disk
+      writeFile: async (filePath: string, data: Buffer) => {
+        // Validate path, then write
+        if (!filePath.startsWith("/allowed/output/")) {
+          throw new Error("Write not allowed to this path");
+        }
+        await fs.writeFile(filePath, data);
+      },
+      // Callback for reading files for setInputFiles()
+      readFile: async (filePath: string) => {
+        // Validate path, then read
+        if (!filePath.startsWith("/allowed/uploads/")) {
+          throw new Error("Read not allowed from this path");
+        }
+        const buffer = await fs.readFile(filePath);
+        return {
+          name: path.basename(filePath),
+          mimeType: "application/octet-stream", // Determine from extension
+          buffer,
+        };
+      },
+    }),
   },
 });
 
@@ -582,6 +592,7 @@ For tests that need multiple pages or browser contexts, provide `createPage` and
 
 ```typescript
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const browserContext = await browser.newContext();
@@ -590,11 +601,12 @@ const page = await browserContext.newPage();
 const runtime = await client.createRuntime({
   testEnvironment: true,
   playwright: {
-    page,
-    // Called when isolate code calls context.newPage(); receive the BrowserContext and call context.newPage()
-    createPage: async (context) => context.newPage(),
-    // Called when isolate code calls browser.newContext()
-    createContext: async (options) => browser.newContext(options),
+    handler: defaultPlaywrightHandler(page, {
+      // Called when isolate code calls context.newPage(); receive the BrowserContext and call context.newPage()
+      createPage: async (context) => context.newPage(),
+      // Called when isolate code calls browser.newContext()
+      createContext: async (options) => browser.newContext(options),
+    }),
   },
 });
 
@@ -695,8 +707,8 @@ interface RemoteTestEnvironmentHandle {
 }
 
 interface RemotePlaywrightHandle {
-  getCollectedData(): Promise<CollectedData>;
-  clearCollectedData(): Promise<void>;
+  getCollectedData(): CollectedData;
+  clearCollectedData(): void;
 }
 ```
 

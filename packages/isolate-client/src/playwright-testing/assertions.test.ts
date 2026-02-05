@@ -9,6 +9,7 @@ import { connect } from "../connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import { chromium } from "playwright";
 import type { DaemonConnection } from "../types.ts";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const TEST_SOCKET = "/tmp/isolate-test-assertions.sock";
 
@@ -33,7 +34,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -63,7 +64,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -93,7 +94,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -121,7 +122,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -151,7 +152,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -179,7 +180,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -210,7 +211,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -239,7 +240,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -267,7 +268,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -295,7 +296,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -324,7 +325,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -354,7 +355,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -382,7 +383,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -418,7 +419,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -448,7 +449,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -476,7 +477,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -504,7 +505,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -532,7 +533,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -559,7 +560,7 @@ describe("playwright assertion matchers", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {

@@ -4,8 +4,6 @@
 
 import type { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
-import path from "node:path";
-import ivm from "isolated-vm";
 import {
   createFrameParser,
   buildFrame,
@@ -14,7 +12,8 @@ import {
   STREAM_THRESHOLD,
   STREAM_CHUNK_SIZE,
   STREAM_DEFAULT_CREDIT,
-  normalizeEntryFilename,
+  marshalValue,
+  unmarshalValue,
   type Message,
   type ResponseOk,
   type ResponseError,
@@ -27,12 +26,9 @@ import {
   type RunTestsRequest,
   type HasTestsRequest,
   type GetTestCountRequest,
-  type RunPlaywrightTestsRequest,
-  type ResetPlaywrightTestsRequest,
   type GetCollectedDataRequest,
   type ResetTestEnvRequest,
   type ClearCollectedDataRequest,
-  type FsCallbackRegistrations,
   type CustomFunctionRegistrations,
   type CallbackRegistration,
   type PlaywrightOperation,
@@ -68,39 +64,14 @@ import {
   type ClientWsClosedMessage,
   type ClientWsErrorMessage,
   type FetchRequestInit,
-  encodeValue,
-  decodeValue,
-  marshalValue,
-  unmarshalValue,
   type MarshalContext,
-  type UnmarshalContext,
 } from "@ricsam/isolate-protocol";
 import { createCallbackFileSystemHandler } from "./callback-fs-handler.ts";
 import {
-  setupTestEnvironment,
-  runTests as runTestsInContext,
-  hasTests as hasTestsInContext,
-  getTestCount as getTestCountInContext,
-} from "@ricsam/isolate-test-environment";
-import {
-  setupPlaywright,
-  type PlaywrightCallback,
-  type BrowserConsoleLogEntry,
-  type NetworkRequestInfo,
-  type NetworkResponseInfo,
-} from "@ricsam/isolate-playwright";
-import {
-  createInternalRuntime,
-  type InternalRuntimeHandle,
+  createRuntime,
+  type RuntimeHandle,
+  type CustomFunctionsMarshalOptions,
 } from "@ricsam/isolate-runtime";
-import {
-  transformEntryCode,
-  transformModuleCode,
-  contentHash,
-  mapErrorStack,
-  type SourceMap,
-  type TransformResult,
-} from "@ricsam/isolate-transform";
 import type {
   DaemonState,
   ConnectionState,
@@ -154,15 +125,9 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
           softDeleteRuntime(instance, state);
         } else if (!instance.isDisposed) {
           // Non-namespaced runtime: hard delete
-          try {
-            // Clean up Playwright resources if present
-            if (instance.playwrightHandle) {
-              instance.playwrightHandle.dispose();
-            }
-            instance.runtime.dispose();
-          } catch {
+          instance.runtime.dispose().catch(() => {
             // Ignore disposal errors
-          }
+          });
           state.isolates.delete(isolateId);
         }
       }
@@ -370,22 +335,6 @@ async function handleMessage(
       );
       break;
 
-    case MessageType.RUN_PLAYWRIGHT_TESTS:
-      await handleRunPlaywrightTests(
-        message as RunPlaywrightTestsRequest,
-        connection,
-        state
-      );
-      break;
-
-    case MessageType.RESET_PLAYWRIGHT_TESTS:
-      await handleResetPlaywrightTests(
-        message as ResetPlaywrightTestsRequest,
-        connection,
-        state
-      );
-      break;
-
     case MessageType.GET_COLLECTED_DATA:
       await handleGetCollectedData(
         message as GetCollectedDataRequest,
@@ -475,6 +424,9 @@ function softDeleteRuntime(instance: IsolateInstance, state: DaemonState): void 
   instance.isDisposed = true;
   instance.disposedAt = Date.now();
   instance.ownerConnection = null;
+  if (instance.callbackContext) {
+    instance.callbackContext.connection = null;
+  }
   instance.callbacks.clear();
 
   // Clear timers
@@ -484,20 +436,15 @@ function softDeleteRuntime(instance: IsolateInstance, state: DaemonState): void 
   instance.runtime.console.reset();
 
   // Clear pending callbacks
-  instance.pendingCallbacks.length = 0;
+  instance.runtime.pendingCallbacks.length = 0;
 
   // Clear returned callback/promise/iterator registries
   instance.returnedCallbacks?.clear();
   instance.returnedPromises?.clear();
   instance.returnedIterators?.clear();
 
-  // Clear module cache — cached ivm.Module objects have their dependency graphs
-  // permanently baked in after instantiation, so transitive dependency changes
-  // would not be picked up. Within a single eval cycle the cache still prevents
-  // compiling the same module twice when multiple files import it.
-  instance.moduleCache?.clear();
-  instance.moduleToFilename?.clear();
-  // staticModuleCache and transformCache intentionally preserved across reuse
+  // Clear module cache (staticModuleCache and transformCache preserved by clearModuleCache)
+  instance.runtime.clearModuleCache();
 }
 
 /**
@@ -521,6 +468,11 @@ function reuseNamespacedRuntime(
 
   // Re-register callbacks from the new request
   const callbacks = message.options.callbacks;
+  const testEnvOptions =
+    message.options.testEnvironment != null &&
+    typeof message.options.testEnvironment === "object"
+      ? message.options.testEnvironment
+      : undefined;
 
   // Update the mutable callback context (closures reference this object)
   if (instance.callbackContext) {
@@ -531,6 +483,17 @@ function reuseNamespacedRuntime(
     instance.callbackContext.consoleOnEntry = callbacks?.console?.onEntry?.callbackId;
     instance.callbackContext.fetch = callbacks?.fetch?.callbackId;
     instance.callbackContext.moduleLoader = callbacks?.moduleLoader?.callbackId;
+    instance.callbackContext.testEnvironmentOnEvent =
+      testEnvOptions?.callbacks?.onEvent?.callbackId;
+    instance.callbackContext.playwright = {
+      handlerCallbackId: callbacks?.playwright?.handlerCallbackId,
+      onBrowserConsoleLogCallbackId:
+        callbacks?.playwright?.onBrowserConsoleLogCallbackId,
+      onNetworkRequestCallbackId:
+        callbacks?.playwright?.onNetworkRequestCallbackId,
+      onNetworkResponseCallbackId:
+        callbacks?.playwright?.onNetworkResponseCallbackId,
+    };
 
     // Update FS callback IDs
     instance.callbackContext.fs = {
@@ -577,7 +540,6 @@ function reuseNamespacedRuntime(
   }
 
   if (callbacks?.moduleLoader) {
-    instance.moduleLoaderCallbackId = callbacks.moduleLoader.callbackId;
     instance.callbacks.set(callbacks.moduleLoader.callbackId, callbacks.moduleLoader);
   }
 
@@ -589,37 +551,54 @@ function reuseNamespacedRuntime(
     }
   }
 
+  if (testEnvOptions?.callbacks?.onEvent) {
+    instance.callbacks.set(testEnvOptions.callbacks.onEvent.callbackId, {
+      ...testEnvOptions.callbacks.onEvent,
+      name: "testEnvironment.onEvent",
+    });
+  }
+
+  if (callbacks?.playwright) {
+    instance.callbacks.set(callbacks.playwright.handlerCallbackId, {
+      callbackId: callbacks.playwright.handlerCallbackId,
+      name: "playwright.handler",
+      type: "async",
+    });
+    if (callbacks.playwright.onBrowserConsoleLogCallbackId !== undefined) {
+      instance.callbacks.set(callbacks.playwright.onBrowserConsoleLogCallbackId, {
+        callbackId: callbacks.playwright.onBrowserConsoleLogCallbackId,
+        name: "playwright.onBrowserConsoleLog",
+        type: "sync",
+      });
+    }
+    if (callbacks.playwright.onNetworkRequestCallbackId !== undefined) {
+      instance.callbacks.set(callbacks.playwright.onNetworkRequestCallbackId, {
+        callbackId: callbacks.playwright.onNetworkRequestCallbackId,
+        name: "playwright.onNetworkRequest",
+        type: "sync",
+      });
+    }
+    if (callbacks.playwright.onNetworkResponseCallbackId !== undefined) {
+      instance.callbacks.set(callbacks.playwright.onNetworkResponseCallbackId, {
+        callbackId: callbacks.playwright.onNetworkResponseCallbackId,
+        name: "playwright.onNetworkResponse",
+        type: "sync",
+      });
+    }
+  }
+
   // Re-initialize registries for new callbacks
   instance.returnedCallbacks = new Map();
   instance.returnedPromises = new Map();
   instance.returnedIterators = new Map();
   instance.nextLocalCallbackId = 1_000_000;
-
-  // Update the __customFnCallbackIds global in the V8 context with new callback IDs
-  // This allows custom functions to use the new client's callback IDs
-  if (callbacks?.custom) {
-    const newCallbackIdMap: Record<string, number> = {};
-    for (const [name, reg] of Object.entries(callbacks.custom)) {
-      if (reg) {
-        newCallbackIdMap[name] = reg.callbackId;
-      }
-    }
-    try {
-      instance.runtime.context.global.setSync(
-        "__customFnCallbackIds",
-        new ivm.ExternalCopy(newCallbackIdMap).copyInto()
-      );
-    } catch {
-      // Ignore errors if context is not available
-    }
-  }
 }
 
 /**
  * Evict the oldest disposed runtime to make room for a new one.
  * Returns true if a runtime was evicted, false if no disposed runtimes available.
  */
-function evictOldestDisposedRuntime(state: DaemonState): boolean {
+async function evictOldestDisposedRuntime(state: DaemonState): Promise<boolean> {
   let oldest: IsolateInstance | null = null;
   let oldestTime = Infinity;
 
@@ -635,10 +614,7 @@ function evictOldestDisposedRuntime(state: DaemonState): boolean {
   if (oldest) {
     // Hard delete the oldest disposed runtime
     try {
-      if (oldest.playwrightHandle) {
-        oldest.playwrightHandle.dispose();
-      }
-      oldest.runtime.dispose();
+      await oldest.runtime.dispose();
     } catch {
       // Ignore disposal errors
     }
@@ -707,7 +683,7 @@ async function handleCreateRuntime(
   // Check limits - try LRU eviction if at limit
   if (state.isolates.size >= state.options.maxIsolates) {
     // Try to evict an old disposed runtime
-    if (!evictOldestDisposedRuntime(state)) {
+    if (!(await evictOldestDisposedRuntime(state))) {
       sendError(
         connection.socket,
         message.requestId,
@@ -728,9 +704,6 @@ async function handleCreateRuntime(
     const moduleLoaderCallback = message.options.callbacks?.moduleLoader;
     const customCallbacks = message.options.callbacks?.custom;
 
-    // Track pending callbacks so eval can wait for them
-    const pendingCallbacks: Promise<unknown>[] = [];
-
     // Create mutable callback context that closures can reference
     // This allows updating callback IDs on runtime reuse
     const callbackContext: CallbackContext = {
@@ -738,6 +711,20 @@ async function handleCreateRuntime(
       consoleOnEntry: consoleCallbacks?.onEntry?.callbackId,
       fetch: fetchCallback?.callbackId,
       moduleLoader: moduleLoaderCallback?.callbackId,
+      testEnvironmentOnEvent:
+        message.options.testEnvironment != null &&
+        typeof message.options.testEnvironment === "object"
+          ? message.options.testEnvironment.callbacks?.onEvent?.callbackId
+          : undefined,
+      playwright: {
+        handlerCallbackId: message.options.callbacks?.playwright?.handlerCallbackId,
+        onBrowserConsoleLogCallbackId:
+          message.options.callbacks?.playwright?.onBrowserConsoleLogCallbackId,
+        onNetworkRequestCallbackId:
+          message.options.callbacks?.playwright?.onNetworkRequestCallbackId,
+        onNetworkResponseCallbackId:
+          message.options.callbacks?.playwright?.onNetworkResponseCallbackId,
+      },
       fs: {
         readFile: fsCallbacks?.readFile?.callbackId,
         writeFile: fsCallbacks?.writeFile?.callbackId,
@@ -754,92 +741,15 @@ async function handleCreateRuntime(
       ),
     };
 
-    const runtime = await createInternalRuntime({
-      memoryLimitMB: message.options.memoryLimitMB ?? state.options.defaultMemoryLimitMB,
-      cwd: message.options.cwd,
-      // Always create console handler to support adding callbacks on reuse
-      console: {
-        onEntry: (entry) => {
-          // Use callback context for dynamic lookup (supports runtime reuse)
-          const conn = callbackContext.connection;
-          const callbackId = callbackContext.consoleOnEntry;
-          // Only invoke if callback is registered
-          if (!conn || callbackId === undefined) return;
-
-          // Track this callback so eval waits for it to complete
-          const promise = invokeClientCallback(
-            conn,
-            callbackId,
-            [entry]
-          ).catch(() => {}); // Ignore errors, just track completion
-          pendingCallbacks.push(promise);
-        },
-      },
-      // Always create fetch handler to support adding callbacks on reuse
-      fetch: {
-        onFetch: async (url: string, init: FetchRequestInit) => {
-          // Use callback context for dynamic lookup (supports runtime reuse)
-          const conn = callbackContext.connection;
-          const callbackId = callbackContext.fetch;
-          if (!conn || callbackId === undefined) {
-            throw new Error("Fetch callback not available");
-          }
-
-          const serialized: SerializedRequestData = {
-            url,
-            method: init.method,
-            headers: init.headers,
-            body: init.rawBody,
-          };
-          const result = await invokeClientCallback(
-            conn,
-            callbackId,
-            [serialized],
-            // Use longer timeout for fetch callbacks since they may involve streaming
-            // The timeout is for the initial response, streaming continues after
-            60000
-          );
-
-          // Check if this is a streaming response
-          if (result && typeof result === 'object' && (result as { __streamingResponse?: boolean }).__streamingResponse) {
-            // Streaming response - return the Response directly
-            // Mark it so fetch setup knows to stream it to the isolate
-            const response = (result as { response: Response }).response;
-            (response as Response & { __isCallbackStream?: boolean }).__isCallbackStream = true;
-            return response;
-          }
-
-          // Buffered response - deserialize
-          return deserializeResponse(result as SerializedResponseData);
-        },
-      },
-      // Always create fs handler to support adding callbacks on reuse
-      fs: {
-        getDirectory: async (path: string) => {
-          // Use callback context for dynamic lookup (supports runtime reuse)
-          const conn = callbackContext.connection;
-          if (!conn) {
-            throw new Error("FS callbacks not available");
-          }
-
-          return createCallbackFileSystemHandler({
-            connection: conn,
-            callbackContext,
-            invokeClientCallback,
-            basePath: path,
-          });
-        },
-      },
-    });
-
+    // Pre-create the instance object so marshalOptions closures can reference it
+    // (needed for returned callbacks/promises/iterators registration)
     const instance: IsolateInstance = {
       isolateId,
-      runtime,
+      runtime: null as unknown as RuntimeHandle, // Set after createRuntime
       ownerConnection: connection.socket,
       callbacks: new Map(),
       createdAt: Date.now(),
       lastActivity: Date.now(),
-      pendingCallbacks,
       // Initialize registries for returned callbacks/promises/iterators
       returnedCallbacks: new Map(),
       returnedPromises: new Map(),
@@ -853,19 +763,365 @@ async function handleCreateRuntime(
       callbackContext,
     };
 
-    // Setup module loader
-    if (moduleLoaderCallback) {
-      instance.moduleLoaderCallbackId = moduleLoaderCallback.callbackId;
-      instance.moduleCache = new Map();
-      instance.staticModuleCache = new Map();
-      instance.transformCache = new Map();
-      instance.moduleToFilename = new Map();
+    // Build custom functions as local IPC-bridged implementations
+    type CustomFunctions = Record<string, { type: "sync" | "async" | "asyncIterator"; fn: (...args: unknown[]) => unknown }>;
+    let bridgedCustomFunctions: CustomFunctions | undefined;
+    let customFnMarshalOptions: CustomFunctionsMarshalOptions | undefined;
+
+    if (customCallbacks) {
+      // Create MarshalContext factory and addCallbackIdsToRefs for custom function results
+      const createMarshalContext = (): MarshalContext => ({
+        registerCallback: (fn: Function): number => {
+          const callbackId = instance.nextLocalCallbackId!++;
+          instance.returnedCallbacks!.set(callbackId, fn);
+          return callbackId;
+        },
+        registerPromise: (promise: Promise<unknown>): number => {
+          const promiseId = instance.nextLocalCallbackId!++;
+          instance.returnedPromises!.set(promiseId, promise);
+          return promiseId;
+        },
+        registerIterator: (iterator: AsyncIterator<unknown>): number => {
+          const iteratorId = instance.nextLocalCallbackId!++;
+          instance.returnedIterators!.set(iteratorId, iterator);
+          return iteratorId;
+        },
+      });
+
+      const isPromiseRef = (value: unknown): value is { __type: "PromiseRef"; promiseId: number } =>
+        typeof value === 'object' && value !== null && (value as { __type?: string }).__type === 'PromiseRef';
+      const isAsyncIteratorRef = (value: unknown): value is { __type: "AsyncIteratorRef"; iteratorId: number } =>
+        typeof value === 'object' && value !== null && (value as { __type?: string }).__type === 'AsyncIteratorRef';
+
+      const addCallbackIdsToRefs = (value: unknown): unknown => {
+        if (value === null || typeof value !== 'object') return value;
+
+        if (isPromiseRef(value)) {
+          if ('__resolveCallbackId' in value) return value;
+          const resolveCallbackId = instance.nextLocalCallbackId!++;
+          instance.returnedCallbacks!.set(resolveCallbackId, async (promiseId: number) => {
+            const promise = instance.returnedPromises!.get(promiseId);
+            if (!promise) throw new Error(`Promise ${promiseId} not found`);
+            const result = await promise;
+            instance.returnedPromises!.delete(promiseId);
+            const ctx = createMarshalContext();
+            const marshalled = await marshalValue(result, ctx);
+            return addCallbackIdsToRefs(marshalled);
+          });
+          return { ...value, __resolveCallbackId: resolveCallbackId };
+        }
+
+        if (isAsyncIteratorRef(value)) {
+          if ('__nextCallbackId' in value) return value;
+          const nextCallbackId = instance.nextLocalCallbackId!++;
+          instance.returnedCallbacks!.set(nextCallbackId, async (iteratorId: number) => {
+            const iterator = instance.returnedIterators!.get(iteratorId);
+            if (!iterator) throw new Error(`Iterator ${iteratorId} not found`);
+            const result = await iterator.next();
+            if (result.done) instance.returnedIterators!.delete(iteratorId);
+            const ctx = createMarshalContext();
+            const marshalledValue = await marshalValue(result.value, ctx);
+            return { done: result.done, value: addCallbackIdsToRefs(marshalledValue) };
+          });
+          const returnCallbackId = instance.nextLocalCallbackId!++;
+          instance.returnedCallbacks!.set(returnCallbackId, async (iteratorId: number, returnValue?: unknown) => {
+            const iterator = instance.returnedIterators!.get(iteratorId);
+            instance.returnedIterators!.delete(iteratorId);
+            if (!iterator || !iterator.return) return { done: true, value: undefined };
+            const result = await iterator.return(returnValue);
+            const ctx = createMarshalContext();
+            const marshalledValue = await marshalValue(result.value, ctx);
+            return { done: true, value: addCallbackIdsToRefs(marshalledValue) };
+          });
+          return { ...value, __nextCallbackId: nextCallbackId, __returnCallbackId: returnCallbackId };
+        }
+
+        if (Array.isArray(value)) return value.map(item => addCallbackIdsToRefs(item));
+
+        const result: Record<string, unknown> = {};
+        for (const key of Object.keys(value)) {
+          result[key] = addCallbackIdsToRefs((value as Record<string, unknown>)[key]);
+        }
+        return result;
+      };
+
+      const LOCAL_CALLBACK_THRESHOLD = 1_000_000;
+
+      const invokeCallback = async (callbackId: number, args: unknown[]): Promise<unknown> => {
+        if (callbackId >= LOCAL_CALLBACK_THRESHOLD) {
+          // Local callback (returned from a previous custom function call on the daemon)
+          const callback = instance.returnedCallbacks!.get(callbackId);
+          if (!callback) {
+            throw new Error(`Local callback ${callbackId} not found`);
+          }
+          return await callback(...args);
+        } else {
+          // Client-side callback — forward via IPC
+          const conn = callbackContext.connection;
+          if (!conn) {
+            throw new Error(`No connection available for callback ${callbackId}`);
+          }
+          return invokeClientCallback(conn, callbackId, args);
+        }
+      };
+
+      customFnMarshalOptions = { createMarshalContext, addCallbackIdsToRefs, invokeCallback };
+
+      // Build bridged custom functions
+      // The invokeCallbackRef in setupCustomFunctions (in runtime) will call these bridged functions.
+      // For client callbacks, these functions invoke IPC; for local callbacks (returned from previous calls),
+      // they invoke from the instance registries.
+      bridgedCustomFunctions = {};
+
+      for (const [name, registration] of Object.entries(customCallbacks)) {
+        // Skip companion callbacks for asyncIterator (name:start, etc.)
+        if (name.includes(':')) continue;
+
+        const callbackContext_ = callbackContext; // Capture for closure
+
+        if (registration.type === 'asyncIterator') {
+          // AsyncIterator: create start/next/return/throw as a single asyncIterator function
+          bridgedCustomFunctions[name] = {
+            type: 'asyncIterator' as const,
+            fn: (...args: unknown[]) => {
+              // Return an async generator that bridges to client callbacks
+              const startCallbackId = callbackContext_.custom.get(`${name}:start`);
+              const nextCallbackId = callbackContext_.custom.get(`${name}:next`);
+              const returnCallbackId = callbackContext_.custom.get(`${name}:return`);
+
+              // Create async generator
+              async function* bridgedIterator() {
+                // Start the iterator on the client
+                const conn = callbackContext_.connection;
+                if (!conn || startCallbackId === undefined) {
+                  throw new Error(`AsyncIterator callback '${name}' not available`);
+                }
+
+                const startResult = await invokeClientCallback(conn, startCallbackId, args) as { iteratorId: number };
+                const iteratorId = startResult.iteratorId;
+
+                try {
+                  while (true) {
+                    const nextConn = callbackContext_.connection;
+                    if (!nextConn || nextCallbackId === undefined) {
+                      throw new Error(`AsyncIterator callback '${name}' not available`);
+                    }
+                    const nextResult = await invokeClientCallback(nextConn, nextCallbackId, [iteratorId]) as { done: boolean; value: unknown };
+                    if (nextResult.done) return nextResult.value;
+                    yield nextResult.value;
+                  }
+                } finally {
+                  // Call return on cleanup
+                  const retConn = callbackContext_.connection;
+                  if (retConn && returnCallbackId !== undefined) {
+                    await invokeClientCallback(retConn, returnCallbackId, [iteratorId]).catch(() => {});
+                  }
+                }
+              }
+
+              return bridgedIterator();
+            },
+          };
+        } else {
+          // Sync or async function — both bridge to IPC (which is always async)
+          // The runtime's setupCustomFunctions handles the sync/async wrapping in the isolate
+          bridgedCustomFunctions[name] = {
+            type: registration.type as 'sync' | 'async',
+            fn: async (...args: unknown[]) => {
+              const conn = callbackContext_.connection;
+              const cbId = callbackContext_.custom.get(name);
+              if (!conn || cbId === undefined) {
+                throw new Error(`Custom function callback '${name}' not available`);
+              }
+              return invokeClientCallback(conn, cbId, args);
+            },
+          };
+        }
+      }
     }
 
-    // Setup custom functions as globals in the isolate
-    if (customCallbacks) {
-      await setupCustomFunctions(runtime.context, customCallbacks, connection, instance);
+    // Build module loader if registered
+    let moduleLoader: ((specifier: string, importer: { path: string; resolveDir: string }) => Promise<{ code: string; resolveDir: string; static?: boolean }>) | undefined;
+    if (moduleLoaderCallback) {
+      moduleLoader = async (specifier: string, importer: { path: string; resolveDir: string }) => {
+        const conn = callbackContext.connection;
+        const cbId = callbackContext.moduleLoader;
+        if (!conn || cbId === undefined) {
+          throw new Error("Module loader callback not available");
+        }
+        return invokeClientCallback(conn, cbId, [specifier, importer]) as Promise<{ code: string; resolveDir: string; static?: boolean }>;
+      };
     }
+
+    // Build test environment options
+    let testEnvironment: boolean | { onEvent?: (event: unknown) => void; testTimeout?: number } | undefined;
+    if (message.options.testEnvironment) {
+      const testEnvOption = message.options.testEnvironment;
+      const testEnvOptions = typeof testEnvOption === "object" ? testEnvOption : undefined;
+      testEnvironment = {
+        onEvent: testEnvOptions?.callbacks?.onEvent
+          ? (event: unknown) => {
+              const conn = callbackContext.connection;
+              const callbackId = callbackContext.testEnvironmentOnEvent;
+              if (!conn || callbackId === undefined) {
+                return;
+              }
+              const promise = invokeClientCallback(
+                conn,
+                callbackId,
+                [JSON.stringify(event)]
+              ).catch(() => {});
+              // Push to runtime's pendingCallbacks (will be set after createRuntime)
+              instance.runtime?.pendingCallbacks?.push(promise);
+            }
+          : undefined,
+        testTimeout: testEnvOptions?.testTimeout,
+      };
+
+      // Store callback registration
+      if (testEnvOptions?.callbacks?.onEvent) {
+        instance.callbacks.set(testEnvOptions.callbacks.onEvent.callbackId, {
+          ...testEnvOptions.callbacks.onEvent,
+          name: "testEnvironment.onEvent",
+        });
+      }
+    }
+
+    // Build playwright options
+    let playwrightOptions: { handler: (op: PlaywrightOperation) => Promise<PlaywrightResult>; console?: boolean; onEvent?: (event: { type: string; level?: string; stdout?: string; timestamp?: number; [key: string]: unknown }) => void } | undefined;
+    const playwrightCallbacks = message.options.callbacks?.playwright;
+    if (playwrightCallbacks) {
+      playwrightOptions = {
+        handler: async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
+          const conn = callbackContext.connection;
+          const callbackId = callbackContext.playwright.handlerCallbackId;
+          if (!conn || callbackId === undefined) {
+            return {
+              ok: false,
+              error: {
+                name: "Error",
+                message: "Playwright handler callback not available",
+              },
+            };
+          }
+          try {
+            const resultJson = await invokeClientCallback(
+              conn,
+              callbackId,
+              [JSON.stringify(op)],
+              60000
+            );
+            return JSON.parse(resultJson as string) as PlaywrightResult;
+          } catch (err) {
+            const error = err as Error;
+            return { ok: false, error: { name: error.name, message: error.message } };
+          }
+        },
+        console: playwrightCallbacks.console,
+        onEvent: (event: { type: string; level?: string; stdout?: string; timestamp?: number; [key: string]: unknown }) => {
+          const conn = callbackContext.connection;
+          if (!conn) {
+            return;
+          }
+
+          if (
+            event.type === "browserConsoleLog" &&
+            callbackContext.playwright.onBrowserConsoleLogCallbackId !== undefined
+          ) {
+            const promise = invokeClientCallback(
+              conn,
+              callbackContext.playwright.onBrowserConsoleLogCallbackId,
+              [{ level: event.level, stdout: event.stdout, timestamp: event.timestamp }]
+            ).catch(() => {});
+            instance.runtime?.pendingCallbacks?.push(promise);
+          } else if (
+            event.type === "networkRequest" &&
+            callbackContext.playwright.onNetworkRequestCallbackId !== undefined
+          ) {
+            const promise = invokeClientCallback(
+              conn,
+              callbackContext.playwright.onNetworkRequestCallbackId,
+              [event]
+            ).catch(() => {});
+            instance.runtime?.pendingCallbacks?.push(promise);
+          } else if (
+            event.type === "networkResponse" &&
+            callbackContext.playwright.onNetworkResponseCallbackId !== undefined
+          ) {
+            const promise = invokeClientCallback(
+              conn,
+              callbackContext.playwright.onNetworkResponseCallbackId,
+              [event]
+            ).catch(() => {});
+            instance.runtime?.pendingCallbacks?.push(promise);
+          }
+        },
+      };
+    }
+
+    // Create the runtime using the unified createRuntime()
+    const runtime = await createRuntime({
+      memoryLimitMB: message.options.memoryLimitMB ?? state.options.defaultMemoryLimitMB,
+      cwd: message.options.cwd,
+      // Console handler that bridges to client via IPC
+      console: {
+        onEntry: (entry) => {
+          const conn = callbackContext.connection;
+          const callbackId = callbackContext.consoleOnEntry;
+          if (!conn || callbackId === undefined) return;
+          const promise = invokeClientCallback(conn, callbackId, [entry]).catch(() => {});
+          runtime.pendingCallbacks.push(promise);
+        },
+      },
+      // Fetch handler that bridges to client via IPC
+      fetch: async (url: string, init: FetchRequestInit) => {
+        const conn = callbackContext.connection;
+        const callbackId = callbackContext.fetch;
+        if (!conn || callbackId === undefined) {
+          throw new Error("Fetch callback not available");
+        }
+        const serialized: SerializedRequestData = {
+          url,
+          method: init.method,
+          headers: init.headers,
+          body: init.rawBody,
+        };
+        const result = await invokeClientCallback(conn, callbackId, [serialized], 60000);
+        if (result && typeof result === 'object' && (result as { __streamingResponse?: boolean }).__streamingResponse) {
+          const response = (result as { response: Response }).response;
+          (response as Response & { __isCallbackStream?: boolean }).__isCallbackStream = true;
+          return response;
+        }
+        return deserializeResponse(result as SerializedResponseData);
+      },
+      // FS handler that bridges to client via IPC
+      fs: {
+        getDirectory: async (dirPath: string) => {
+          const conn = callbackContext.connection;
+          if (!conn) {
+            throw new Error("FS callbacks not available");
+          }
+          return createCallbackFileSystemHandler({
+            connection: conn,
+            callbackContext,
+            invokeClientCallback,
+            basePath: dirPath,
+          });
+        },
+      },
+      // Module loader that bridges to client via IPC
+      moduleLoader,
+      // Custom functions bridged to client via IPC
+      customFunctions: bridgedCustomFunctions as any,
+      customFunctionsMarshalOptions: customFnMarshalOptions,
+      // Test environment
+      testEnvironment,
+      // Playwright
+      playwright: playwrightOptions as any,
+    });
+
+    // Set the runtime on the pre-created instance
+    instance.runtime = runtime;
 
     // Store callback registrations
     if (consoleCallbacks?.onEntry) {
@@ -894,93 +1150,33 @@ async function handleCreateRuntime(
         }
       }
     }
-
-    // Setup test environment if requested
-    if (message.options.testEnvironment) {
-      const testEnvOption = message.options.testEnvironment;
-      const testEnvOptions = typeof testEnvOption === "object" ? testEnvOption : undefined;
-
-      // Create event callback if provided
-      const onEventCallback = testEnvOptions?.callbacks?.onEvent;
-
-      await setupTestEnvironment(runtime.context, {
-        onEvent: onEventCallback
-          ? (event) => {
-              // Forward event to client callback
-              const promise = invokeClientCallback(
-                connection,
-                onEventCallback.callbackId,
-                [JSON.stringify(event)]
-              ).catch(() => {});
-              pendingCallbacks.push(promise);
-            }
-          : undefined,
-        testTimeout: testEnvOptions?.testTimeout,
+    if (playwrightCallbacks) {
+      instance.callbacks.set(playwrightCallbacks.handlerCallbackId, {
+        callbackId: playwrightCallbacks.handlerCallbackId,
+        name: "playwright.handler",
+        type: "async",
       });
-
-      instance.testEnvironmentEnabled = true;
-
-      // Store callback registration
-      if (onEventCallback) {
-        instance.callbacks.set(onEventCallback.callbackId, {
-          ...onEventCallback,
-          name: "testEnvironment.onEvent",
+      if (playwrightCallbacks.onBrowserConsoleLogCallbackId !== undefined) {
+        instance.callbacks.set(playwrightCallbacks.onBrowserConsoleLogCallbackId, {
+          callbackId: playwrightCallbacks.onBrowserConsoleLogCallbackId,
+          name: "playwright.onBrowserConsoleLog",
+          type: "sync",
         });
       }
-    }
-
-    // Setup playwright if callbacks are provided (client owns the browser)
-    const playwrightCallbacks = message.options.callbacks?.playwright;
-    if (playwrightCallbacks) {
-      // Create handler that invokes client callback
-      const handler: PlaywrightCallback = async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
-        try {
-          const resultJson = await invokeClientCallback(
-            connection,
-            playwrightCallbacks.handlerCallbackId,
-            [JSON.stringify(op)],
-            // Playwright operations (goto, newPage, etc.) involve browser I/O
-            // and can be slow under load, so use a longer timeout
-            60000
-          );
-          return JSON.parse(resultJson as string) as PlaywrightResult;
-        } catch (err) {
-          const error = err as Error;
-          return { ok: false, error: { name: error.name, message: error.message } };
-        }
-      };
-
-      instance.playwrightHandle = await setupPlaywright(runtime.context, {
-        handler,
-        // If console is true, browser logs are printed to stdout
-        console: playwrightCallbacks.console,
-        // Unified event callback
-        onEvent: (event) => {
-          // Route events to appropriate client callbacks
-          if (event.type === "browserConsoleLog" && playwrightCallbacks.onBrowserConsoleLogCallbackId) {
-            const promise = invokeClientCallback(
-              connection,
-              playwrightCallbacks.onBrowserConsoleLogCallbackId,
-              [{ level: event.level, stdout: event.stdout, timestamp: event.timestamp }]
-            ).catch(() => {});
-            pendingCallbacks.push(promise);
-          } else if (event.type === "networkRequest" && playwrightCallbacks.onNetworkRequestCallbackId) {
-            const promise = invokeClientCallback(
-              connection,
-              playwrightCallbacks.onNetworkRequestCallbackId,
-              [event]
-            ).catch(() => {});
-            pendingCallbacks.push(promise);
-          } else if (event.type === "networkResponse" && playwrightCallbacks.onNetworkResponseCallbackId) {
-            const promise = invokeClientCallback(
-              connection,
-              playwrightCallbacks.onNetworkResponseCallbackId,
-              [event]
-            ).catch(() => {});
-            pendingCallbacks.push(promise);
-          }
-        },
-      });
+      if (playwrightCallbacks.onNetworkRequestCallbackId !== undefined) {
+        instance.callbacks.set(playwrightCallbacks.onNetworkRequestCallbackId, {
+          callbackId: playwrightCallbacks.onNetworkRequestCallbackId,
+          name: "playwright.onNetworkRequest",
+          type: "sync",
+        });
+      }
+      if (playwrightCallbacks.onNetworkResponseCallbackId !== undefined) {
+        instance.callbacks.set(playwrightCallbacks.onNetworkResponseCallbackId, {
+          callbackId: playwrightCallbacks.onNetworkResponseCallbackId,
+          name: "playwright.onNetworkResponse",
+          type: "sync",
+        });
+      }
     }
 
     state.isolates.set(isolateId, instance);
@@ -993,8 +1189,12 @@ async function handleCreateRuntime(
     }
 
     // Forward WebSocket commands from isolate to client
-    instance.runtime.fetch.onWebSocketCommand((cmd) => {
-      // Convert ArrayBuffer to Uint8Array if needed for protocol
+    runtime.fetch.onWebSocketCommand((cmd) => {
+      const targetConnection = callbackContext.connection;
+      if (!targetConnection) {
+        return;
+      }
+
       let data: string | Uint8Array | undefined;
       if (cmd.data instanceof ArrayBuffer) {
         data = new Uint8Array(cmd.data);
@@ -1012,12 +1212,16 @@ async function handleCreateRuntime(
           reason: cmd.reason,
         },
       };
-      sendMessage(connection.socket, wsCommandMsg);
+      sendMessage(targetConnection.socket, wsCommandMsg);
     });
 
     // Forward client WebSocket commands from isolate to client
-    instance.runtime.fetch.onClientWebSocketCommand((cmd) => {
-      // Convert ArrayBuffer to Uint8Array if needed for protocol
+    runtime.fetch.onClientWebSocketCommand((cmd) => {
+      const targetConnection = callbackContext.connection;
+      if (!targetConnection) {
+        return;
+      }
+
       let data: string | Uint8Array | undefined;
       if (cmd.data instanceof ArrayBuffer) {
         data = new Uint8Array(cmd.data);
@@ -1027,13 +1231,13 @@ async function handleCreateRuntime(
       if (cmd.type === "connect") {
         const msg: ClientWsConnectRequest = {
           type: MessageType.CLIENT_WS_CONNECT,
-          requestId: 0, // No response expected
+          requestId: 0,
           isolateId,
           socketId: cmd.socketId,
           url: cmd.url!,
           protocols: cmd.protocols,
         };
-        sendMessage(connection.socket, msg);
+        sendMessage(targetConnection.socket, msg);
       } else if (cmd.type === "send") {
         const msg: ClientWsSendRequest = {
           type: MessageType.CLIENT_WS_SEND,
@@ -1042,7 +1246,7 @@ async function handleCreateRuntime(
           socketId: cmd.socketId,
           data: data!,
         };
-        sendMessage(connection.socket, msg);
+        sendMessage(targetConnection.socket, msg);
       } else if (cmd.type === "close") {
         const msg: ClientWsCloseRequest = {
           type: MessageType.CLIENT_WS_CLOSE,
@@ -1052,7 +1256,7 @@ async function handleCreateRuntime(
           code: cmd.code,
           reason: cmd.reason,
         };
-        sendMessage(connection.socket, msg);
+        sendMessage(targetConnection.socket, msg);
       }
     });
 
@@ -1108,12 +1312,7 @@ async function handleDisposeRuntime(
       softDeleteRuntime(instance, state);
     } else {
       // Non-namespaced runtime: hard delete
-      // Clean up Playwright resources if present
-      if (instance.playwrightHandle) {
-        instance.playwrightHandle.dispose();
-      }
-
-      instance.runtime.dispose();
+      await instance.runtime.dispose();
       state.isolates.delete(message.isolateId);
     }
 
@@ -1153,69 +1352,19 @@ async function handleEval(
   instance.lastActivity = Date.now();
 
   try {
-    // Normalize filename to absolute path for module resolution
-    const filename = normalizeEntryFilename(message.filename);
-
-    // Transform entry code: strip types, validate, wrap in async function
-    const transformed = await transformEntryCode(message.code, filename);
-    if (transformed.sourceMap) {
-      if (!instance.sourceMaps) {
-        instance.sourceMaps = new Map();
-      }
-      instance.sourceMaps.set(filename, transformed.sourceMap);
-    }
-
-    // Compile as ES module
-    const mod = await instance.runtime.isolate.compileModule(transformed.code, {
-      filename,
+    // Delegate to RuntimeHandle.eval() which handles:
+    // - Transform, compile, instantiate, evaluate, source maps
+    // - Module resolution via moduleLoader callback
+    // - Pending callback flushing
+    await instance.runtime.eval(message.code, {
+      filename: message.filename,
+      maxExecutionMs: message.maxExecutionMs,
     });
-
-    // Instantiate with module resolver if available
-    if (instance.moduleLoaderCallbackId) {
-      // Track entry module filename for nested imports
-      instance.moduleToFilename?.set(mod, filename);
-
-      const resolver = createModuleResolver(instance, connection);
-      await mod.instantiate(instance.runtime.context, resolver);
-    } else {
-      // No module loader - instantiate with a resolver that always throws
-      await mod.instantiate(instance.runtime.context, (specifier) => {
-        throw new Error(
-          `No module loader registered. Cannot import: ${specifier}`
-        );
-      });
-    }
-
-    // Evaluate - only resolves imports and defines the default function (no timeout needed)
-    await mod.evaluate();
-
-    // Get the default export and run it with timeout
-    const ns = mod.namespace;
-    const runRef = await ns.get("default", { reference: true });
-    try {
-      await runRef.apply(undefined, [], {
-        result: { promise: true },
-        ...(message.maxExecutionMs
-          ? { timeout: message.maxExecutionMs }
-          : {}),
-      });
-    } finally {
-      runRef.release();
-    }
-
-    // Wait for all pending callbacks (e.g., console.log) to complete
-    // This ensures the client receives all callbacks before eval resolves
-    await Promise.all(instance.pendingCallbacks);
-    instance.pendingCallbacks.length = 0; // Clear for next eval
 
     // Return undefined for module evaluation
     sendOk(connection.socket, message.requestId, { value: undefined });
   } catch (err) {
     const error = err as Error;
-    // Map error stack through source maps
-    if (error.stack && instance.sourceMaps?.size) {
-      error.stack = mapErrorStack(error.stack, instance.sourceMaps);
-    }
     // Check if this is a timeout error from isolated-vm
     const isTimeoutError = error.message?.includes('Script execution timed out');
     sendError(
@@ -1943,657 +2092,6 @@ async function invokeClientCallback(
   });
 }
 
-/**
- * Lightweight marshalling code to inject into the isolate.
- * Converts JavaScript types to Ref objects for type-preserving serialization.
- */
-const ISOLATE_MARSHAL_CODE = `
-(function() {
-  // Marshal a value (JavaScript → Ref)
-  function marshalForHost(value, depth = 0) {
-    if (depth > 100) throw new Error('Maximum marshalling depth exceeded');
-
-    if (value === null) return null;
-    if (value === undefined) return { __type: 'UndefinedRef' };
-
-    const type = typeof value;
-    if (type === 'string' || type === 'number' || type === 'boolean') return value;
-    if (type === 'bigint') return { __type: 'BigIntRef', value: value.toString() };
-    if (type === 'function') throw new Error('Cannot marshal functions from isolate');
-    if (type === 'symbol') throw new Error('Cannot marshal Symbol values');
-
-    if (type === 'object') {
-      if (value instanceof Date) {
-        return { __type: 'DateRef', timestamp: value.getTime() };
-      }
-      if (value instanceof RegExp) {
-        return { __type: 'RegExpRef', source: value.source, flags: value.flags };
-      }
-      if (value instanceof URL) {
-        return { __type: 'URLRef', href: value.href };
-      }
-      if (typeof Headers !== 'undefined' && value instanceof Headers) {
-        const pairs = [];
-        value.forEach((v, k) => pairs.push([k, v]));
-        return { __type: 'HeadersRef', pairs };
-      }
-      if (value instanceof Uint8Array) {
-        return { __type: 'Uint8ArrayRef', data: Array.from(value) };
-      }
-      if (value instanceof ArrayBuffer) {
-        return { __type: 'Uint8ArrayRef', data: Array.from(new Uint8Array(value)) };
-      }
-      if (typeof Request !== 'undefined' && value instanceof Request) {
-        throw new Error('Cannot marshal Request from isolate. Use fetch callback instead.');
-      }
-      if (typeof Response !== 'undefined' && value instanceof Response) {
-        throw new Error('Cannot marshal Response from isolate. Return plain objects instead.');
-      }
-      if (typeof File !== 'undefined' && value instanceof File) {
-        throw new Error('Cannot marshal File from isolate.');
-      }
-      if (typeof Blob !== 'undefined' && value instanceof Blob) {
-        throw new Error('Cannot marshal Blob from isolate.');
-      }
-      if (typeof FormData !== 'undefined' && value instanceof FormData) {
-        throw new Error('Cannot marshal FormData from isolate.');
-      }
-      if (Array.isArray(value)) {
-        return value.map(v => marshalForHost(v, depth + 1));
-      }
-      // Plain object
-      const result = {};
-      for (const key of Object.keys(value)) {
-        result[key] = marshalForHost(value[key], depth + 1);
-      }
-      return result;
-    }
-    return value;
-  }
-
-  // Unmarshal a value (Ref → JavaScript)
-  function unmarshalFromHost(value, depth = 0) {
-    if (depth > 100) throw new Error('Maximum unmarshalling depth exceeded');
-
-    if (value === null) return null;
-    if (typeof value !== 'object') return value;
-
-    if (value.__type) {
-      switch (value.__type) {
-        case 'UndefinedRef': return undefined;
-        case 'DateRef': return new Date(value.timestamp);
-        case 'RegExpRef': return new RegExp(value.source, value.flags);
-        case 'BigIntRef': return BigInt(value.value);
-        case 'URLRef': return new URL(value.href);
-        case 'HeadersRef': return new Headers(value.pairs);
-        case 'Uint8ArrayRef': return new Uint8Array(value.data);
-        case 'RequestRef': {
-          const init = {
-            method: value.method,
-            headers: value.headers,
-            body: value.body ? new Uint8Array(value.body) : null,
-          };
-          if (value.mode) init.mode = value.mode;
-          if (value.credentials) init.credentials = value.credentials;
-          if (value.cache) init.cache = value.cache;
-          if (value.redirect) init.redirect = value.redirect;
-          if (value.referrer) init.referrer = value.referrer;
-          if (value.referrerPolicy) init.referrerPolicy = value.referrerPolicy;
-          if (value.integrity) init.integrity = value.integrity;
-          return new Request(value.url, init);
-        }
-        case 'ResponseRef': {
-          return new Response(value.body ? new Uint8Array(value.body) : null, {
-            status: value.status,
-            statusText: value.statusText,
-            headers: value.headers,
-          });
-        }
-        case 'FileRef': {
-          if (!value.name) {
-            return new Blob([new Uint8Array(value.data)], { type: value.type });
-          }
-          return new File([new Uint8Array(value.data)], value.name, {
-            type: value.type,
-            lastModified: value.lastModified,
-          });
-        }
-        case 'FormDataRef': {
-          const fd = new FormData();
-          for (const [key, entry] of value.entries) {
-            if (typeof entry === 'string') {
-              fd.append(key, entry);
-            } else {
-              const file = unmarshalFromHost(entry, depth + 1);
-              fd.append(key, file);
-            }
-          }
-          return fd;
-        }
-        case 'CallbackRef': {
-          // Create a proxy function that invokes the callback
-          const callbackId = value.callbackId;
-          return function(...args) {
-            const argsJson = JSON.stringify(marshalForHost(args));
-            const resultJson = __customFn_invoke.applySyncPromise(undefined, [callbackId, argsJson]);
-            const result = JSON.parse(resultJson);
-            if (result.ok) {
-              return unmarshalFromHost(result.value);
-            } else {
-              const error = new Error(result.error.message);
-              error.name = result.error.name;
-              throw error;
-            }
-          };
-        }
-        case 'PromiseRef': {
-          // Create a proxy Promise that resolves via callback
-          const promiseId = value.promiseId;
-          return new Promise((resolve, reject) => {
-            try {
-              const argsJson = JSON.stringify([promiseId]);
-              const resultJson = __customFn_invoke.applySyncPromise(undefined, [value.__resolveCallbackId, argsJson]);
-              const result = JSON.parse(resultJson);
-              if (result.ok) {
-                resolve(unmarshalFromHost(result.value));
-              } else {
-                reject(new Error(result.error.message));
-              }
-            } catch (e) {
-              reject(e);
-            }
-          });
-        }
-        case 'AsyncIteratorRef': {
-          const iteratorId = value.iteratorId;
-          const nextCallbackId = value.__nextCallbackId;
-          const returnCallbackId = value.__returnCallbackId;
-          return {
-            [Symbol.asyncIterator]() { return this; },
-            async next() {
-              const argsJson = JSON.stringify([iteratorId]);
-              const resultJson = __customFn_invoke.applySyncPromise(undefined, [nextCallbackId, argsJson]);
-              const result = JSON.parse(resultJson);
-              if (!result.ok) {
-                const error = new Error(result.error.message);
-                error.name = result.error.name;
-                throw error;
-              }
-              return {
-                done: result.value.done,
-                value: unmarshalFromHost(result.value.value)
-              };
-            },
-            async return(v) {
-              const argsJson = JSON.stringify([iteratorId, marshalForHost(v)]);
-              const resultJson = __customFn_invoke.applySyncPromise(undefined, [returnCallbackId, argsJson]);
-              const result = JSON.parse(resultJson);
-              return { done: true, value: result.ok ? unmarshalFromHost(result.value) : undefined };
-            }
-          };
-        }
-        default:
-          // Unknown ref type, return as-is
-          break;
-      }
-    }
-
-    if (Array.isArray(value)) {
-      return value.map(v => unmarshalFromHost(v, depth + 1));
-    }
-
-    // Plain object - recursively unmarshal
-    const result = {};
-    for (const key of Object.keys(value)) {
-      result[key] = unmarshalFromHost(value[key], depth + 1);
-    }
-    return result;
-  }
-
-  globalThis.__marshalForHost = marshalForHost;
-  globalThis.__unmarshalFromHost = unmarshalFromHost;
-})();
-`;
-
-// Threshold for daemon-local callback IDs (returned callbacks/promises/iterators)
-const LOCAL_CALLBACK_THRESHOLD = 1_000_000;
-
-/**
- * Type guard for PromiseRef
- */
-function isPromiseRef(value: unknown): value is { __type: "PromiseRef"; promiseId: number } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as { __type?: string }).__type === 'PromiseRef'
-  );
-}
-
-/**
- * Type guard for AsyncIteratorRef
- */
-function isAsyncIteratorRef(value: unknown): value is { __type: "AsyncIteratorRef"; iteratorId: number } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as { __type?: string }).__type === 'AsyncIteratorRef'
-  );
-}
-
-/**
- * Type guard for CallbackRef
- */
-function isCallbackRef(value: unknown): value is { __type: "CallbackRef"; callbackId: number } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as { __type?: string }).__type === 'CallbackRef'
-  );
-}
-
-/**
- * Check if a callback ID is for a daemon-local callback (returned from custom function)
- */
-function isLocalCallbackId(callbackId: number): boolean {
-  return callbackId >= LOCAL_CALLBACK_THRESHOLD;
-}
-
-/**
- * Setup custom functions as globals in the isolate context.
- * Each function invokes the client callback when called.
- * Results are marshalled/unmarshalled to preserve type fidelity across isolate boundary.
- *
- * Custom functions return Promises that resolve when the host callback completes.
- * Users should use `await` when calling these functions.
- */
-async function setupCustomFunctions(
-  context: ivm.Context,
-  customCallbacks: CustomFunctionRegistrations,
-  connection: ConnectionState,
-  instance: IsolateInstance
-): Promise<void> {
-  const global = context.global;
-
-  /**
-   * Create a MarshalContext for registering returned callbacks/promises/iterators.
-   * These are registered on the instance so they can be invoked when the isolate calls back.
-   */
-  function createMarshalContext(): MarshalContext {
-    return {
-      registerCallback: (fn: Function): number => {
-        const callbackId = instance.nextLocalCallbackId!++;
-        instance.returnedCallbacks!.set(callbackId, fn);
-        return callbackId;
-      },
-      registerPromise: (promise: Promise<unknown>): number => {
-        const promiseId = instance.nextLocalCallbackId!++;
-        instance.returnedPromises!.set(promiseId, promise);
-        return promiseId;
-      },
-      registerIterator: (iterator: AsyncIterator<unknown>): number => {
-        const iteratorId = instance.nextLocalCallbackId!++;
-        instance.returnedIterators!.set(iteratorId, iterator);
-        return iteratorId;
-      },
-    };
-  }
-
-  /**
-   * Post-process marshalled value to add callback IDs for PromiseRef and AsyncIteratorRef.
-   * This recursively walks the value and adds __resolveCallbackId, __nextCallbackId, etc.
-   */
-  function addCallbackIdsToRefs(value: unknown): unknown {
-    if (value === null || typeof value !== 'object') {
-      return value;
-    }
-
-    // Check for PromiseRef - skip if already has callback ID (came from client)
-    if (isPromiseRef(value)) {
-      if ('__resolveCallbackId' in value) {
-        // Already has callback ID from client, pass through
-        return value;
-      }
-      // Create a resolve callback that waits for the promise
-      const resolveCallbackId = instance.nextLocalCallbackId!++;
-      instance.returnedCallbacks!.set(resolveCallbackId, async (promiseId: number) => {
-        const promise = instance.returnedPromises!.get(promiseId);
-        if (!promise) {
-          throw new Error(`Promise ${promiseId} not found`);
-        }
-        const result = await promise;
-        // Clean up
-        instance.returnedPromises!.delete(promiseId);
-        // Marshal the result recursively
-        const ctx = createMarshalContext();
-        const marshalled = await marshalValue(result, ctx);
-        return addCallbackIdsToRefs(marshalled);
-      });
-      return {
-        ...value,
-        __resolveCallbackId: resolveCallbackId,
-      };
-    }
-
-    // Check for AsyncIteratorRef - skip if already has callback IDs (came from client)
-    if (isAsyncIteratorRef(value)) {
-      if ('__nextCallbackId' in value) {
-        // Already has callback IDs from client, pass through
-        return value;
-      }
-      // Create next callback
-      const nextCallbackId = instance.nextLocalCallbackId!++;
-      instance.returnedCallbacks!.set(nextCallbackId, async (iteratorId: number) => {
-        const iterator = instance.returnedIterators!.get(iteratorId);
-        if (!iterator) {
-          throw new Error(`Iterator ${iteratorId} not found`);
-        }
-        const result = await iterator.next();
-        if (result.done) {
-          instance.returnedIterators!.delete(iteratorId);
-        }
-        // Marshal the value recursively
-        const ctx = createMarshalContext();
-        const marshalledValue = await marshalValue(result.value, ctx);
-        return {
-          done: result.done,
-          value: addCallbackIdsToRefs(marshalledValue),
-        };
-      });
-
-      // Create return callback
-      const returnCallbackId = instance.nextLocalCallbackId!++;
-      instance.returnedCallbacks!.set(returnCallbackId, async (iteratorId: number, returnValue?: unknown) => {
-        const iterator = instance.returnedIterators!.get(iteratorId);
-        instance.returnedIterators!.delete(iteratorId);
-        if (!iterator || !iterator.return) {
-          return { done: true, value: undefined };
-        }
-        const result = await iterator.return(returnValue);
-        const ctx = createMarshalContext();
-        const marshalledValue = await marshalValue(result.value, ctx);
-        return {
-          done: true,
-          value: addCallbackIdsToRefs(marshalledValue),
-        };
-      });
-
-      return {
-        ...value,
-        __nextCallbackId: nextCallbackId,
-        __returnCallbackId: returnCallbackId,
-      };
-    }
-
-    // Handle arrays
-    if (Array.isArray(value)) {
-      return value.map(item => addCallbackIdsToRefs(item));
-    }
-
-    // Handle plain objects (recursively process values)
-    const result: Record<string, unknown> = {};
-    for (const key of Object.keys(value)) {
-      result[key] = addCallbackIdsToRefs((value as Record<string, unknown>)[key]);
-    }
-    return result;
-  }
-
-  // Reference that invokes the callback and returns the result
-  // Uses applySyncPromise which works in async contexts (serve handlers, etc.)
-  // Args are JSON-encoded marshalled values, result is JSON-encoded marshalled value
-  // Uses instance.callbackContext for dynamic connection lookup (supports runtime reuse)
-  const invokeCallbackRef = new ivm.Reference(
-    async (callbackId: number, argsJson: string) => {
-      // Parse the JSON and unmarshal refs back to real types
-      const marshalledArgs = JSON.parse(argsJson);
-      const args = unmarshalValue(marshalledArgs) as unknown[];
-      try {
-        let result: unknown;
-
-        if (isLocalCallbackId(callbackId)) {
-          // Local callback (returned from a previous custom function call)
-          const callback = instance.returnedCallbacks!.get(callbackId);
-          if (!callback) {
-            throw new Error(`Local callback ${callbackId} not found`);
-          }
-          result = await callback(...args);
-        } else {
-          // Client callback - use dynamic connection lookup for runtime reuse support
-          const conn = instance.callbackContext?.connection || connection;
-          result = await invokeClientCallback(conn, callbackId, args);
-        }
-
-        // Marshal the result with context for registering returned callbacks/promises/iterators
-        const ctx = createMarshalContext();
-        const marshalledResult = await marshalValue({ ok: true, value: result }, ctx);
-        // Add callback IDs to any PromiseRef/AsyncIteratorRef in the result
-        const processedResult = addCallbackIdsToRefs(marshalledResult);
-        return JSON.stringify(processedResult);
-      } catch (error: unknown) {
-        const err = error as Error;
-        return JSON.stringify({
-          ok: false,
-          error: { message: err.message, name: err.name },
-        });
-      }
-    }
-  );
-
-  global.setSync("__customFn_invoke", invokeCallbackRef);
-
-  // Inject marshalling helpers into the isolate
-  context.evalSync(ISOLATE_MARSHAL_CODE);
-
-  // Create a global registry for custom function callback IDs
-  // This allows updating callback IDs on runtime reuse without recreating wrapper functions
-  const callbackIdMap: Record<string, number> = {};
-  for (const [name, registration] of Object.entries(customCallbacks)) {
-    callbackIdMap[name] = registration.callbackId;
-  }
-  global.setSync("__customFnCallbackIds", new ivm.ExternalCopy(callbackIdMap).copyInto());
-
-  // Create wrapper functions for each custom function
-  // These use __customFnCallbackIds for dynamic callback ID lookup
-  for (const [name, registration] of Object.entries(customCallbacks)) {
-    // Skip companion callbacks (name:start, name:next, etc.) - they are used internally by asyncIterator
-    if (name.includes(':')) {
-      continue;
-    }
-
-    if (registration.type === 'sync') {
-      // Sync function: use applySyncPromise (to await the host response) but wrap in regular function
-      // The function blocks until the host responds, but returns the value directly (not a Promise)
-      context.evalSync(`
-        globalThis.${name} = function(...args) {
-          const callbackId = globalThis.__customFnCallbackIds["${name}"];
-          const argsJson = JSON.stringify(__marshalForHost(args));
-          const resultJson = __customFn_invoke.applySyncPromise(
-            undefined,
-            [callbackId, argsJson]
-          );
-          const result = JSON.parse(resultJson);
-          if (result.ok) {
-            return __unmarshalFromHost(result.value);
-          } else {
-            const error = new Error(result.error.message);
-            error.name = result.error.name;
-            throw error;
-          }
-        };
-      `);
-    } else if (registration.type === 'asyncIterator') {
-      // AsyncIterator function: look up companion callbacks and create async iterator wrapper
-      const startReg = customCallbacks[`${name}:start`];
-      const nextReg = customCallbacks[`${name}:next`];
-      const returnReg = customCallbacks[`${name}:return`];
-      const throwReg = customCallbacks[`${name}:throw`];
-
-      if (!startReg || !nextReg || !returnReg || !throwReg) {
-        throw new Error(`Missing companion callbacks for asyncIterator function "${name}"`);
-      }
-
-      context.evalSync(`
-        globalThis.${name} = function(...args) {
-          // Start the iterator and get the iteratorId
-          const startCallbackId = globalThis.__customFnCallbackIds["${name}:start"];
-          const argsJson = JSON.stringify(__marshalForHost(args));
-          const startResultJson = __customFn_invoke.applySyncPromise(
-            undefined,
-            [startCallbackId, argsJson]
-          );
-          const startResult = JSON.parse(startResultJson);
-          if (!startResult.ok) {
-            const error = new Error(startResult.error.message);
-            error.name = startResult.error.name;
-            throw error;
-          }
-          const iteratorId = __unmarshalFromHost(startResult.value).iteratorId;
-
-          return {
-            [Symbol.asyncIterator]() { return this; },
-            async next() {
-              const nextCallbackId = globalThis.__customFnCallbackIds["${name}:next"];
-              const argsJson = JSON.stringify(__marshalForHost([iteratorId]));
-              const resultJson = __customFn_invoke.applySyncPromise(
-                undefined,
-                [nextCallbackId, argsJson]
-              );
-              const result = JSON.parse(resultJson);
-              if (!result.ok) {
-                const error = new Error(result.error.message);
-                error.name = result.error.name;
-                throw error;
-              }
-              const val = __unmarshalFromHost(result.value);
-              return { done: val.done, value: val.value };
-            },
-            async return(v) {
-              const returnCallbackId = globalThis.__customFnCallbackIds["${name}:return"];
-              const argsJson = JSON.stringify(__marshalForHost([iteratorId, v]));
-              const resultJson = __customFn_invoke.applySyncPromise(
-                undefined,
-                [returnCallbackId, argsJson]
-              );
-              const result = JSON.parse(resultJson);
-              return { done: true, value: result.ok ? __unmarshalFromHost(result.value) : undefined };
-            },
-            async throw(e) {
-              const throwCallbackId = globalThis.__customFnCallbackIds["${name}:throw"];
-              const argsJson = JSON.stringify(__marshalForHost([iteratorId, { message: e?.message, name: e?.name }]));
-              const resultJson = __customFn_invoke.applySyncPromise(
-                undefined,
-                [throwCallbackId, argsJson]
-              );
-              const result = JSON.parse(resultJson);
-              if (!result.ok) {
-                const error = new Error(result.error.message);
-                error.name = result.error.name;
-                throw error;
-              }
-              const val = __unmarshalFromHost(result.value);
-              return { done: val.done, value: val.value };
-            }
-          };
-        };
-      `);
-    } else if (registration.type === 'async') {
-      // Async function: use applySyncPromise and async function wrapper
-      context.evalSync(`
-        globalThis.${name} = async function(...args) {
-          const callbackId = globalThis.__customFnCallbackIds["${name}"];
-          const argsJson = JSON.stringify(__marshalForHost(args));
-          const resultJson = __customFn_invoke.applySyncPromise(
-            undefined,
-            [callbackId, argsJson]
-          );
-          const result = JSON.parse(resultJson);
-          if (result.ok) {
-            return __unmarshalFromHost(result.value);
-          } else {
-            const error = new Error(result.error.message);
-            error.name = result.error.name;
-            throw error;
-          }
-        };
-      `);
-    }
-  }
-}
-
-/**
- * Create a module resolver function that invokes the client's module loader.
- */
-function createModuleResolver(
-  instance: IsolateInstance,
-  connection: ConnectionState
-): (specifier: string, referrer: ivm.Module) => Promise<ivm.Module> {
-  return async (specifier: string, referrer: ivm.Module): Promise<ivm.Module> => {
-    // 1. Static cache — survives reuse, keyed by specifier only
-    const staticCached = instance.staticModuleCache?.get(specifier);
-    if (staticCached) return staticCached;
-
-    // 2. Must have module loader for non-static modules
-    if (!instance.moduleLoaderCallbackId) {
-      throw new Error(`Module not found: ${specifier}`);
-    }
-
-    // Get importer info
-    const importerPath = instance.moduleToFilename?.get(referrer) ?? "<unknown>";
-    const importerResolveDir = path.posix.dirname(importerPath);
-
-    // 3. Always call module loader to get current content
-    const result = (await invokeClientCallback(
-      connection,
-      instance.moduleLoaderCallbackId,
-      [specifier, { path: importerPath, resolveDir: importerResolveDir }]
-    )) as { code: string; resolveDir: string; static?: boolean };
-
-    const { code, resolveDir } = result;
-
-    // 4. Content-hash cache — within a single eval cycle, avoid recompiling
-    //    the same module when imported by multiple files
-    const hash = contentHash(code);
-    const cacheKey = `${specifier}:${hash}`;
-    const hashCached = instance.moduleCache?.get(cacheKey);
-    if (hashCached) return hashCached;
-
-    // 5. Transform — check transform cache first (survives reuse)
-    let transformed: TransformResult | undefined = instance.transformCache?.get(hash);
-    if (!transformed) {
-      transformed = await transformModuleCode(code, specifier);
-      instance.transformCache?.set(hash, transformed);
-    }
-
-    if (transformed.sourceMap) {
-      if (!instance.sourceMaps) {
-        instance.sourceMaps = new Map();
-      }
-      instance.sourceMaps.set(specifier, transformed.sourceMap);
-    }
-
-    // 6. Compile (always — ivm.Module can't be reused after instantiation)
-    const mod = await instance.runtime.isolate.compileModule(transformed.code, {
-      filename: specifier,
-    });
-
-    // Construct resolved path and track for nested imports
-    const resolvedPath = path.posix.join(resolveDir, path.posix.basename(specifier));
-    instance.moduleToFilename?.set(mod, resolvedPath);
-
-    // 7. Cache before instantiation (circular deps)
-    if (result.static) {
-      instance.staticModuleCache?.set(specifier, mod);
-    } else {
-      instance.moduleCache?.set(cacheKey, mod);
-    }
-
-    // 8. Instantiate with recursive resolver
-    const resolver = createModuleResolver(instance, connection);
-    await mod.instantiate(instance.runtime.context, resolver);
-
-    return mod;
-  };
-}
-
 // ============================================================================
 // Request/Response Serialization
 // ============================================================================
@@ -3076,39 +2574,12 @@ async function handleRunTests(
     return;
   }
 
-  if (!instance.testEnvironmentEnabled) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      "Test environment not enabled. Set testEnvironment: true in createRuntime options."
-    );
-    return;
-  }
-
   instance.lastActivity = Date.now();
 
   try {
-    // Run tests with optional timeout
     const timeout = message.timeout ?? 30000;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error("Test timeout")), timeout);
-    });
-
-    try {
-      const results = await Promise.race([
-        runTestsInContext(instance.runtime.context),
-        timeoutPromise,
-      ]);
-
-      sendOk(connection.socket, message.requestId, results);
-    } finally {
-      // Always clear the timeout to prevent process from hanging
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-    }
+    const results = await instance.runtime.testEnvironment.runTests(timeout);
+    sendOk(connection.socket, message.requestId, results);
   } catch (err) {
     const error = err as Error;
     sendError(
@@ -3141,21 +2612,10 @@ async function handleResetTestEnv(
     return;
   }
 
-  if (!instance.testEnvironmentEnabled) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      "Test environment not enabled. Set testEnvironment: true in createRuntime options."
-    );
-    return;
-  }
-
   instance.lastActivity = Date.now();
 
   try {
-    // Reset test environment state
-    await instance.runtime.context.eval("__resetTestEnvironment()", { promise: true });
+    instance.runtime.testEnvironment.reset();
     sendOk(connection.socket, message.requestId);
   } catch (err) {
     const error = err as Error;
@@ -3189,20 +2649,10 @@ async function handleHasTests(
     return;
   }
 
-  if (!instance.testEnvironmentEnabled) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      "Test environment not enabled. Set testEnvironment: true in createRuntime options."
-    );
-    return;
-  }
-
   instance.lastActivity = Date.now();
 
   try {
-    const result = hasTestsInContext(instance.runtime.context);
+    const result = instance.runtime.testEnvironment.hasTests();
     sendOk(connection.socket, message.requestId, result);
   } catch (err) {
     const error = err as Error;
@@ -3236,20 +2686,10 @@ async function handleGetTestCount(
     return;
   }
 
-  if (!instance.testEnvironmentEnabled) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      "Test environment not enabled. Set testEnvironment: true in createRuntime options."
-    );
-    return;
-  }
-
   instance.lastActivity = Date.now();
 
   try {
-    const result = getTestCountInContext(instance.runtime.context);
+    const result = instance.runtime.testEnvironment.getTestCount();
     sendOk(connection.socket, message.requestId, result);
   } catch (err) {
     const error = err as Error;
@@ -3266,40 +2706,6 @@ async function handleGetTestCount(
 // ============================================================================
 // Playwright Handlers
 // ============================================================================
-
-/**
- * Handle RUN_PLAYWRIGHT_TESTS message.
- * @deprecated Use testEnvironment.runTests() instead
- */
-async function handleRunPlaywrightTests(
-  message: RunPlaywrightTestsRequest,
-  connection: ConnectionState,
-  _state: DaemonState
-): Promise<void> {
-  sendError(
-    connection.socket,
-    message.requestId,
-    ErrorCode.SCRIPT_ERROR,
-    "playwright.runTests() has been removed. Use testEnvironment.runTests() instead."
-  );
-}
-
-/**
- * Handle RESET_PLAYWRIGHT_TESTS message.
- * @deprecated Use testEnvironment.reset() instead
- */
-async function handleResetPlaywrightTests(
-  message: ResetPlaywrightTestsRequest,
-  connection: ConnectionState,
-  _state: DaemonState
-): Promise<void> {
-  sendError(
-    connection.socket,
-    message.requestId,
-    ErrorCode.SCRIPT_ERROR,
-    "playwright.reset() has been removed. Use testEnvironment.reset() instead."
-  );
-}
 
 /**
  * Handle GET_COLLECTED_DATA message.
@@ -3321,25 +2727,10 @@ async function handleGetCollectedData(
     return;
   }
 
-  if (!instance.playwrightHandle) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      "Playwright not configured. Provide playwright.page in createRuntime options."
-    );
-    return;
-  }
-
   instance.lastActivity = Date.now();
 
   try {
-    const data = {
-      browserConsoleLogs: instance.playwrightHandle.getBrowserConsoleLogs(),
-      networkRequests: instance.playwrightHandle.getNetworkRequests(),
-      networkResponses: instance.playwrightHandle.getNetworkResponses(),
-    };
-
+    const data = instance.runtime.playwright.getCollectedData();
     sendOk(connection.socket, message.requestId, data);
   } catch (err) {
     const error = err as Error;
@@ -3373,20 +2764,10 @@ async function handleClearCollectedData(
     return;
   }
 
-  if (!instance.playwrightHandle) {
-    sendError(
-      connection.socket,
-      message.requestId,
-      ErrorCode.SCRIPT_ERROR,
-      "Playwright not configured. Provide playwright.page in createRuntime options."
-    );
-    return;
-  }
-
   instance.lastActivity = Date.now();
 
   try {
-    instance.playwrightHandle.clearCollected();
+    instance.runtime.playwright.clearCollectedData();
     sendOk(connection.socket, message.requestId);
   } catch (err) {
     const error = err as Error;

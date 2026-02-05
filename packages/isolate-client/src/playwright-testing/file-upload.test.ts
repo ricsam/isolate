@@ -10,6 +10,7 @@ import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import { chromium } from "playwright";
 import type { DaemonConnection } from "../types.ts";
 import * as path from "node:path";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const TEST_SOCKET = "/tmp/isolate-test-file-upload.sock";
 
@@ -34,7 +35,7 @@ describe("playwright file upload with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -78,7 +79,7 @@ describe("playwright file upload with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -122,16 +123,17 @@ describe("playwright file upload with security callbacks", () => {
     const runtime = await client.createRuntime({
       testEnvironment: true,
       playwright: {
-        page,
-        readFile: async (filePath: string) => {
-          readFileCalls.push(filePath);
-          // Simulate reading a file - in real usage this would read from disk
-          return {
-            name: path.basename(filePath),
-            mimeType: 'text/plain',
-            buffer: Buffer.from(`Content of ${filePath}`),
-          };
-        },
+        handler: defaultPlaywrightHandler(page, {
+          readFile: async (filePath: string) => {
+            readFileCalls.push(filePath);
+            // Simulate reading a file - in real usage this would read from disk
+            return {
+              name: path.basename(filePath),
+              mimeType: 'text/plain',
+              buffer: Buffer.from(`Content of ${filePath}`),
+            };
+          },
+        }),
       },
     });
 
@@ -172,15 +174,16 @@ describe("playwright file upload with security callbacks", () => {
     const runtime = await client.createRuntime({
       testEnvironment: true,
       playwright: {
-        page,
-        readFile: async (filePath: string) => {
-          readFileCalls.push(filePath);
-          return {
-            name: path.basename(filePath),
-            mimeType: 'application/pdf',
-            buffer: Buffer.from(`PDF content of ${filePath}`),
-          };
-        },
+        handler: defaultPlaywrightHandler(page, {
+          readFile: async (filePath: string) => {
+            readFileCalls.push(filePath);
+            return {
+              name: path.basename(filePath),
+              mimeType: 'application/pdf',
+              buffer: Buffer.from(`PDF content of ${filePath}`),
+            };
+          },
+        }),
       },
     });
 
@@ -220,7 +223,7 @@ describe("playwright file upload with security callbacks", () => {
     // No readFile callback provided
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -257,7 +260,7 @@ describe("playwright file upload with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {

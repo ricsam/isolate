@@ -50,6 +50,46 @@ export type PlaywrightCallback = (
 ) => Promise<import("@ricsam/isolate-protocol").PlaywrightResult>;
 
 /**
+ * Symbol key used to attach metadata to handlers created by
+ * defaultPlaywrightHandler(). Enables adapter layers to keep local ergonomics
+ * (event capture, collected data) without exposing page-mode in runtime options.
+ */
+export const DEFAULT_PLAYWRIGHT_HANDLER_META = Symbol.for(
+  "@ricsam/isolate-playwright/default-handler-meta"
+);
+
+/**
+ * Options for defaultPlaywrightHandler(page, options).
+ */
+export interface DefaultPlaywrightHandlerOptions {
+  /** Default timeout for operations */
+  timeout?: number;
+  /** Callback to read files for setInputFiles() with file paths */
+  readFile?: (filePath: string) => Promise<import("@ricsam/isolate-protocol").PlaywrightFileData> | import("@ricsam/isolate-protocol").PlaywrightFileData;
+  /** Callback to write files for screenshot()/pdf() with path option */
+  writeFile?: (filePath: string, data: Buffer) => Promise<void> | void;
+  /** Callback to create new pages when context.newPage() is called */
+  createPage?: (context: import("playwright").BrowserContext) => Promise<import("playwright").Page> | import("playwright").Page;
+  /** Callback to create new contexts when browser.newContext() is called */
+  createContext?: (options?: import("playwright").BrowserContextOptions) => Promise<import("playwright").BrowserContext> | import("playwright").BrowserContext;
+}
+
+/**
+ * Metadata attached to handlers created by defaultPlaywrightHandler().
+ */
+export interface DefaultPlaywrightHandlerMetadata {
+  page: import("playwright").Page;
+  options?: DefaultPlaywrightHandlerOptions;
+}
+
+/**
+ * Handler created by defaultPlaywrightHandler().
+ */
+export type DefaultPlaywrightHandler = PlaywrightCallback & {
+  [DEFAULT_PLAYWRIGHT_HANDLER_META]?: DefaultPlaywrightHandlerMetadata;
+};
+
+/**
  * Options for setting up playwright in an isolate.
  */
 export interface PlaywrightSetupOptions {
@@ -90,16 +130,6 @@ export interface PlaywrightSetupOptions {
    * @returns The new BrowserContext object
    */
   createContext?: (options?: import("playwright").BrowserContextOptions) => Promise<import("playwright").BrowserContext> | import("playwright").BrowserContext;
-}
-
-/**
- * @deprecated Use PlaywrightSetupOptions instead
- */
-export interface PlaywrightOptions {
-  page: import("playwright").Page;
-  timeout?: number;
-  onNetworkRequest?: (info: NetworkRequestInfo) => void;
-  onNetworkResponse?: (info: NetworkResponseInfo) => void;
 }
 
 export interface PlaywrightHandle {

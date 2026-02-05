@@ -43,7 +43,7 @@ export type CollectedData = ProtocolCollectedData;
 export type ConsoleEntry = ProtocolConsoleEntry;
 export type PlaywrightEvent = ProtocolPlaywrightEvent;
 
-// Re-export shared types from protocol for backward compatibility
+// Re-export shared types from protocol
 export type EvalOptions = ProtocolEvalOptions;
 export type TestEnvironmentOptions = ProtocolTestEnvironmentOptions;
 export type PlaywrightOptions = ProtocolPlaywrightOptions;
@@ -187,11 +187,6 @@ export interface RemoteRuntime {
   /** Unique runtime identifier */
   readonly id: string;
 
-  /**
-   * @deprecated Use id instead
-   */
-  readonly isolateId: string;
-
   /** True if runtime was reused from namespace pool */
   readonly reused?: boolean;
 
@@ -210,14 +205,9 @@ export interface RemoteRuntime {
    * Execute code as ES module in the isolate.
    * Supports top-level await.
    * @param code - The code to execute
-   * @param filename - Optional filename for stack traces
+   * @param filenameOrOptions - Optional filename or eval options
    */
-  eval(code: string, filename?: string): Promise<void>;
-
-  /**
-   * @deprecated Use the new signature: eval(code: string, filename?: string)
-   */
-  eval(code: string, options?: EvalOptions): Promise<void>;
+  eval(code: string, filenameOrOptions?: string | EvalOptions): Promise<void>;
 
   /** Dispose the runtime */
   dispose(): Promise<void>;
@@ -247,4 +237,3 @@ export interface RemotePlaywrightHandle {
   /** Clear collected data */
   clearCollectedData(): void;
 }
-

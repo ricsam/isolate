@@ -68,7 +68,10 @@ import {
   marshalValue,
   type MarshalContext,
 } from "@ricsam/isolate-protocol";
-import { createPlaywrightHandler, type PlaywrightCallback } from "@ricsam/isolate-playwright/client";
+import {
+  getDefaultPlaywrightHandlerMetadata,
+  type PlaywrightCallback,
+} from "@ricsam/isolate-playwright/client";
 import type {
   ConnectOptions,
   DaemonConnection,
@@ -93,6 +96,7 @@ import type {
 } from "./types.ts";
 
 const DEFAULT_TIMEOUT = 30000;
+const TEST_REQUEST_TIMEOUT_BUFFER_MS = 1000;
 
 // Track WebSocket command callbacks per isolate for handling WS_COMMAND messages
 const isolateWsCallbacks = new Map<string, Set<(cmd: WebSocketCommand) => void>>();
@@ -740,13 +744,11 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   const pageListenerCleanups: (() => void)[] = [];
 
   if (options.playwright) {
-    playwrightHandler = createPlaywrightHandler(options.playwright.page, {
-      timeout: options.playwright.timeout,
-      readFile: options.playwright.readFile,
-      writeFile: options.playwright.writeFile,
-      createPage: options.playwright.createPage,
-      createContext: options.playwright.createContext,
-    });
+    playwrightHandler = options.playwright.handler;
+    if (!playwrightHandler) {
+      throw new Error("playwright.handler is required when using playwright options");
+    }
+    const page = getDefaultPlaywrightHandlerMetadata(playwrightHandler)?.page;
 
     const handlerCallbackId = state.nextCallbackId++;
     state.callbacks.set(handlerCallbackId, async (opJson: unknown) => {
@@ -755,78 +757,79 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       return JSON.stringify(result);
     });
 
-    // Set up client-side page.on listeners for browser events
-    const page = options.playwright.page;
+    // If handler was created from a page via defaultPlaywrightHandler(),
+    // preserve local event capture and collected-data ergonomics.
+    if (page) {
+      const onConsole = (msg: { type: () => string; text: () => string }) => {
+        const entry = {
+          level: msg.type(),
+          stdout: msg.text(),
+          timestamp: Date.now(),
+        };
+        browserConsoleLogs.push(entry);
 
-    const onConsole = (msg: { type: () => string; text: () => string }) => {
-      const entry = {
-        level: msg.type(),
-        stdout: msg.text(),
-        timestamp: Date.now(),
+        if (options.playwright!.onEvent) {
+          options.playwright!.onEvent({
+            type: "browserConsoleLog",
+            ...entry,
+          });
+        }
+
+        if (options.playwright!.console && options.console?.onEntry) {
+          options.console.onEntry({
+            type: "browserOutput",
+            ...entry,
+          });
+        } else if (options.playwright!.console) {
+          const prefix = entry.level === "error" ? "[browser:error]" : "[browser]";
+          console.log(prefix, entry.stdout);
+        }
       };
-      browserConsoleLogs.push(entry);
 
-      if (options.playwright!.onEvent) {
-        options.playwright!.onEvent({
-          type: "browserConsoleLog",
-          ...entry,
-        });
-      }
+      const onRequest = (request: { url: () => string; method: () => string; headers: () => Record<string, string> }) => {
+        const info = {
+          url: request.url(),
+          method: request.method(),
+          headers: request.headers(),
+          timestamp: Date.now(),
+        };
+        networkRequests.push(info);
 
-      if (options.playwright!.console && options.console?.onEntry) {
-        options.console.onEntry({
-          type: "browserOutput",
-          ...entry,
-        });
-      } else if (options.playwright!.console) {
-        const prefix = entry.level === "error" ? "[browser:error]" : "[browser]";
-        console.log(prefix, entry.stdout);
-      }
-    };
-
-    const onRequest = (request: { url: () => string; method: () => string; headers: () => Record<string, string> }) => {
-      const info = {
-        url: request.url(),
-        method: request.method(),
-        headers: request.headers(),
-        timestamp: Date.now(),
+        if (options.playwright!.onEvent) {
+          options.playwright!.onEvent({
+            type: "networkRequest",
+            ...info,
+          });
+        }
       };
-      networkRequests.push(info);
 
-      if (options.playwright!.onEvent) {
-        options.playwright!.onEvent({
-          type: "networkRequest",
-          ...info,
-        });
-      }
-    };
+      const onResponse = (response: { url: () => string; status: () => number; headers: () => Record<string, string> }) => {
+        const info = {
+          url: response.url(),
+          status: response.status(),
+          headers: response.headers(),
+          timestamp: Date.now(),
+        };
+        networkResponses.push(info);
 
-    const onResponse = (response: { url: () => string; status: () => number; headers: () => Record<string, string> }) => {
-      const info = {
-        url: response.url(),
-        status: response.status(),
-        headers: response.headers(),
-        timestamp: Date.now(),
+        if (options.playwright!.onEvent) {
+          options.playwright!.onEvent({
+            type: "networkResponse",
+            ...info,
+          });
+        }
       };
-      networkResponses.push(info);
 
-      if (options.playwright!.onEvent) {
-        options.playwright!.onEvent({
-          type: "networkResponse",
-          ...info,
-        });
-      }
-    };
+      page.on("console", onConsole);
+      page.on("request", onRequest);
+      page.on("response", onResponse);
 
-    page.on("console", onConsole);
-    page.on("request", onRequest);
-    page.on("response", onResponse);
-
-    pageListenerCleanups.push(
-      () => page.removeListener("console", onConsole),
-      () => page.removeListener("request", onRequest),
-      () => page.removeListener("response", onResponse),
-    );
+      pageListenerCleanups.push(
+        () => page.removeListener("console", onConsole),
+        () => page.removeListener("request", onRequest),
+        () => page.removeListener("response", onResponse),
+      );
+    }
 
     callbacks.playwright = {
       handlerCallbackId,
@@ -1105,7 +1108,11 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         isolateId,
         timeout,
       };
-      return sendRequest<RunTestsResult>(state, req, timeout ?? DEFAULT_TIMEOUT);
+      const requestTimeout =
+        timeout === undefined
+          ? DEFAULT_TIMEOUT
+          : Math.max(timeout + TEST_REQUEST_TIMEOUT_BUFFER_MS, DEFAULT_TIMEOUT);
+      return sendRequest<RunTestsResult>(state, req, requestTimeout);
     },
 
     async hasTests(): Promise<boolean> {
@@ -1152,7 +1159,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   const playwrightHandle: RemotePlaywrightHandle = {
     getCollectedData(): CollectedData {
       if (!playwrightEnabled) {
-        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
+        throw new Error("Playwright not configured. Provide playwright.handler in createRuntime options.");
       }
       return {
         browserConsoleLogs: [...browserConsoleLogs],
@@ -1163,7 +1170,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
 
     clearCollectedData(): void {
       if (!playwrightEnabled) {
-        throw new Error("Playwright not configured. Provide playwright.page in createRuntime options.");
+        throw new Error("Playwright not configured. Provide playwright.handler in createRuntime options.");
       }
       browserConsoleLogs.length = 0;
       networkRequests.length = 0;
@@ -1173,7 +1180,6 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
 
   return {
     id: isolateId,
-    isolateId,
     reused,
 
     // Module handles
@@ -1188,7 +1194,6 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       filenameOrOptions?: string | EvalOptions
     ): Promise<void> => {
       const reqId = state.nextRequestId++;
-      // Support both new signature (filename string) and old signature (EvalOptions)
       const options =
         typeof filenameOrOptions === "string"
           ? { filename: filenameOrOptions }
@@ -1200,7 +1205,6 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         code,
         filename: options?.filename,
         maxExecutionMs: options?.maxExecutionMs,
-        module: true, // Always use module mode
       };
       await sendRequest<{ value: unknown }>(state, req);
       // Module evaluation returns void - don't return the value

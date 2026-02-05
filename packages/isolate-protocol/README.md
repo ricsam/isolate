@@ -25,6 +25,16 @@ npm add @ricsam/isolate-protocol
 - Streaming support for large request/response bodies
 - Event streaming for Playwright console logs and network activity
 
+## Playwright Contract Notes
+
+The shared runtime contract is handler-first:
+
+- `playwright.handler` is the public integration point
+- convenience helpers (for example `defaultPlaywrightHandler(page)`) live in
+  `@ricsam/isolate-playwright`
+- page-mode options are intentionally not part of the protocol's public
+  runtime options shape
+
 ## Usage
 
 ```typescript

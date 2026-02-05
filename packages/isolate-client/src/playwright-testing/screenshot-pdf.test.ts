@@ -9,6 +9,7 @@ import { connect } from "../connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import { chromium } from "playwright";
 import type { DaemonConnection } from "../types.ts";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const TEST_SOCKET = "/tmp/isolate-test-screenshot-pdf.sock";
 
@@ -33,7 +34,7 @@ describe("playwright screenshot and pdf with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -72,7 +73,7 @@ describe("playwright screenshot and pdf with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -104,12 +105,9 @@ describe("playwright screenshot and pdf with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: {
-        page,
-        writeFile: async (filePath: string, data: Buffer) => {
+      playwright: { handler: defaultPlaywrightHandler(page, { writeFile: async (filePath: string, data: Buffer) => {
           writtenFiles.push({ path: filePath, size: data.length });
-        },
-      },
+        } }) },
     });
 
     try {
@@ -146,7 +144,7 @@ describe("playwright screenshot and pdf with security callbacks", () => {
     // No writeFile callback provided
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -180,7 +178,7 @@ describe("playwright screenshot and pdf with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -220,12 +218,9 @@ describe("playwright screenshot and pdf with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: {
-        page,
-        writeFile: async (filePath: string, data: Buffer) => {
+      playwright: { handler: defaultPlaywrightHandler(page, { writeFile: async (filePath: string, data: Buffer) => {
           writtenFiles.push({ path: filePath, size: data.length });
-        },
-      },
+        } }) },
     });
 
     try {
@@ -257,7 +252,7 @@ describe("playwright screenshot and pdf with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -294,12 +289,9 @@ describe("playwright screenshot and pdf with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: {
-        page,
-        writeFile: async (filePath: string, data: Buffer) => {
+      playwright: { handler: defaultPlaywrightHandler(page, { writeFile: async (filePath: string, data: Buffer) => {
           writtenFiles.push({ path: filePath, size: data.length });
-        },
-      },
+        } }) },
     });
 
     try {
@@ -331,7 +323,7 @@ describe("playwright screenshot and pdf with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -365,7 +357,7 @@ describe("playwright screenshot and pdf with security callbacks", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {

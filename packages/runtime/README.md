@@ -115,23 +115,16 @@ interface RuntimeOptions {
   cwd?: string;
   /** Enable test environment (describe, it, expect) */
   testEnvironment?: boolean | TestEnvironmentOptions;
-  /** Playwright options - user provides page object */
+  /** Playwright options (handler-first public API) */
   playwright?: PlaywrightOptions;
 }
 
 interface PlaywrightOptions {
-  page: import("playwright").Page;
+  handler: (op: PlaywrightOperation) => Promise<PlaywrightResult>;
   timeout?: number;
   /** Print browser console logs to stdout */
   console?: boolean;
-  /** Browser console log callback (from the page, not sandbox) */
-  onBrowserConsoleLog?: (entry: { level: string; stdout: string; timestamp: number }) => void;
-  onNetworkRequest?: (info: { url: string; method: string; headers: Record<string, string>; timestamp: number }) => void;
-  onNetworkResponse?: (info: { url: string; status: number; headers: Record<string, string>; timestamp: number }) => void;
-  /** Callback to create new pages when context.newPage() is called */
-  createPage?: (context: BrowserContext) => Promise<Page> | Page;
-  /** Callback to create new contexts when browser.newContext() is called */
-  createContext?: (options?: BrowserContextOptions) => Promise<BrowserContext> | BrowserContext;
+  onEvent?: (event: PlaywrightEvent) => void;
 }
 ```
 
@@ -313,20 +306,27 @@ type TestEvent =
 
 ## Playwright Integration
 
-Run browser automation with untrusted code. **You provide the Playwright page object**:
+Run browser automation with untrusted code. Public API is handler-first:
+
+```typescript
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
+
+playwright: { handler: defaultPlaywrightHandler(page) }
+```
 
 ### Script Mode (No Tests)
 
 ```typescript
 import { createRuntime } from "@ricsam/isolate-runtime";
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 
 const runtime = await createRuntime({
   playwright: {
-    page,
+    handler: defaultPlaywrightHandler(page),
     console: true, // Print browser console to stdout
   },
 });
@@ -353,6 +353,7 @@ Combine `testEnvironment` and `playwright` for browser testing. Playwright exten
 ```typescript
 import { createRuntime } from "@ricsam/isolate-runtime";
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
@@ -360,8 +361,12 @@ const page = await browser.newPage();
 const runtime = await createRuntime({
   testEnvironment: true, // Provides describe, it, expect
   playwright: {
-    page,
-    onBrowserConsoleLog: (entry) => console.log("[browser]", entry.stdout),
+    handler: defaultPlaywrightHandler(page),
+    onEvent: (event) => {
+      if (event.type === "browserConsoleLog") {
+        console.log("[browser]", event.stdout);
+      }
+    },
   },
 });
 
@@ -394,6 +399,7 @@ For tests that need multiple pages or browser contexts, provide `createPage` and
 ```typescript
 import { createRuntime } from "@ricsam/isolate-runtime";
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const browserContext = await browser.newContext();
@@ -402,11 +408,12 @@ const page = await browserContext.newPage();
 const runtime = await createRuntime({
   testEnvironment: true,
   playwright: {
-    page,
-    // Called when isolate code calls context.newPage()
-    createPage: async (context) => context.newPage(),
-    // Called when isolate code calls browser.newContext()
-    createContext: async (options) => browser.newContext(options),
+    handler: defaultPlaywrightHandler(page, {
+      // Called when isolate code calls context.newPage()
+      createPage: async (context) => context.newPage(),
+      // Called when isolate code calls browser.newContext()
+      createContext: async (options) => browser.newContext(options),
+    }),
   },
 });
 
@@ -464,20 +471,7 @@ await browser.close();
 - Fetch API
 - File System (if handler provided)
 - Test Environment (if enabled)
-- Playwright (if page provided)
-
-## Legacy API
-
-For backwards compatibility with code that needs direct isolate/context access:
-
-```typescript
-import { createLegacyRuntime } from "@ricsam/isolate-runtime";
-
-const runtime = await createLegacyRuntime();
-// runtime.isolate and runtime.context are available
-await runtime.context.eval(`console.log("Hello")`);
-runtime.dispose(); // sync
-```
+- Playwright (if handler provided)
 
 ## License
 

@@ -535,23 +535,19 @@ interface RuntimeOptions {
   /** Enable test environment (describe, it, expect, etc.) */
   testEnvironment?: boolean | TestEnvironmentOptions;
 
-  /** Playwright options - user provides page object */
+  /** Playwright options - handler-first public API */
   playwright?: PlaywrightOptions;
 }
 
 interface PlaywrightOptions {
-  /** Playwright page object */
-  page: import("playwright").Page;
+  /** Playwright operation handler (required when playwright is enabled) */
+  handler: (op: PlaywrightOperation) => Promise<PlaywrightResult>;
   /** Default timeout for operations in ms */
   timeout?: number;
   /** Route browser console logs through console handler (or print to stdout if no handler) */
   console?: boolean;
   /** Unified event callback for all playwright events */
   onEvent?: (event: PlaywrightEvent) => void;
-  /** Callback to create new pages when context.newPage() is called; receives the BrowserContext so you can call context.newPage() */
-  createPage?: (context: BrowserContext) => Promise<Page> | Page;
-  /** Callback to create new contexts when browser.newContext() is called */
-  createContext?: (options?: BrowserContextOptions) => Promise<BrowserContext> | BrowserContext;
 }
 
 type PlaywrightEvent =
@@ -1038,19 +1034,26 @@ interface RunResults {
 
 ## Playwright Integration
 
-Run browser automation with untrusted code. **The client owns the browser** - you provide the Playwright page object.
+Run browser automation with untrusted code. Public API is handler-first: provide `playwright.handler`.
+
+```typescript
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
+
+playwright: { handler: defaultPlaywrightHandler(page) }
+```
 
 ### Script Mode (No Tests)
 
 ```typescript
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 
 const runtime = await createRuntime({
   playwright: {
-    page,
+    handler: defaultPlaywrightHandler(page),
     onEvent: (event) => {
       // Unified event handler for all playwright events
       switch (event.type) {
@@ -1089,6 +1092,7 @@ Combine `testEnvironment` and `playwright` for browser testing. Playwright exten
 
 ```typescript
 import { chromium } from "playwright";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
@@ -1106,7 +1110,7 @@ const runtime = await createRuntime({
   },
   testEnvironment: true, // Provides describe, it, expect
   playwright: {
-    page,
+    handler: defaultPlaywrightHandler(page),
     console: true, // Routes browser logs through the console handler above
   },
 });

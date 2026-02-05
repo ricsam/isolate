@@ -18,6 +18,7 @@ import type { DaemonConnection } from "./types.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const TEST_SOCKET = "/tmp/isolate-demo-server-test.sock";
 const DEMO_SERVER_URL = "http://localhost:6421";
@@ -107,7 +108,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -138,7 +139,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -178,7 +179,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -208,7 +209,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -238,7 +239,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -271,7 +272,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -301,7 +302,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -340,7 +341,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -368,7 +369,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -441,7 +442,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -490,7 +491,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -548,7 +549,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -621,7 +622,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -669,7 +670,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -728,7 +729,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -778,7 +779,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page, timeout: 30000 },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page, { timeout: 30000 }), timeout: 30000 },
         });
 
         try {
@@ -839,7 +840,7 @@ describe("demo server tests", () => {
         const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page },
+            testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           });
 
           try {
@@ -895,7 +896,7 @@ describe("demo server tests", () => {
         const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page },
+            testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           });
 
           try {
@@ -952,7 +953,7 @@ describe("demo server tests", () => {
         const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page },
+            testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           });
 
           try {
@@ -1011,7 +1012,7 @@ describe("demo server tests", () => {
         const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page },
+            testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           });
 
           try {
@@ -1070,7 +1071,7 @@ describe("demo server tests", () => {
         const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page },
+            testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           });
 
           try {
@@ -1132,7 +1133,7 @@ describe("demo server tests", () => {
         const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page },
+            testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           });
 
           try {
@@ -1193,7 +1194,7 @@ describe("demo server tests", () => {
         const page = await browserContext.newPage();
         try {
           const runtime = await client.createRuntime({
-            testEnvironment: true, playwright: { page },
+            testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
           });
 
           try {
@@ -1260,7 +1261,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {
@@ -1306,7 +1307,7 @@ describe("demo server tests", () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
-          testEnvironment: true, playwright: { page },
+          testEnvironment: true, playwright: { handler: defaultPlaywrightHandler(page) },
         });
 
         try {

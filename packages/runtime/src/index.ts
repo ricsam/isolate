@@ -26,7 +26,11 @@ import {
   hasTests as hasTestsInContext,
   getTestCount as getTestCountInContext,
 } from "@ricsam/isolate-test-environment";
-import { setupPlaywright } from "@ricsam/isolate-playwright";
+import {
+  setupPlaywright,
+  type PlaywrightCallback,
+  type PlaywrightSetupOptions,
+} from "@ricsam/isolate-playwright";
 
 import type { ConsoleOptions, ConsoleHandle } from "@ricsam/isolate-console";
 import type {
@@ -35,6 +39,7 @@ import type {
   DispatchRequestOptions,
   UpgradeRequest,
   WebSocketCommand,
+  ClientWebSocketCommand,
 } from "@ricsam/isolate-fetch";
 import type { FsOptions, FsHandle } from "@ricsam/isolate-fs";
 import type { CoreHandle } from "@ricsam/isolate-core";
@@ -77,6 +82,7 @@ import type {
 import {
   marshalValue,
   unmarshalValue,
+  type MarshalContext,
 } from "@ricsam/isolate-protocol";
 
 // Re-export shared types from protocol
@@ -92,9 +98,22 @@ export type {
   DispatchOptions,
 } from "@ricsam/isolate-protocol";
 
-// Re-export shared types with local aliases for backward compatibility
+// Re-export shared protocol option types
 export type EvalOptions = ProtocolEvalOptions;
 export type PlaywrightOptions = ProtocolPlaywrightOptions;
+
+/**
+ * Options for customizing how custom function return values are marshalled.
+ * Used by the daemon to support returned callbacks/promises/iterators via IPC.
+ */
+export interface CustomFunctionsMarshalOptions {
+  /** Factory to create a MarshalContext for registering returned callbacks/promises/iterators */
+  createMarshalContext: () => MarshalContext;
+  /** Post-processor to add callback IDs to PromiseRef/AsyncIteratorRef values */
+  addCallbackIdsToRefs: (value: unknown) => unknown;
+  /** Handler for numeric callback IDs from marshalled refs (CallbackRef, PromiseRef, AsyncIteratorRef) */
+  invokeCallback: (callbackId: number, args: unknown[]) => Promise<unknown>;
+}
 
 /**
  * Options for creating a runtime.
@@ -108,6 +127,12 @@ export interface RuntimeOptions<T extends Record<string, any[]> = Record<string,
    * For remote runtime (isolate-client), use FileSystemCallbacks instead.
    */
   fs?: FsOptions;
+  /**
+   * Optional marshal options for custom functions.
+   * When provided, enables MarshalContext-based marshalling for returned values.
+   * Used by the daemon for IPC proxying of callbacks/promises/iterators.
+   */
+  customFunctionsMarshalOptions?: CustomFunctionsMarshalOptions;
 }
 
 /**
@@ -142,6 +167,16 @@ export interface RuntimeFetchHandle {
   hasServeHandler(): boolean;
   /** Check if there are active WebSocket connections */
   hasActiveConnections(): boolean;
+  /** Dispatch open event to a client WebSocket in the isolate */
+  dispatchClientWebSocketOpen(socketId: string, protocol: string, extensions: string): void;
+  /** Dispatch message event to a client WebSocket in the isolate */
+  dispatchClientWebSocketMessage(socketId: string, data: string | ArrayBuffer): void;
+  /** Dispatch close event to a client WebSocket in the isolate */
+  dispatchClientWebSocketClose(socketId: string, code: number, reason: string, wasClean: boolean): void;
+  /** Dispatch error event to a client WebSocket in the isolate */
+  dispatchClientWebSocketError(socketId: string): void;
+  /** Register callback for client WebSocket commands from isolate */
+  onClientWebSocketCommand(callback: (cmd: ClientWebSocketCommand) => void): () => void;
 }
 
 /**
@@ -211,6 +246,15 @@ export interface RuntimeHandle {
   eval(code: string, filenameOrOptions?: string | EvalOptions): Promise<void>;
   /** Dispose all resources */
   dispose(): Promise<void>;
+  /** Clear module cache and source maps (used for namespace pooling/reuse) */
+  clearModuleCache(): void;
+
+  /**
+   * Array of pending callback promises. Push promises here to have them
+   * awaited after each eval() call completes. Used by daemon for IPC flush.
+   * For standalone use this array stays empty (callbacks are synchronous).
+   */
+  readonly pendingCallbacks: Promise<unknown>[];
 
   /** Fetch handle - access to fetch/serve operations */
   readonly fetch: RuntimeFetchHandle;
@@ -250,6 +294,8 @@ interface RuntimeState {
     (name: string, argsJson: string) => Promise<string>
   >;
   sourceMaps: Map<string, SourceMap>;
+  /** Pending callbacks to await after eval (for daemon IPC fire-and-forget pattern) */
+  pendingCallbacks: Promise<unknown>[];
 }
 
 // Iterator session tracking for async iterator custom functions
@@ -387,6 +433,68 @@ const ISOLATE_MARSHAL_CODE = `
           }
           return fd;
         }
+        case 'CallbackRef': {
+          // Create a proxy function that invokes the callback
+          const callbackId = value.callbackId;
+          return function(...args) {
+            const argsJson = JSON.stringify(marshalForHost(args));
+            const resultJson = __customFn_invoke.applySyncPromise(undefined, [callbackId, argsJson]);
+            const result = JSON.parse(resultJson);
+            if (result.ok) {
+              return unmarshalFromHost(result.value);
+            } else {
+              const error = new Error(result.error.message);
+              error.name = result.error.name;
+              throw error;
+            }
+          };
+        }
+        case 'PromiseRef': {
+          // Create a proxy Promise that resolves via callback
+          const promiseId = value.promiseId;
+          return new Promise((resolve, reject) => {
+            try {
+              const argsJson = JSON.stringify([promiseId]);
+              const resultJson = __customFn_invoke.applySyncPromise(undefined, [value.__resolveCallbackId, argsJson]);
+              const result = JSON.parse(resultJson);
+              if (result.ok) {
+                resolve(unmarshalFromHost(result.value));
+              } else {
+                reject(new Error(result.error.message));
+              }
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }
+        case 'AsyncIteratorRef': {
+          const iteratorId = value.iteratorId;
+          const nextCallbackId = value.__nextCallbackId;
+          const returnCallbackId = value.__returnCallbackId;
+          return {
+            [Symbol.asyncIterator]() { return this; },
+            async next() {
+              const argsJson = JSON.stringify([iteratorId]);
+              const resultJson = __customFn_invoke.applySyncPromise(undefined, [nextCallbackId, argsJson]);
+              const result = JSON.parse(resultJson);
+              if (!result.ok) {
+                const error = new Error(result.error.message);
+                error.name = result.error.name;
+                throw error;
+              }
+              return {
+                done: result.value.done,
+                value: unmarshalFromHost(result.value.value)
+              };
+            },
+            async return(v) {
+              const argsJson = JSON.stringify([iteratorId, marshalForHost(v)]);
+              const resultJson = __customFn_invoke.applySyncPromise(undefined, [returnCallbackId, argsJson]);
+              const result = JSON.parse(resultJson);
+              return { done: true, value: result.ok ? unmarshalFromHost(result.value) : undefined };
+            }
+          };
+        }
         default:
           // Unknown ref type, return as-is
           break;
@@ -411,19 +519,47 @@ const ISOLATE_MARSHAL_CODE = `
 })();
 `;
 
+// CustomFunctionsMarshalOptions is exported at the top of the file
+
 /**
  * Setup custom functions as globals in the isolate context.
  * Each function directly calls the host callback when invoked.
+ *
+ * When marshalOptions is provided, returned values are marshalled with a MarshalContext,
+ * enabling proper proxying of callbacks/promises/iterators across boundaries.
  */
 async function setupCustomFunctions(
   context: ivm.Context,
-  customFunctions: CustomFunctions
+  customFunctions: CustomFunctions,
+  marshalOptions?: CustomFunctionsMarshalOptions,
 ): Promise<ivm.Reference<(name: string, argsJson: string) => Promise<string>>> {
   const global = context.global;
 
-  // Reference that invokes the callback and returns the result
+  // Reference that invokes the callback and returns the result.
+  // The first argument can be a string function name (for custom functions) or a
+  // numeric callback ID (for returned callbacks/promises/iterators from marshal).
   const invokeCallbackRef = new ivm.Reference(
-    async (name: string, argsJson: string): Promise<string> => {
+    async (nameOrId: string | number, argsJson: string): Promise<string> => {
+      // Check if this is a local callback ID (numeric, used by returned callbacks/promises/iterators)
+      if (typeof nameOrId === "number" && marshalOptions) {
+        const rawArgs = JSON.parse(argsJson) as unknown[];
+        const args = unmarshalValue(rawArgs) as unknown[];
+        try {
+          const result = await marshalOptions.invokeCallback(nameOrId, args);
+          const ctx = marshalOptions.createMarshalContext();
+          const marshalledResult = await marshalValue(result, ctx);
+          const processedResult = marshalOptions.addCallbackIdsToRefs(marshalledResult);
+          return JSON.stringify({ ok: true, value: processedResult });
+        } catch (error: unknown) {
+          const err = error as Error;
+          return JSON.stringify({
+            ok: false,
+            error: { message: err.message, name: err.name },
+          });
+        }
+      }
+
+      const name = String(nameOrId);
       const def = customFunctions[name];
       if (!def) {
         return JSON.stringify({
@@ -438,9 +574,16 @@ async function setupCustomFunctions(
       const rawArgs = JSON.parse(argsJson) as unknown[];
       const args = unmarshalValue(rawArgs) as unknown[];
       try {
-        const result =
-          def.type === "async" ? await def.fn(...args) : def.fn(...args);
+        // Always await the result: for daemon-bridged functions, even "sync" custom functions
+        // are async due to IPC, so we need to resolve the promise.
+        const result = await def.fn(...args);
         // Marshal result for isolate (converts JavaScript types to Refs)
+        if (marshalOptions) {
+          const ctx = marshalOptions.createMarshalContext();
+          const marshalledResult = await marshalValue(result, ctx);
+          const processedResult = marshalOptions.addCallbackIdsToRefs(marshalledResult);
+          return JSON.stringify({ ok: true, value: processedResult });
+        }
         const marshalledResult = await marshalValue(result);
         return JSON.stringify({ ok: true, value: marshalledResult });
       } catch (error: unknown) {
@@ -508,7 +651,14 @@ async function setupCustomFunctions(
           iteratorSessions.delete(iteratorId);
         }
         // Marshal value for isolate
-        const marshalledValue = await marshalValue(result.value);
+        let marshalledValue: unknown;
+        if (marshalOptions) {
+          const ctx = marshalOptions.createMarshalContext();
+          marshalledValue = await marshalValue(result.value, ctx);
+          marshalledValue = marshalOptions.addCallbackIdsToRefs(marshalledValue);
+        } else {
+          marshalledValue = await marshalValue(result.value);
+        }
         return JSON.stringify({
           ok: true,
           done: result.done,
@@ -541,7 +691,14 @@ async function setupCustomFunctions(
         const result = await session.iterator.return?.(value);
         iteratorSessions.delete(iteratorId);
         // Marshal value for isolate
-        const marshalledValue = await marshalValue(result?.value);
+        let marshalledValue: unknown;
+        if (marshalOptions) {
+          const ctx = marshalOptions.createMarshalContext();
+          marshalledValue = await marshalValue(result?.value, ctx);
+          marshalledValue = marshalOptions.addCallbackIdsToRefs(marshalledValue);
+        } else {
+          marshalledValue = await marshalValue(result?.value);
+        }
         return JSON.stringify({ ok: true, done: true, value: marshalledValue });
       } catch (error: unknown) {
         const err = error as Error;
@@ -580,7 +737,14 @@ async function setupCustomFunctions(
         const result = await session.iterator.throw?.(error);
         iteratorSessions.delete(iteratorId);
         // Marshal value for isolate
-        const marshalledValue = await marshalValue(result?.value);
+        let marshalledValue: unknown;
+        if (marshalOptions) {
+          const ctx = marshalOptions.createMarshalContext();
+          marshalledValue = await marshalValue(result?.value, ctx);
+          marshalledValue = marshalOptions.addCallbackIdsToRefs(marshalledValue);
+        } else {
+          marshalledValue = await marshalValue(result?.value);
+        }
         return JSON.stringify({
           ok: true,
           done: result?.done ?? true,
@@ -682,6 +846,144 @@ async function setupCustomFunctions(
   }
 
   return invokeCallbackRef;
+}
+
+/**
+ * Create local marshal options for standalone runtime custom functions.
+ * Enables returned callbacks/promises/iterators without daemon IPC.
+ */
+function createLocalCustomFunctionsMarshalOptions(): CustomFunctionsMarshalOptions {
+  const returnedCallbacks = new Map<number, Function>();
+  const returnedPromises = new Map<number, Promise<unknown>>();
+  const returnedIterators = new Map<number, AsyncIterator<unknown>>();
+  let nextLocalCallbackId = 1_000_000;
+
+  const createMarshalContext = (): MarshalContext => ({
+    registerCallback: (fn: Function): number => {
+      const callbackId = nextLocalCallbackId++;
+      returnedCallbacks.set(callbackId, fn);
+      return callbackId;
+    },
+    registerPromise: (promise: Promise<unknown>): number => {
+      const promiseId = nextLocalCallbackId++;
+      returnedPromises.set(promiseId, promise);
+      return promiseId;
+    },
+    registerIterator: (iterator: AsyncIterator<unknown>): number => {
+      const iteratorId = nextLocalCallbackId++;
+      returnedIterators.set(iteratorId, iterator);
+      return iteratorId;
+    },
+  });
+
+  const isPromiseRef = (
+    value: unknown
+  ): value is { __type: "PromiseRef"; promiseId: number } =>
+    typeof value === "object" &&
+    value !== null &&
+    (value as { __type?: string }).__type === "PromiseRef";
+
+  const isAsyncIteratorRef = (
+    value: unknown
+  ): value is { __type: "AsyncIteratorRef"; iteratorId: number } =>
+    typeof value === "object" &&
+    value !== null &&
+    (value as { __type?: string }).__type === "AsyncIteratorRef";
+
+  const addCallbackIdsToRefs = (value: unknown): unknown => {
+    if (value === null || typeof value !== "object") return value;
+
+    if (isPromiseRef(value)) {
+      if ("__resolveCallbackId" in value) return value;
+
+      const resolveCallbackId = nextLocalCallbackId++;
+      returnedCallbacks.set(resolveCallbackId, async (promiseId: number) => {
+        const promise = returnedPromises.get(promiseId);
+        if (!promise) {
+          throw new Error(`Promise ${promiseId} not found`);
+        }
+        const result = await promise;
+        returnedPromises.delete(promiseId);
+        const ctx = createMarshalContext();
+        const marshalled = await marshalValue(result, ctx);
+        return addCallbackIdsToRefs(marshalled);
+      });
+
+      return { ...value, __resolveCallbackId: resolveCallbackId };
+    }
+
+    if (isAsyncIteratorRef(value)) {
+      if ("__nextCallbackId" in value) return value;
+
+      const nextCallbackId = nextLocalCallbackId++;
+      returnedCallbacks.set(nextCallbackId, async (iteratorId: number) => {
+        const iterator = returnedIterators.get(iteratorId);
+        if (!iterator) {
+          throw new Error(`Iterator ${iteratorId} not found`);
+        }
+        const result = await iterator.next();
+        if (result.done) {
+          returnedIterators.delete(iteratorId);
+        }
+        const ctx = createMarshalContext();
+        const marshalledValue = await marshalValue(result.value, ctx);
+        return {
+          done: result.done,
+          value: addCallbackIdsToRefs(marshalledValue),
+        };
+      });
+
+      const returnCallbackId = nextLocalCallbackId++;
+      returnedCallbacks.set(
+        returnCallbackId,
+        async (iteratorId: number, returnValue?: unknown) => {
+          const iterator = returnedIterators.get(iteratorId);
+          returnedIterators.delete(iteratorId);
+          if (!iterator || !iterator.return) {
+            return { done: true, value: undefined };
+          }
+          const result = await iterator.return(returnValue);
+          const ctx = createMarshalContext();
+          const marshalledValue = await marshalValue(result.value, ctx);
+          return {
+            done: true,
+            value: addCallbackIdsToRefs(marshalledValue),
+          };
+        }
+      );
+
+      return {
+        ...value,
+        __nextCallbackId: nextCallbackId,
+        __returnCallbackId: returnCallbackId,
+      };
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) => addCallbackIdsToRefs(item));
+    }
+
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+      result[key] = addCallbackIdsToRefs(
+        (value as Record<string, unknown>)[key]
+      );
+    }
+    return result;
+  };
+
+  const invokeCallback = async (
+    callbackId: number,
+    args: unknown[]
+  ): Promise<unknown> => {
+    const callback = returnedCallbacks.get(callbackId);
+    if (!callback) {
+      throw new Error(`Local callback ${callbackId} not found`);
+    }
+    return await callback(...args);
+  };
+
+  return { createMarshalContext, addCallbackIdsToRefs, invokeCallback };
 }
 
 /**
@@ -819,6 +1121,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     transformCache: new Map(),
     moduleToFilename: new Map(),
     sourceMaps: new Map(),
+    pendingCallbacks: [],
     moduleLoader: opts.moduleLoader,
     customFunctions: opts.customFunctions as CustomFunctions<Record<string, unknown[]>>,
   };
@@ -855,9 +1158,14 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
 
   // Setup custom functions
   if (opts.customFunctions) {
+    const customMarshalOptions =
+      opts.customFunctionsMarshalOptions ??
+      createLocalCustomFunctionsMarshalOptions();
+
     state.customFnInvokeRef = await setupCustomFunctions(
       context,
-      opts.customFunctions as CustomFunctions<Record<string, unknown[]>>
+      opts.customFunctions as CustomFunctions<Record<string, unknown[]>>,
+      customMarshalOptions,
     );
   }
 
@@ -873,8 +1181,14 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     );
   }
 
-  // Setup playwright (if page provided) - AFTER test environment so expect can be extended
+  // Setup playwright - AFTER test environment so expect can be extended
   if (opts.playwright) {
+    if (!opts.playwright.handler) {
+      throw new Error(
+        "Playwright configured without handler. Provide playwright.handler in createRuntime options."
+      );
+    }
+
     // Determine event handler
     // If console: true and we have a console handler, wrap onEvent to route browser logs
     let eventCallback = opts.playwright.onEvent;
@@ -899,15 +1213,15 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       };
     }
 
-    state.handles.playwright = await setupPlaywright(context, {
-      page: opts.playwright.page,
+    const playwrightSetupOptions: PlaywrightSetupOptions = {
+      handler: opts.playwright.handler,
       timeout: opts.playwright.timeout,
       // Don't print directly if routing through console handler
       console: opts.playwright.console && !opts.console?.onEntry,
       onEvent: eventCallback,
-      createPage: opts.playwright.createPage,
-      createContext: opts.playwright.createContext,
-    });
+    };
+
+    state.handles.playwright = await setupPlaywright(context, playwrightSetupOptions);
   }
 
   // Create fetch handle wrapper
@@ -972,6 +1286,36 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       }
       return state.handles.fetch.hasActiveConnections();
     },
+    dispatchClientWebSocketOpen(socketId: string, protocol: string, extensions: string) {
+      if (!state.handles.fetch) {
+        throw new Error("Fetch handle not available");
+      }
+      state.handles.fetch.dispatchClientWebSocketOpen(socketId, protocol, extensions);
+    },
+    dispatchClientWebSocketMessage(socketId: string, data: string | ArrayBuffer) {
+      if (!state.handles.fetch) {
+        throw new Error("Fetch handle not available");
+      }
+      state.handles.fetch.dispatchClientWebSocketMessage(socketId, data);
+    },
+    dispatchClientWebSocketClose(socketId: string, code: number, reason: string, wasClean: boolean) {
+      if (!state.handles.fetch) {
+        throw new Error("Fetch handle not available");
+      }
+      state.handles.fetch.dispatchClientWebSocketClose(socketId, code, reason, wasClean);
+    },
+    dispatchClientWebSocketError(socketId: string) {
+      if (!state.handles.fetch) {
+        throw new Error("Fetch handle not available");
+      }
+      state.handles.fetch.dispatchClientWebSocketError(socketId);
+    },
+    onClientWebSocketCommand(callback: (cmd: ClientWebSocketCommand) => void) {
+      if (!state.handles.fetch) {
+        throw new Error("Fetch handle not available");
+      }
+      return state.handles.fetch.onClientWebSocketCommand(callback);
+    },
   };
 
   // Create timers handle wrapper
@@ -999,14 +1343,32 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
 
   // Create test environment handle wrapper
   const testEnvironmentHandle: RuntimeTestEnvironmentHandle = {
-    async runTests(_timeout?: number): Promise<RunResults> {
+    async runTests(timeout?: number): Promise<RunResults> {
       if (!state.handles.testEnvironment) {
         throw new Error(
           "Test environment not enabled. Set testEnvironment: true in createRuntime options."
         );
       }
-      // Note: timeout parameter reserved for future use
-      return runTestsInContext(state.context);
+
+      if (timeout === undefined) {
+        return runTestsInContext(state.context);
+      }
+
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error("Test timeout")), timeout);
+      });
+
+      try {
+        return await Promise.race([
+          runTestsInContext(state.context),
+          timeoutPromise,
+        ]);
+      } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+      }
     },
     hasTests(): boolean {
       if (!state.handles.testEnvironment) {
@@ -1034,7 +1396,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     getCollectedData(): CollectedData {
       if (!state.handles.playwright) {
         throw new Error(
-          "Playwright not configured. Provide playwright.page in createRuntime options."
+          "Playwright not configured. Provide playwright.handler in createRuntime options."
         );
       }
       return {
@@ -1050,6 +1412,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
 
   return {
     id,
+    pendingCallbacks: state.pendingCallbacks,
 
     // Module handles
     fetch: fetchHandle,
@@ -1106,6 +1469,12 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
         } finally {
           runRef.release();
         }
+
+        // Await pending callbacks (no-op for local use, enables daemon IPC flush)
+        if (state.pendingCallbacks.length > 0) {
+          await Promise.all(state.pendingCallbacks);
+          state.pendingCallbacks.length = 0;
+        }
       } catch (err) {
         const error = err as Error;
         if (error.stack && state.sourceMaps.size > 0) {
@@ -1113,6 +1482,13 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
         }
         throw error;
       }
+    },
+
+    clearModuleCache() {
+      state.moduleCache.clear();
+      state.moduleToFilename.clear();
+      state.sourceMaps.clear();
+      // staticModuleCache and transformCache intentionally preserved
     },
 
     async dispose(): Promise<void> {
@@ -1170,6 +1546,7 @@ export type {
   FetchOptions,
   WebSocketCommand,
   UpgradeRequest,
+  ClientWebSocketCommand,
 } from "@ricsam/isolate-fetch";
 
 export { setupFs, createNodeFileSystemHandler } from "@ricsam/isolate-fs";
@@ -1207,6 +1584,8 @@ export type {
 export {
   setupPlaywright,
   createPlaywrightHandler,
+  defaultPlaywrightHandler,
+  getDefaultPlaywrightHandlerMetadata,
 } from "@ricsam/isolate-playwright";
 export type {
   PlaywrightHandle,
@@ -1217,5 +1596,3 @@ export type {
   NetworkResponseInfo,
   BrowserConsoleLogEntry,
 } from "@ricsam/isolate-playwright";
-
-export * from "./internal.ts";

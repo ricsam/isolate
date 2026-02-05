@@ -3,11 +3,8 @@
  */
 
 import type { Socket } from "node:net";
-import type ivm from "isolated-vm";
-import type { InternalRuntimeHandle } from "@ricsam/isolate-runtime";
+import type { RuntimeHandle } from "@ricsam/isolate-runtime";
 import type { CallbackRegistration } from "@ricsam/isolate-protocol";
-import type { PlaywrightHandle } from "@ricsam/isolate-playwright";
-import type { SourceMap, TransformResult } from "@ricsam/isolate-transform";
 
 /**
  * Options for starting the daemon.
@@ -52,29 +49,11 @@ export interface DaemonStats {
  */
 export interface IsolateInstance {
   isolateId: string;
-  runtime: InternalRuntimeHandle;
+  runtime: RuntimeHandle;
   ownerConnection: Socket | null;
   callbacks: Map<number, CallbackRegistration>;
   createdAt: number;
   lastActivity: number;
-  /** Whether test environment is enabled */
-  testEnvironmentEnabled?: boolean;
-  /** Playwright handle for event management (if setup) */
-  playwrightHandle?: PlaywrightHandle;
-  /** Module loader callback ID (if registered) */
-  moduleLoaderCallbackId?: number;
-  /** Cache of compiled ES modules (cleared on reuse) */
-  moduleCache?: Map<string, ivm.Module>;
-  /** Cache of static modules that survive namespace reuse */
-  staticModuleCache?: Map<string, ivm.Module>;
-  /** Cache of transformed JS by content hash (survives reuse) */
-  transformCache?: Map<string, TransformResult>;
-  /** Map from module to its filename (for tracking importer path) */
-  moduleToFilename?: Map<ivm.Module, string>;
-  /** Pending callback promises for current eval */
-  pendingCallbacks: Promise<unknown>[];
-  /** Source maps for error stack trace mapping */
-  sourceMaps?: Map<string, SourceMap>;
 
   // Registries for returned callbacks/promises/iterators from custom function calls
   /** Functions returned by custom function calls (callable from isolate) */
@@ -112,6 +91,15 @@ export interface CallbackContext {
   fetch?: number;
   /** Module loader callback ID */
   moduleLoader?: number;
+  /** testEnvironment.onEvent callback ID */
+  testEnvironmentOnEvent?: number;
+  /** Playwright callback IDs */
+  playwright: {
+    handlerCallbackId?: number;
+    onBrowserConsoleLogCallbackId?: number;
+    onNetworkRequestCallbackId?: number;
+    onNetworkResponseCallbackId?: number;
+  };
   /** FS callback IDs by name */
   fs: {
     readFile?: number;

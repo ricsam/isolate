@@ -56,7 +56,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       }
     });
 
-    it("should have same isolateId on reuse", async () => {
+    it("should keep same runtime id on reuse", async () => {
       const namespace = client.createNamespace("basic-test-3");
 
       const runtime1 = await namespace.createRuntime();
@@ -705,6 +705,119 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           console.log("value:", value);
         `);
         assert.ok(logs.some((l) => l === "value: new"));
+      } finally {
+        await runtime2.dispose();
+      }
+    });
+
+    it("should re-register testEnvironment.onEvent callback on reuse", async () => {
+      const namespace = client.createNamespace("callback-test-events-1");
+
+      const events1: string[] = [];
+      const runtime1 = await namespace.createRuntime({
+        testEnvironment: {
+          onEvent: (event) => {
+            events1.push(event.type);
+          },
+        },
+      });
+
+      await runtime1.eval(`
+        test("runtime1 test", () => {
+          expect(1 + 1).toBe(2);
+        });
+      `);
+      await runtime1.testEnvironment.runTests();
+      const events1AfterRun = events1.length;
+      await runtime1.dispose();
+
+      const events2: string[] = [];
+      const runtime2 = await namespace.createRuntime({
+        testEnvironment: {
+          onEvent: (event) => {
+            events2.push(event.type);
+          },
+        },
+      });
+
+      try {
+        await runtime2.eval(`
+          test("runtime2 test", () => {
+            expect(true).toBe(true);
+          });
+        `);
+        await runtime2.testEnvironment.runTests();
+
+        assert.ok(events2.length > 0, "Expected second callback to receive test events");
+        assert.strictEqual(
+          events1.length,
+          events1AfterRun,
+          "Old callback should not receive events after reuse"
+        );
+      } finally {
+        await runtime2.dispose();
+      }
+    });
+
+    it("should re-register playwright handler callback on reuse", async () => {
+      const namespace = client.createNamespace("callback-playwright-handler-1");
+
+      const logs1: string[] = [];
+      let handler1Calls = 0;
+      const runtime1 = await namespace.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs1.push(entry.stdout);
+            }
+          },
+        },
+        playwright: {
+          handler: async (op) => {
+            handler1Calls++;
+            if (op.type === "goto") return { ok: true };
+            if (op.type === "title") return { ok: true, value: "title-one" };
+            return { ok: true };
+          },
+        },
+      });
+
+      await runtime1.eval(`
+        await page.goto("data:text/html,<h1>One</h1>");
+        console.log(await page.title());
+      `);
+      await runtime1.dispose();
+
+      const logs2: string[] = [];
+      let handler2Calls = 0;
+      const runtime2 = await namespace.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs2.push(entry.stdout);
+            }
+          },
+        },
+        playwright: {
+          handler: async (op) => {
+            handler2Calls++;
+            if (op.type === "goto") return { ok: true };
+            if (op.type === "title") return { ok: true, value: "title-two" };
+            return { ok: true };
+          },
+        },
+      });
+
+      try {
+        await runtime2.eval(`
+          await page.goto("data:text/html,<h1>Two</h1>");
+          console.log(await page.title());
+        `);
+
+        assert.ok(logs1.includes("title-one"));
+        assert.ok(logs2.includes("title-two"));
+        assert.ok(handler1Calls > 0);
+        assert.ok(handler2Calls > 0);
       } finally {
         await runtime2.dispose();
       }

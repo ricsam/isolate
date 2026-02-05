@@ -10,6 +10,7 @@ import { connect } from "../connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { DaemonConnection } from "../types.ts";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const TEST_SOCKET = "/tmp/isolate-test-browser-context.sock";
 
@@ -38,14 +39,11 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async (contextId) => {
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async (contextId) => {
             const newPage = await browserContext.newPage();
             createdPages.push(newPage);
             return newPage;
-          },
-        },
+          } }) },
       });
 
       try {
@@ -73,10 +71,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -112,19 +107,15 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createContext: async (options) => {
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createContext: async (options) => {
             const ctx = await browser.newContext(options);
             createdContexts.push(ctx);
             return ctx;
-          },
-          createPage: async (contextId) => {
+          }, createPage: async (contextId) => {
             // For new contexts, create page in the most recent context
             const ctx = createdContexts[createdContexts.length - 1] || initialContext;
             return await ctx.newPage();
-          },
-        },
+          } }) },
       });
 
       try {
@@ -154,18 +145,14 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createContext: async (options) => {
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createContext: async (options) => {
             const ctx = await browser.newContext(options);
             createdContexts.push(ctx);
             return ctx;
-          },
-          createPage: async (contextId) => {
+          }, createPage: async (contextId) => {
             const ctx = createdContexts[createdContexts.length - 1] || initialContext;
             return await ctx.newPage();
-          },
-        },
+          } }) },
       });
 
       try {
@@ -208,10 +195,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -243,10 +227,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -279,10 +260,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -317,10 +295,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -346,9 +321,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage) },
       });
 
       try {
@@ -390,10 +363,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -429,10 +399,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -466,10 +433,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -512,18 +476,14 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createContext: async (options) => {
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createContext: async (options) => {
             const ctx = await browser.newContext(options);
             createdContexts.push(ctx);
             return ctx;
-          },
-          createPage: async (contextId) => {
+          }, createPage: async (contextId) => {
             const ctx = createdContexts[createdContexts.length - 1] || initialContext;
             return await ctx.newPage();
-          },
-        },
+          } }) },
       });
 
       try {
@@ -575,18 +535,14 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createContext: async (options) => {
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createContext: async (options) => {
             const ctx = await browser.newContext(options);
             createdContexts.push(ctx);
             return ctx;
-          },
-          createPage: async (contextId) => {
+          }, createPage: async (contextId) => {
             const ctx = createdContexts[createdContexts.length - 1] || initialContext;
             return await ctx.newPage();
-          },
-        },
+          } }) },
       });
 
       try {
@@ -621,10 +577,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -657,10 +610,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -693,10 +643,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -729,10 +676,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -765,10 +709,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -803,10 +744,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -836,10 +774,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -875,10 +810,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -917,10 +849,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -953,10 +882,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -989,10 +915,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1031,10 +954,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1069,10 +989,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1109,10 +1026,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1147,10 +1061,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1183,10 +1094,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1226,10 +1134,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1270,10 +1175,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1316,10 +1218,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1356,10 +1255,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1397,10 +1293,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1437,10 +1330,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1483,10 +1373,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1521,10 +1408,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1557,10 +1441,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1598,10 +1479,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1634,10 +1512,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1680,10 +1555,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1721,10 +1593,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createPage: async () => await browserContext.newPage(),
-        },
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
       });
 
       try {
@@ -1761,19 +1630,15 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createContext: async (options) => {
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createContext: async (options) => {
             const ctx = await browser.newContext(options);
             createdContexts.push(ctx);
             return ctx;
-          },
-          createPage: async (context) => {
+          }, createPage: async (context) => {
             // Create page in the provided context
             const newPage = await context.newPage();
             return newPage;
-          },
-        },
+          } }) },
       });
 
       try {
@@ -1825,18 +1690,14 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: {
-          page: initialPage,
-          createContext: async (options) => {
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createContext: async (options) => {
             const ctx = await browser.newContext(options);
             createdContexts.push(ctx);
             return ctx;
-          },
-          createPage: async (context) => {
+          }, createPage: async (context) => {
             receivedContexts.push(context);
             return await context.newPage();
-          },
-        },
+          } }) },
       });
 
       try {
@@ -1879,7 +1740,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: { page }, // No createPage callback
+        playwright: { handler: defaultPlaywrightHandler(page) }, // No createPage callback
       });
 
       try {
@@ -1910,7 +1771,7 @@ describe("playwright browser/context/page lifecycle", () => {
 
       const runtime = await client.createRuntime({
         testEnvironment: true,
-        playwright: { page }, // No createContext callback
+        playwright: { handler: defaultPlaywrightHandler(page) }, // No createContext callback
       });
 
       try {

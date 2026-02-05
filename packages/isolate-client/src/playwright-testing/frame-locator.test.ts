@@ -9,6 +9,7 @@ import { connect } from "../connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import { chromium } from "playwright";
 import type { DaemonConnection } from "../types.ts";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const TEST_SOCKET = "/tmp/isolate-test-frame-locator.sock";
 
@@ -33,7 +34,7 @@ describe("playwright frameLocator", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -66,7 +67,7 @@ describe("playwright frameLocator", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -98,7 +99,7 @@ describe("playwright frameLocator", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -130,7 +131,7 @@ describe("playwright frameLocator", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -163,7 +164,7 @@ describe("playwright frameLocator", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -196,7 +197,7 @@ describe("playwright frameLocator", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -228,7 +229,7 @@ describe("playwright frameLocator", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {

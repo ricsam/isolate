@@ -8,6 +8,7 @@ import { connect } from "./connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import { chromium } from "playwright";
 import type { DaemonConnection } from "./types.ts";
+import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
 
 const TEST_SOCKET = "/tmp/isolate-test-playwright.sock";
 
@@ -32,7 +33,7 @@ describe("isolate-client playwright integration", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -62,7 +63,7 @@ describe("isolate-client playwright integration", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -100,7 +101,7 @@ describe("isolate-client playwright integration", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -145,7 +146,7 @@ describe("isolate-client playwright integration", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -183,14 +184,11 @@ describe("isolate-client playwright integration", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: {
-        page,
-        onEvent: (event) => {
+      playwright: { handler: defaultPlaywrightHandler(page), onEvent: (event) => {
           if (event.type === "browserConsoleLog") {
             consoleLogs.push({ level: event.level, stdout: event.stdout });
           }
-        },
-      },
+        } },
     });
 
     try {
@@ -221,10 +219,7 @@ describe("isolate-client playwright integration", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: {
-        page,
-        console: true,
-      },
+      playwright: { handler: defaultPlaywrightHandler(page), console: true },
       console: {
         onEntry: () => {},
       },
@@ -263,10 +258,7 @@ describe("isolate-client playwright integration", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: {
-        page,
-        console: true,
-      },
+      playwright: { handler: defaultPlaywrightHandler(page), console: true },
       console: {
         onEntry: (entry) => {
           if (entry.type === "browserOutput") {
@@ -304,7 +296,7 @@ describe("isolate-client playwright integration", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
@@ -338,7 +330,7 @@ describe("isolate-client playwright integration", () => {
 
     const runtime = await client.createRuntime({
       testEnvironment: true,
-      playwright: { page },
+      playwright: { handler: defaultPlaywrightHandler(page) },
     });
 
     try {
