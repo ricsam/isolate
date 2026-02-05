@@ -85,6 +85,32 @@ export interface UnmarshalContext {
 }
 
 // ============================================================================
+// Type Guards for Ref Types
+// ============================================================================
+
+/**
+ * Type guard for PromiseRef values.
+ */
+export function isPromiseRef(value: unknown): value is { __type: "PromiseRef"; promiseId: number } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { __type?: string }).__type === 'PromiseRef'
+  );
+}
+
+/**
+ * Type guard for AsyncIteratorRef values.
+ */
+export function isAsyncIteratorRef(value: unknown): value is { __type: "AsyncIteratorRef"; iteratorId: number } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { __type?: string }).__type === 'AsyncIteratorRef'
+  );
+}
+
+// ============================================================================
 // Supported Class Detection
 // ============================================================================
 

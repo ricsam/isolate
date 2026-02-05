@@ -14,6 +14,11 @@ import {
   STREAM_DEFAULT_CREDIT,
   marshalValue,
   unmarshalValue,
+  isPromiseRef,
+  isAsyncIteratorRef,
+  deserializeResponse,
+  type SerializedRequest,
+  type SerializedResponse,
   type Message,
   type ResponseOk,
   type ResponseError,
@@ -788,11 +793,6 @@ async function handleCreateRuntime(
         },
       });
 
-      const isPromiseRef = (value: unknown): value is { __type: "PromiseRef"; promiseId: number } =>
-        typeof value === 'object' && value !== null && (value as { __type?: string }).__type === 'PromiseRef';
-      const isAsyncIteratorRef = (value: unknown): value is { __type: "AsyncIteratorRef"; iteratorId: number } =>
-        typeof value === 'object' && value !== null && (value as { __type?: string }).__type === 'AsyncIteratorRef';
-
       const addCallbackIdsToRefs = (value: unknown): unknown => {
         if (value === null || typeof value !== 'object') return value;
 
@@ -1080,7 +1080,7 @@ async function handleCreateRuntime(
         if (!conn || callbackId === undefined) {
           throw new Error("Fetch callback not available");
         }
-        const serialized: SerializedRequestData = {
+        const serialized: SerializedRequest = {
           url,
           method: init.method,
           headers: init.headers,
@@ -1092,7 +1092,7 @@ async function handleCreateRuntime(
           (response as Response & { __isCallbackStream?: boolean }).__isCallbackStream = true;
           return response;
         }
-        return deserializeResponse(result as SerializedResponseData);
+        return deserializeResponse(result as SerializedResponse);
       },
       // FS handler that bridges to client via IPC
       fs: {
@@ -2089,70 +2089,6 @@ async function invokeClientCallback(
     };
 
     sendMessage(connection.socket, invoke);
-  });
-}
-
-// ============================================================================
-// Request/Response Serialization
-// ============================================================================
-
-interface SerializedRequestData {
-  method: string;
-  url: string;
-  headers: [string, string][];
-  body: Uint8Array | null;
-}
-
-interface SerializedResponseData {
-  status: number;
-  statusText: string;
-  headers: [string, string][];
-  body: Uint8Array | null;
-}
-
-async function serializeRequest(request: Request): Promise<SerializedRequestData> {
-  const headers: [string, string][] = [];
-  request.headers.forEach((value, key) => {
-    headers.push([key, value]);
-  });
-
-  let body: Uint8Array | null = null;
-  if (request.body) {
-    body = new Uint8Array(await request.arrayBuffer());
-  }
-
-  return {
-    method: request.method,
-    url: request.url,
-    headers,
-    body,
-  };
-}
-
-async function serializeResponse(response: Response): Promise<SerializedResponseData> {
-  const headers: [string, string][] = [];
-  response.headers.forEach((value, key) => {
-    headers.push([key, value]);
-  });
-
-  let body: Uint8Array | null = null;
-  if (response.body) {
-    body = new Uint8Array(await response.arrayBuffer());
-  }
-
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-    body,
-  };
-}
-
-function deserializeResponse(data: SerializedResponseData): Response {
-  return new Response(data.body as any, {
-    status: data.status,
-    statusText: data.statusText,
-    headers: data.headers,
   });
 }
 

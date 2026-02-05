@@ -57,9 +57,19 @@ export {
   marshalValueSync,
   unmarshalValue,
   MarshalError,
+  isPromiseRef,
+  isAsyncIteratorRef,
   type MarshalContext,
   type UnmarshalContext,
 } from "./marshalValue.ts";
+
+// Request/Response serialization
+export {
+  serializeRequest,
+  serializeResponse,
+  deserializeRequest,
+  deserializeResponse,
+} from "./serialization.ts";
 
 // Framing
 export {

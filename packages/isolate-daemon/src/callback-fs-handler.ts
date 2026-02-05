@@ -8,6 +8,23 @@
 import type { FileSystemHandler } from "@ricsam/isolate-fs";
 import type { ConnectionState, CallbackContext } from "./types.ts";
 
+/** Common MIME type mappings by file extension. */
+const MIME_TYPES: Record<string, string> = {
+  txt: "text/plain",
+  html: "text/html",
+  htm: "text/html",
+  css: "text/css",
+  js: "text/javascript",
+  json: "application/json",
+  xml: "application/xml",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+};
+
 interface InvokeClientCallback {
   (connection: ConnectionState, callbackId: number, args: unknown[]): Promise<unknown>;
 }
@@ -263,22 +280,7 @@ export function createCallbackFileSystemHandler(
 
       // Determine MIME type from extension
       const ext = path.split(".").pop()?.toLowerCase() || "";
-      const mimeTypes: Record<string, string> = {
-        txt: "text/plain",
-        html: "text/html",
-        htm: "text/html",
-        css: "text/css",
-        js: "text/javascript",
-        json: "application/json",
-        xml: "application/xml",
-        png: "image/png",
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        gif: "image/gif",
-        svg: "image/svg+xml",
-        pdf: "application/pdf",
-      };
-      const type = mimeTypes[ext] || "application/octet-stream";
+      const type = MIME_TYPES[ext] || "application/octet-stream";
 
       return { data: bytes, size, lastModified, type };
     },
@@ -397,22 +399,7 @@ export function createCallbackFileSystemHandler(
 
       // Determine MIME type from extension
       const ext = path.split(".").pop()?.toLowerCase() || "";
-      const mimeTypes: Record<string, string> = {
-        txt: "text/plain",
-        html: "text/html",
-        htm: "text/html",
-        css: "text/css",
-        js: "text/javascript",
-        json: "application/json",
-        xml: "application/xml",
-        png: "image/png",
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        gif: "image/gif",
-        svg: "image/svg+xml",
-        pdf: "application/pdf",
-      };
-      const type = mimeTypes[ext] || "application/octet-stream";
+      const type = MIME_TYPES[ext] || "application/octet-stream";
 
       return {
         size: stat.size,

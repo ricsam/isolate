@@ -23,6 +23,7 @@ import {
   type CallbackRegistration,
   type RuntimeCallbackRegistrations,
   type CreateRuntimeResult,
+  type SerializedRequest,
   type SerializedResponse,
   type RunTestsRequest,
   type RunTestsResult,
@@ -66,6 +67,11 @@ import {
   type ClientWsClosedMessage,
   type ClientWsErrorMessage,
   marshalValue,
+  isPromiseRef,
+  isAsyncIteratorRef,
+  serializeResponse,
+  deserializeRequest,
+  deserializeResponse,
   type MarshalContext,
 } from "@ricsam/isolate-protocol";
 import {
@@ -1294,14 +1300,14 @@ function registerFetchCallback(
 
   // Register a callback that returns a special marker for streaming responses
   state.callbacks.set(callbackId, async (serialized: unknown, requestId: unknown) => {
-    const data = serialized as SerializedRequestData;
+    const data = serialized as SerializedRequest;
     // Create a FetchRequestInit from the serialized data
     // Note: signal is not serialized over the wire, so we create a dummy one
     const init = {
       method: data.method,
       headers: data.headers,
-      rawBody: data.body,
-      body: data.body as BodyInit | null,
+      rawBody: data.body ?? null,
+      body: (data.body ?? null) as BodyInit | null,
       signal: new AbortController().signal,
     };
     const response = await callback(data.url, init);
@@ -1545,28 +1551,6 @@ const returnedPromiseRegistry = new Map<number, Promise<unknown>>();
 const returnedIteratorRegistry = new Map<number, AsyncIterator<unknown>>();
 
 /**
- * Type guard for PromiseRef
- */
-function isPromiseRef(value: unknown): value is { __type: "PromiseRef"; promiseId: number } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as { __type?: string }).__type === 'PromiseRef'
-  );
-}
-
-/**
- * Type guard for AsyncIteratorRef
- */
-function isAsyncIteratorRef(value: unknown): value is { __type: "AsyncIteratorRef"; iteratorId: number } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as { __type?: string }).__type === 'AsyncIteratorRef'
-  );
-}
-
-/**
  * Register custom function callbacks.
  */
 function registerCustomFunctions(
@@ -1803,82 +1787,10 @@ function registerCustomFunctions(
 }
 
 // ============================================================================
-// Request/Response Serialization
-// ============================================================================
-
-interface SerializedRequestData {
-  method: string;
-  url: string;
-  headers: [string, string][];
-  body: Uint8Array | null;
-}
-
-interface SerializedResponseData {
-  status: number;
-  statusText: string;
-  headers: [string, string][];
-  body: Uint8Array | null;
-}
-
-async function serializeRequest(request: Request): Promise<SerializedRequestData> {
-  const headers: [string, string][] = [];
-  request.headers.forEach((value, key) => {
-    headers.push([key, value]);
-  });
-
-  let body: Uint8Array | null = null;
-  if (request.body) {
-    body = new Uint8Array(await request.arrayBuffer());
-  }
-
-  return {
-    method: request.method,
-    url: request.url,
-    headers,
-    body,
-  };
-}
-
-async function serializeResponse(response: Response): Promise<SerializedResponseData> {
-  const headers: [string, string][] = [];
-  response.headers.forEach((value, key) => {
-    headers.push([key, value]);
-  });
-
-  let body: Uint8Array | null = null;
-  if (response.body) {
-    body = new Uint8Array(await response.arrayBuffer());
-  }
-
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-    body,
-  };
-}
-
-function deserializeRequest(data: SerializedRequestData): Request {
-  return new Request(data.url, {
-    method: data.method,
-    headers: data.headers,
-    body: data.body as unknown as BodyInit | null | undefined,
-  });
-}
-
-function deserializeResponse(data: SerializedResponse): Response {
-  return new Response(data.body as unknown as BodyInit | null, {
-    status: data.status,
-    statusText: data.statusText,
-    headers: data.headers,
-  });
-}
-
-// ============================================================================
 // Streaming Request Serialization
 // ============================================================================
 
-interface SerializedRequestWithStream extends SerializedRequestData {
+interface SerializedRequestWithStream extends SerializedRequest {
   bodyStreamId?: number;
   bodyStream?: ReadableStream<Uint8Array>;
 }
