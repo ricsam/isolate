@@ -99,6 +99,7 @@ import {
   contentHash,
   mapErrorStack,
   type SourceMap,
+  type TransformResult,
 } from "@ricsam/isolate-transform";
 import type {
   DaemonState,
@@ -468,7 +469,7 @@ async function handleMessage(
 
 /**
  * Soft-delete a namespaced runtime (keep cached for reuse).
- * Clears owner connection and callbacks but preserves isolate/context/module cache.
+ * Clears owner connection and callbacks but preserves isolate/context.
  */
 function softDeleteRuntime(instance: IsolateInstance, state: DaemonState): void {
   instance.isDisposed = true;
@@ -490,7 +491,13 @@ function softDeleteRuntime(instance: IsolateInstance, state: DaemonState): void 
   instance.returnedPromises?.clear();
   instance.returnedIterators?.clear();
 
-  // Note: We preserve the module cache (moduleCache) for performance benefit
+  // Clear module cache — cached ivm.Module objects have their dependency graphs
+  // permanently baked in after instantiation, so transitive dependency changes
+  // would not be picked up. Within a single eval cycle the cache still prevents
+  // compiling the same module twice when multiple files import it.
+  instance.moduleCache?.clear();
+  instance.moduleToFilename?.clear();
+  // staticModuleCache and transformCache intentionally preserved across reuse
 }
 
 /**
@@ -850,6 +857,8 @@ async function handleCreateRuntime(
     if (moduleLoaderCallback) {
       instance.moduleLoaderCallbackId = moduleLoaderCallback.callbackId;
       instance.moduleCache = new Map();
+      instance.staticModuleCache = new Map();
+      instance.transformCache = new Map();
       instance.moduleToFilename = new Map();
     }
 
@@ -2518,6 +2527,11 @@ function createModuleResolver(
   connection: ConnectionState
 ): (specifier: string, referrer: ivm.Module) => Promise<ivm.Module> {
   return async (specifier: string, referrer: ivm.Module): Promise<ivm.Module> => {
+    // 1. Static cache — survives reuse, keyed by specifier only
+    const staticCached = instance.staticModuleCache?.get(specifier);
+    if (staticCached) return staticCached;
+
+    // 2. Must have module loader for non-static modules
     if (!instance.moduleLoaderCallbackId) {
       throw new Error(`Module not found: ${specifier}`);
     }
@@ -2526,23 +2540,29 @@ function createModuleResolver(
     const importerPath = instance.moduleToFilename?.get(referrer) ?? "<unknown>";
     const importerResolveDir = path.posix.dirname(importerPath);
 
-    // Invoke client callback - now always returns { code, resolveDir }
+    // 3. Always call module loader to get current content
     const result = (await invokeClientCallback(
       connection,
       instance.moduleLoaderCallbackId,
       [specifier, { path: importerPath, resolveDir: importerResolveDir }]
-    )) as { code: string; resolveDir: string };
+    )) as { code: string; resolveDir: string; static?: boolean };
 
     const { code, resolveDir } = result;
 
-    // Check cache by content hash
+    // 4. Content-hash cache — within a single eval cycle, avoid recompiling
+    //    the same module when imported by multiple files
     const hash = contentHash(code);
     const cacheKey = `${specifier}:${hash}`;
     const hashCached = instance.moduleCache?.get(cacheKey);
     if (hashCached) return hashCached;
 
-    // Transform module code (strip types)
-    const transformed = await transformModuleCode(code, specifier);
+    // 5. Transform — check transform cache first (survives reuse)
+    let transformed: TransformResult | undefined = instance.transformCache?.get(hash);
+    if (!transformed) {
+      transformed = await transformModuleCode(code, specifier);
+      instance.transformCache?.set(hash, transformed);
+    }
+
     if (transformed.sourceMap) {
       if (!instance.sourceMaps) {
         instance.sourceMaps = new Map();
@@ -2550,7 +2570,7 @@ function createModuleResolver(
       instance.sourceMaps.set(specifier, transformed.sourceMap);
     }
 
-    // Compile the module
+    // 6. Compile (always — ivm.Module can't be reused after instantiation)
     const mod = await instance.runtime.isolate.compileModule(transformed.code, {
       filename: specifier,
     });
@@ -2559,10 +2579,14 @@ function createModuleResolver(
     const resolvedPath = path.posix.join(resolveDir, path.posix.basename(specifier));
     instance.moduleToFilename?.set(mod, resolvedPath);
 
-    // Cache before instantiation (for circular dependencies)
-    instance.moduleCache?.set(cacheKey, mod);
+    // 7. Cache before instantiation (circular deps)
+    if (result.static) {
+      instance.staticModuleCache?.set(specifier, mod);
+    } else {
+      instance.moduleCache?.set(cacheKey, mod);
+    }
 
-    // Instantiate with recursive resolver
+    // 8. Instantiate with recursive resolver
     const resolver = createModuleResolver(instance, connection);
     await mod.instantiate(instance.runtime.context, resolver);
 

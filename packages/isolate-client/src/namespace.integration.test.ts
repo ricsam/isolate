@@ -87,8 +87,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
     });
   });
 
-  describe("Module Cache Preservation", () => {
-    it("should preserve module cache on reuse", async () => {
+  describe("Module Loading on Reuse", () => {
+    it("should reload modules on reuse", async () => {
       let loadCount = 0;
       const namespace = client.createNamespace("module-cache-1");
 
@@ -115,7 +115,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
 
       assert.strictEqual(loadCount, 1);
 
-      // Second runtime - module should already be cached
+      // Second runtime - module cache is cleared on reuse, so module loader is called again
       const runtime2 = await namespace.createRuntime({
         console: {
           onEntry: (entry) => {
@@ -139,13 +139,12 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       try {
         assert.strictEqual(runtime2.reused, true);
 
-        // Import same module - should use cache
         await runtime2.eval(`
           import { value } from "@/cached-module";
           console.log("module value:", value);
         `);
 
-        // Module loader is called again (to fetch content for hashing), but recompilation is avoided
+        // Module loader is called again on reuse (cache cleared to avoid stale transitive deps)
         assert.strictEqual(loadCount, 2);
         assert.ok(logs1.some((l) => l.includes("module value:") && l.includes("cached")));
       } finally {
@@ -214,6 +213,178 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         `);
 
         // Should see version 2, not stale version 1
+        assert.ok(logs2.some((l) => l.includes("version:") && l.includes("2")));
+      } finally {
+        await runtime2.dispose();
+      }
+    });
+
+    it("should pick up transitive dependency changes across namespace reuse", async () => {
+      const namespace = client.createNamespace("transitive-dep-change-1");
+      let configVersion = 1;
+
+      const moduleLoader = async (moduleName: string, importer: { resolveDir: string }) => {
+        if (moduleName === "@/utils") {
+          return {
+            code: `import { version } from "@/config"; export const getVersion = () => version;`,
+            resolveDir: importer.resolveDir,
+          };
+        }
+        if (moduleName === "@/config") {
+          return {
+            code: `export const version = ${configVersion};`,
+            resolveDir: importer.resolveDir,
+          };
+        }
+        throw new Error(`Unknown module: ${moduleName}`);
+      };
+
+      // First runtime - load @/utils which transitively imports @/config (version 1)
+      const logs1: string[] = [];
+      const runtime1 = await namespace.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs1.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader,
+      });
+
+      await runtime1.eval(`
+        import { getVersion } from "@/utils";
+        console.log("version:", getVersion());
+      `);
+      assert.ok(logs1.some((l) => l.includes("version:") && l.includes("1")));
+      await runtime1.dispose();
+
+      // Change the transitive dependency
+      configVersion = 2;
+
+      // Second runtime - @/utils content is unchanged, but @/config changed
+      const logs2: string[] = [];
+      const runtime2 = await namespace.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs2.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader,
+      });
+
+      try {
+        assert.strictEqual(runtime2.reused, true);
+
+        await runtime2.eval(`
+          import { getVersion } from "@/utils";
+          console.log("version:", getVersion());
+        `);
+
+        // Should see version 2, not stale version 1
+        assert.ok(logs2.some((l) => l.includes("version:") && l.includes("2")));
+      } finally {
+        await runtime2.dispose();
+      }
+    });
+
+    it("should preserve static modules across reuse but refresh dynamic modules", async () => {
+      const namespace = client.createNamespace("static-module-cache-1");
+      let lodashLoadCount = 0;
+      let configLoadCount = 0;
+
+      // First runtime — load a static module and a dynamic module
+      const logs1: string[] = [];
+      const runtime1 = await namespace.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs1.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName: string, importer) => {
+          if (moduleName === "@/lodash") {
+            lodashLoadCount++;
+            return {
+              code: `export const chunk = (arr, size) => { const r = []; for (let i = 0; i < arr.length; i += size) r.push(arr.slice(i, i + size)); return r; };`,
+              resolveDir: importer.resolveDir,
+              static: true,
+            };
+          }
+          if (moduleName === "@/config") {
+            configLoadCount++;
+            return {
+              code: `export const version = 1;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      await runtime1.eval(`
+        import { chunk } from "@/lodash";
+        import { version } from "@/config";
+        console.log("chunk:", JSON.stringify(chunk([1,2,3,4], 2)));
+        console.log("version:", version);
+      `);
+      assert.strictEqual(lodashLoadCount, 1);
+      assert.strictEqual(configLoadCount, 1);
+      assert.ok(logs1.some((l) => l.includes("chunk:") && l.includes("[[1,2],[3,4]]")));
+      assert.ok(logs1.some((l) => l.includes("version:") && l.includes("1")));
+      await runtime1.dispose();
+
+      // Second runtime — static module should NOT call loader again,
+      // dynamic module should call loader and get fresh content
+      const logs2: string[] = [];
+      const runtime2 = await namespace.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs2.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName: string, importer) => {
+          if (moduleName === "@/lodash") {
+            lodashLoadCount++;
+            return {
+              code: `export const chunk = (arr, size) => { const r = []; for (let i = 0; i < arr.length; i += size) r.push(arr.slice(i, i + size)); return r; };`,
+              resolveDir: importer.resolveDir,
+              static: true,
+            };
+          }
+          if (moduleName === "@/config") {
+            configLoadCount++;
+            return {
+              code: `export const version = 2;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        assert.strictEqual(runtime2.reused, true);
+
+        await runtime2.eval(`
+          import { chunk } from "@/lodash";
+          import { version } from "@/config";
+          console.log("chunk:", JSON.stringify(chunk([5,6,7,8], 2)));
+          console.log("version:", version);
+        `);
+
+        // Static module — loader never called again (stays at 1)
+        assert.strictEqual(lodashLoadCount, 1);
+        // Dynamic module — loader called again (incremented to 2)
+        assert.strictEqual(configLoadCount, 2);
+        // Static module still works
+        assert.ok(logs2.some((l) => l.includes("chunk:") && l.includes("[[5,6],[7,8]]")));
+        // Dynamic module picks up new content
         assert.ok(logs2.some((l) => l.includes("version:") && l.includes("2")));
       } finally {
         await runtime2.dispose();

@@ -8,6 +8,7 @@ import {
   contentHash,
   mapErrorStack,
   type SourceMap,
+  type TransformResult,
 } from "@ricsam/isolate-transform";
 
 // Re-export for convenience
@@ -240,6 +241,8 @@ interface RuntimeState {
     playwright?: PlaywrightHandle;
   };
   moduleCache: Map<string, ivm.Module>;
+  staticModuleCache: Map<string, ivm.Module>;
+  transformCache: Map<string, TransformResult>;
   moduleToFilename: Map<ivm.Module, string>;
   moduleLoader?: ModuleLoaderCallback;
   customFunctions?: CustomFunctions;
@@ -691,6 +694,10 @@ function createModuleResolver(
     specifier: string,
     referrer: ivm.Module
   ): Promise<ivm.Module> => {
+    // Static cache first
+    const staticCached = state.staticModuleCache.get(specifier);
+    if (staticCached) return staticCached;
+
     // Specifier-only fast path is safe here: each local runtime gets a fresh cache,
     // so there's no cross-lifecycle staleness (unlike the daemon where caches persist across namespace reuse).
     const cached = state.moduleCache.get(specifier);
@@ -706,11 +713,12 @@ function createModuleResolver(
     const importerPath = state.moduleToFilename.get(referrer) ?? "<unknown>";
     const importerResolveDir = path.posix.dirname(importerPath);
 
-    // Invoke module loader - now always returns { code, resolveDir }
-    const { code, resolveDir } = await state.moduleLoader(specifier, {
+    // Invoke module loader - capture full result including static flag
+    const result = await state.moduleLoader(specifier, {
       path: importerPath,
       resolveDir: importerResolveDir,
     });
+    const { code, resolveDir } = result;
 
     // Cache by specifier + content hash (allows invalidation when content changes)
     const hash = contentHash(code);
@@ -718,8 +726,13 @@ function createModuleResolver(
     const hashCached = state.moduleCache.get(cacheKey);
     if (hashCached) return hashCached;
 
-    // Transform module code (strip types)
-    const transformed = await transformModuleCode(code, specifier);
+    // Transform cache — check transform cache first (survives reuse in daemon)
+    let transformed: TransformResult | undefined = state.transformCache.get(hash);
+    if (!transformed) {
+      transformed = await transformModuleCode(code, specifier);
+      state.transformCache.set(hash, transformed);
+    }
+
     if (transformed.sourceMap) {
       state.sourceMaps.set(specifier, transformed.sourceMap);
     }
@@ -734,9 +747,12 @@ function createModuleResolver(
     state.moduleToFilename.set(mod, resolvedPath);
 
     // Cache before instantiation (for circular dependencies)
-    // Cache by both specifier (fast lookup) and specifier:hash (content-based invalidation)
-    state.moduleCache.set(specifier, mod);
-    state.moduleCache.set(cacheKey, mod);
+    if (result.static) {
+      state.staticModuleCache.set(specifier, mod);
+    } else {
+      state.moduleCache.set(specifier, mod);
+      state.moduleCache.set(cacheKey, mod);
+    }
 
     // Instantiate with recursive resolver
     const resolver = createModuleResolver(state);
@@ -799,6 +815,8 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     context,
     handles: {},
     moduleCache: new Map(),
+    staticModuleCache: new Map(),
+    transformCache: new Map(),
     moduleToFilename: new Map(),
     sourceMaps: new Map(),
     moduleLoader: opts.moduleLoader,

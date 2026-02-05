@@ -831,7 +831,15 @@ export type Message = ClientMessage | DaemonMessage;
 export type ModuleLoaderCallback = (
   moduleName: string,
   importer: { path: string; resolveDir: string }
-) => { code: string; resolveDir: string } | Promise<{ code: string; resolveDir: string }>;
+) => ModuleLoaderResult | Promise<ModuleLoaderResult>;
+
+export interface ModuleLoaderResult {
+  code: string;
+  resolveDir: string;
+  /** Mark as static to preserve across namespace reuse (e.g. node_modules).
+   *  Static modules and their transitive deps should all be static. */
+  static?: boolean;
+}
 
 /**
  * A custom function that can be called from within the isolate.

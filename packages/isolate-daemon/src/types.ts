@@ -7,7 +7,7 @@ import type ivm from "isolated-vm";
 import type { InternalRuntimeHandle } from "@ricsam/isolate-runtime";
 import type { CallbackRegistration } from "@ricsam/isolate-protocol";
 import type { PlaywrightHandle } from "@ricsam/isolate-playwright";
-import type { SourceMap } from "@ricsam/isolate-transform";
+import type { SourceMap, TransformResult } from "@ricsam/isolate-transform";
 
 /**
  * Options for starting the daemon.
@@ -63,8 +63,12 @@ export interface IsolateInstance {
   playwrightHandle?: PlaywrightHandle;
   /** Module loader callback ID (if registered) */
   moduleLoaderCallbackId?: number;
-  /** Cache of compiled ES modules */
+  /** Cache of compiled ES modules (cleared on reuse) */
   moduleCache?: Map<string, ivm.Module>;
+  /** Cache of static modules that survive namespace reuse */
+  staticModuleCache?: Map<string, ivm.Module>;
+  /** Cache of transformed JS by content hash (survives reuse) */
+  transformCache?: Map<string, TransformResult>;
   /** Map from module to its filename (for tracking importer path) */
   moduleToFilename?: Map<ivm.Module, string>;
   /** Pending callback promises for current eval */
