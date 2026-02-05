@@ -37,7 +37,7 @@ export interface NetworkResponseInfo {
  */
 export interface BrowserConsoleLogEntry {
   level: string;
-  args: string[];
+  stdout: string;
   timestamp: number;
 }
 

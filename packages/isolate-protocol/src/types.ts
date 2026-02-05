@@ -194,6 +194,8 @@ export interface PlaywrightOperation {
     | "goBack"
     | "goForward"
     | "waitForURL"
+    | "waitForResponseStart"
+    | "waitForResponseFinish"
     | "clearCookies"
     // Page-level operations
     | "screenshot"
