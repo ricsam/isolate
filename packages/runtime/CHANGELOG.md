@@ -1,5 +1,43 @@
 # @ricsam/isolate-runtime
 
+## 0.1.15
+
+### Patch Changes
+
+- new version
+- 1369fd1: Finalize client/runtime parity refactor and tighten the Playwright public API to handler-first.
+
+  ### Breaking changes
+
+  - `PlaywrightOptions` in the shared protocol/runtime/client contract is now handler-only:
+    - keep: `handler`, `timeout?`, `console?`, `onEvent?`
+    - remove from the public options object: `page`, `readFile`, `writeFile`, `createPage`, `createContext`
+  - Remove deprecated Playwright test protocol messages (`RUN_PLAYWRIGHT_TESTS`, `RESET_PLAYWRIGHT_TESTS`).
+
+  ### Added and improved
+
+  - Add/standardize `defaultPlaywrightHandler(page, options?)` and metadata helpers for handler-first ergonomics.
+  - Daemon runtime creation and namespace reuse now rebind Playwright/test callbacks via mutable callback context.
+  - Runtime custom function marshalling parity improved for returned callbacks/promises/async iterators in standalone mode.
+  - `runTests(timeout)` timeout behavior aligned for direct runtime and daemon client.
+  - Add shared parity conformance tests that run identical scenarios against direct runtime and client+daemon adapters.
+  - Add API design guidance in `CONTRIBUTING.md` to keep public contracts tight and expandable.
+
+- Updated dependencies
+- Updated dependencies [1369fd1]
+  - @ricsam/isolate-console@0.1.13
+  - @ricsam/isolate-core@0.1.12
+  - @ricsam/isolate-crypto@0.1.12
+  - @ricsam/isolate-encoding@0.1.12
+  - @ricsam/isolate-fetch@0.1.14
+  - @ricsam/isolate-fs@0.1.12
+  - @ricsam/isolate-protocol@0.1.13
+  - @ricsam/isolate-path@0.1.12
+  - @ricsam/isolate-playwright@0.1.13
+  - @ricsam/isolate-test-environment@0.1.12
+  - @ricsam/isolate-timers@0.1.12
+  - @ricsam/isolate-transform@0.1.2
+
 ## 0.1.14
 
 ### Patch Changes
