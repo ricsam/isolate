@@ -49,6 +49,7 @@ export async function startDaemon(
     },
     options: resolvedOptions,
     namespacedRuntimes: new Map(),
+    namespacedCreatesInFlight: new Set(),
   };
 
   const server = createServer((socket) => {

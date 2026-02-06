@@ -196,4 +196,6 @@ export interface DaemonState {
   options: Required<DaemonOptions>;
   /** Index of namespaced runtimes by namespace ID for fast lookup */
   namespacedRuntimes: Map<string, IsolateInstance>;
+  /** Track in-flight namespace creations to prevent thundering herd */
+  namespacedCreatesInFlight: Set<string>;
 }

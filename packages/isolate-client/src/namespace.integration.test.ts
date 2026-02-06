@@ -949,6 +949,55 @@ describe("Namespace Runtime Caching Integration Tests", () => {
     });
   });
 
+  describe("Concurrent Requests", () => {
+    it("should handle concurrent dispatchRequest to a namespaced runtime", async () => {
+      const tenantId = "tenant_1";
+      const requestCount = 20;
+      const namespace = client.createNamespace(tenantId);
+      const runtime = await namespace.createRuntime();
+
+      try {
+        await runtime.eval(`
+          serve({
+            async fetch(request) {
+              const url = new URL(request.url);
+              const id = Number(url.searchParams.get("id") || "0");
+              const delay = (id % 5) * 10;
+              if (delay > 0) {
+                await new Promise(r => setTimeout(r, delay));
+              }
+              return new Response(JSON.stringify({ id: String(id), tenant: "${tenantId}" }), {
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+          });
+        `);
+
+        const requests = Array.from({ length: requestCount }, (_, i) =>
+          runtime.fetch.dispatchRequest(
+            new Request(`http://localhost/tenant?id=${i}`)
+          )
+        );
+
+        const responses = await Promise.all(requests);
+        const payloads = await Promise.all(responses.map((response) => response.json()));
+
+        assert.strictEqual(payloads.length, requestCount);
+
+        const ids = payloads.map((payload: { id: string }) => payload.id).sort();
+        const expectedIds = Array.from({ length: requestCount }, (_, i) => String(i)).sort();
+        assert.deepStrictEqual(ids, expectedIds);
+
+        assert.ok(
+          payloads.every((payload: { tenant: string }) => payload.tenant === tenantId),
+          "Expected all responses to match tenant id"
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+  });
+
   describe("Error Cases", () => {
     it("should return same runtime when namespace has active runtime (idempotent)", async () => {
       const namespace = client.createNamespace("idempotent-active-1");
@@ -972,6 +1021,36 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         assert.strictEqual(runtime.reused, false);
       } finally {
         await runtime.dispose();
+      }
+    });
+
+    it("should fail fast when concurrent createRuntime calls target same namespace", async () => {
+      const namespaceId = "concurrent-create-1";
+      const namespace = client.createNamespace(namespaceId);
+
+      const results = await Promise.allSettled([
+        namespace.createRuntime(),
+        namespace.createRuntime(),
+      ]);
+
+      const fulfilled = results.filter(
+        (result): result is PromiseFulfilledResult<RemoteRuntime> =>
+          result.status === "fulfilled"
+      );
+      const rejected = results.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected"
+      );
+
+      try {
+        assert.strictEqual(fulfilled.length, 1);
+        assert.strictEqual(rejected.length, 1);
+        const reason = rejected[0].reason as Error;
+        assert.match(
+          reason?.message ?? String(rejected[0].reason),
+          /creation already in progress/i
+        );
+      } finally {
+        await Promise.all(fulfilled.map((result) => result.value.dispose()));
       }
     });
   });

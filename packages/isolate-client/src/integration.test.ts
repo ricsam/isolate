@@ -116,6 +116,35 @@ describe("isolate-client integration", () => {
     }
   });
 
+  it("should create multiple runtimes concurrently", { timeout: 10000 }, async () => {
+    const count = 15;
+    const results = await Promise.allSettled(
+      Array.from({ length: count }, () => client.createRuntime())
+    );
+
+    const rejected = results.filter((result) => result.status === "rejected");
+    if (rejected.length > 0) {
+      assert.fail(
+        `Expected all runtimes to be created, but ${rejected.length} failed`
+      );
+    }
+
+    const runtimes = results
+      .filter(
+        (result): result is PromiseFulfilledResult<RemoteRuntime> =>
+          result.status === "fulfilled"
+      )
+      .map((result) => result.value);
+
+    try {
+      assert.strictEqual(runtimes.length, count);
+      const ids = new Set(runtimes.map((runtime) => runtime.id));
+      assert.strictEqual(ids.size, count);
+    } finally {
+      await Promise.all(runtimes.map((runtime) => runtime.dispose()));
+    }
+  });
+
   it("should dispatch HTTP requests", async () => {
     const runtime = await client.createRuntime();
 

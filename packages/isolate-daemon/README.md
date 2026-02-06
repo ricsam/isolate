@@ -100,6 +100,7 @@ The daemon supports **namespace-based runtime pooling** for improved performance
 - **Namespaced runtimes** are cached and reusable across connections
 - **LRU eviction** removes oldest disposed runtimes when at capacity
 - **Connection close** soft-deletes namespaced runtimes (keeps them in pool)
+- Concurrent createRuntime calls for the same namespace are rejected with `Namespace "<id>" creation already in progress`
 
 The `maxIsolates` limit includes both active and pooled (disposed) runtimes. This ensures predictable memory usage while allowing runtime reuse.
 

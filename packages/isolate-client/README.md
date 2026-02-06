@@ -145,6 +145,7 @@ interface Namespace {
 - Namespaced runtimes are cached on dispose and evicted via LRU when `maxIsolates` limit is reached
 - Cross-client reuse is allowed - any connection can reuse a namespace by ID
 - A namespace can only have one active runtime at a time; creating a second runtime with the same namespace ID while one is active will fail
+- Concurrent createRuntime calls for the same namespace are rejected with `Namespace "<id>" creation already in progress`
 
 ## Module Loader
 

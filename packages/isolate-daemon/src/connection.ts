@@ -635,6 +635,7 @@ async function handleCreateRuntime(
   state: DaemonState
 ): Promise<void> {
   const namespaceId = message.options.namespaceId;
+  let namespaceCreationLocked = false;
 
   // Check if we're trying to reuse a namespaced runtime
   // Note: use != null to allow empty string namespace IDs but exclude undefined/null
@@ -672,23 +673,36 @@ async function handleCreateRuntime(
       });
       return;
     }
-  }
 
-  // Check limits - try LRU eviction if at limit
-  if (state.isolates.size >= state.options.maxIsolates) {
-    // Try to evict an old disposed runtime
-    if (!(await evictOldestDisposedRuntime(state))) {
+    if (state.namespacedCreatesInFlight.has(namespaceId)) {
       sendError(
         connection.socket,
         message.requestId,
-        ErrorCode.ISOLATE_MEMORY_LIMIT,
-        `Maximum isolates (${state.options.maxIsolates}) reached`
+        ErrorCode.SCRIPT_ERROR,
+        `Namespace "${namespaceId}" creation already in progress`
       );
       return;
     }
+
+    state.namespacedCreatesInFlight.add(namespaceId);
+    namespaceCreationLocked = true;
   }
 
   try {
+    // Check limits - try LRU eviction if at limit
+    if (state.isolates.size >= state.options.maxIsolates) {
+      // Try to evict an old disposed runtime
+      if (!(await evictOldestDisposedRuntime(state))) {
+        sendError(
+          connection.socket,
+          message.requestId,
+          ErrorCode.ISOLATE_MEMORY_LIMIT,
+          `Maximum isolates (${state.options.maxIsolates}) reached`
+        );
+        return;
+      }
+    }
+
     const isolateId = randomUUID();
 
     // Create bridged callbacks that invoke the client
@@ -1279,6 +1293,10 @@ async function handleCreateRuntime(
       error.message,
       { name: error.name, stack: error.stack }
     );
+  } finally {
+    if (namespaceCreationLocked && namespaceId != null) {
+      state.namespacedCreatesInFlight.delete(namespaceId);
+    }
   }
 }
 
