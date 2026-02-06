@@ -50,7 +50,6 @@ import {
   type ConsoleGetTimersRequest,
   type ConsoleGetCountersRequest,
   type ConsoleGetGroupDepthRequest,
-  type WsCommandMessage,
   type ResponseStreamStart,
   type ResponseStreamChunk,
   type ResponseStreamEnd,
@@ -61,13 +60,18 @@ import {
   type CallbackStreamStart,
   type CallbackStreamChunk,
   type CallbackStreamEnd,
-  type ClientWsConnectRequest,
-  type ClientWsSendRequest,
-  type ClientWsCloseRequest,
-  type ClientWsOpenedMessage,
-  type ClientWsMessageMessage,
-  type ClientWsClosedMessage,
-  type ClientWsErrorMessage,
+  type ClientEventMessage,
+  type IsolateEventMessage,
+  IsolateEvents,
+  ClientEvents,
+  type WsCommandPayload,
+  type WsClientConnectPayload,
+  type WsClientSendPayload,
+  type WsClientClosePayload,
+  type WsClientOpenedPayload,
+  type WsClientMessagePayload,
+  type WsClientClosedPayload,
+  type WsClientErrorPayload,
   type FetchRequestInit,
   type MarshalContext,
 } from "@ricsam/isolate-protocol";
@@ -390,21 +394,9 @@ async function handleMessage(
       handleCallbackStreamEnd(message as CallbackStreamEnd, connection);
       break;
 
-    // Client WebSocket events (from client, forwarded to isolate)
-    case MessageType.CLIENT_WS_OPENED:
-      handleClientWsOpened(message as ClientWsOpenedMessage, connection, state);
-      break;
-
-    case MessageType.CLIENT_WS_MESSAGE:
-      handleClientWsMessage(message as ClientWsMessageMessage, connection, state);
-      break;
-
-    case MessageType.CLIENT_WS_CLOSED:
-      handleClientWsClosed(message as ClientWsClosedMessage, connection, state);
-      break;
-
-    case MessageType.CLIENT_WS_ERROR:
-      handleClientWsError(message as ClientWsErrorMessage, connection, state);
+    // Generic client events (WebSocket events and user-defined events)
+    case MessageType.CLIENT_EVENT:
+      handleClientEvent(message as ClientEventMessage, connection, state);
       break;
 
     default:
@@ -1188,7 +1180,7 @@ async function handleCreateRuntime(
       state.namespacedRuntimes.set(namespaceId, instance);
     }
 
-    // Forward WebSocket commands from isolate to client
+    // Forward WebSocket commands from isolate to client via ISOLATE_EVENT
     runtime.fetch.onWebSocketCommand((cmd) => {
       const targetConnection = callbackContext.connection;
       if (!targetConnection) {
@@ -1201,21 +1193,22 @@ async function handleCreateRuntime(
       } else {
         data = cmd.data as string | undefined;
       }
-      const wsCommandMsg: WsCommandMessage = {
-        type: MessageType.WS_COMMAND,
-        isolateId,
-        command: {
-          type: cmd.type,
-          connectionId: cmd.connectionId,
-          data,
-          code: cmd.code,
-          reason: cmd.reason,
-        },
+      const payload: WsCommandPayload = {
+        type: cmd.type,
+        connectionId: cmd.connectionId,
+        data,
+        code: cmd.code,
+        reason: cmd.reason,
       };
-      sendMessage(targetConnection.socket, wsCommandMsg);
+      sendMessage(targetConnection.socket, {
+        type: MessageType.ISOLATE_EVENT,
+        isolateId,
+        event: IsolateEvents.WS_COMMAND,
+        payload,
+      } as IsolateEventMessage);
     });
 
-    // Forward client WebSocket commands from isolate to client
+    // Forward client WebSocket commands from isolate to client via ISOLATE_EVENT
     runtime.fetch.onClientWebSocketCommand((cmd) => {
       const targetConnection = callbackContext.connection;
       if (!targetConnection) {
@@ -1229,35 +1222,55 @@ async function handleCreateRuntime(
         data = cmd.data as string | undefined;
       }
       if (cmd.type === "connect") {
-        const msg: ClientWsConnectRequest = {
-          type: MessageType.CLIENT_WS_CONNECT,
-          requestId: 0,
-          isolateId,
+        const payload: WsClientConnectPayload = {
           socketId: cmd.socketId,
           url: cmd.url!,
           protocols: cmd.protocols,
         };
-        sendMessage(targetConnection.socket, msg);
-      } else if (cmd.type === "send") {
-        const msg: ClientWsSendRequest = {
-          type: MessageType.CLIENT_WS_SEND,
-          requestId: 0,
+        sendMessage(targetConnection.socket, {
+          type: MessageType.ISOLATE_EVENT,
           isolateId,
+          event: IsolateEvents.WS_CLIENT_CONNECT,
+          payload,
+        } as IsolateEventMessage);
+      } else if (cmd.type === "send") {
+        const payload: WsClientSendPayload = {
           socketId: cmd.socketId,
           data: data!,
         };
-        sendMessage(targetConnection.socket, msg);
-      } else if (cmd.type === "close") {
-        const msg: ClientWsCloseRequest = {
-          type: MessageType.CLIENT_WS_CLOSE,
-          requestId: 0,
+        sendMessage(targetConnection.socket, {
+          type: MessageType.ISOLATE_EVENT,
           isolateId,
+          event: IsolateEvents.WS_CLIENT_SEND,
+          payload,
+        } as IsolateEventMessage);
+      } else if (cmd.type === "close") {
+        const payload: WsClientClosePayload = {
           socketId: cmd.socketId,
           code: cmd.code,
           reason: cmd.reason,
         };
-        sendMessage(targetConnection.socket, msg);
+        sendMessage(targetConnection.socket, {
+          type: MessageType.ISOLATE_EVENT,
+          isolateId,
+          event: IsolateEvents.WS_CLIENT_CLOSE,
+          payload,
+        } as IsolateEventMessage);
       }
+    });
+
+    // Forward user-defined events from isolate to client via ISOLATE_EVENT
+    runtime.fetch.onEvent((eventName, payload) => {
+      const targetConnection = callbackContext.connection;
+      if (!targetConnection) {
+        return;
+      }
+      sendMessage(targetConnection.socket, {
+        type: MessageType.ISOLATE_EVENT,
+        isolateId,
+        event: eventName,
+        payload,
+      } as IsolateEventMessage);
     });
 
     sendOk(connection.socket, message.requestId, { isolateId, reused: false });
@@ -1600,35 +1613,15 @@ async function handleWsClose(
 }
 
 // ============================================================================
-// Client WebSocket Event Handlers (outbound connections from isolate)
+// Generic Client Event Handler
 // ============================================================================
 
 /**
- * Handle CLIENT_WS_OPENED message from client.
- * Dispatches open event to the WebSocket instance in the isolate.
+ * Handle CLIENT_EVENT message from client.
+ * Routes WebSocket events to the isolate, and user-defined events to dispatchEvent.
  */
-function handleClientWsOpened(
-  message: ClientWsOpenedMessage,
-  connection: ConnectionState,
-  state: DaemonState
-): void {
-  const instance = state.isolates.get(message.isolateId);
-  if (!instance) return;
-
-  instance.lastActivity = Date.now();
-  instance.runtime.fetch.dispatchClientWebSocketOpen(
-    message.socketId,
-    message.protocol,
-    message.extensions
-  );
-}
-
-/**
- * Handle CLIENT_WS_MESSAGE message from client.
- * Dispatches message event to the WebSocket instance in the isolate.
- */
-function handleClientWsMessage(
-  message: ClientWsMessageMessage,
+function handleClientEvent(
+  message: ClientEventMessage,
   connection: ConnectionState,
   state: DaemonState
 ): void {
@@ -1637,52 +1630,49 @@ function handleClientWsMessage(
 
   instance.lastActivity = Date.now();
 
-  // Convert Uint8Array to ArrayBuffer if needed
-  const data = message.data instanceof Uint8Array
-    ? message.data.buffer.slice(
-        message.data.byteOffset,
-        message.data.byteOffset + message.data.byteLength
-      ) as ArrayBuffer
-    : message.data;
-
-  instance.runtime.fetch.dispatchClientWebSocketMessage(message.socketId, data);
-}
-
-/**
- * Handle CLIENT_WS_CLOSED message from client.
- * Dispatches close event to the WebSocket instance in the isolate.
- */
-function handleClientWsClosed(
-  message: ClientWsClosedMessage,
-  connection: ConnectionState,
-  state: DaemonState
-): void {
-  const instance = state.isolates.get(message.isolateId);
-  if (!instance) return;
-
-  instance.lastActivity = Date.now();
-  instance.runtime.fetch.dispatchClientWebSocketClose(
-    message.socketId,
-    message.code,
-    message.reason,
-    message.wasClean
-  );
-}
-
-/**
- * Handle CLIENT_WS_ERROR message from client.
- * Dispatches error event to the WebSocket instance in the isolate.
- */
-function handleClientWsError(
-  message: ClientWsErrorMessage,
-  connection: ConnectionState,
-  state: DaemonState
-): void {
-  const instance = state.isolates.get(message.isolateId);
-  if (!instance) return;
-
-  instance.lastActivity = Date.now();
-  instance.runtime.fetch.dispatchClientWebSocketError(message.socketId);
+  switch (message.event) {
+    case ClientEvents.WS_CLIENT_OPENED: {
+      const payload = message.payload as WsClientOpenedPayload;
+      instance.runtime.fetch.dispatchClientWebSocketOpen(
+        payload.socketId,
+        payload.protocol,
+        payload.extensions
+      );
+      break;
+    }
+    case ClientEvents.WS_CLIENT_MESSAGE: {
+      const payload = message.payload as WsClientMessagePayload;
+      // Convert Uint8Array to ArrayBuffer if needed
+      const data = payload.data instanceof Uint8Array
+        ? payload.data.buffer.slice(
+            payload.data.byteOffset,
+            payload.data.byteOffset + payload.data.byteLength
+          ) as ArrayBuffer
+        : payload.data;
+      instance.runtime.fetch.dispatchClientWebSocketMessage(payload.socketId, data);
+      break;
+    }
+    case ClientEvents.WS_CLIENT_CLOSED: {
+      const payload = message.payload as WsClientClosedPayload;
+      instance.runtime.fetch.dispatchClientWebSocketClose(
+        payload.socketId,
+        payload.code,
+        payload.reason,
+        payload.wasClean
+      );
+      break;
+    }
+    case ClientEvents.WS_CLIENT_ERROR: {
+      const payload = message.payload as WsClientErrorPayload;
+      instance.runtime.fetch.dispatchClientWebSocketError(payload.socketId);
+      break;
+    }
+    default: {
+      // User-defined events: dispatch to isolate
+      instance.runtime.fetch.dispatchEvent(message.event, message.payload);
+      break;
+    }
+  }
 }
 
 // ============================================================================

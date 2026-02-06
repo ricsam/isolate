@@ -177,6 +177,10 @@ export interface RuntimeFetchHandle {
   dispatchClientWebSocketError(socketId: string): void;
   /** Register callback for client WebSocket commands from isolate */
   onClientWebSocketCommand(callback: (cmd: ClientWebSocketCommand) => void): () => void;
+  /** Register callback for events emitted from isolate code */
+  onEvent(callback: (event: string, payload: unknown) => void): () => void;
+  /** Dispatch an event into the isolate (calls __on listeners) */
+  dispatchEvent(event: string, payload: unknown): void;
 }
 
 /**
@@ -1315,6 +1319,18 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
         throw new Error("Fetch handle not available");
       }
       return state.handles.fetch.onClientWebSocketCommand(callback);
+    },
+    onEvent(callback: (event: string, payload: unknown) => void) {
+      if (!state.handles.fetch) {
+        throw new Error("Fetch handle not available");
+      }
+      return state.handles.fetch.onEvent(callback);
+    },
+    dispatchEvent(event: string, payload: unknown) {
+      if (!state.handles.fetch) {
+        throw new Error("Fetch handle not available");
+      }
+      state.handles.fetch.dispatchEvent(event, payload);
     },
   };
 

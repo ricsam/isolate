@@ -66,21 +66,9 @@ export const MessageType = {
   STREAM_CLOSE: 0xa2,
   STREAM_ERROR: 0xa3,
 
-  // Client → Daemon: Client WebSocket operations (outbound connections from isolate)
-  CLIENT_WS_CONNECT: 0x40,
-  CLIENT_WS_SEND: 0x41,
-  CLIENT_WS_CLOSE: 0x42,
-
-  // Daemon → Client: Events
-  PLAYWRIGHT_EVENT: 0xb0,
-  TEST_EVENT: 0xb1,
-  WS_COMMAND: 0xb2,
-
-  // Daemon → Client: Client WebSocket events
-  CLIENT_WS_OPENED: 0xb8,
-  CLIENT_WS_MESSAGE: 0xb9,
-  CLIENT_WS_CLOSED: 0xba,
-  CLIENT_WS_ERROR: 0xbb,
+  // Bidirectional: Generic events
+  ISOLATE_EVENT: 0xc0,  // daemon → client
+  CLIENT_EVENT: 0xc1,   // client → daemon
 
   // Heartbeat
   PING: 0xf0,
@@ -584,111 +572,87 @@ export interface StreamError {
 }
 
 // ============================================================================
-// Events
+// Generic Events
 // ============================================================================
 
-export type PlaywrightEventType =
-  | "consoleLog"
-  | "networkRequest"
-  | "networkResponse";
+/** Event name constants for isolate → client events */
+export const IsolateEvents = {
+  WS_COMMAND: "ws:command",
+  WS_CLIENT_CONNECT: "ws:client-connect",
+  WS_CLIENT_SEND: "ws:client-send",
+  WS_CLIENT_CLOSE: "ws:client-close",
+} as const;
 
-export interface PlaywrightEventMessage {
-  type: typeof MessageType.PLAYWRIGHT_EVENT;
+/** Event name constants for client → daemon events */
+export const ClientEvents = {
+  WS_CLIENT_OPENED: "ws:client-opened",
+  WS_CLIENT_MESSAGE: "ws:client-message",
+  WS_CLIENT_CLOSED: "ws:client-closed",
+  WS_CLIENT_ERROR: "ws:client-error",
+} as const;
+
+/** Generic event from daemon to client */
+export interface IsolateEventMessage {
+  type: typeof MessageType.ISOLATE_EVENT;
   isolateId: string;
-  eventType: PlaywrightEventType;
+  event: string;
   payload: unknown;
 }
 
-export interface TestEventMessage {
-  type: typeof MessageType.TEST_EVENT;
+/** Generic event from client to daemon */
+export interface ClientEventMessage {
+  type: typeof MessageType.CLIENT_EVENT;
   isolateId: string;
-  event: TestEvent;
+  event: string;
+  payload: unknown;
 }
 
-export interface WsCommandMessage {
-  type: typeof MessageType.WS_COMMAND;
-  isolateId: string;
-  command: {
-    type: "message" | "close";
-    connectionId: string;
-    data?: string | Uint8Array;
-    code?: number;
-    reason?: string;
-  };
-}
+// Typed payloads for internal WS events (for type safety at usage sites)
 
-// ============================================================================
-// Client WebSocket Messages (outbound connections from isolate)
-// ============================================================================
-
-/** Client WebSocket command from isolate to host */
-export interface ClientWebSocketCommand {
-  type: "connect" | "send" | "close";
-  socketId: string;
-  url?: string;
-  protocols?: string[];
+export interface WsCommandPayload {
+  type: "message" | "close";
+  connectionId: string;
   data?: string | Uint8Array;
   code?: number;
   reason?: string;
 }
 
-/** Message sent when isolate wants to create a WebSocket connection */
-export interface ClientWsConnectRequest extends BaseMessage {
-  type: typeof MessageType.CLIENT_WS_CONNECT;
-  isolateId: string;
+export interface WsClientConnectPayload {
   socketId: string;
   url: string;
   protocols?: string[];
 }
 
-/** Message sent when isolate wants to send data on a WebSocket */
-export interface ClientWsSendRequest extends BaseMessage {
-  type: typeof MessageType.CLIENT_WS_SEND;
-  isolateId: string;
+export interface WsClientSendPayload {
   socketId: string;
   data: string | Uint8Array;
 }
 
-/** Message sent when isolate wants to close a WebSocket */
-export interface ClientWsCloseRequest extends BaseMessage {
-  type: typeof MessageType.CLIENT_WS_CLOSE;
-  isolateId: string;
+export interface WsClientClosePayload {
   socketId: string;
   code?: number;
   reason?: string;
 }
 
-/** Event sent when a client WebSocket connection is opened */
-export interface ClientWsOpenedMessage {
-  type: typeof MessageType.CLIENT_WS_OPENED;
-  isolateId: string;
+export interface WsClientOpenedPayload {
   socketId: string;
   protocol: string;
   extensions: string;
 }
 
-/** Event sent when a client WebSocket receives a message */
-export interface ClientWsMessageMessage {
-  type: typeof MessageType.CLIENT_WS_MESSAGE;
-  isolateId: string;
+export interface WsClientMessagePayload {
   socketId: string;
   data: string | Uint8Array;
 }
 
-/** Event sent when a client WebSocket is closed */
-export interface ClientWsClosedMessage {
-  type: typeof MessageType.CLIENT_WS_CLOSED;
-  isolateId: string;
+export interface WsClientClosedPayload {
   socketId: string;
   code: number;
   reason: string;
   wasClean: boolean;
 }
 
-/** Event sent when a client WebSocket has an error */
-export interface ClientWsErrorMessage {
-  type: typeof MessageType.CLIENT_WS_ERROR;
-  isolateId: string;
+export interface WsClientErrorPayload {
   socketId: string;
 }
 
@@ -768,10 +732,7 @@ export type ClientMessage =
   | StreamPull
   | StreamClose
   | StreamError
-  | ClientWsOpenedMessage
-  | ClientWsMessageMessage
-  | ClientWsClosedMessage
-  | ClientWsErrorMessage
+  | ClientEventMessage
   | PingMessage;
 
 export type DaemonMessage =
@@ -785,12 +746,7 @@ export type DaemonMessage =
   | StreamPull
   | StreamClose
   | StreamError
-  | PlaywrightEventMessage
-  | TestEventMessage
-  | WsCommandMessage
-  | ClientWsConnectRequest
-  | ClientWsSendRequest
-  | ClientWsCloseRequest
+  | IsolateEventMessage
   | PongMessage;
 
 export type Message = ClientMessage | DaemonMessage;

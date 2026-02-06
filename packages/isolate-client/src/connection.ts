@@ -31,7 +31,6 @@ import {
   type GetTestCountRequest,
   type TestEnvironmentCallbackRegistrations,
   type TestEnvironmentOptionsProtocol,
-  type TestEventMessage,
   type CollectedData,
   type ResetTestEnvRequest,
   type PlaywrightOperation,
@@ -48,7 +47,14 @@ import {
   type ConsoleGetTimersRequest,
   type ConsoleGetCountersRequest,
   type ConsoleGetGroupDepthRequest,
-  type WsCommandMessage,
+  type IsolateEventMessage,
+  type ClientEventMessage,
+  IsolateEvents,
+  ClientEvents,
+  type WsCommandPayload,
+  type WsClientConnectPayload,
+  type WsClientSendPayload,
+  type WsClientClosePayload,
   type ResponseStreamStart,
   type ResponseStreamChunk,
   type ResponseStreamEnd,
@@ -59,13 +65,6 @@ import {
   type CallbackStreamStart,
   type CallbackStreamChunk,
   type CallbackStreamEnd,
-  type ClientWsConnectRequest,
-  type ClientWsSendRequest,
-  type ClientWsCloseRequest,
-  type ClientWsOpenedMessage,
-  type ClientWsMessageMessage,
-  type ClientWsClosedMessage,
-  type ClientWsErrorMessage,
   marshalValue,
   isPromiseRef,
   isAsyncIteratorRef,
@@ -115,6 +114,10 @@ const isolateClientWebSockets = new Map<string, Map<string, WebSocket>>();
 // Map: isolateId -> WebSocketCallback
 import type { WebSocketCallback } from "@ricsam/isolate-protocol";
 const isolateWebSocketCallbacks = new Map<string, WebSocketCallback>();
+
+// Track event listeners per isolate for handling user-defined ISOLATE_EVENT messages
+// Map: isolateId -> Map<event, Set<callback>>
+const isolateEventListeners = new Map<string, Map<string, Set<(payload: unknown) => void>>>();
 
 interface PendingRequest {
   resolve: (data: unknown) => void;
@@ -350,50 +353,10 @@ function handleMessage(message: Message, state: ConnectionState): void {
       break;
     }
 
-    case MessageType.WS_COMMAND: {
-      const msg = message as WsCommandMessage;
-      const callbacks = isolateWsCallbacks.get(msg.isolateId);
-      if (callbacks) {
-        // Convert Uint8Array to ArrayBuffer if needed
-        let data: string | ArrayBuffer | undefined;
-        if (msg.command.data instanceof Uint8Array) {
-          data = msg.command.data.buffer.slice(
-            msg.command.data.byteOffset,
-            msg.command.data.byteOffset + msg.command.data.byteLength
-          ) as ArrayBuffer;
-        } else {
-          data = msg.command.data;
-        }
-        const cmd: WebSocketCommand = {
-          type: msg.command.type,
-          connectionId: msg.command.connectionId,
-          data,
-          code: msg.command.code,
-          reason: msg.command.reason,
-        };
-        for (const cb of callbacks) {
-          cb(cmd);
-        }
-      }
-      break;
-    }
-
-    // Client WebSocket commands (outbound connections from isolate)
-    case MessageType.CLIENT_WS_CONNECT: {
-      const msg = message as ClientWsConnectRequest;
-      handleClientWsConnect(msg, state);
-      break;
-    }
-
-    case MessageType.CLIENT_WS_SEND: {
-      const msg = message as ClientWsSendRequest;
-      handleClientWsSend(msg, state);
-      break;
-    }
-
-    case MessageType.CLIENT_WS_CLOSE: {
-      const msg = message as ClientWsCloseRequest;
-      handleClientWsClose(msg, state);
+    // Generic isolate events (WebSocket commands and user-defined events)
+    case MessageType.ISOLATE_EVENT: {
+      const msg = message as IsolateEventMessage;
+      handleIsolateEvent(msg, state);
       break;
     }
 
@@ -1216,6 +1179,38 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       // Module evaluation returns void - don't return the value
     },
 
+    on(event: string, callback: (payload: unknown) => void): () => void {
+      let listeners = isolateEventListeners.get(isolateId);
+      if (!listeners) {
+        listeners = new Map();
+        isolateEventListeners.set(isolateId, listeners);
+      }
+      let eventListeners = listeners.get(event);
+      if (!eventListeners) {
+        eventListeners = new Set();
+        listeners.set(event, eventListeners);
+      }
+      eventListeners.add(callback);
+      return () => {
+        eventListeners!.delete(callback);
+        if (eventListeners!.size === 0) {
+          listeners!.delete(event);
+          if (listeners!.size === 0) {
+            isolateEventListeners.delete(isolateId);
+          }
+        }
+      };
+    },
+
+    emit(event: string, payload: unknown): void {
+      sendMessage(state.socket, {
+        type: MessageType.CLIENT_EVENT,
+        isolateId,
+        event,
+        payload,
+      } as ClientEventMessage);
+    },
+
     dispose: async () => {
       // Clean up page listeners
       for (const cleanup of pageListenerCleanups) {
@@ -1224,6 +1219,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       // Clean up WebSocket callbacks
       isolateWsCallbacks.delete(isolateId);
       isolateWebSocketCallbacks.delete(isolateId);
+      isolateEventListeners.delete(isolateId);
 
       // Clean up client WebSockets (close all open connections)
       const clientSockets = isolateClientWebSockets.get(isolateId);
@@ -1940,19 +1936,91 @@ async function sendBodyStream(
 }
 
 // ============================================================================
+// Generic Isolate Event Handler
+// ============================================================================
+
+/**
+ * Handle ISOLATE_EVENT message from daemon.
+ * Routes WS events to existing handlers, and user-defined events to listeners.
+ */
+function handleIsolateEvent(
+  message: IsolateEventMessage,
+  state: ConnectionState
+): void {
+  switch (message.event) {
+    case IsolateEvents.WS_COMMAND: {
+      const payload = message.payload as WsCommandPayload;
+      const callbacks = isolateWsCallbacks.get(message.isolateId);
+      if (callbacks) {
+        // Convert Uint8Array to ArrayBuffer if needed
+        let data: string | ArrayBuffer | undefined;
+        if (payload.data instanceof Uint8Array) {
+          data = payload.data.buffer.slice(
+            payload.data.byteOffset,
+            payload.data.byteOffset + payload.data.byteLength
+          ) as ArrayBuffer;
+        } else {
+          data = payload.data;
+        }
+        const cmd: WebSocketCommand = {
+          type: payload.type,
+          connectionId: payload.connectionId,
+          data,
+          code: payload.code,
+          reason: payload.reason,
+        };
+        for (const cb of callbacks) {
+          cb(cmd);
+        }
+      }
+      break;
+    }
+    case IsolateEvents.WS_CLIENT_CONNECT: {
+      const payload = message.payload as WsClientConnectPayload;
+      handleClientWsConnect(message.isolateId, payload, state);
+      break;
+    }
+    case IsolateEvents.WS_CLIENT_SEND: {
+      const payload = message.payload as WsClientSendPayload;
+      handleClientWsSend(message.isolateId, payload, state);
+      break;
+    }
+    case IsolateEvents.WS_CLIENT_CLOSE: {
+      const payload = message.payload as WsClientClosePayload;
+      handleClientWsClose(message.isolateId, payload, state);
+      break;
+    }
+    default: {
+      // User-defined events: dispatch to per-isolate event listeners
+      const listeners = isolateEventListeners.get(message.isolateId);
+      if (listeners) {
+        const eventListeners = listeners.get(message.event);
+        if (eventListeners) {
+          for (const cb of eventListeners) {
+            cb(message.payload);
+          }
+        }
+      }
+      break;
+    }
+  }
+}
+
+// ============================================================================
 // Client WebSocket Handlers (outbound connections from isolate)
 // ============================================================================
 
 /**
- * Handle CLIENT_WS_CONNECT command from daemon.
+ * Handle client WebSocket connect command from daemon.
  * Creates a real WebSocket connection and sets up event handlers.
  * If a WebSocket callback is registered, it's used to create/proxy the connection.
  */
 function handleClientWsConnect(
-  message: ClientWsConnectRequest,
+  isolateId: string,
+  payload: WsClientConnectPayload,
   state: ConnectionState
 ): void {
-  const { isolateId, socketId, url, protocols } = message;
+  const { socketId, url, protocols } = payload;
 
   // Get or create the WebSocket map for this isolate
   let sockets = isolateClientWebSockets.get(isolateId);
@@ -1968,14 +2036,12 @@ function handleClientWsConnect(
 
     // Set up event handlers
     ws.onopen = () => {
-      const msg: ClientWsOpenedMessage = {
-        type: MessageType.CLIENT_WS_OPENED,
+      sendMessage(state.socket, {
+        type: MessageType.CLIENT_EVENT,
         isolateId,
-        socketId,
-        protocol: ws.protocol || "",
-        extensions: ws.extensions || "",
-      };
-      sendMessage(state.socket, msg);
+        event: ClientEvents.WS_CLIENT_OPENED,
+        payload: { socketId, protocol: ws.protocol || "", extensions: ws.extensions || "" },
+      } as ClientEventMessage);
     };
 
     ws.onmessage = (event) => {
@@ -1987,13 +2053,12 @@ function handleClientWsConnect(
       } else if (event.data instanceof Blob) {
         // Read blob asynchronously
         event.data.arrayBuffer().then((buffer) => {
-          const msg: ClientWsMessageMessage = {
-            type: MessageType.CLIENT_WS_MESSAGE,
+          sendMessage(state.socket, {
+            type: MessageType.CLIENT_EVENT,
             isolateId,
-            socketId,
-            data: new Uint8Array(buffer),
-          };
-          sendMessage(state.socket, msg);
+            event: ClientEvents.WS_CLIENT_MESSAGE,
+            payload: { socketId, data: new Uint8Array(buffer) },
+          } as ClientEventMessage);
         });
         return;
       } else {
@@ -2001,34 +2066,30 @@ function handleClientWsConnect(
         data = String(event.data);
       }
 
-      const msg: ClientWsMessageMessage = {
-        type: MessageType.CLIENT_WS_MESSAGE,
+      sendMessage(state.socket, {
+        type: MessageType.CLIENT_EVENT,
         isolateId,
-        socketId,
-        data,
-      };
-      sendMessage(state.socket, msg);
+        event: ClientEvents.WS_CLIENT_MESSAGE,
+        payload: { socketId, data },
+      } as ClientEventMessage);
     };
 
     ws.onerror = () => {
-      const msg: ClientWsErrorMessage = {
-        type: MessageType.CLIENT_WS_ERROR,
+      sendMessage(state.socket, {
+        type: MessageType.CLIENT_EVENT,
         isolateId,
-        socketId,
-      };
-      sendMessage(state.socket, msg);
+        event: ClientEvents.WS_CLIENT_ERROR,
+        payload: { socketId },
+      } as ClientEventMessage);
     };
 
     ws.onclose = (event) => {
-      const msg: ClientWsClosedMessage = {
-        type: MessageType.CLIENT_WS_CLOSED,
+      sendMessage(state.socket, {
+        type: MessageType.CLIENT_EVENT,
         isolateId,
-        socketId,
-        code: event.code,
-        reason: event.reason,
-        wasClean: event.wasClean,
-      };
-      sendMessage(state.socket, msg);
+        event: ClientEvents.WS_CLIENT_CLOSED,
+        payload: { socketId, code: event.code, reason: event.reason, wasClean: event.wasClean },
+      } as ClientEventMessage);
 
       // Clean up the socket
       sockets?.delete(socketId);
@@ -2040,22 +2101,19 @@ function handleClientWsConnect(
 
   // Helper to send connection blocked/failed events
   const sendConnectionFailed = (reason: string) => {
-    const errorMsg: ClientWsErrorMessage = {
-      type: MessageType.CLIENT_WS_ERROR,
+    sendMessage(state.socket, {
+      type: MessageType.CLIENT_EVENT,
       isolateId,
-      socketId,
-    };
-    sendMessage(state.socket, errorMsg);
+      event: ClientEvents.WS_CLIENT_ERROR,
+      payload: { socketId },
+    } as ClientEventMessage);
 
-    const closeMsg: ClientWsClosedMessage = {
-      type: MessageType.CLIENT_WS_CLOSED,
+    sendMessage(state.socket, {
+      type: MessageType.CLIENT_EVENT,
       isolateId,
-      socketId,
-      code: 1006,
-      reason,
-      wasClean: false,
-    };
-    sendMessage(state.socket, closeMsg);
+      event: ClientEvents.WS_CLIENT_CLOSED,
+      payload: { socketId, code: 1006, reason, wasClean: false },
+    } as ClientEventMessage);
   };
 
   // Check if a WebSocket callback is registered for this isolate
@@ -2105,14 +2163,15 @@ function handleClientWsConnect(
 }
 
 /**
- * Handle CLIENT_WS_SEND command from daemon.
+ * Handle client WebSocket send command from daemon.
  * Sends data on an existing WebSocket connection.
  */
 function handleClientWsSend(
-  message: ClientWsSendRequest,
+  isolateId: string,
+  payload: WsClientSendPayload,
   state: ConnectionState
 ): void {
-  const { isolateId, socketId, data } = message;
+  const { socketId, data } = payload;
 
   const sockets = isolateClientWebSockets.get(isolateId);
   const ws = sockets?.get(socketId);
@@ -2134,14 +2193,15 @@ function handleClientWsSend(
 }
 
 /**
- * Handle CLIENT_WS_CLOSE command from daemon.
+ * Handle client WebSocket close command from daemon.
  * Closes an existing WebSocket connection.
  */
 function handleClientWsClose(
-  message: ClientWsCloseRequest,
+  isolateId: string,
+  payload: WsClientClosePayload,
   state: ConnectionState
 ): void {
-  const { isolateId, socketId, code, reason } = message;
+  const { socketId, code, reason } = payload;
 
   const sockets = isolateClientWebSockets.get(isolateId);
   const ws = sockets?.get(socketId);

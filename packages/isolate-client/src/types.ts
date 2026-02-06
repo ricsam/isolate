@@ -209,6 +209,21 @@ export interface RemoteRuntime {
    */
   eval(code: string, filenameOrOptions?: string | EvalOptions): Promise<void>;
 
+  /**
+   * Listen for events emitted from isolate code (via __emit).
+   * @param event - The event name to listen for
+   * @param callback - Called when the event is received
+   * @returns Unsubscribe function
+   */
+  on(event: string, callback: (payload: unknown) => void): () => void;
+
+  /**
+   * Emit an event to the isolate (received via __on in isolate code).
+   * @param event - The event name
+   * @param payload - The event payload (must be JSON-serializable)
+   */
+  emit(event: string, payload: unknown): void;
+
   /** Dispose the runtime */
   dispose(): Promise<void>;
 }

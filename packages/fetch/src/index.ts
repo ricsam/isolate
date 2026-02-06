@@ -89,6 +89,12 @@ export interface FetchHandle {
   dispatchClientWebSocketError(socketId: string): void;
   /** Register callback for client WebSocket commands from isolate */
   onClientWebSocketCommand(callback: (cmd: ClientWebSocketCommand) => void): () => void;
+
+  // Generic events
+  /** Register callback for events emitted from isolate code */
+  onEvent(callback: (event: string, payload: unknown) => void): () => void;
+  /** Dispatch an event into the isolate (calls __on listeners) */
+  dispatchEvent(event: string, payload: unknown): void;
 }
 
 // ============================================================================
@@ -2688,6 +2694,49 @@ export async function setupFetch(
   // Setup client WebSocket class (outbound connections from isolate)
   setupClientWebSocket(context, clientWsCommandCallbacks);
 
+  // Setup event system callbacks
+  const eventCallbacks = new Set<(event: string, payload: unknown) => void>();
+
+  // __emit: called from isolate code to emit events to host
+  context.global.setSync(
+    "__emit",
+    new ivm.Callback((eventName: string, payloadJson: string) => {
+      const payload = JSON.parse(payloadJson);
+      for (const cb of eventCallbacks) cb(eventName, payload);
+    })
+  );
+
+  // Inject isolate-side event listener infrastructure
+  context.evalSync(`
+(function() {
+  const __eventListeners = new Map();
+
+  globalThis.__on = function(event, callback) {
+    let listeners = __eventListeners.get(event);
+    if (!listeners) {
+      listeners = new Set();
+      __eventListeners.set(event, listeners);
+    }
+    listeners.add(callback);
+    return function() {
+      listeners.delete(callback);
+      if (listeners.size === 0) {
+        __eventListeners.delete(event);
+      }
+    };
+  };
+
+  globalThis.__dispatchExternalEvent = function(event, payloadJson) {
+    const listeners = __eventListeners.get(event);
+    if (!listeners) return;
+    const payload = JSON.parse(payloadJson);
+    for (const cb of listeners) {
+      try { cb(payload); } catch (e) { console.error('Event listener error:', e); }
+    }
+  };
+})();
+  `);
+
   return {
     dispose() {
       // Clear state for this context
@@ -3110,6 +3159,18 @@ export async function setupFetch(
     onClientWebSocketCommand(callback: (cmd: ClientWebSocketCommand) => void): () => void {
       clientWsCommandCallbacks.add(callback);
       return () => clientWsCommandCallbacks.delete(callback);
+    },
+
+    onEvent(callback: (event: string, payload: unknown) => void): () => void {
+      eventCallbacks.add(callback);
+      return () => eventCallbacks.delete(callback);
+    },
+
+    dispatchEvent(event: string, payload: unknown): void {
+      const json = JSON.stringify(payload);
+      const safeEvent = JSON.stringify(event);
+      const safeJson = JSON.stringify(json);
+      context.evalSync(`__dispatchExternalEvent(${safeEvent}, ${safeJson});`);
     },
   };
 }
