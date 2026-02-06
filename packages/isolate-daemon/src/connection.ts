@@ -142,11 +142,8 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
       }
     }
 
-    // Reject pending callbacks and clear their timeouts
+    // Reject pending callbacks
     for (const [, pending] of connection.pendingCallbacks) {
-      if (pending.timeoutId) {
-        clearTimeout(pending.timeoutId);
-      }
       pending.reject(new Error("Connection closed"));
     }
     connection.pendingCallbacks.clear();
@@ -1001,7 +998,6 @@ async function handleCreateRuntime(
               conn,
               callbackId,
               [JSON.stringify(op)],
-              60000
             );
             return JSON.parse(resultJson as string) as PlaywrightResult;
           } catch (err) {
@@ -1078,7 +1074,7 @@ async function handleCreateRuntime(
           headers: init.headers,
           body: init.rawBody,
         };
-        const result = await invokeClientCallback(conn, callbackId, [serialized], 60000);
+        const result = await invokeClientCallback(conn, callbackId, [serialized]);
         if (result && typeof result === 'object' && (result as { __streamingResponse?: boolean }).__streamingResponse) {
           const response = (result as { response: Response }).response;
           (response as Response & { __isCallbackStream?: boolean }).__isCallbackStream = true;
@@ -1371,19 +1367,16 @@ async function handleEval(
     // - Pending callback flushing
     await instance.runtime.eval(message.code, {
       filename: message.filename,
-      maxExecutionMs: message.maxExecutionMs,
     });
 
     // Return undefined for module evaluation
     sendOk(connection.socket, message.requestId, { value: undefined });
   } catch (err) {
     const error = err as Error;
-    // Check if this is a timeout error from isolated-vm
-    const isTimeoutError = error.message?.includes('Script execution timed out');
     sendError(
       connection.socket,
       message.requestId,
-      isTimeoutError ? ErrorCode.ISOLATE_TIMEOUT : ErrorCode.SCRIPT_ERROR,
+      ErrorCode.SCRIPT_ERROR,
       error.message,
       { name: error.name, stack: error.stack }
     );
@@ -2030,10 +2023,6 @@ function handleCallbackResponse(
 
   connection.pendingCallbacks.delete(message.requestId);
 
-  if (pending.timeoutId) {
-    clearTimeout(pending.timeoutId);
-  }
-
   if (message.error) {
     const error = new Error(message.error.message);
     error.name = message.error.name;
@@ -2053,20 +2042,13 @@ async function invokeClientCallback(
   connection: ConnectionState,
   callbackId: number,
   args: unknown[],
-  timeout = 10000
 ): Promise<unknown> {
   const requestId = connection.nextCallbackId++;
 
   return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      connection.pendingCallbacks.delete(requestId);
-      reject(new Error("Callback timeout"));
-    }, timeout);
-
     const pending: PendingRequest = {
       resolve,
       reject,
-      timeoutId,
     };
 
     connection.pendingCallbacks.set(requestId, pending);
@@ -2275,9 +2257,6 @@ function handleCallbackStreamStart(
   const pending = connection.pendingCallbacks.get(message.requestId);
   if (pending) {
     connection.pendingCallbacks.delete(message.requestId);
-    if (pending.timeoutId) {
-      clearTimeout(pending.timeoutId);
-    }
 
     const response = new Response(readableStream, {
       status: message.metadata.status,

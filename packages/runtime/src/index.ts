@@ -1478,9 +1478,6 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
         try {
           await runRef.apply(undefined, [], {
             result: { promise: true },
-            ...(options?.maxExecutionMs
-              ? { timeout: options.maxExecutionMs }
-              : {}),
           });
         } finally {
           runRef.release();

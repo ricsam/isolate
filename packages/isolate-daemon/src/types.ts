@@ -120,7 +120,6 @@ export interface CallbackContext {
 export interface PendingRequest {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
-  timeoutId?: ReturnType<typeof setTimeout>;
 }
 
 /**

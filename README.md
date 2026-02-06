@@ -444,7 +444,7 @@ interface Runtime {
 
 interface FetchHandle {
   /** Dispatch HTTP request to serve() handler */
-  dispatchRequest(request: Request, options?: { timeout?: number }): Promise<Response>;
+  dispatchRequest(request: Request, options?: { signal?: AbortSignal }): Promise<Response>;
   /** Check if serve() has been called */
   hasServeHandler(): boolean;
   /** Check if there are active WebSocket connections */

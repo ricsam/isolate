@@ -23,6 +23,6 @@ When adding or evolving public APIs in this repository, follow these rules:
 ## Current Legacy Candidates (documented, not yet removed)
 
 - `eval(code, filenameOrOptions)` overload:
-  - Preferred API is `eval(code, { filename, maxExecutionMs })`.
+  - Preferred API is `eval(code, { filename })`.
 - `testEnvironment: boolean | object`:
   - Keep for compatibility for now; revisit in a future cleanup.

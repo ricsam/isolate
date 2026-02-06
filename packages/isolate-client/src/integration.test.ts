@@ -244,42 +244,6 @@ describe("isolate-client integration", () => {
     assert.ok(stats.activeConnections >= 1);
   });
 
-  // maxExecutionMs timeout tests
-  it("should timeout on infinite loop with maxExecutionMs", async () => {
-    const runtime = await client.createRuntime();
-    try {
-      await assert.rejects(
-        async () => {
-          await runtime.eval(`while(true) {}`, { maxExecutionMs: 100 });
-        },
-        /Script execution timed out/,
-        "should throw timeout error"
-      );
-    } finally {
-      await runtime.dispose();
-    }
-  });
-
-  it("should complete when code finishes within maxExecutionMs", async () => {
-    const logs: string[] = [];
-    const runtime = await client.createRuntime({
-      console: {
-        onEntry: (entry) => {
-          if (entry.type === "output" && entry.level === "log") {
-            logs.push(entry.stdout);
-          }
-        },
-      },
-    });
-
-    try {
-      await runtime.eval(`console.log("fast code");`, { maxExecutionMs: 5000 });
-      assert.strictEqual(logs[0], "fast code");
-    } finally {
-      await runtime.dispose();
-    }
-  });
-
   // Test Environment Integration Tests
   it("should setup test environment and run tests", async () => {
     const runtime = await client.createRuntime({

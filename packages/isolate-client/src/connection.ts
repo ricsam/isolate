@@ -100,9 +100,6 @@ import type {
   Namespace,
 } from "./types.ts";
 
-const DEFAULT_TIMEOUT = 30000;
-const TEST_REQUEST_TIMEOUT_BUFFER_MS = 1000;
-
 // Track WebSocket command callbacks per isolate for handling WS_COMMAND messages
 const isolateWsCallbacks = new Map<string, Set<(cmd: WebSocketCommand) => void>>();
 
@@ -122,7 +119,6 @@ const isolateEventListeners = new Map<string, Map<string, Set<(payload: unknown)
 interface PendingRequest {
   resolve: (data: unknown) => void;
   reject: (error: Error) => void;
-  timeoutId?: ReturnType<typeof setTimeout>;
 }
 
 /** Stream receiver for streaming response chunks directly to consumer */
@@ -207,11 +203,8 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
 
   socket.on("close", () => {
     state.connected = false;
-    // Reject all pending requests and clear their timeouts
+    // Reject all pending requests
     for (const [, pending] of state.pendingRequests) {
-      if (pending.timeoutId) {
-        clearTimeout(pending.timeoutId);
-      }
       pending.reject(new Error("Connection closed"));
     }
     state.pendingRequests.clear();
@@ -263,7 +256,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
  */
 function createSocket(options: ConnectOptions): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    const timeout = options.timeout ?? DEFAULT_TIMEOUT;
+    const timeout = options.timeout;
 
     let socket: Socket;
 
@@ -288,15 +281,17 @@ function createSocket(options: ConnectOptions): Promise<Socket> {
 
     socket.on("error", onError);
 
-    // Connection timeout
-    const timeoutId = setTimeout(() => {
-      socket.destroy();
-      reject(new Error("Connection timeout"));
-    }, timeout);
+    // Connection timeout (opt-in)
+    if (timeout && timeout > 0) {
+      const timeoutId = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("Connection timeout"));
+      }, timeout);
 
-    socket.once("connect", () => {
-      clearTimeout(timeoutId);
-    });
+      socket.once("connect", () => {
+        clearTimeout(timeoutId);
+      });
+    }
   });
 }
 
@@ -310,7 +305,6 @@ function handleMessage(message: Message, state: ConnectionState): void {
       const pending = state.pendingRequests.get(response.requestId);
       if (pending) {
         state.pendingRequests.delete(response.requestId);
-        if (pending.timeoutId) clearTimeout(pending.timeoutId);
         pending.resolve(response.data);
       }
       break;
@@ -321,7 +315,6 @@ function handleMessage(message: Message, state: ConnectionState): void {
       const pending = state.pendingRequests.get(response.requestId);
       if (pending) {
         state.pendingRequests.delete(response.requestId);
-        if (pending.timeoutId) clearTimeout(pending.timeoutId);
         const error = new Error(response.message);
         if (response.details) {
           error.name = response.details.name;
@@ -458,7 +451,6 @@ function handleMessage(message: Message, state: ConnectionState): void {
       const pending = state.pendingRequests.get(msg.requestId);
       if (pending) {
         state.pendingRequests.delete(msg.requestId);
-        if (pending.timeoutId) clearTimeout(pending.timeoutId);
 
         const response = new Response(readableStream, {
           status: msg.metadata?.status ?? 200,
@@ -645,7 +637,6 @@ function sendMessage(socket: Socket, message: Message): void {
 function sendRequest<T>(
   state: ConnectionState,
   message: Message,
-  timeout = DEFAULT_TIMEOUT
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     if (!state.connected) {
@@ -655,15 +646,9 @@ function sendRequest<T>(
 
     const requestId = (message as { requestId: number }).requestId;
 
-    const timeoutId = setTimeout(() => {
-      state.pendingRequests.delete(requestId);
-      reject(new Error("Request timeout"));
-    }, timeout);
-
     state.pendingRequests.set(requestId, {
       resolve: resolve as (data: unknown) => void,
       reject,
-      timeoutId,
     });
 
     sendMessage(state.socket, message);
@@ -864,6 +849,11 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   // Create fetch handle
   const fetchHandle: RemoteFetchHandle = {
     async dispatchRequest(req: Request, opts?: DispatchOptions) {
+      const signal = opts?.signal;
+      if (signal?.aborted) {
+        throw new DOMException("The operation was aborted", "AbortError");
+      }
+
       const reqId = state.nextRequestId++;
       const serialized = await serializeRequestWithStreaming(state, req);
 
@@ -875,7 +865,6 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         requestId: reqId,
         isolateId,
         request: serializableRequest,
-        options: opts,
       };
 
       // Helper to handle response which may be streaming or buffered
@@ -888,30 +877,47 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         return deserializeResponse(res.response as SerializedResponse);
       };
 
-      // If streaming body, start sending chunks after request is sent
-      if (serialized.bodyStreamId !== undefined && bodyStream) {
-        const streamId = serialized.bodyStreamId;
+      // Set up abort signal handling
+      let onAbort: (() => void) | undefined;
+      if (signal) {
+        onAbort = () => {
+          const pending = state.pendingRequests.get(reqId);
+          if (pending) {
+            state.pendingRequests.delete(reqId);
+            pending.reject(new DOMException("The operation was aborted", "AbortError"));
+          }
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
 
-        // Send the request first
-        const responsePromise = sendRequest<{ response: SerializedResponse | Response; __streaming?: boolean }>(
-          state,
-          request,
-          opts?.timeout ?? DEFAULT_TIMEOUT
-        );
+      try {
+        // If streaming body, start sending chunks after request is sent
+        if (serialized.bodyStreamId !== undefined && bodyStream) {
+          const streamId = serialized.bodyStreamId;
 
-        // Then stream the body
-        await sendBodyStream(state, streamId, bodyStream);
+          // Send the request first
+          const responsePromise = sendRequest<{ response: SerializedResponse | Response; __streaming?: boolean }>(
+            state,
+            request,
+          );
 
-        // Wait for response
-        const res = await responsePromise;
-        return handleResponse(res);
-      } else {
-        const res = await sendRequest<{ response: SerializedResponse | Response; __streaming?: boolean }>(
-          state,
-          request,
-          opts?.timeout ?? DEFAULT_TIMEOUT
-        );
-        return handleResponse(res);
+          // Then stream the body
+          await sendBodyStream(state, streamId, bodyStream);
+
+          // Wait for response
+          const res = await responsePromise;
+          return handleResponse(res);
+        } else {
+          const res = await sendRequest<{ response: SerializedResponse | Response; __streaming?: boolean }>(
+            state,
+            request,
+          );
+          return handleResponse(res);
+        }
+      } finally {
+        if (signal && onAbort) {
+          signal.removeEventListener("abort", onAbort);
+        }
       }
     },
 
@@ -1077,11 +1083,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         isolateId,
         timeout,
       };
-      const requestTimeout =
-        timeout === undefined
-          ? DEFAULT_TIMEOUT
-          : Math.max(timeout + TEST_REQUEST_TIMEOUT_BUFFER_MS, DEFAULT_TIMEOUT);
-      return sendRequest<RunTestsResult>(state, req, requestTimeout);
+      return sendRequest<RunTestsResult>(state, req);
     },
 
     async hasTests(): Promise<boolean> {
@@ -1173,7 +1175,6 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         isolateId,
         code,
         filename: options?.filename,
-        maxExecutionMs: options?.maxExecutionMs,
       };
       await sendRequest<{ value: unknown }>(state, req);
       // Module evaluation returns void - don't return the value

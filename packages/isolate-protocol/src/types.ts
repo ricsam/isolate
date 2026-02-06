@@ -300,8 +300,6 @@ export interface EvalRequest extends BaseMessage {
   isolateId: string;
   code: string;
   filename?: string;
-  /** Maximum execution time in milliseconds. If exceeded, throws a timeout error. */
-  maxExecutionMs?: number;
 }
 
 export interface SerializedRequest {
@@ -318,9 +316,6 @@ export interface DispatchRequestRequest extends BaseMessage {
   type: typeof MessageType.DISPATCH_REQUEST;
   isolateId: string;
   request: SerializedRequest;
-  options?: {
-    timeout?: number;
-  };
 }
 
 // WebSocket messages
@@ -930,8 +925,8 @@ export interface FileSystemCallbacks {
  * Options for dispatching a request.
  */
 export interface DispatchOptions {
-  /** Request timeout in ms */
-  timeout?: number;
+  /** AbortSignal to cancel the request */
+  signal?: AbortSignal;
 }
 
 /**
@@ -940,8 +935,6 @@ export interface DispatchOptions {
 export interface EvalOptions {
   /** Filename for stack traces */
   filename?: string;
-  /** Maximum execution time in milliseconds. If exceeded, throws a timeout error. */
-  maxExecutionMs?: number;
 }
 
 /**

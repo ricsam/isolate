@@ -1003,42 +1003,7 @@ describe("@ricsam/isolate-runtime", () => {
 
   });
 
-  describe("maxExecutionMs timeout", () => {
-    test("throws timeout error on infinite loop", async () => {
-      const runtime = await createRuntime();
-      try {
-        await assert.rejects(
-          async () => {
-            await runtime.eval(`while(true) {}`, { maxExecutionMs: 100 });
-          },
-          /Script execution timed out/,
-          "should throw timeout error"
-        );
-      } finally {
-        await runtime.dispose();
-      }
-    });
-
-    test("completes when code finishes within timeout", async () => {
-      let logValue: string | null = null;
-      const runtime = await createRuntime({
-        console: {
-          onEntry: (entry) => {
-            if (entry.type === "output" && entry.level === "log") {
-              logValue = entry.stdout;
-            }
-          },
-        },
-      });
-
-      try {
-        await runtime.eval(`console.log("fast code");`, { maxExecutionMs: 5000 });
-        assert.strictEqual(logValue, "fast code");
-      } finally {
-        await runtime.dispose();
-      }
-    });
-
+  describe("eval options", () => {
     test("supports filename in options object", async () => {
       const runtime = await createRuntime();
       try {
