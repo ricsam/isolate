@@ -1044,9 +1044,11 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       try {
         assert.strictEqual(fulfilled.length, 1);
         assert.strictEqual(rejected.length, 1);
-        const reason = rejected[0].reason as Error;
+        const rejectedResult = rejected[0];
+        assert.ok(rejectedResult);
+        const reason = rejectedResult.reason as Error;
         assert.match(
-          reason?.message ?? String(rejected[0].reason),
+          reason?.message ?? String(rejectedResult.reason),
           /creation already in progress/i
         );
       } finally {
@@ -1238,6 +1240,118 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       const stats = daemon.getStats();
       // We can't directly verify the specific isolate was removed, but
       // the test verifies the flow works without errors
+    });
+
+    it("should hard-delete poisoned namespaced runtime on dispose", async () => {
+      const namespaceId = "poison-dispose-1";
+      const namespace = client.createNamespace(namespaceId);
+
+      const runtime1 = await namespace.createRuntime({
+        moduleLoader: async (moduleName: string) => {
+          if (moduleName === "poisoned-module") {
+            throw new Error("Module is currently being linked by another linker");
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      const id1 = runtime1.id;
+      await assert.rejects(
+        async () => {
+          await runtime1.eval(`import "poisoned-module";`);
+        },
+        /Module is currently being linked by another linker/
+      );
+      await runtime1.dispose();
+
+      const runtime2 = await namespace.createRuntime({
+        moduleLoader: async (moduleName: string, importer) => {
+          if (moduleName === "poisoned-module") {
+            return { code: `export const ok = true;`, resolveDir: importer.resolveDir };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+      try {
+        assert.strictEqual(runtime2.reused, false);
+        assert.notStrictEqual(runtime2.id, id1);
+      } finally {
+        await runtime2.dispose();
+      }
+    });
+
+    it("should hard-delete poisoned namespaced runtime on connection close", async () => {
+      const namespaceId = "poison-conn-close-1";
+
+      const client1 = await connect({ socket: TEST_SOCKET });
+      const ns1 = client1.createNamespace(namespaceId);
+      const rt1 = await ns1.createRuntime({
+        moduleLoader: async (moduleName: string) => {
+          if (moduleName === "poisoned-module") {
+            throw new Error("Module is currently being linked by another linker");
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+      const id1 = rt1.id;
+      await assert.rejects(
+        async () => {
+          await rt1.eval(`import "poisoned-module";`);
+        },
+        /Module is currently being linked by another linker/
+      );
+      await client1.close();
+
+      const client2 = await connect({ socket: TEST_SOCKET });
+      try {
+        const ns2 = client2.createNamespace(namespaceId);
+        const rt2 = await ns2.createRuntime();
+        try {
+          assert.strictEqual(rt2.reused, false);
+          assert.notStrictEqual(rt2.id, id1);
+        } finally {
+          await rt2.dispose();
+        }
+      } finally {
+        await client2.close();
+      }
+    });
+
+    it("should treat stale runtime handle dispose as idempotent after reconnect", async () => {
+      const namespaceId = "stale-dispose-1";
+
+      const client1 = await connect({ socket: TEST_SOCKET });
+      const ns1 = client1.createNamespace(namespaceId);
+      const rt1 = await ns1.createRuntime();
+      const id1 = rt1.id;
+
+      await client1.close();
+
+      const client2 = await connect({ socket: TEST_SOCKET });
+      try {
+        const ns2 = client2.createNamespace(namespaceId);
+        const rt2 = await ns2.createRuntime({
+          console: {
+            onEntry: () => {},
+          },
+        });
+        try {
+          assert.strictEqual(rt2.reused, true);
+          assert.strictEqual(rt2.id, id1);
+
+          await assert.doesNotReject(async () => {
+            await rt1.dispose();
+          });
+
+          await assert.doesNotReject(async () => {
+            await rt2.eval(`globalThis.staleDisposeStillWorks = true;`);
+          });
+        } finally {
+          await rt2.dispose();
+        }
+      } finally {
+        await client2.close();
+      }
     });
   });
 

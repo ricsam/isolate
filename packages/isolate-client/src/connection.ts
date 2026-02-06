@@ -655,6 +655,13 @@ function sendRequest<T>(
   });
 }
 
+function isBenignDisposeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /isolate not owned by this connection|isolate not found|not connected|connection closed/i.test(
+    message
+  );
+}
+
 /**
  * Create a runtime in the daemon.
  */
@@ -1239,7 +1246,14 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         requestId: reqId,
         isolateId,
       };
-      await sendRequest(state, req);
+      try {
+        await sendRequest(state, req);
+      } catch (error) {
+        // Stale runtime handles after reconnect/ownership handoff are idempotent disposals.
+        if (!isBenignDisposeError(error)) {
+          throw error;
+        }
+      }
     },
   };
 }

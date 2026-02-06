@@ -70,6 +70,8 @@ export interface IsolateInstance {
   namespaceId?: string;
   /** Whether this runtime is soft-deleted (disposed but cached for reuse) */
   isDisposed: boolean;
+  /** Whether runtime hit unrecoverable module-linking state and must not be reused */
+  isPoisoned: boolean;
   /** Timestamp when runtime was disposed (for LRU eviction) */
   disposedAt?: number;
 

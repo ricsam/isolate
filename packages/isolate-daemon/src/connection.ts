@@ -90,6 +90,38 @@ import type {
   CallbackStreamReceiver,
 } from "./types.ts";
 
+const LINKER_CONFLICT_ERROR = "Module is currently being linked by another linker";
+
+function getErrorText(error: unknown): string {
+  if (error instanceof Error) {
+    const cause = (error as Error & { cause?: unknown }).cause;
+    const causeText =
+      cause instanceof Error
+        ? `${cause.name}: ${cause.message}\n${cause.stack ?? ""}`
+        : cause != null
+          ? String(cause)
+          : "";
+    return [error.name, error.message, error.stack, causeText]
+      .filter((part) => part != null && part !== "")
+      .join("\n");
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error ?? "");
+  }
+}
+
+function isLinkerConflictError(error: unknown): boolean {
+  const text = getErrorText(error).toLowerCase();
+  return text.includes(LINKER_CONFLICT_ERROR.toLowerCase());
+}
+
 /**
  * Handle a new client connection.
  */
@@ -130,14 +162,20 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
       const instance = state.isolates.get(isolateId);
       if (instance) {
         if (instance.namespaceId != null && !instance.isDisposed) {
-          // Namespaced runtime: soft-delete (keep cached for reuse)
-          softDeleteRuntime(instance, state);
+          if (instance.isPoisoned) {
+            // Poisoned namespaced runtime: hard delete and remove from namespace index
+            hardDeleteRuntime(instance, state).catch(() => {
+              // Ignore disposal errors on socket close cleanup
+            });
+          } else {
+            // Namespaced runtime: soft-delete (keep cached for reuse)
+            softDeleteRuntime(instance, state);
+          }
         } else if (!instance.isDisposed) {
           // Non-namespaced runtime: hard delete
-          instance.runtime.dispose().catch(() => {
+          hardDeleteRuntime(instance, state).catch(() => {
             // Ignore disposal errors
           });
-          state.isolates.delete(isolateId);
         }
       }
     }
@@ -411,6 +449,29 @@ async function handleMessage(
 // ============================================================================
 
 /**
+ * Hard-delete a runtime and remove it from daemon indexes.
+ */
+async function hardDeleteRuntime(instance: IsolateInstance, state: DaemonState): Promise<void> {
+  try {
+    await instance.runtime.dispose();
+  } finally {
+    state.isolates.delete(instance.isolateId);
+    if (instance.namespaceId != null) {
+      const indexed = state.namespacedRuntimes.get(instance.namespaceId);
+      if (indexed?.isolateId === instance.isolateId) {
+        state.namespacedRuntimes.delete(instance.namespaceId);
+      }
+    }
+    instance.isDisposed = true;
+    instance.disposedAt = undefined;
+    instance.ownerConnection = null;
+    if (instance.callbackContext) {
+      instance.callbackContext.connection = null;
+    }
+  }
+}
+
+/**
  * Soft-delete a namespaced runtime (keep cached for reuse).
  * Clears owner connection and callbacks but preserves isolate/context.
  */
@@ -454,6 +515,7 @@ function reuseNamespacedRuntime(
   // Update ownership
   instance.ownerConnection = connection.socket;
   instance.isDisposed = false;
+  instance.isPoisoned = false;
   instance.disposedAt = undefined;
   instance.lastActivity = Date.now();
 
@@ -608,13 +670,9 @@ async function evictOldestDisposedRuntime(state: DaemonState): Promise<boolean> 
   if (oldest) {
     // Hard delete the oldest disposed runtime
     try {
-      await oldest.runtime.dispose();
+      await hardDeleteRuntime(oldest, state);
     } catch {
       // Ignore disposal errors
-    }
-    state.isolates.delete(oldest.isolateId);
-    if (oldest.namespaceId != null) {
-      state.namespacedRuntimes.delete(oldest.namespaceId);
     }
     return true;
   }
@@ -767,6 +825,7 @@ async function handleCreateRuntime(
       // Namespace pooling fields
       namespaceId,
       isDisposed: false,
+      isPoisoned: false,
       // Mutable callback context for runtime reuse
       callbackContext,
     };
@@ -1335,17 +1394,24 @@ async function handleDisposeRuntime(
     connection.isolates.delete(message.isolateId);
 
     if (instance.namespaceId != null) {
-      // Namespaced runtime: soft-delete (keep cached for reuse)
-      softDeleteRuntime(instance, state);
+      if (instance.isPoisoned) {
+        // Poisoned namespaced runtime: hard delete and remove from namespace index
+        await hardDeleteRuntime(instance, state);
+      } else {
+        // Namespaced runtime: soft-delete (keep cached for reuse)
+        softDeleteRuntime(instance, state);
+      }
     } else {
       // Non-namespaced runtime: hard delete
-      await instance.runtime.dispose();
-      state.isolates.delete(message.isolateId);
+      await hardDeleteRuntime(instance, state);
     }
 
     sendOk(connection.socket, message.requestId);
   } catch (err) {
     const error = err as Error;
+    if (instance.namespaceId != null && isLinkerConflictError(error)) {
+      instance.isPoisoned = true;
+    }
     sendError(
       connection.socket,
       message.requestId,
@@ -1391,6 +1457,9 @@ async function handleEval(
     sendOk(connection.socket, message.requestId, { value: undefined });
   } catch (err) {
     const error = err as Error;
+    if (instance.namespaceId != null && isLinkerConflictError(error)) {
+      instance.isPoisoned = true;
+    }
     sendError(
       connection.socket,
       message.requestId,

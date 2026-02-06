@@ -290,6 +290,7 @@ interface RuntimeState {
   };
   moduleCache: Map<string, ivm.Module>;
   staticModuleCache: Map<string, ivm.Module>;
+  moduleLoadsInFlight: Map<string, Promise<ivm.Module>>;
   transformCache: Map<string, TransformResult>;
   moduleToFilename: Map<ivm.Module, string>;
   moduleLoader?: ModuleLoaderCallback;
@@ -300,6 +301,8 @@ interface RuntimeState {
   sourceMaps: Map<string, SourceMap>;
   /** Pending callbacks to await after eval (for daemon IPC fire-and-forget pattern) */
   pendingCallbacks: Promise<unknown>[];
+  /** Per-runtime eval queue to prevent overlapping module linking/evaluation */
+  evalChain: Promise<void>;
 }
 
 // Iterator session tracking for async iterator custom functions
@@ -1029,42 +1032,80 @@ function createModuleResolver(
     // Cache by specifier + content hash (allows invalidation when content changes)
     const hash = contentHash(code);
     const cacheKey = `${specifier}:${hash}`;
+    const inFlightKey = `${result.static ? "static" : "dynamic"}:${cacheKey}`;
+
+    // Cache checks again after await in case another resolver call won the race
+    const staticCachedAfterLoad = state.staticModuleCache.get(specifier);
+    if (staticCachedAfterLoad) return staticCachedAfterLoad;
+
+    const cachedAfterLoad = state.moduleCache.get(specifier);
+    if (cachedAfterLoad) return cachedAfterLoad;
+
     const hashCached = state.moduleCache.get(cacheKey);
     if (hashCached) return hashCached;
 
-    // Transform cache — check transform cache first (survives reuse in daemon)
-    let transformed: TransformResult | undefined = state.transformCache.get(hash);
-    if (!transformed) {
-      transformed = await transformModuleCode(code, specifier);
-      state.transformCache.set(hash, transformed);
+    const inFlight = state.moduleLoadsInFlight.get(inFlightKey);
+    if (inFlight) return inFlight;
+
+    const loadPromise = (async (): Promise<ivm.Module> => {
+      let mod: ivm.Module | undefined;
+      try {
+        // Transform cache — check transform cache first (survives reuse in daemon)
+        let transformed: TransformResult | undefined = state.transformCache.get(hash);
+        if (!transformed) {
+          transformed = await transformModuleCode(code, specifier);
+          state.transformCache.set(hash, transformed);
+        }
+
+        if (transformed.sourceMap) {
+          state.sourceMaps.set(specifier, transformed.sourceMap);
+        }
+
+        // Compile the module
+        mod = await state.isolate.compileModule(transformed.code, {
+          filename: specifier,
+        });
+
+        // Construct resolved path and track for nested imports
+        const resolvedPath = path.posix.join(resolveDir, path.posix.basename(specifier));
+        state.moduleToFilename.set(mod, resolvedPath);
+
+        // Cache the compiled module before linker uses it (supports circular deps)
+        if (result.static) {
+          state.staticModuleCache.set(specifier, mod);
+        } else {
+          state.moduleCache.set(specifier, mod);
+          state.moduleCache.set(cacheKey, mod);
+        }
+
+        return mod;
+      } catch (err) {
+        // Remove partial cache state to avoid returning poisoned module entries later.
+        if (mod) {
+          state.moduleToFilename.delete(mod);
+          if (result.static) {
+            if (state.staticModuleCache.get(specifier) === mod) {
+              state.staticModuleCache.delete(specifier);
+            }
+          } else {
+            if (state.moduleCache.get(specifier) === mod) {
+              state.moduleCache.delete(specifier);
+            }
+            if (state.moduleCache.get(cacheKey) === mod) {
+              state.moduleCache.delete(cacheKey);
+            }
+          }
+        }
+        throw err;
+      }
+    })();
+
+    state.moduleLoadsInFlight.set(inFlightKey, loadPromise);
+    try {
+      return await loadPromise;
+    } finally {
+      state.moduleLoadsInFlight.delete(inFlightKey);
     }
-
-    if (transformed.sourceMap) {
-      state.sourceMaps.set(specifier, transformed.sourceMap);
-    }
-
-    // Compile the module
-    const mod = await state.isolate.compileModule(transformed.code, {
-      filename: specifier,
-    });
-
-    // Construct resolved path and track for nested imports
-    const resolvedPath = path.posix.join(resolveDir, path.posix.basename(specifier));
-    state.moduleToFilename.set(mod, resolvedPath);
-
-    // Cache before instantiation (for circular dependencies)
-    if (result.static) {
-      state.staticModuleCache.set(specifier, mod);
-    } else {
-      state.moduleCache.set(specifier, mod);
-      state.moduleCache.set(cacheKey, mod);
-    }
-
-    // Instantiate with recursive resolver
-    const resolver = createModuleResolver(state);
-    await mod.instantiate(state.context, resolver);
-
-    return mod;
   };
 }
 
@@ -1122,10 +1163,12 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     handles: {},
     moduleCache: new Map(),
     staticModuleCache: new Map(),
+    moduleLoadsInFlight: new Map(),
     transformCache: new Map(),
     moduleToFilename: new Map(),
     sourceMaps: new Map(),
     pendingCallbacks: [],
+    evalChain: Promise.resolve(),
     moduleLoader: opts.moduleLoader,
     customFunctions: opts.customFunctions as CustomFunctions<Record<string, unknown[]>>,
   };
@@ -1441,64 +1484,74 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       code: string,
       filenameOrOptions?: string | EvalOptions
     ): Promise<void> {
-      // Parse options
-      const options =
-        typeof filenameOrOptions === "string"
-          ? { filename: filenameOrOptions }
-          : filenameOrOptions;
+      const runEval = async (): Promise<void> => {
+        // Parse options
+        const options =
+          typeof filenameOrOptions === "string"
+            ? { filename: filenameOrOptions }
+            : filenameOrOptions;
 
-      // Normalize filename to absolute path for module resolution
-      const filename = normalizeEntryFilename(options?.filename);
+        // Normalize filename to absolute path for module resolution
+        const filename = normalizeEntryFilename(options?.filename);
 
-      try {
-        // Transform entry code: strip types, validate, wrap in async function
-        const transformed = await transformEntryCode(code, filename);
-        if (transformed.sourceMap) {
-          state.sourceMaps.set(filename, transformed.sourceMap);
-        }
-
-        // Compile as ES module
-        const mod = await state.isolate.compileModule(transformed.code, {
-          filename,
-        });
-
-        // Track entry module filename for nested imports
-        state.moduleToFilename.set(mod, filename);
-
-        // Instantiate with module resolver
-        const resolver = createModuleResolver(state);
-        await mod.instantiate(state.context, resolver);
-
-        // Evaluate - only resolves imports and defines the default function (no timeout needed)
-        await mod.evaluate();
-
-        // Get the default export and run it with timeout
-        const ns = mod.namespace;
-        const runRef = await ns.get("default", { reference: true });
         try {
-          await runRef.apply(undefined, [], {
-            result: { promise: true },
-          });
-        } finally {
-          runRef.release();
-        }
+          // Transform entry code: strip types, validate, wrap in async function
+          const transformed = await transformEntryCode(code, filename);
+          if (transformed.sourceMap) {
+            state.sourceMaps.set(filename, transformed.sourceMap);
+          }
 
-        // Await pending callbacks (no-op for local use, enables daemon IPC flush)
-        if (state.pendingCallbacks.length > 0) {
-          await Promise.all(state.pendingCallbacks);
-          state.pendingCallbacks.length = 0;
+          // Compile as ES module
+          const mod = await state.isolate.compileModule(transformed.code, {
+            filename,
+          });
+
+          // Track entry module filename for nested imports
+          state.moduleToFilename.set(mod, filename);
+
+          // Instantiate with module resolver
+          const resolver = createModuleResolver(state);
+          await mod.instantiate(state.context, resolver);
+
+          // Evaluate - only resolves imports and defines the default function (no timeout needed)
+          await mod.evaluate();
+
+          // Get the default export and run it with timeout
+          const ns = mod.namespace;
+          const runRef = await ns.get("default", { reference: true });
+          try {
+            await runRef.apply(undefined, [], {
+              result: { promise: true },
+            });
+          } finally {
+            runRef.release();
+          }
+
+          // Await pending callbacks (no-op for local use, enables daemon IPC flush)
+          if (state.pendingCallbacks.length > 0) {
+            await Promise.all(state.pendingCallbacks);
+            state.pendingCallbacks.length = 0;
+          }
+        } catch (err) {
+          const error = err as Error;
+          if (error.stack && state.sourceMaps.size > 0) {
+            error.stack = mapErrorStack(error.stack, state.sourceMaps);
+          }
+          throw error;
         }
-      } catch (err) {
-        const error = err as Error;
-        if (error.stack && state.sourceMaps.size > 0) {
-          error.stack = mapErrorStack(error.stack, state.sourceMaps);
-        }
-        throw error;
-      }
+      };
+
+      const queuedEval = state.evalChain.then(runEval, runEval);
+      state.evalChain = queuedEval.then(
+        () => undefined,
+        () => undefined
+      );
+      return queuedEval;
     },
 
     clearModuleCache() {
       state.moduleCache.clear();
+      state.moduleLoadsInFlight.clear();
       state.moduleToFilename.clear();
       state.sourceMaps.clear();
       // staticModuleCache and transformCache intentionally preserved
@@ -1524,6 +1577,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
 
       // Clear module cache
       state.moduleCache.clear();
+      state.moduleLoadsInFlight.clear();
 
       // Release context and dispose isolate
       state.context.release();

@@ -336,6 +336,110 @@ describe("@ricsam/isolate-runtime", () => {
         await runtime.dispose();
       }
     });
+
+    test("concurrent eval calls are serialized per runtime", async () => {
+      const runtime = await createRuntime({
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/shared") {
+            return {
+              code: `import { dep } from "@/dep"; export const value = dep;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/dep") {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return {
+              code: `export const dep = 1;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await assert.doesNotReject(async () => {
+          await Promise.all([
+            runtime.eval(`import { value } from "@/shared";`),
+            runtime.eval(`import { value } from "@/shared";`),
+          ]);
+        });
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("shared transitive imports stay stable under concurrent eval stress", async () => {
+      const runtime = await createRuntime({
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/moduleA") {
+            return {
+              code: `import { shared } from "@/shared"; export const a = shared + 1;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/moduleB") {
+            return {
+              code: `import { shared } from "@/shared"; export const b = shared + 2;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/shared") {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            return {
+              code: `export const shared = 10;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        for (let i = 0; i < 40; i++) {
+          await assert.doesNotReject(async () => {
+            await Promise.all([
+              runtime.eval(`import { a } from "@/moduleA"; import { b } from "@/moduleB";`),
+              runtime.eval(`import { b } from "@/moduleB"; import { a } from "@/moduleA";`),
+            ]);
+          });
+        }
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("failed module load does not leave runtime stuck in linking state", async () => {
+      const runtime = await createRuntime({
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/bad") {
+            return {
+              code: `import { value } from "@/missing"; export const out = value;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`import { out } from "@/bad";`);
+          },
+          /Unknown module: @\/missing/
+        );
+
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`import { out } from "@/bad";`);
+          },
+          /Unknown module: @\/missing/
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
   });
 
   describe("customFunctions", () => {
