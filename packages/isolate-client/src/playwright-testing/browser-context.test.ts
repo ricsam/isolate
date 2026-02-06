@@ -1128,6 +1128,39 @@ describe("playwright browser/context/page lifecycle", () => {
       }
     });
 
+    it("should update page.url() after history.pushState on same document", async () => {
+      const browserContext = await browser.newContext();
+      const initialPage = await browserContext.newPage();
+
+      const runtime = await client.createRuntime({
+        testEnvironment: true,
+        playwright: { handler: defaultPlaywrightHandler(initialPage, { createPage: async () => await browserContext.newPage() }) },
+      });
+
+      try {
+        await runtime.eval(`
+          test('page.url updates after history.pushState', async () => {
+            await page.goto('data:text/html,<h1>History Test</h1>');
+
+            const before = page.url();
+            await page.evaluate(() => {
+              history.pushState({}, '', '#route-a');
+            });
+            const after = page.url();
+
+            expect(before.includes('#route-a')).toBe(false);
+            expect(after).toContain('#route-a');
+          });
+        `);
+
+        const results = await runtime.testEnvironment.runTests();
+        assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+      } finally {
+        await runtime.dispose();
+        await browserContext.close();
+      }
+    });
+
     it("should support goBack and goForward on different pages", async () => {
       const browserContext = await browser.newContext();
       const initialPage = await browserContext.newPage();

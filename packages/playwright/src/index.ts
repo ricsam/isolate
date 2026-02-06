@@ -198,7 +198,7 @@ export async function setupPlaywright(
   // Helper function to invoke handler and handle errors
   context.evalSync(`
 (function() {
-  globalThis.__pw_invoke = async function(type, args, options) {
+  globalThis.__pw_invoke_sync = function(type, args, options) {
     const op = JSON.stringify({ type, args, pageId: options?.pageId, contextId: options?.contextId });
     const resultJson = __Playwright_handler_ref.applySyncPromise(undefined, [op]);
     const result = JSON.parse(resultJson);
@@ -210,6 +210,9 @@ export async function setupPlaywright(
       throw error;
     }
   };
+  globalThis.__pw_invoke = async function(type, args, options) {
+    return globalThis.__pw_invoke_sync(type, args, options);
+  };
 })();
 `);
 
@@ -218,7 +221,7 @@ export async function setupPlaywright(
 (function() {
   // IsolatePage class - represents a page with a specific pageId
   class IsolatePage {
-    #pageId; #contextId; #currentUrl = '';
+    #pageId; #contextId;
     constructor(pageId, contextId) {
       this.#pageId = pageId;
       this.#contextId = contextId;
@@ -229,15 +232,11 @@ export async function setupPlaywright(
 
     async goto(url, options) {
       await __pw_invoke("goto", [url, options?.waitUntil || null], { pageId: this.#pageId });
-      const resolvedUrl = await __pw_invoke("url", [], { pageId: this.#pageId });
-      this.#currentUrl = resolvedUrl || url;
     }
     async reload() {
       await __pw_invoke("reload", [], { pageId: this.#pageId });
-      const resolvedUrl = await __pw_invoke("url", [], { pageId: this.#pageId });
-      if (resolvedUrl) this.#currentUrl = resolvedUrl;
     }
-    url() { return this.#currentUrl; }
+    url() { return __pw_invoke_sync("url", [], { pageId: this.#pageId }); }
     async title() { return __pw_invoke("title", [], { pageId: this.#pageId }); }
     async content() { return __pw_invoke("content", [], { pageId: this.#pageId }); }
     async waitForSelector(selector, options) {
@@ -287,13 +286,9 @@ export async function setupPlaywright(
     }
     async goBack(options) {
       await __pw_invoke("goBack", [options?.waitUntil || null], { pageId: this.#pageId });
-      const resolvedUrl = await __pw_invoke("url", [], { pageId: this.#pageId });
-      if (resolvedUrl) this.#currentUrl = resolvedUrl;
     }
     async goForward(options) {
       await __pw_invoke("goForward", [options?.waitUntil || null], { pageId: this.#pageId });
-      const resolvedUrl = await __pw_invoke("url", [], { pageId: this.#pageId });
-      if (resolvedUrl) this.#currentUrl = resolvedUrl;
     }
     async waitForURL(url, options) {
       let serializedUrl = url;
@@ -318,33 +313,15 @@ export async function setupPlaywright(
       }
 
       // Step 1: Start listening (blocks briefly, host returns listenerId immediately)
-      const startOp = JSON.stringify({
-        type: "waitForResponseStart",
-        args: [serializedMatcher, options?.timeout || null],
-        pageId: this.#pageId
-      });
-      const startResult = JSON.parse(__Playwright_handler_ref.applySyncPromise(undefined, [startOp]));
-      if (!startResult.ok) {
-        throw Object.assign(new Error(startResult.error.message), { name: startResult.error.name });
-      }
-      const listenerId = startResult.value.listenerId;
+      const startResult = __pw_invoke_sync("waitForResponseStart", [serializedMatcher, options?.timeout || null], { pageId: this.#pageId });
+      const listenerId = startResult.listenerId;
       const pageId = this.#pageId;
 
       // Step 2: Return thenable — when awaited, blocks until response arrives
       return {
         then(resolve, reject) {
           try {
-            const finishOp = JSON.stringify({
-              type: "waitForResponseFinish",
-              args: [listenerId],
-              pageId
-            });
-            const finishResult = JSON.parse(__Playwright_handler_ref.applySyncPromise(undefined, [finishOp]));
-            if (!finishResult.ok) {
-              reject(Object.assign(new Error(finishResult.error.message), { name: finishResult.error.name }));
-              return;
-            }
-            const r = finishResult.value;
+            const r = __pw_invoke_sync("waitForResponseFinish", [listenerId], { pageId });
             resolve({
               url: () => r.url,
               status: () => r.status,
