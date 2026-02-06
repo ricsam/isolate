@@ -1,5 +1,27 @@
 # @ricsam/isolate-daemon
 
+## 0.1.15
+
+### Patch Changes
+
+- new isolate-server package
+- e17d18d: Stabilize module linking and runtime lifecycle behavior across runtime, daemon, and client:
+
+  - Runtime: remove recursive module instantiation from resolver, dedupe in-flight module compilation by content hash, clear partial resolver cache entries on failure, and serialize `eval()` per runtime.
+  - Daemon: track poisoned namespaced runtimes and hard-delete them on dispose/connection close instead of returning them to the namespace pool.
+  - Client: treat stale runtime dispose failures (`not owned`, `not found`, disconnected) as idempotent success.
+
+  Also adds regression coverage for concurrent eval/linking behavior, poisoned namespace reuse, and stale dispose after reconnect.
+
+- Updated dependencies
+- Updated dependencies [e17d18d]
+  - @ricsam/isolate-playwright@0.1.14
+  - @ricsam/isolate-fs@0.1.13
+  - @ricsam/isolate-protocol@0.1.14
+  - @ricsam/isolate-runtime@0.1.16
+  - @ricsam/isolate-test-environment@0.1.13
+  - @ricsam/isolate-transform@0.1.3
+
 ## 0.1.14
 
 ### Patch Changes

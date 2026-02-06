@@ -704,6 +704,60 @@ describe("handle-based API", () => {
   });
 
   describe("WebSocket command push", () => {
+    it("should auto-register RuntimeOptions.onWebSocketCommand callback", async () => {
+      const receivedCommands: { type: string; connectionId: string; data?: unknown }[] = [];
+
+      const runtime = await client.createRuntime({
+        onWebSocketCommand: (cmd) => {
+          receivedCommands.push({
+            type: cmd.type,
+            connectionId: cmd.connectionId,
+            data: cmd.data,
+          });
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          serve({
+            fetch(request, server) {
+              if (request.headers.get("Upgrade") === "websocket") {
+                server.upgrade(request);
+                return new Response(null, { status: 101 });
+              }
+              return new Response("Not a WebSocket request", { status: 400 });
+            },
+            websocket: {
+              open(ws) {
+                ws.send("hello from runtime option");
+              }
+            }
+          });
+        `);
+
+        await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/ws", {
+            headers: { "Upgrade": "websocket" },
+          })
+        );
+
+        const upgradeRequest = await runtime.fetch.getUpgradeRequest();
+        assert.ok(upgradeRequest, "Should have upgrade request");
+        const connectionId = upgradeRequest!.connectionId;
+
+        await runtime.fetch.dispatchWebSocketOpen(connectionId);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        const sendCommand = receivedCommands.find(
+          (cmd) => cmd.type === "message" && cmd.connectionId === connectionId
+        );
+        assert.ok(sendCommand, "Should receive message command via runtime option callback");
+        assert.strictEqual(sendCommand?.data, "hello from runtime option");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
     it("should receive ws.send() commands from isolate", async () => {
       const receivedCommands: { type: string; connectionId: string; data?: unknown }[] = [];
 

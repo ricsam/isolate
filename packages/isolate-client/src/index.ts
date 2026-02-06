@@ -5,7 +5,7 @@
  * Works with Bun, Node.js, and other JavaScript runtimes.
  */
 
-export { connect } from "./connection.ts";
+export { connect, isBenignDisposeError } from "./connection.ts";
 export type {
   ConnectOptions,
   DaemonConnection,
@@ -35,4 +35,5 @@ export type {
   ConsoleEntry,
   CustomFunctions,
   UpgradeRequest,
+  WebSocketCommand,
 } from "./types.ts";

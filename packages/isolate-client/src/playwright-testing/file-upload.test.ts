@@ -113,6 +113,103 @@ describe("playwright file upload with security callbacks", () => {
     }
   });
 
+  it("should upload file using a single inline object payload", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('upload file with single object', async () => {
+          await page.goto('data:text/html,<input type="file" id="upload" />');
+
+          const input = page.locator('#upload');
+          await input.setInputFiles({
+            name: 'single-object.txt',
+            mimeType: 'text/plain',
+            buffer: new TextEncoder().encode('single payload'),
+          });
+
+          const files = await page.evaluate(() => {
+            const input = document.getElementById('upload') as HTMLInputElement;
+            return Array.from(input.files || []).map(f => ({ name: f.name, size: f.size }));
+          });
+
+          expect(files).toHaveLength(1);
+          expect(files[0].name).toBe('single-object.txt');
+          expect(files[0].size).toBe(14);
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+      assert.strictEqual(results.failed, 0);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("should not call readFile callback for inline object payloads", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const readFileCalls: string[] = [];
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: {
+        handler: defaultPlaywrightHandler(page, {
+          readFile: async (filePath: string) => {
+            readFileCalls.push(filePath);
+            return {
+              name: path.basename(filePath),
+              mimeType: "text/plain",
+              buffer: Buffer.from("should not be used"),
+            };
+          },
+        }),
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        test('inline object bypasses readFile callback', async () => {
+          await page.goto('data:text/html,<input type="file" id="upload" />');
+
+          const input = page.locator('#upload');
+          await input.setInputFiles({
+            name: 'inline-only.txt',
+            mimeType: 'text/plain',
+            buffer: new TextEncoder().encode('inline data'),
+          });
+
+          const files = await page.evaluate(() => {
+            const input = document.getElementById('upload') as HTMLInputElement;
+            return Array.from(input.files || []).map(f => f.name);
+          });
+
+          expect(files).toHaveLength(1);
+          expect(files[0]).toBe('inline-only.txt');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+      assert.strictEqual(results.failed, 0);
+      assert.strictEqual(readFileCalls.length, 0);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
   it("should use readFile callback when file path is provided", async () => {
     const browser = await chromium.launch({ headless: true });
     const browserContext = await browser.newContext();
@@ -247,6 +344,46 @@ describe("playwright file upload with security callbacks", () => {
 
       const results = await runtime.testEnvironment.runTests();
       assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("should throw validation error when mixing paths and inline objects", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('mixed setInputFiles inputs should fail', async () => {
+          await page.goto('data:text/html,<input type="file" id="upload" />');
+
+          const input = page.locator('#upload');
+          let error: Error | null = null;
+          try {
+            await input.setInputFiles([
+              '/path/to/file.txt',
+              { name: 'inline.txt', mimeType: 'text/plain', buffer: new TextEncoder().encode('inline') },
+            ]);
+          } catch (e) {
+            error = e as Error;
+          }
+
+          expect(error).not.toBeNull();
+          expect(error!.message).toContain('mixing file paths and inline file objects');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+      assert.strictEqual(results.failed, 0);
     } finally {
       await runtime.dispose();
       await browser.close();

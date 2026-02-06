@@ -30,6 +30,78 @@ export interface FileIOCallbacks {
   writeFile?: WriteFileCallback;
 }
 
+interface SerializedInputFilePayload {
+  name: string;
+  mimeType: string;
+  buffer: string;
+}
+
+type NormalizedSetInputFilesArg =
+  | { mode: "clear" }
+  | { mode: "paths"; paths: string[] }
+  | { mode: "inline"; files: SerializedInputFilePayload[] };
+
+const INPUT_FILES_VALIDATION_ERROR =
+  "setInputFiles() expects a file path string, an array of file path strings, " +
+  "a single inline file object ({ name, mimeType, buffer }), or an array of inline file objects.";
+
+const MIXED_INPUT_FILES_ERROR =
+  "setInputFiles() does not support mixing file paths and inline file objects in the same array.";
+
+function isSerializedInputFilePayload(value: unknown): value is SerializedInputFilePayload {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.name === "string" &&
+    typeof candidate.mimeType === "string" &&
+    typeof candidate.buffer === "string"
+  );
+}
+
+function normalizeSetInputFilesArg(actionArg: unknown): NormalizedSetInputFilesArg {
+  if (typeof actionArg === "string") {
+    return { mode: "paths", paths: [actionArg] };
+  }
+  if (isSerializedInputFilePayload(actionArg)) {
+    return { mode: "inline", files: [actionArg] };
+  }
+  if (!Array.isArray(actionArg)) {
+    throw new Error(INPUT_FILES_VALIDATION_ERROR);
+  }
+  if (actionArg.length === 0) {
+    return { mode: "clear" };
+  }
+
+  const paths: string[] = [];
+  const inlineFiles: SerializedInputFilePayload[] = [];
+  let hasPaths = false;
+  let hasInline = false;
+
+  for (const file of actionArg) {
+    if (typeof file === "string") {
+      hasPaths = true;
+      paths.push(file);
+      continue;
+    }
+    if (isSerializedInputFilePayload(file)) {
+      hasInline = true;
+      inlineFiles.push(file);
+      continue;
+    }
+    throw new Error(INPUT_FILES_VALIDATION_ERROR);
+  }
+
+  if (hasPaths && hasInline) {
+    throw new Error(MIXED_INPUT_FILES_ERROR);
+  }
+  if (hasInline) {
+    return { mode: "inline", files: inlineFiles };
+  }
+  return { mode: "paths", paths };
+}
+
 // ============================================================================
 // Helper: Get locator from selector info
 // ============================================================================
@@ -359,24 +431,24 @@ export async function executeLocatorAction(
     case "boundingBox":
       return await locator.boundingBox({ timeout });
     case "setInputFiles": {
-      const files = actionArg as string | string[] | { name: string; mimeType: string; buffer: string }[];
-      // Handle empty array - clear files
-      if (Array.isArray(files) && files.length === 0) {
+      const normalizedFiles = normalizeSetInputFilesArg(actionArg);
+
+      if (normalizedFiles.mode === "clear") {
         await locator.setInputFiles([], { timeout });
         return null;
       }
-      // Handle base64 buffer format - already have the file data
-      if (Array.isArray(files) && files.length > 0 && typeof files[0] === 'object' && 'buffer' in files[0]) {
-        const fileBuffers = (files as { name: string; mimeType: string; buffer: string }[]).map(f => ({
+
+      if (normalizedFiles.mode === "inline") {
+        const fileBuffers = normalizedFiles.files.map((f) => ({
           name: f.name,
           mimeType: f.mimeType,
-          buffer: Buffer.from(f.buffer, 'base64'),
+          buffer: Buffer.from(f.buffer, "base64"),
         }));
         await locator.setInputFiles(fileBuffers, { timeout });
         return null;
       }
+
       // File paths - need readFile callback
-      const filePaths = Array.isArray(files) ? files : [files];
       if (!fileIO?.readFile) {
         throw new Error(
           "setInputFiles() with file paths requires a readFile callback to be provided. " +
@@ -386,7 +458,7 @@ export async function executeLocatorAction(
       }
       // Read files through callback
       const fileBuffers = await Promise.all(
-        (filePaths as string[]).map(async (filePath) => {
+        normalizedFiles.paths.map(async (filePath) => {
           const fileData = await fileIO.readFile!(filePath);
           return {
             name: fileData.name,

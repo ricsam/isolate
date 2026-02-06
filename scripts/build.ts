@@ -24,6 +24,7 @@ const PACKAGES = [
   "isolate-protocol",
   "isolate-daemon",
   "isolate-client",
+  "isolate-server",
   "test-utils",
 ];
 
@@ -312,6 +313,8 @@ const buildPackage = async (
         "Node.js daemon server for running isolated-vm runtimes via IPC",
       "isolate-client":
         "Client library for connecting to the isolate daemon from any JavaScript runtime",
+      "isolate-server":
+        "Reusable lifecycle manager for namespaced isolate runtimes and entry-module startup",
     };
     publishPackageJson.description =
       descriptions[packageName] || rootMetadata.description;
@@ -528,6 +531,7 @@ const main = async () => {
   console.log("                   npm publish packages/fs");
   console.log("                   npm publish packages/runtime");
   console.log("                   npm publish packages/test-environment");
+  console.log("                   npm publish packages/isolate-server");
   console.log("\n   Or use: bun run publish:all\n");
 };
 

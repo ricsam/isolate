@@ -109,6 +109,8 @@ export interface RuntimeOptions<T extends Record<string, any[]> = Record<string,
   extends BaseRuntimeOptions<T> {
   /** File system callback handlers */
   fs?: FileSystemCallbacks;
+  /** Register callback for WebSocket commands from isolate at runtime creation time */
+  onWebSocketCommand?: (cmd: WebSocketCommand) => void;
 }
 
 /**

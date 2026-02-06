@@ -655,7 +655,7 @@ function sendRequest<T>(
   });
 }
 
-function isBenignDisposeError(error: unknown): boolean {
+export function isBenignDisposeError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
   return /isolate not owned by this connection|isolate not found|not connected|connection closed/i.test(
     message
@@ -847,6 +847,9 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   // WebSocket command callbacks - store in module-level Map for WS_COMMAND message handling
   const wsCommandCallbacks: Set<(cmd: WebSocketCommand) => void> = new Set();
   isolateWsCallbacks.set(isolateId, wsCommandCallbacks);
+  if (options.onWebSocketCommand) {
+    wsCommandCallbacks.add(options.onWebSocketCommand);
+  }
 
   // Store WebSocket callback if provided (for outbound connections from isolate)
   if (options.webSocket) {

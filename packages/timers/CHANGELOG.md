@@ -1,5 +1,13 @@
 # @ricsam/isolate-timers
 
+## 0.1.13
+
+### Patch Changes
+
+- new isolate-server package
+- Updated dependencies
+  - @ricsam/isolate-core@0.1.13
+
 ## 0.1.12
 
 ### Patch Changes

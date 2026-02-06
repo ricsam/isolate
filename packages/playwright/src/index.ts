@@ -70,10 +70,14 @@ export async function setupPlaywright(
   // Get lifecycle callbacks
   const createPage = "createPage" in options ? options.createPage : undefined;
   const createContext = "createContext" in options ? options.createContext : undefined;
+  const readFile = "readFile" in options ? options.readFile : undefined;
+  const writeFile = "writeFile" in options ? options.writeFile : undefined;
 
   // Create handler from page if needed
   const effectiveHandler = handler ?? (page ? createPlaywrightHandler(page, {
     timeout,
+    readFile,
+    writeFile,
     createPage,
     createContext,
   }) : undefined);
@@ -456,6 +460,86 @@ export async function setupPlaywright(
     return JSON.stringify(serialized);
   }
 
+  const INPUT_FILES_VALIDATION_ERROR =
+    "setInputFiles() expects a file path string, an array of file path strings, " +
+    "a single inline file object ({ name, mimeType, buffer }), or an array of inline file objects.";
+
+  function isInlineFileObject(value) {
+    return !!value
+      && typeof value === 'object'
+      && typeof value.name === 'string'
+      && typeof value.mimeType === 'string'
+      && 'buffer' in value;
+  }
+
+  function encodeInlineFileBuffer(buffer) {
+    if (typeof buffer === 'string') {
+      return buffer;
+    }
+    let bytes;
+    if (buffer instanceof ArrayBuffer) {
+      bytes = new Uint8Array(buffer);
+    } else if (ArrayBuffer.isView(buffer)) {
+      bytes = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    } else {
+      throw new Error(
+        "setInputFiles() inline file buffer must be a base64 string, ArrayBuffer, or TypedArray."
+      );
+    }
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
+
+  function serializeInlineFile(file) {
+    return {
+      name: file.name,
+      mimeType: file.mimeType,
+      buffer: encodeInlineFileBuffer(file.buffer),
+    };
+  }
+
+  function normalizeSetInputFilesArg(files) {
+    if (typeof files === 'string') {
+      return files;
+    }
+    if (isInlineFileObject(files)) {
+      return serializeInlineFile(files);
+    }
+    if (!Array.isArray(files)) {
+      throw new Error(INPUT_FILES_VALIDATION_ERROR);
+    }
+    if (files.length === 0) {
+      return [];
+    }
+
+    let hasPaths = false;
+    let hasInline = false;
+    const inlineFiles = [];
+
+    for (const file of files) {
+      if (typeof file === 'string') {
+        hasPaths = true;
+        continue;
+      }
+      if (isInlineFileObject(file)) {
+        hasInline = true;
+        inlineFiles.push(serializeInlineFile(file));
+        continue;
+      }
+      throw new Error(INPUT_FILES_VALIDATION_ERROR);
+    }
+
+    if (hasPaths && hasInline) {
+      throw new Error(
+        "setInputFiles() does not support mixing file paths and inline file objects in the same array."
+      );
+    }
+    return hasInline ? inlineFiles : files;
+  }
+
   class Locator {
     #type; #value; #options; #pageId;
     constructor(type, value, options, pageId) {
@@ -554,15 +638,7 @@ export async function setupPlaywright(
       return __pw_invoke("locatorAction", [...this._getInfo(), "boundingBox", null], { pageId: this.#pageId });
     }
     async setInputFiles(files) {
-      // Serialize files - if they have buffers, convert to base64
-      let serializedFiles = files;
-      if (Array.isArray(files) && files.length > 0 && typeof files[0] === 'object' && files[0].buffer) {
-        serializedFiles = files.map(f => ({
-          name: f.name,
-          mimeType: f.mimeType,
-          buffer: typeof f.buffer === 'string' ? f.buffer : btoa(String.fromCharCode(...new Uint8Array(f.buffer)))
-        }));
-      }
+      const serializedFiles = normalizeSetInputFilesArg(files);
       return __pw_invoke("locatorAction", [...this._getInfo(), "setInputFiles", serializedFiles], { pageId: this.#pageId });
     }
     async screenshot(options) {

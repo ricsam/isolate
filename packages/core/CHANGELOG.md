@@ -1,5 +1,11 @@
 # @ricsam/isolate-core
 
+## 0.1.13
+
+### Patch Changes
+
+- new isolate-server package
+
 ## 0.1.12
 
 ### Patch Changes

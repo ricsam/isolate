@@ -1,5 +1,6 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
+import * as path from "node:path";
 import ivm from "isolated-vm";
 import { chromium, type Browser, type Page } from "playwright";
 import {
@@ -467,6 +468,116 @@ describe("playwright bridge", () => {
 
     const results = await runTests(context);
     assert.strictEqual(results.passed, 1, `Expected 1 passed test, got: ${JSON.stringify(results.tests)}`);
+    assert.strictEqual(results.failed, 0);
+
+    handle.dispose();
+  });
+
+  test("setInputFiles accepts single inline object without readFile callback", async () => {
+    await setupTestEnvironment(context);
+    const handle = await setupPlaywright(context, { page });
+
+    await context.eval(`
+      describe("setInputFiles single object", () => {
+        it("uploads file from inline payload", async () => {
+          await page.goto('data:text/html,<input type="file" id="upload" />');
+
+          const input = page.locator('#upload');
+          await input.setInputFiles({
+            name: 'single-object.txt',
+            mimeType: 'text/plain',
+            buffer: 'c2luZ2xlIHBheWxvYWQ=',
+          });
+
+          const files = await page.evaluate(() => {
+            const input = document.getElementById('upload');
+            return Array.from(input.files || []).map(f => ({ name: f.name, size: f.size }));
+          });
+
+          expect(files).toHaveLength(1);
+          expect(files[0].name).toBe('single-object.txt');
+          expect(files[0].size).toBe(14);
+        });
+      });
+    `);
+
+    const results = await runTests(context);
+    assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    assert.strictEqual(results.failed, 0);
+
+    handle.dispose();
+  });
+
+  test("setInputFiles uses readFile callback in setupPlaywright page mode", async () => {
+    const readFileCalls: string[] = [];
+    await setupTestEnvironment(context);
+    const handle = await setupPlaywright(context, {
+      page,
+      readFile: async (filePath: string) => {
+        readFileCalls.push(filePath);
+        return {
+          name: path.basename(filePath),
+          mimeType: "text/plain",
+          buffer: Buffer.from("callback content"),
+        };
+      },
+    });
+
+    await context.eval(`
+      describe("setInputFiles page mode callback", () => {
+        it("reads file path through readFile callback", async () => {
+          await page.goto('data:text/html,<input type="file" id="upload" />');
+
+          const input = page.locator('#upload');
+          await input.setInputFiles('/uploads/from-page-mode.txt');
+
+          const files = await page.evaluate(() => {
+            const input = document.getElementById('upload');
+            return Array.from(input.files || []).map(f => f.name);
+          });
+
+          expect(files).toHaveLength(1);
+          expect(files[0]).toBe('from-page-mode.txt');
+        });
+      });
+    `);
+
+    const results = await runTests(context);
+    assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    assert.strictEqual(results.failed, 0);
+    assert.deepStrictEqual(readFileCalls, ["/uploads/from-page-mode.txt"]);
+
+    handle.dispose();
+  });
+
+  test("setInputFiles rejects mixed path and inline object arrays", async () => {
+    await setupTestEnvironment(context);
+    const handle = await setupPlaywright(context, { page });
+
+    await context.eval(`
+      describe("setInputFiles mixed inputs", () => {
+        it("throws a validation error", async () => {
+          await page.goto('data:text/html,<input type="file" id="upload" />');
+
+          const input = page.locator('#upload');
+          let error = null;
+          try {
+            await input.setInputFiles([
+              '/tmp/file.txt',
+              { name: 'inline.txt', mimeType: 'text/plain', buffer: 'aW5saW5l' },
+            ]);
+          } catch (e) {
+            error = e;
+          }
+
+          expect(error).not.toBeNull();
+          expect(error.message).toContain('mixing file paths and inline file objects');
+        });
+      });
+    `);
+
+    const results = await runTests(context);
+    assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
     assert.strictEqual(results.failed, 0);
 
     handle.dispose();

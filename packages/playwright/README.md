@@ -385,9 +385,31 @@ await context.eval(`
 `);
 ```
 
+With handler-first runtime APIs (`createRuntime({ playwright: { handler } })`), provide
+`writeFile` when creating the handler:
+
+```typescript
+const handler = defaultPlaywrightHandler(page, {
+  writeFile: async (filePath, data) => {
+    await fs.writeFile(filePath, data);
+  },
+});
+```
+
 ### File Uploads (setInputFiles)
 
-File uploads support both inline data and file paths:
+File uploads support these input shapes:
+
+- `"/uploads/document.pdf"`
+- `["/uploads/file1.pdf", "/uploads/file2.pdf"]`
+- `{ name, mimeType, buffer }`
+- `[{ name, mimeType, buffer }, ...]`
+- `[]` (clear files)
+
+Mixing paths and inline objects in the same array throws an error.
+
+In page-mode (`setupPlaywright(context, { page, ... })`), provide `readFile` in
+`setupPlaywright` options:
 
 ```typescript
 const handle = await setupPlaywright(context, {
@@ -404,7 +426,14 @@ const handle = await setupPlaywright(context, {
 
 // In isolate code:
 await context.eval(`
-  // Inline data - no callback needed
+  // Inline data object - no callback needed
+  await page.locator('#upload').setInputFiles({
+    name: 'single.txt',
+    mimeType: 'text/plain',
+    buffer: new TextEncoder().encode('Hello!'),
+  });
+
+  // Inline data array - no callback needed
   await page.locator('#upload').setInputFiles([{
     name: 'test.txt',
     mimeType: 'text/plain',
@@ -423,6 +452,22 @@ await context.eval(`
   // Clear files
   await page.locator('#upload').setInputFiles([]);
 `);
+```
+
+With handler-first runtime APIs (`createRuntime({ playwright: { handler } })`),
+provide `readFile` when creating the handler:
+
+```typescript
+const handler = defaultPlaywrightHandler(page, {
+  readFile: async (filePath) => {
+    const buffer = await fs.readFile(filePath);
+    return {
+      name: path.basename(filePath),
+      mimeType: 'application/octet-stream',
+      buffer,
+    };
+  },
+});
 ```
 
 ## License

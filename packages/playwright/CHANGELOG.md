@@ -1,5 +1,13 @@
 # @ricsam/isolate-playwright
 
+## 0.1.14
+
+### Patch Changes
+
+- new isolate-server package
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.14
+
 ## 0.1.13
 
 ### Patch Changes

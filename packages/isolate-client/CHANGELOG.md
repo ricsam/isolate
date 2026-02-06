@@ -1,5 +1,35 @@
 # @ricsam/isolate-client
 
+## 0.1.16
+
+### Patch Changes
+
+- Add a new `@ricsam/isolate-server` package that provides a reusable lifecycle abstraction for namespaced runtimes:
+
+  - `IsolateServer` with serialized `start()`, `reload()`, and `close()`
+  - entry-module startup via synthetic import
+  - auto-starting `fetch.*` proxy methods after initial configuration
+  - linker-conflict retry and benign dispose handling
+
+  Also update `@ricsam/isolate-client` to support runtime-level WebSocket command registration:
+
+  - add `RuntimeOptions.onWebSocketCommand`
+  - auto-register the callback during `createRuntime()`
+  - export `isBenignDisposeError` for upstream lifecycle managers
+
+- new isolate-server package
+- e17d18d: Stabilize module linking and runtime lifecycle behavior across runtime, daemon, and client:
+
+  - Runtime: remove recursive module instantiation from resolver, dedupe in-flight module compilation by content hash, clear partial resolver cache entries on failure, and serialize `eval()` per runtime.
+  - Daemon: track poisoned namespaced runtimes and hard-delete them on dispose/connection close instead of returning them to the namespace pool.
+  - Client: treat stale runtime dispose failures (`not owned`, `not found`, disconnected) as idempotent success.
+
+  Also adds regression coverage for concurrent eval/linking behavior, poisoned namespace reuse, and stale dispose after reconnect.
+
+- Updated dependencies
+  - @ricsam/isolate-playwright@0.1.14
+  - @ricsam/isolate-protocol@0.1.14
+
 ## 0.1.15
 
 ### Patch Changes

@@ -29,6 +29,7 @@ npm add @ricsam/isolate-runtime isolated-vm
 # For daemon/client architecture (works with Bun, Deno, Node.js)
 npm add @ricsam/isolate-daemon  # Server (Node.js only)
 npm add @ricsam/isolate-client  # Client (any runtime)
+npm add @ricsam/isolate-server  # Lifecycle wrapper for server-style runtimes
 ```
 
 ## Quick Start
@@ -416,6 +417,61 @@ await runtime2.eval(`
 - Non-namespaced runtimes (`client.createRuntime()`) work as before - true disposal
 - Namespaced runtimes are cached on dispose and evicted via LRU when `maxIsolates` limit is reached
 - Cross-client reuse is allowed - any connection can reuse a namespace by ID
+
+### IsolateServer (Lifecycle Manager)
+
+`@ricsam/isolate-server` provides a reusable lifecycle wrapper for server-style runtimes built on
+`@ricsam/isolate-client` namespaces.
+
+Use it when you want:
+- a single owner for `start()`, `reload()`, and `close()`
+- stable request/WebSocket dispatch via `fetch.*` proxy methods
+- auto-restart on dispatch after an initial successful `start()`
+- built-in linker conflict retry (`"Module is currently being linked by another linker"`)
+
+```typescript
+import { connect } from "@ricsam/isolate-client";
+import { IsolateServer } from "@ricsam/isolate-server";
+
+const connection = await connect({ socket: "/tmp/isolate.sock" });
+
+const server = new IsolateServer({
+  namespaceId: "project-123/main",
+  getConnection: async () => connection,
+});
+
+await server.start({
+  entry: "server.js", // resolved by runtimeOptions.moduleLoader
+  runtimeOptions: {
+    moduleLoader: async (specifier) => {
+      if (specifier === "server.js") {
+        return {
+          code: `serve({ fetch: () => new Response("ok") });`,
+          resolveDir: "/backend",
+        };
+      }
+      throw new Error(`Unknown module: ${specifier}`);
+    },
+  },
+  onWebSocketCommand: (cmd) => {
+    // Forward isolate websocket commands to your host connection registry.
+    console.log(cmd.type, cmd.connectionId);
+  },
+});
+
+const response = await server.fetch.dispatchRequest(new Request("http://localhost/"));
+console.log(await response.text()); // "ok"
+
+await server.reload(); // restarts with last start options
+await server.close();  // idempotent
+await connection.close();
+```
+
+Notes:
+- Calling `fetch.*` before the first `start()` throws: `Server not configured. Call start() first.`
+- `start()` is idempotent while runtime is active.
+- `close()` and dispose paths swallow known benign dispose errors.
+- Full package docs: [`packages/isolate-server/README.md`](./packages/isolate-server/README.md)
 
 ## Runtime Interface
 
@@ -1146,6 +1202,7 @@ await browser.close();
 | [@ricsam/isolate-runtime](./packages/runtime) | Complete runtime with all APIs (Node.js) |
 | [@ricsam/isolate-daemon](./packages/isolate-daemon) | Daemon server for IPC-based isolation |
 | [@ricsam/isolate-client](./packages/isolate-client) | Client for any JavaScript runtime |
+| [@ricsam/isolate-server](./packages/isolate-server) | Runtime lifecycle manager for server-style execution |
 | [@ricsam/isolate-protocol](./packages/isolate-protocol) | Binary protocol for daemon communication |
 | [@ricsam/isolate-core](./packages/core) | Core utilities (Blob, File, streams, URL) |
 | [@ricsam/isolate-fetch](./packages/fetch) | Fetch API and HTTP server |
