@@ -5,6 +5,7 @@ import { normalizeEntryFilename } from "@ricsam/isolate-protocol";
 import {
   transformEntryCode,
   transformModuleCode,
+  transformModuleCodeAsScript,
   contentHash,
   mapErrorStack,
   type SourceMap,
@@ -298,6 +299,9 @@ interface RuntimeState {
   customFnInvokeRef?: ivm.Reference<
     (name: string, argsJson: string) => Promise<string>
   >;
+  dynamicImportRef?: ivm.Reference<(...args: any[]) => any>;
+  moduleSourceCache: Map<string, { code: string; resolveDir: string; isStatic?: boolean }>;
+  scriptCache: Map<string, string>;
   sourceMaps: Map<string, SourceMap>;
   /** Pending callbacks to await after eval (for daemon IPC fire-and-forget pattern) */
   pendingCallbacks: Promise<unknown>[];
@@ -1023,10 +1027,18 @@ function createModuleResolver(
     const importerResolveDir = path.posix.dirname(importerPath);
 
     // Invoke module loader - capture full result including static flag
-    const result = await state.moduleLoader(specifier, {
-      path: importerPath,
-      resolveDir: importerResolveDir,
-    });
+    // Check source cache first (shared with dynamic import handler)
+    let result: { code: string; resolveDir: string; static?: boolean };
+    const cachedSource = state.moduleSourceCache.get(specifier);
+    if (cachedSource) {
+      result = { code: cachedSource.code, resolveDir: cachedSource.resolveDir, static: cachedSource.isStatic };
+    } else {
+      result = await state.moduleLoader(specifier, {
+        path: importerPath,
+        resolveDir: importerResolveDir,
+      });
+      state.moduleSourceCache.set(specifier, { code: result.code, resolveDir: result.resolveDir, isStatic: result.static });
+    }
     const { code, resolveDir } = result;
 
     // Cache by specifier + content hash (allows invalidation when content changes)
@@ -1110,6 +1122,88 @@ function createModuleResolver(
 }
 
 /**
+ * Setup dynamic import() and require() support.
+ *
+ * Uses a two-phase approach to avoid deadlocking with isolated-vm's lock:
+ * 1. Host handler (via applySyncPromise) fetches + transforms module code into an
+ *    eval-able script string — NO isolate operations are performed on the host side.
+ * 2. The isolate-side wrapper evals the returned script, which is an IIFE that
+ *    returns the module's exports as a plain object.
+ *
+ * For import(): async IIFE with `await __dynamicImport()` for nested static imports.
+ * For require(): sync IIFE with `__require()` for nested static imports.
+ */
+async function setupDynamicImport(state: RuntimeState): Promise<ivm.Reference<(...args: any[]) => any>> {
+  const handleDynamicImport = async (
+    specifier: string,
+    importerFilename: string,
+    mode: number // 0 = async (import), 1 = sync (require)
+  ): Promise<string> => {
+    if (!state.moduleLoader) {
+      throw new Error(
+        `No module loader registered. Cannot dynamically import: ${specifier}`
+      );
+    }
+
+    const modeStr = mode === 0 ? 'async' : 'sync';
+
+    // Check script cache
+    const scriptCacheKey = `${modeStr}:${specifier}`;
+    const cachedScript = state.scriptCache.get(scriptCacheKey);
+    if (cachedScript) return cachedScript;
+
+    // Get source — check source cache first (shared with static module resolver)
+    const importerResolveDir = path.posix.dirname(importerFilename);
+    let code: string;
+    const cachedSource = state.moduleSourceCache.get(specifier);
+    if (cachedSource) {
+      code = cachedSource.code;
+    } else {
+      const result = await state.moduleLoader(specifier, {
+        path: importerFilename,
+        resolveDir: importerResolveDir,
+      });
+      code = result.code;
+      state.moduleSourceCache.set(specifier, { code: result.code, resolveDir: result.resolveDir });
+    }
+
+    // Transform module code to eval-able script
+    const scriptCode = await transformModuleCodeAsScript(code, specifier, modeStr);
+
+    // Cache
+    state.scriptCache.set(scriptCacheKey, scriptCode);
+
+    return scriptCode;
+  };
+
+  const ref = new ivm.Reference(handleDynamicImport);
+  state.context.global.setSync("__dynamicImport_ref", ref);
+
+  // Inject isolate-side wrappers with module cache
+  state.context.evalSync(`
+    globalThis.__moduleCache = new Map();
+
+    globalThis.__dynamicImport = function(specifier, importerFilename) {
+      if (__moduleCache.has("async:" + specifier)) return __moduleCache.get("async:" + specifier);
+      var code = __dynamicImport_ref.applySyncPromise(undefined, [specifier, importerFilename, 0]);
+      var result = (0, eval)(code);
+      __moduleCache.set("async:" + specifier, result);
+      return result;
+    };
+
+    globalThis.__require = function(specifier, importerFilename) {
+      if (__moduleCache.has("sync:" + specifier)) return __moduleCache.get("sync:" + specifier);
+      var code = __dynamicImport_ref.applySyncPromise(undefined, [specifier, importerFilename, 1]);
+      var result = (0, eval)(code);
+      __moduleCache.set("sync:" + specifier, result);
+      return result;
+    };
+  `);
+
+  return ref;
+}
+
+/**
  * Convert FetchCallback to FetchOptions
  */
 function convertFetchCallback(callback?: FetchCallback): FetchOptions {
@@ -1166,6 +1260,8 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     moduleLoadsInFlight: new Map(),
     transformCache: new Map(),
     moduleToFilename: new Map(),
+    moduleSourceCache: new Map(),
+    scriptCache: new Map(),
     sourceMaps: new Map(),
     pendingCallbacks: [],
     evalChain: Promise.resolve(),
@@ -1215,6 +1311,9 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       customMarshalOptions,
     );
   }
+
+  // Setup dynamic import/require support
+  state.dynamicImportRef = await setupDynamicImport(state);
 
   // Setup test environment (if enabled)
   if (opts.testEnvironment) {
@@ -1553,11 +1652,20 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       state.moduleCache.clear();
       state.moduleLoadsInFlight.clear();
       state.moduleToFilename.clear();
+      state.moduleSourceCache.clear();
+      state.scriptCache.clear();
       state.sourceMaps.clear();
+      // Clear isolate-side module cache
+      try { state.context.evalSync('__moduleCache.clear()'); } catch {}
       // staticModuleCache and transformCache intentionally preserved
     },
 
     async dispose(): Promise<void> {
+      // Dispose dynamic import reference
+      if (state.dynamicImportRef) {
+        state.dynamicImportRef.release();
+      }
+
       // Dispose custom function reference
       if (state.customFnInvokeRef) {
         state.customFnInvokeRef.release();

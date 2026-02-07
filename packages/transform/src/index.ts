@@ -142,11 +142,14 @@ export async function transformEntryCode(
   // Step 1: Separate imports from body
   const { imports, body, importLineCount } = separateImports(code);
 
-  // Step 2: Validate no require(), dynamic import(), or top-level return in body
+  // Step 2: Validate no top-level return in body
   validateBody(body);
 
   // Step 3: Strip types from body
   const strippedBody = stripTypes(body, importLineCount);
+
+  // Step 3.5: Rewrite dynamic import() and require() calls
+  const rewrittenBody = rewriteDynamicImports(strippedBody, filename);
 
   // Step 4: Strip type-only imports
   let strippedImports = "";
@@ -160,7 +163,7 @@ export async function transformEntryCode(
     parts.push(strippedImports);
   }
   parts.push("export default async function() {");
-  parts.push(strippedBody);
+  parts.push(rewrittenBody);
   parts.push("}");
   const wrappedCode = parts.join("\n");
 
@@ -187,6 +190,9 @@ export async function transformModuleCode(
   // Strip types from body
   const strippedBody = stripTypes(body, importLineCount);
 
+  // Rewrite dynamic import() and require() calls
+  const rewrittenBody = rewriteDynamicImports(strippedBody, filename);
+
   // Strip type-only imports
   let strippedImports = "";
   if (imports.trim()) {
@@ -198,7 +204,7 @@ export async function transformModuleCode(
   if (strippedImports) {
     parts.push(strippedImports);
   }
-  parts.push(strippedBody);
+  parts.push(rewrittenBody);
   const finalCode = parts.join("\n");
 
   const outputImportLines = strippedImports ? strippedImports.split("\n").length : 0;
@@ -332,26 +338,352 @@ function hasTopLevelReturn(body: string): boolean {
 }
 
 /**
- * Validate that body code doesn't use require(), dynamic import(), or top-level return.
+ * Validate that body code doesn't use top-level return.
  */
 function validateBody(body: string): void {
-  if (/(?<![.\w])require\s*\(/.test(body)) {
-    throw new Error(
-      "require() is not allowed. Use ES module import statements instead."
-    );
-  }
-
-  if (/\bimport\s*\(/.test(body)) {
-    throw new Error(
-      "Dynamic import() is not allowed in entry code. Use static import statements instead."
-    );
-  }
-
   // Check for top-level return statements (not inside braces)
   if (hasTopLevelReturn(body)) {
     throw new Error(
       "Top-level return is not allowed. Code runs as a module, not a script."
     );
+  }
+}
+
+/**
+ * Check if a character is an identifier character (part of a variable/property name).
+ */
+function isIdentChar(ch: string): boolean {
+  return /[\w$]/.test(ch);
+}
+
+/**
+ * Rewrite dynamic import() and require() calls into __dynamicImport() and __require() calls.
+ * Walks the code character-by-character (same pattern as hasTopLevelReturn), skipping
+ * strings and comments. Injects the importer filename as a second argument so the host
+ * handler knows which file is importing for module resolution.
+ *
+ * - `import(EXPR)` → `__dynamicImport(EXPR, "FILENAME")`
+ * - `require(EXPR)` → `__require(EXPR, "FILENAME")`
+ *
+ * Guards against `foo.import(` / `foo.require(` by checking the preceding character.
+ */
+function rewriteDynamicImports(body: string, filename: string): string {
+  const escapedFilename = filename.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  let result = "";
+  let i = 0;
+
+  while (i < body.length) {
+    const ch = body[i]!;
+
+    // Skip string literals
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const quote = ch;
+      result += ch;
+      i++;
+      while (i < body.length && body[i] !== quote) {
+        if (body[i] === "\\") {
+          result += body[i]!;
+          i++;
+          if (i < body.length) {
+            result += body[i]!;
+            i++;
+          }
+          continue;
+        }
+        if (quote === "`" && body[i] === "$" && body[i + 1] === "{") {
+          // Template literal expression - track brace depth
+          result += "${";
+          i += 2;
+          let tmplDepth = 1;
+          while (i < body.length && tmplDepth > 0) {
+            if (body[i] === "{") tmplDepth++;
+            else if (body[i] === "}") tmplDepth--;
+            if (tmplDepth > 0) {
+              result += body[i]!;
+              i++;
+            }
+          }
+          if (i < body.length) {
+            result += "}";
+            i++;
+          }
+          continue;
+        }
+        result += body[i]!;
+        i++;
+      }
+      if (i < body.length) {
+        result += body[i]!;
+        i++;
+      }
+      continue;
+    }
+
+    // Skip line comments
+    if (ch === "/" && body[i + 1] === "/") {
+      result += "//";
+      i += 2;
+      while (i < body.length && body[i] !== "\n") {
+        result += body[i]!;
+        i++;
+      }
+      continue;
+    }
+
+    // Skip block comments
+    if (ch === "/" && body[i + 1] === "*") {
+      result += "/*";
+      i += 2;
+      while (i < body.length && !(body[i] === "*" && body[i + 1] === "/")) {
+        result += body[i]!;
+        i++;
+      }
+      if (i < body.length) {
+        result += "*/";
+        i += 2;
+      }
+      continue;
+    }
+
+    // Check for `import(`
+    if (body.substring(i, i + 7) === "import(" || (body.substring(i, i + 6) === "import" && body.substring(i + 6).match(/^\s*\(/))) {
+      // Guard: preceding char must not be identifier char or '.'
+      const prevChar = i > 0 ? body[i - 1]! : "";
+      if (prevChar !== "." && !isIdentChar(prevChar)) {
+        // Find the opening paren
+        let j = i + 6;
+        while (j < body.length && body[j] !== "(") j++;
+        // j is now at '('
+        const parenStart = j;
+        // Find matching closing paren by tracking depth
+        let depth = 1;
+        j++;
+        while (j < body.length && depth > 0) {
+          if (body[j] === "(") depth++;
+          else if (body[j] === ")") depth--;
+          if (depth > 0) j++;
+        }
+        // j is now at the closing ')'
+        if (depth === 0) {
+          const innerExpr = body.substring(parenStart + 1, j);
+          result += `__dynamicImport(${innerExpr}, "${escapedFilename}")`;
+          i = j + 1;
+          continue;
+        }
+      }
+    }
+
+    // Check for `require(`
+    if (body.substring(i, i + 8) === "require(" || (body.substring(i, i + 7) === "require" && body.substring(i + 7).match(/^\s*\(/))) {
+      // Guard: preceding char must not be identifier char or '.'
+      const prevChar = i > 0 ? body[i - 1]! : "";
+      if (prevChar !== "." && !isIdentChar(prevChar)) {
+        // Find the opening paren
+        let j = i + 7;
+        while (j < body.length && body[j] !== "(") j++;
+        // j is now at '('
+        const parenStart = j;
+        // Find matching closing paren by tracking depth
+        let depth = 1;
+        j++;
+        while (j < body.length && depth > 0) {
+          if (body[j] === "(") depth++;
+          else if (body[j] === ")") depth--;
+          if (depth > 0) j++;
+        }
+        // j is now at the closing ')'
+        if (depth === 0) {
+          const innerExpr = body.substring(parenStart + 1, j);
+          result += `__require(${innerExpr}, "${escapedFilename}")`;
+          i = j + 1;
+          continue;
+        }
+      }
+    }
+
+    result += ch;
+    i++;
+  }
+
+  return result;
+}
+
+/**
+ * Convert static import declarations to dynamic import/require calls for script mode.
+ * - `import { a, b } from "mod"` → `const { a, b } = await __dynamicImport("mod", specifier);`
+ * - `import x from "mod"` → `const { default: x } = await __dynamicImport("mod", specifier);`
+ * - `import * as x from "mod"` → `const x = await __dynamicImport("mod", specifier);`
+ * - `import "mod"` → `await __dynamicImport("mod", specifier);`
+ */
+function convertStaticImportsToScript(imports: string, escapedSpecifier: string, mode: 'async' | 'sync'): string {
+  const awaitPrefix = mode === 'async' ? 'await ' : '';
+  const importFn = mode === 'async' ? '__dynamicImport' : '__require';
+  let result = imports;
+
+  // import * as name from "mod" (must come before default import pattern)
+  result = result.replace(
+    /import\s*\*\s*as\s+(\w+)\s+from\s*(['"][^'"]+['"])\s*;?/g,
+    (_, name, mod) => `const ${name} = ${awaitPrefix}${importFn}(${mod}, "${escapedSpecifier}");`
+  );
+
+  // import { a, b } from "mod"
+  result = result.replace(
+    /import\s*\{([^}]+)\}\s*from\s*(['"][^'"]+['"])\s*;?/g,
+    (_, specs, mod) => `const {${specs}} = ${awaitPrefix}${importFn}(${mod}, "${escapedSpecifier}");`
+  );
+
+  // import defaultName from "mod"
+  result = result.replace(
+    /import\s+(\w+)\s+from\s*(['"][^'"]+['"])\s*;?/g,
+    (_, name, mod) => `const { default: ${name} } = ${awaitPrefix}${importFn}(${mod}, "${escapedSpecifier}");`
+  );
+
+  // import "mod" (side-effect only)
+  result = result.replace(
+    /import\s*(['"][^'"]+['"])\s*;?/g,
+    (_, mod) => `${awaitPrefix}${importFn}(${mod}, "${escapedSpecifier}");`
+  );
+
+  return result;
+}
+
+/**
+ * Remove export keywords from body code and track exported names.
+ */
+function removeExports(body: string): { processed: string; exportEntries: Array<{ exported: string; local: string }> } {
+  const exportEntries: Array<{ exported: string; local: string }> = [];
+  let processed = body;
+
+  // export default (must come before other export patterns)
+  processed = processed.replace(
+    /\bexport\s+default\s+/g,
+    () => {
+      exportEntries.push({ exported: 'default', local: '__default__' });
+      return 'var __default__ = ';
+    }
+  );
+
+  // export const/let/var NAME
+  processed = processed.replace(
+    /\bexport\s+(const|let|var)\s+(\w+)/g,
+    (_, keyword, name) => {
+      exportEntries.push({ exported: name, local: name });
+      return `${keyword} ${name}`;
+    }
+  );
+
+  // export async function NAME
+  processed = processed.replace(
+    /\bexport\s+(async\s+function)\s+(\w+)/g,
+    (_, keyword, name) => {
+      exportEntries.push({ exported: name, local: name });
+      return `${keyword} ${name}`;
+    }
+  );
+
+  // export function NAME
+  processed = processed.replace(
+    /\bexport\s+(function)\s+(\w+)/g,
+    (_, keyword, name) => {
+      exportEntries.push({ exported: name, local: name });
+      return `${keyword} ${name}`;
+    }
+  );
+
+  // export class NAME
+  processed = processed.replace(
+    /\bexport\s+(class)\s+(\w+)/g,
+    (_, keyword, name) => {
+      exportEntries.push({ exported: name, local: name });
+      return `${keyword} ${name}`;
+    }
+  );
+
+  // export { a, b as c }
+  processed = processed.replace(
+    /\bexport\s*\{([^}]+)\}\s*;?/g,
+    (_, specs: string) => {
+      const specifiers = specs.split(',').map((s: string) => s.trim()).filter(Boolean);
+      for (const spec of specifiers) {
+        const match = spec.match(/^(\w+)\s+as\s+(\w+)$/);
+        if (match) {
+          exportEntries.push({ exported: match[2]!, local: match[1]! });
+        } else {
+          exportEntries.push({ exported: spec, local: spec });
+        }
+      }
+      return '';
+    }
+  );
+
+  return { processed, exportEntries };
+}
+
+/**
+ * Transform module code into a script that can be eval'd in the isolate.
+ * Converts ES module syntax (import/export) to script-compatible code:
+ * - Static imports become __dynamicImport() or __require() calls
+ * - Export keywords are stripped, export names are tracked
+ * - Code is wrapped in an async IIFE (for import) or sync IIFE (for require)
+ * - The IIFE returns an object with all exports
+ *
+ * @param code - Raw module source code (may contain TypeScript)
+ * @param specifier - The module specifier (used as importer filename for nested imports)
+ * @param mode - 'async' for import() (async IIFE), 'sync' for require() (sync IIFE)
+ */
+export async function transformModuleCodeAsScript(
+  code: string,
+  specifier: string,
+  mode: 'async' | 'sync'
+): Promise<string> {
+  const escapedSpecifier = specifier.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+  // Strip TypeScript types
+  const stripped = stripTypes(code, 0);
+
+  // Separate imports from body
+  const { imports, body } = separateImports(stripped);
+
+  // Process imports: strip type-only, convert to dynamic calls, and also remove any exports
+  // (handles case where import and export are on the same line)
+  let convertedImports = '';
+  let importSectionExports: Array<{ exported: string; local: string }> = [];
+  if (imports.trim()) {
+    const strippedImports = stripTypeImports(imports);
+    if (strippedImports.trim()) {
+      const { processed: importsNoExport, exportEntries: importExportEntries } = removeExports(strippedImports);
+      convertedImports = convertStaticImportsToScript(importsNoExport, escapedSpecifier, mode);
+      importSectionExports = importExportEntries;
+    }
+  }
+
+  // Remove export keywords from body and track exports
+  const { processed, exportEntries: bodyExportEntries } = removeExports(body);
+
+  // Combine export entries from both sections
+  const exportEntries = [...importSectionExports, ...bodyExportEntries];
+
+  // Rewrite dynamic import() and require() calls in body
+  const rewrittenBody = rewriteDynamicImports(processed, specifier);
+
+  // Build return statement
+  const returnEntries = exportEntries.map(e =>
+    e.exported === e.local ? e.local : `${JSON.stringify(e.exported)}: ${e.local}`
+  );
+  const returnStatement = returnEntries.length > 0
+    ? `return { ${returnEntries.join(', ')} };`
+    : 'return {};';
+
+  // Combine imports and body
+  const codeBody = convertedImports
+    ? `${convertedImports}\n${rewrittenBody}`
+    : rewrittenBody;
+
+  // Wrap in IIFE
+  if (mode === 'async') {
+    return `(async () => {\n${codeBody}\n${returnStatement}\n})()`;
+  } else {
+    return `(function() {\n${codeBody}\n${returnStatement}\n})()`;
   }
 }
 
