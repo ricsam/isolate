@@ -574,4 +574,222 @@ describe("dynamic import/require", () => {
     assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
     assert.deepStrictEqual(outcomes.direct, ["module-a module-b module-c"]);
   });
+
+  it("CJS module.exports object via import()", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/cjs-lib") {
+            return {
+              code: `module.exports = { hello: "world", num: 42 };`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const lib = await import("@/cjs-lib");
+          console.log("hello:", lib.hello);
+          console.log("num:", lib.num);
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["hello: world", "num: 42"]);
+  });
+
+  it("CJS module.exports object via require()", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/cjs-lib") {
+            return {
+              code: `module.exports = { greet: (name) => "Hi " + name };`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const lib = require("@/cjs-lib");
+          console.log(lib.greet("Alice"));
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["Hi Alice"]);
+  });
+
+  it("CJS exports.foo incremental assignment", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/helpers") {
+            return {
+              code: `exports.greet = (name) => "Hello, " + name;\nexports.farewell = (name) => "Bye, " + name;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const helpers = await import("@/helpers");
+          console.log(helpers.greet("Bob"));
+          console.log(helpers.farewell("Bob"));
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["Hello, Bob", "Bye, Bob"]);
+  });
+
+  it("CJS module.exports = function", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/fn-module") {
+            return {
+              code: `module.exports = function(x) { return x * 2; };`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const double = await import("@/fn-module");
+          console.log("result:", double(21));
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["result: 42"]);
+  });
+
+  it("CJS module that uses require() internally", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/cjs-main") {
+            return {
+              code: `const utils = require("@/cjs-utils");\nmodule.exports = { result: utils.add(10, 20) };`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/cjs-utils") {
+            return {
+              code: `exports.add = (a, b) => a + b;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const main = require("@/cjs-main");
+          console.log("result:", main.result);
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["result: 30"]);
+  });
 });

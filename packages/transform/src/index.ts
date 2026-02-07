@@ -672,12 +672,15 @@ export async function transformModuleCodeAsScript(
   );
   const returnStatement = returnEntries.length > 0
     ? `return { ${returnEntries.join(', ')} };`
-    : 'return {};';
+    : 'return module.exports;';
+
+  // CJS preamble: inject module/exports objects for CommonJS compatibility
+  const cjsPreamble = 'var module = { exports: {} }; var exports = module.exports;';
 
   // Combine imports and body
   const codeBody = convertedImports
-    ? `${convertedImports}\n${rewrittenBody}`
-    : rewrittenBody;
+    ? `${cjsPreamble}\n${convertedImports}\n${rewrittenBody}`
+    : `${cjsPreamble}\n${rewrittenBody}`;
 
   // Wrap in IIFE
   if (mode === 'async') {
