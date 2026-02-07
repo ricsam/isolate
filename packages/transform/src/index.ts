@@ -180,10 +180,98 @@ export async function transformEntryCode(
 /**
  * Transform module code: strip TypeScript types only (no wrapping).
  */
+/**
+ * Detect whether code is CommonJS (no ES module syntax, uses module.exports/exports.X).
+ * Returns false if code contains any `export` or static `import ... from` statements.
+ */
+function isCJS(code: string): boolean {
+  // Quick check: if code has ES export/import keywords, it's ESM
+  // We check for common ES module patterns (avoiding matches inside strings/comments for simplicity)
+  if (/\bexport\s+(default|const|let|var|function|class|async\s+function)\b/.test(code)) return false;
+  if (/\bexport\s*\{/.test(code)) return false;
+  if (/\bexport\s*\*/.test(code)) return false;
+  if (/\bimport\s+.*\s+from\s+/.test(code)) return false;
+  if (/\bimport\s*\{.*\}\s*from\s+/.test(code)) return false;
+  if (/\bimport\s*\*\s*as\s+/.test(code)) return false;
+
+  // Check for CJS patterns
+  return /\bmodule\.exports\b/.test(code) || /\bexports\./.test(code);
+}
+
+/**
+ * Extract named export names from CJS code by analyzing exports.NAME = ... patterns.
+ * Returns deduplicated list of export names.
+ */
+function extractCJSExportNames(code: string): string[] {
+  const names = new Set<string>();
+
+  // exports.NAME = ...
+  const exportsPattern = /\bexports\.(\w+)\s*=/g;
+  let match;
+  while ((match = exportsPattern.exec(code)) !== null) {
+    names.add(match[1]!);
+  }
+
+  // module.exports.NAME = ...
+  const moduleExportsPattern = /\bmodule\.exports\.(\w+)\s*=/g;
+  while ((match = moduleExportsPattern.exec(code)) !== null) {
+    names.add(match[1]!);
+  }
+
+  // Object.defineProperty(exports, "NAME", ...)
+  const definePattern = /\bObject\.defineProperty\s*\(\s*exports\s*,\s*['"](\w+)['"]/g;
+  while ((match = definePattern.exec(code)) !== null) {
+    names.add(match[1]!);
+  }
+
+  return [...names];
+}
+
+/**
+ * Convert CJS code to an ES module by wrapping in a function scope and adding export declarations.
+ * Wraps CJS code in an IIFE to avoid name conflicts between CJS declarations and ES export bindings.
+ * Detects `exports.NAME = ...` patterns and generates corresponding named ES exports.
+ * Also generates `export default` for the full module.exports object.
+ */
+function convertCJSToESModule(code: string, filename: string): string {
+  const names = extractCJSExportNames(code);
+  const rewrittenCode = rewriteDynamicImports(code, filename);
+
+  const parts: string[] = [];
+
+  // Wrap CJS code in a function scope to avoid name conflicts
+  // The function receives `module` and `exports` as parameters, matching CJS expectations
+  parts.push('var __cjs_module = { exports: {} };');
+  parts.push('(function(module, exports) {');
+  parts.push(rewrittenCode);
+  parts.push('})(__cjs_module, __cjs_module.exports);');
+
+  // Add named exports extracted from CJS patterns
+  // Skip 'default' (handled by export default below) and '__esModule' (internal CJS marker)
+  for (const name of names) {
+    if (name === 'default' || name === '__esModule') continue;
+    parts.push(`export var ${name} = __cjs_module.exports.${name};`);
+  }
+
+  // Always export default as the full module.exports object
+  parts.push('export default __cjs_module.exports;');
+
+  return parts.join('\n');
+}
+
 export async function transformModuleCode(
   code: string,
   filename: string
 ): Promise<TransformResult> {
+  // Check if code is CJS — if so, convert to ESM wrapper
+  if (isCJS(code)) {
+    const esmCode = convertCJSToESModule(code, filename);
+    return {
+      code: esmCode,
+      // No source map for CJS conversion (line mapping would be complex)
+    };
+  }
+
   // For modules, we need to preserve imports. Separate, strip types on body, recombine.
   const { imports, body, importLineCount } = separateImports(code);
 

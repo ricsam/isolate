@@ -191,6 +191,71 @@ describe("@ricsam/isolate-transform", () => {
       assert.ok(result.code.includes('__require("./dep", "/mod.ts")'));
       assert.ok(!result.code.includes('require("./dep")'));
     });
+
+    test("converts CJS exports.NAME to ESM named exports", async () => {
+      const result = await transformModuleCode(
+        `'use strict';\nfunction foo() { return 1; }\nexports.foo = foo;`,
+        "/mod.cjs"
+      );
+      assert.ok(result.code.includes("var __cjs_module = { exports: {} }"));
+      assert.ok(result.code.includes("(function(module, exports) {"));
+      assert.ok(result.code.includes("export var foo = __cjs_module.exports.foo;"));
+      assert.ok(result.code.includes("export default __cjs_module.exports;"));
+    });
+
+    test("converts CJS module.exports object to ESM default export", async () => {
+      const result = await transformModuleCode(
+        `module.exports = { hello: "world" };`,
+        "/mod.cjs"
+      );
+      assert.ok(result.code.includes("var __cjs_module = { exports: {} }"));
+      assert.ok(result.code.includes("export default __cjs_module.exports;"));
+    });
+
+    test("converts CJS with multiple exports.NAME assignments", async () => {
+      const result = await transformModuleCode(
+        `exports.greet = (name) => "Hello, " + name;\nexports.farewell = (name) => "Bye, " + name;`,
+        "/mod.cjs"
+      );
+      assert.ok(result.code.includes("export var greet = __cjs_module.exports.greet;"));
+      assert.ok(result.code.includes("export var farewell = __cjs_module.exports.farewell;"));
+    });
+
+    test("does NOT treat ESM with export keyword as CJS", async () => {
+      const result = await transformModuleCode(
+        `export const foo = 1;`,
+        "/mod.ts"
+      );
+      assert.ok(result.code.includes("export const foo = 1;"));
+      assert.ok(!result.code.includes("__cjs_module"));
+    });
+
+    test("CJS code with exports.NAME pattern like better-auth", async () => {
+      const code = `'use strict';\nfunction createRandomStringGenerator() { return () => "random"; }\nexports.createRandomStringGenerator = createRandomStringGenerator;`;
+      const result = await transformModuleCode(code, "/random.cjs");
+      assert.ok(result.code.includes("export var createRandomStringGenerator = __cjs_module.exports.createRandomStringGenerator;"));
+      assert.ok(result.code.includes("export default __cjs_module.exports;"));
+    });
+
+    test("CJS skips 'default' and '__esModule' in named exports", async () => {
+      const result = await transformModuleCode(
+        `Object.defineProperty(exports, "__esModule", { value: true });\nexports.z = {};\nexports.default = exports.z;`,
+        "/mod.cjs"
+      );
+      assert.ok(result.code.includes("export var z = __cjs_module.exports.z;"));
+      assert.ok(!result.code.includes("export var default"));
+      assert.ok(!result.code.includes("export var __esModule"));
+      assert.ok(result.code.includes("export default __cjs_module.exports;"));
+    });
+
+    test("CJS conversion rewrites require() calls", async () => {
+      const result = await transformModuleCode(
+        `const dep = require("./dep");\nexports.value = dep.value;`,
+        "/mod.cjs"
+      );
+      assert.ok(result.code.includes('__require("./dep", "/mod.cjs")'));
+      assert.ok(result.code.includes("export var value = __cjs_module.exports.value;"));
+    });
   });
 
   describe("transformModuleCodeAsScript", () => {
