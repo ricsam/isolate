@@ -130,7 +130,7 @@ interface PlaywrightOptions {
 
 ## Module Loader
 
-Provide custom ES modules. The loader receives the module specifier and importer info, and returns an object with the source code and `resolveDir` (used to resolve nested relative imports):
+Provide custom ES modules. The loader receives the module specifier and importer info, and returns an object with the source code and `resolveDir` (used to resolve nested relative imports). It handles static `import` statements, dynamic `import()` calls, and `require()`:
 
 ```typescript
 const runtime = await createRuntime({
@@ -149,9 +149,22 @@ const runtime = await createRuntime({
   },
 });
 
+// Static import
 await runtime.eval(`
   import { add } from "@/utils";
   console.log(add(2, 3)); // 5
+`);
+
+// Dynamic import()
+await runtime.eval(`
+  const utils = await import("@/utils");
+  console.log(utils.add(2, 3)); // 5
+`);
+
+// require()
+await runtime.eval(`
+  const utils = require("@/utils");
+  console.log(utils.add(2, 3)); // 5
 `);
 ```
 

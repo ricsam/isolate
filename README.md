@@ -15,7 +15,7 @@ A WHATWG-compliant JavaScript sandbox built on [isolated-vm](https://github.com/
 - **Encoding** - `atob()` and `btoa()` for Base64 encoding/decoding
 - **Path** - Node.js-compatible path utilities (`path.join`, `path.resolve`, etc.)
 - **Timers** - `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`
-- **ES Modules** - Top-level await, dynamic imports with custom module loader
+- **ES Modules** - Top-level await, dynamic `import()`, `require()`, and static imports with custom module loader
 - **Custom Functions** - Call host functions directly from isolate code
 - **Test Environment** - `describe()`, `it()`, `expect()` for running tests in sandboxed V8
 - **Playwright Bridge** - Run Playwright browser tests with untrusted code in a V8 sandbox
@@ -84,7 +84,7 @@ await runtime.dispose();
 
 ### Module Loader
 
-Provide custom ES modules for dependency injection. The module loader receives the module specifier and importer info, and returns an object with the source code and the `resolveDir` (used to resolve nested relative imports):
+Provide custom ES modules for dependency injection. The module loader receives the module specifier and importer info, and returns an object with the source code and the `resolveDir` (used to resolve nested relative imports). Modules are resolved for static `import` statements, dynamic `import()` calls, and `require()`:
 
 ```typescript
 const runtime = await createRuntime({
@@ -118,12 +118,26 @@ const runtime = await createRuntime({
   fetch: async (url, init) => fetch(url, init),
 });
 
+// Static imports
 await runtime.eval(`
   import { getUser } from "@/db";
   import { API_KEY } from "@/config";
 
   const user = await getUser("123");
   console.log("User:", user, "from", API_KEY);
+`);
+
+// Dynamic import()
+await runtime.eval(`
+  const lang = "en";
+  const i18n = await import("@/i18n-" + lang);
+  console.log(i18n.greeting);
+`);
+
+// require()
+await runtime.eval(`
+  const config = require("@/config");
+  console.log(config.API_KEY);
 `);
 ```
 
@@ -579,7 +593,7 @@ interface RuntimeOptions {
   /** File system callbacks - handles OPFS-style file operations */
   fs?: FileSystemCallbacks;
 
-  /** Module loader - resolves dynamic imports to source code */
+  /** Module loader - resolves static imports, dynamic import(), and require() to source code */
   moduleLoader?: ModuleLoaderCallback;
 
   /** Custom functions - expose host functions to the isolate */
@@ -727,7 +741,7 @@ interface FileSystemCallbacks {
 
 ### Module Loader Callback
 
-Resolve dynamic imports to JavaScript source code. Returns an object with the code and `resolveDir` (directory path used to resolve nested relative imports from this module):
+Resolve static imports, dynamic `import()`, and `require()` to JavaScript source code. Returns an object with the code and `resolveDir` (directory path used to resolve nested relative imports from this module):
 
 ```typescript
 type ModuleLoaderCallback = (
@@ -854,10 +868,8 @@ The transformation uses "strip" mode which preserves line/column positions by re
 
 ### Validations
 
-The following are not allowed in entry code (passed to `eval()`):
+The following is not allowed in entry code (passed to `eval()`):
 
-- `require()` - Use ES module imports instead
-- Dynamic `import()` - Use static import statements
 - Top-level `return` - Code runs as a module
 
 ### Source Map Support
@@ -1224,7 +1236,7 @@ await browser.close();
 - **No automatic network access** - `fetch` callback must be explicitly provided
 - **File system isolation** - `fs` callbacks control all path access
 - **Memory limits** - Configure maximum heap size per isolate
-- **No Node.js APIs** - Sandbox has no access to `require`, `process`, `fs`, etc.
+- **No Node.js APIs** - Sandbox has no access to `process`, `fs`, etc. (`require()` is available but resolves through the custom module loader, not Node.js)
 
 ## Development
 
