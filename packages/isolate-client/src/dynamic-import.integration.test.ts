@@ -745,6 +745,392 @@ describe("dynamic import/require", () => {
     assert.deepStrictEqual(outcomes.direct, ["result: 42"]);
   });
 
+  it("export { name } list syntax via dynamic import", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/lib") {
+            return {
+              code: `function createRandomStringGenerator() { return () => "random"; }\nexport { createRandomStringGenerator };`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const lib = await import("@/lib");
+          const gen = lib.createRandomStringGenerator();
+          console.log(gen());
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["random"]);
+  });
+
+  it("export { name } list syntax via static import", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/lib") {
+            return {
+              code: `function createRandomStringGenerator() { return () => "random"; }\nexport { createRandomStringGenerator };`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          import { createRandomStringGenerator } from "@/lib";
+          const gen = createRandomStringGenerator();
+          console.log(gen());
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["random"]);
+  });
+
+  it("export { name } from 'mod' re-export", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/barrel") {
+            return {
+              code: `export { greet } from "@/impl";`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/impl") {
+            return {
+              code: `export const greet = (name) => "Hello, " + name;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const barrel = await import("@/barrel");
+          console.log(barrel.greet("World"));
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["Hello, World"]);
+  });
+
+  it("export { a as b } from 'mod' renamed re-export", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/barrel") {
+            return {
+              code: `export { add as sum } from "@/math";`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/math") {
+            return {
+              code: `export const add = (a, b) => a + b;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const barrel = await import("@/barrel");
+          console.log("sum:", barrel.sum(3, 4));
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["sum: 7"]);
+  });
+
+  it("export * from 'mod' star re-export", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/barrel") {
+            return {
+              code: `export * from "@/math";`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/math") {
+            return {
+              code: `export const add = (a, b) => a + b; export const mul = (a, b) => a * b;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const barrel = await import("@/barrel");
+          console.log("add:", barrel.add(1, 2));
+          console.log("mul:", barrel.mul(3, 4));
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["add: 3", "mul: 12"]);
+  });
+
+  it("export * as ns from 'mod' namespace re-export", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/barrel") {
+            return {
+              code: `export * as math from "@/math";`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/math") {
+            return {
+              code: `export const add = (a, b) => a + b; export const mul = (a, b) => a * b;`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const barrel = await import("@/barrel");
+          console.log("add:", barrel.math.add(5, 6));
+          console.log("mul:", barrel.math.mul(7, 8));
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["add: 11", "mul: 56"]);
+  });
+
+  it("re-export chain: A re-exports from B which re-exports from C", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/a") {
+            return {
+              code: `export { value } from "@/b";`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/b") {
+            return {
+              code: `export { value } from "@/c";`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/c") {
+            return {
+              code: `export const value = "deep";`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const a = await import("@/a");
+          console.log(a.value);
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["deep"]);
+  });
+
+  it("mixed local exports and re-exports", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/mixed") {
+            return {
+              code: `export const local = "local-value";\nexport { remote } from "@/dep";`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/dep") {
+            return {
+              code: `export const remote = "remote-value";`,
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const mixed = await import("@/mixed");
+          console.log("local:", mixed.local);
+          console.log("remote:", mixed.remote);
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, [
+      "local: local-value",
+      "remote: remote-value",
+    ]);
+  });
+
   it("CJS module that uses require() internally", async () => {
     const outcomes: Record<string, string[]> = {};
 

@@ -3,6 +3,7 @@ import assert from "node:assert";
 import {
   transformEntryCode,
   transformModuleCode,
+  transformModuleCodeAsScript,
   mapErrorStack,
   contentHash,
   type SourceMap,
@@ -189,6 +190,133 @@ describe("@ricsam/isolate-transform", () => {
       );
       assert.ok(result.code.includes('__require("./dep", "/mod.ts")'));
       assert.ok(!result.code.includes('require("./dep")'));
+    });
+  });
+
+  describe("transformModuleCodeAsScript", () => {
+    test("export const becomes local and appears in return", async () => {
+      const result = await transformModuleCodeAsScript(
+        'export const foo = 42;',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes("const foo = 42;"));
+      assert.ok(!result.includes("export const"));
+      assert.ok(result.includes("return { foo }"));
+    });
+
+    test("export { name } list syntax", async () => {
+      const result = await transformModuleCodeAsScript(
+        'const foo = 1;\nconst bar = 2;\nexport { foo, bar };',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes("return { foo, bar }"));
+      assert.ok(!result.includes("export {"));
+    });
+
+    test("export { a as b } renaming", async () => {
+      const result = await transformModuleCodeAsScript(
+        'const foo = 1;\nexport { foo as bar };',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes('"bar": foo'));
+    });
+
+    test("export default", async () => {
+      const result = await transformModuleCodeAsScript(
+        'export default 42;',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes("var __default__ = 42;"));
+      assert.ok(result.includes('"default": __default__'));
+    });
+
+    test("export { name } from 'mod' generates re-import", async () => {
+      const result = await transformModuleCodeAsScript(
+        'export { foo } from "@/dep";',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes('await __dynamicImport("@/dep", "/mod.ts")'));
+      assert.ok(result.includes('"foo": __reexport_0["foo"]'));
+    });
+
+    test("export { a as b } from 'mod' generates renamed re-import", async () => {
+      const result = await transformModuleCodeAsScript(
+        'export { foo as bar } from "@/dep";',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes('await __dynamicImport("@/dep", "/mod.ts")'));
+      assert.ok(result.includes('"bar": __reexport_0["foo"]'));
+    });
+
+    test("export * from 'mod' generates spread re-import", async () => {
+      const result = await transformModuleCodeAsScript(
+        'export * from "@/dep";',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes('await __dynamicImport("@/dep", "/mod.ts")'));
+      assert.ok(result.includes("...__reexport_star_"));
+    });
+
+    test("export * as ns from 'mod' generates namespace re-import", async () => {
+      const result = await transformModuleCodeAsScript(
+        'export * as ns from "@/dep";',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes('await __dynamicImport("@/dep", "/mod.ts")'));
+      assert.ok(result.includes('"ns": __reexport_star_'));
+    });
+
+    test("sync mode uses __require instead of __dynamicImport", async () => {
+      const result = await transformModuleCodeAsScript(
+        'export { foo } from "@/dep";',
+        "/mod.ts",
+        "sync"
+      );
+      assert.ok(result.includes('__require("@/dep", "/mod.ts")'));
+      assert.ok(!result.includes("await"));
+      assert.ok(result.startsWith("(function()"));
+    });
+
+    test("mixed local exports and re-exports", async () => {
+      const result = await transformModuleCodeAsScript(
+        'export const local = 1;\nexport { foo } from "@/dep";\nexport * from "@/base";',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes("const local = 1;"));
+      assert.ok(result.includes('__dynamicImport("@/dep"'));
+      assert.ok(result.includes('__dynamicImport("@/base"'));
+      assert.ok(result.includes("...__reexport_star_"));
+      assert.ok(result.includes('"foo": __reexport_0["foo"]'));
+      assert.ok(result.includes("local"));
+    });
+
+    test("CJS fallback when no exports", async () => {
+      const result = await transformModuleCodeAsScript(
+        'module.exports = { x: 1 };',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes("return module.exports;"));
+    });
+
+    test("re-export in import section (export { } from on same line as imports)", async () => {
+      const result = await transformModuleCodeAsScript(
+        'import { helper } from "@/utils";\nexport { foo } from "@/dep";\nconst x = helper();',
+        "/mod.ts",
+        "async"
+      );
+      assert.ok(result.includes('__dynamicImport("@/utils"'));
+      assert.ok(result.includes('__dynamicImport("@/dep"'));
+      assert.ok(result.includes('"foo": __reexport_0["foo"]'));
     });
   });
 

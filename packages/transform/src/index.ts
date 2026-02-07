@@ -547,11 +547,30 @@ function convertStaticImportsToScript(imports: string, escapedSpecifier: string,
   return result;
 }
 
+interface ReExport {
+  specifiers: Array<{ exported: string; local: string }>;
+  moduleSpecifier: string;
+}
+
+interface StarReExport {
+  moduleSpecifier: string;
+  alias?: string;
+}
+
+interface RemoveExportsResult {
+  processed: string;
+  exportEntries: Array<{ exported: string; local: string }>;
+  reExports: ReExport[];
+  starReExports: StarReExport[];
+}
+
 /**
  * Remove export keywords from body code and track exported names.
  */
-function removeExports(body: string): { processed: string; exportEntries: Array<{ exported: string; local: string }> } {
+function removeExports(body: string): RemoveExportsResult {
   const exportEntries: Array<{ exported: string; local: string }> = [];
+  const reExports: ReExport[] = [];
+  const starReExports: StarReExport[] = [];
   let processed = body;
 
   // export default (must come before other export patterns)
@@ -599,7 +618,47 @@ function removeExports(body: string): { processed: string; exportEntries: Array<
     }
   );
 
-  // export { a, b as c }
+  // export * as name from "mod" (must come before export * from)
+  processed = processed.replace(
+    /\bexport\s*\*\s*as\s+(\w+)\s+from\s*(['"][^'"]+['"])\s*;?/g,
+    (_, alias: string, mod: string) => {
+      const moduleSpecifier = mod.slice(1, -1);
+      starReExports.push({ moduleSpecifier, alias });
+      return '';
+    }
+  );
+
+  // export * from "mod"
+  processed = processed.replace(
+    /\bexport\s*\*\s+from\s*(['"][^'"]+['"])\s*;?/g,
+    (_, mod: string) => {
+      const moduleSpecifier = mod.slice(1, -1);
+      starReExports.push({ moduleSpecifier });
+      return '';
+    }
+  );
+
+  // export { a, b as c } from "mod" (must come before local export { ... })
+  processed = processed.replace(
+    /\bexport\s*\{([^}]+)\}\s*from\s*(['"][^'"]+['"])\s*;?/g,
+    (_, specs: string, mod: string) => {
+      const moduleSpecifier = mod.slice(1, -1);
+      const specifiers = specs.split(',').map((s: string) => s.trim()).filter(Boolean);
+      const parsed: Array<{ exported: string; local: string }> = [];
+      for (const spec of specifiers) {
+        const match = spec.match(/^(\w+)\s+as\s+(\w+)$/);
+        if (match) {
+          parsed.push({ exported: match[2]!, local: match[1]! });
+        } else {
+          parsed.push({ exported: spec, local: spec });
+        }
+      }
+      reExports.push({ specifiers: parsed, moduleSpecifier });
+      return '';
+    }
+  );
+
+  // export { a, b as c } (local, no "from")
   processed = processed.replace(
     /\bexport\s*\{([^}]+)\}\s*;?/g,
     (_, specs: string) => {
@@ -616,7 +675,7 @@ function removeExports(body: string): { processed: string; exportEntries: Array<
     }
   );
 
-  return { processed, exportEntries };
+  return { processed, exportEntries, reExports, starReExports };
 }
 
 /**
@@ -644,43 +703,81 @@ export async function transformModuleCodeAsScript(
   // Separate imports from body
   const { imports, body } = separateImports(stripped);
 
+  const awaitPrefix = mode === 'async' ? 'await ' : '';
+  const importFn = mode === 'async' ? '__dynamicImport' : '__require';
+
   // Process imports: strip type-only, convert to dynamic calls, and also remove any exports
   // (handles case where import and export are on the same line)
   let convertedImports = '';
   let importSectionExports: Array<{ exported: string; local: string }> = [];
+  let importSectionReExports: ReExport[] = [];
+  let importSectionStarReExports: StarReExport[] = [];
   if (imports.trim()) {
     const strippedImports = stripTypeImports(imports);
     if (strippedImports.trim()) {
-      const { processed: importsNoExport, exportEntries: importExportEntries } = removeExports(strippedImports);
+      const { processed: importsNoExport, exportEntries: importExportEntries, reExports: importReExports, starReExports: importStarReExports } = removeExports(strippedImports);
       convertedImports = convertStaticImportsToScript(importsNoExport, escapedSpecifier, mode);
       importSectionExports = importExportEntries;
+      importSectionReExports = importReExports;
+      importSectionStarReExports = importStarReExports;
     }
   }
 
   // Remove export keywords from body and track exports
-  const { processed, exportEntries: bodyExportEntries } = removeExports(body);
+  const { processed, exportEntries: bodyExportEntries, reExports: bodyReExports, starReExports: bodyStarReExports } = removeExports(body);
 
   // Combine export entries from both sections
   const exportEntries = [...importSectionExports, ...bodyExportEntries];
+  const allReExports = [...importSectionReExports, ...bodyReExports];
+  const allStarReExports = [...importSectionStarReExports, ...bodyStarReExports];
 
   // Rewrite dynamic import() and require() calls in body
   const rewrittenBody = rewriteDynamicImports(processed, specifier);
 
+  // Generate re-export code
+  const reExportLines: string[] = [];
+  const reExportReturnEntries: string[] = [];
+  let reExportCounter = 0;
+
+  for (const reExport of allReExports) {
+    const varName = `__reexport_${reExportCounter++}`;
+    const escapedMod = reExport.moduleSpecifier.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    reExportLines.push(`const ${varName} = ${awaitPrefix}${importFn}("${escapedMod}", "${escapedSpecifier}");`);
+    for (const spec of reExport.specifiers) {
+      const localAccess = `${varName}[${JSON.stringify(spec.local)}]`;
+      reExportReturnEntries.push(`${JSON.stringify(spec.exported)}: ${localAccess}`);
+    }
+  }
+
+  const starSpreadEntries: string[] = [];
+  for (const starReExport of allStarReExports) {
+    const varName = `__reexport_star_${reExportCounter++}`;
+    const escapedMod = starReExport.moduleSpecifier.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    reExportLines.push(`const ${varName} = ${awaitPrefix}${importFn}("${escapedMod}", "${escapedSpecifier}");`);
+    if (starReExport.alias) {
+      reExportReturnEntries.push(`${JSON.stringify(starReExport.alias)}: ${varName}`);
+    } else {
+      starSpreadEntries.push(`...${varName}`);
+    }
+  }
+
   // Build return statement
-  const returnEntries = exportEntries.map(e =>
+  const localReturnEntries = exportEntries.map(e =>
     e.exported === e.local ? e.local : `${JSON.stringify(e.exported)}: ${e.local}`
   );
-  const returnStatement = returnEntries.length > 0
-    ? `return { ${returnEntries.join(', ')} };`
+  const allReturnEntries = [...starSpreadEntries, ...reExportReturnEntries, ...localReturnEntries];
+  const returnStatement = allReturnEntries.length > 0
+    ? `return { ${allReturnEntries.join(', ')} };`
     : 'return module.exports;';
 
   // CJS preamble: inject module/exports objects for CommonJS compatibility
   const cjsPreamble = 'var module = { exports: {} }; var exports = module.exports;';
 
-  // Combine imports and body
+  // Combine imports, re-export imports, and body
+  const reExportCode = reExportLines.length > 0 ? reExportLines.join('\n') + '\n' : '';
   const codeBody = convertedImports
-    ? `${cjsPreamble}\n${convertedImports}\n${rewrittenBody}`
-    : `${cjsPreamble}\n${rewrittenBody}`;
+    ? `${cjsPreamble}\n${convertedImports}\n${reExportCode}${rewrittenBody}`
+    : `${cjsPreamble}\n${reExportCode}${rewrittenBody}`;
 
   // Wrap in IIFE
   if (mode === 'async') {
