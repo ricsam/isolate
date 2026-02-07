@@ -15,7 +15,7 @@ npm add @ricsam/isolate-client
 - Execute code in isolated V8 contexts
 - Dispatch HTTP requests to isolate handlers
 - Bidirectional callbacks (console, fetch, fs)
-- Module loader for custom ES module resolution
+- Module loader for custom ES module resolution (static imports, dynamic `import()`, `require()`)
 - Custom functions callable from isolate code
 - Test environment and Playwright support
 - **Namespace-based runtime caching** for performance optimization
@@ -149,7 +149,7 @@ interface Namespace {
 
 ## Module Loader
 
-Register a custom module loader to handle dynamic `import()` calls. The loader receives the module specifier and importer info, and returns an object with the source code and `resolveDir` (used to resolve nested relative imports):
+Register a custom module loader to handle static `import` statements, dynamic `import()` calls, and `require()`. The loader receives the module specifier and importer info, and returns an object with the source code and `resolveDir` (used to resolve nested relative imports):
 
 ```typescript
 const runtime = await client.createRuntime({
@@ -177,12 +177,20 @@ const runtime = await client.createRuntime({
   },
 });
 
+// Static imports
 await runtime.eval(`
   import { getUser } from "@/db";
   import { API_KEY } from "@/config";
 
   const user = await getUser("123");
   console.log("User:", user, "API Key:", API_KEY);
+`);
+
+// Dynamic import() and require() also work
+await runtime.eval(`
+  const db = await import("@/db");
+  const config = require("@/config");
+  console.log(config.API_KEY);
 `);
 ```
 
