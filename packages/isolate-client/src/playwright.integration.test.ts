@@ -9,6 +9,8 @@ import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import { chromium } from "playwright";
 import type { DaemonConnection } from "./types.ts";
 import { defaultPlaywrightHandler } from "@ricsam/isolate-playwright/client";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 
 const TEST_SOCKET = "/tmp/isolate-test-playwright.sock";
 
@@ -348,6 +350,385 @@ describe("isolate-client playwright integration", () => {
           // Verify it found the link
           const text = await btnOrLink.textContent();
           expect(text).toBe('Learn more');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+});
+
+// ============================================================================
+// Predicate function tests for waitForURL, waitForRequest, waitForResponse
+// ============================================================================
+
+function createPredicateTestServer(): Promise<http.Server> {
+  return new Promise<http.Server>((resolve) => {
+    const srv = http.createServer((req, res) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Headers", "*");
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (req.url === "/api/data") {
+        res.setHeader("Content-Type", "application/json");
+        res.writeHead(200);
+        res.end(JSON.stringify({ message: "hello" }));
+      } else if (req.url === "/api/other") {
+        res.setHeader("Content-Type", "application/json");
+        res.writeHead(200);
+        res.end(JSON.stringify({ message: "other" }));
+      } else if (req.url === "/page2") {
+        res.setHeader("Content-Type", "text/html");
+        res.writeHead(200);
+        res.end(`<html><body><h1>Page 2</h1></body></html>`);
+      } else {
+        res.setHeader("Content-Type", "text/html");
+        res.writeHead(200);
+        res.end(`<html><body>
+          <button id="fetch-btn" onclick="fetch('/api/data')">Fetch Data</button>
+          <button id="fetch-other" onclick="fetch('/api/other')">Fetch Other</button>
+          <a id="nav-link" href="/page2">Go to page 2</a>
+        </body></html>`);
+      }
+    });
+    srv.listen(0, "127.0.0.1", () => resolve(srv));
+  });
+}
+
+describe("predicate function support", () => {
+  let daemon: DaemonHandle;
+  let client: DaemonConnection;
+  let server: http.Server;
+  let port: number;
+
+  const TEST_SOCKET_PRED = "/tmp/isolate-test-predicates.sock";
+
+  before(async () => {
+    daemon = await startDaemon({ socketPath: TEST_SOCKET_PRED });
+    client = await connect({ socket: TEST_SOCKET_PRED });
+    server = await createPredicateTestServer();
+    port = (server.address() as AddressInfo).port;
+  });
+
+  after(async () => {
+    await client.close();
+    await daemon.close();
+    server.close();
+  });
+
+  it("waitForURL with predicate function", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('waitForURL with predicate', async () => {
+          await page.goto('http://127.0.0.1:${port}/');
+          expect(page.url()).toContain('127.0.0.1');
+
+          await page.click('#nav-link');
+          await page.waitForURL((url) => url.includes('/page2'));
+
+          expect(page.url()).toContain('/page2');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("waitForURL with predicate using closure variable", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('waitForURL with closure', async () => {
+          await page.goto('http://127.0.0.1:${port}/');
+
+          const targetPath = '/page2';
+          await page.click('#nav-link');
+          await page.waitForURL((url) => url.includes(targetPath));
+
+          expect(page.url()).toContain('/page2');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("waitForResponse with predicate function", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('waitForResponse with predicate', async () => {
+          await page.goto('http://127.0.0.1:${port}/');
+
+          const responsePromise = page.waitForResponse(
+            (response) => response.url().includes('/api/data') && response.status() === 200
+          );
+          await page.click('#fetch-btn');
+          const response = await responsePromise;
+
+          expect(response.ok()).toBe(true);
+          const json = await response.json();
+          expect(json.message).toBe('hello');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("waitForResponse with predicate using closure variable", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('waitForResponse with closure', async () => {
+          await page.goto('http://127.0.0.1:${port}/');
+
+          const targetUrl = '/api/data';
+          const responsePromise = page.waitForResponse(
+            (response) => response.url().includes(targetUrl)
+          );
+          await page.click('#fetch-btn');
+          const response = await responsePromise;
+
+          expect(response.url()).toContain('/api/data');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("waitForRequest with predicate function", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('waitForRequest with predicate', async () => {
+          await page.goto('http://127.0.0.1:${port}/');
+
+          const requestPromise = page.waitForRequest(
+            (request) => request.url().includes('/api/data')
+          );
+          await page.click('#fetch-btn');
+          const request = await requestPromise;
+
+          expect(request.url()).toContain('/api/data');
+          expect(request.method()).toBe('GET');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("waitForRequest with string URL matcher", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('waitForRequest with string', async () => {
+          await page.goto('http://127.0.0.1:${port}/');
+
+          const requestPromise = page.waitForRequest('http://127.0.0.1:${port}/api/data');
+          await page.click('#fetch-btn');
+          const request = await requestPromise;
+
+          expect(request.url()).toContain('/api/data');
+          expect(request.method()).toBe('GET');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("waitForRequest with RegExp matcher", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('waitForRequest with regex', async () => {
+          await page.goto('http://127.0.0.1:${port}/');
+
+          const requestPromise = page.waitForRequest(/\\/api\\/data/);
+          await page.click('#fetch-btn');
+          const request = await requestPromise;
+
+          expect(request.url()).toContain('/api/data');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("waitForURL with string still works", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('waitForURL with string', async () => {
+          await page.goto('http://127.0.0.1:${port}/');
+          await page.click('#nav-link');
+          await page.waitForURL('**/page2');
+          expect(page.url()).toContain('/page2');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("waitForURL with RegExp still works", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('waitForURL with regex', async () => {
+          await page.goto('http://127.0.0.1:${port}/');
+          await page.click('#nav-link');
+          await page.waitForURL(/\\/page2/);
+          expect(page.url()).toContain('/page2');
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(results.passed, 1, `Expected test to pass, got: ${JSON.stringify(results.tests)}`);
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("async predicate throws clear error", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('async predicate error', async () => {
+          await page.goto('http://127.0.0.1:${port}/');
+          let error;
+          try {
+            await page.waitForURL(async (url) => url.includes('/page2'));
+          } catch (e) {
+            error = e;
+          }
+          expect(error).toBeDefined();
+          expect(error.message).toContain('Async predicates are not supported');
         });
       `);
 

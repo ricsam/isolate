@@ -42,6 +42,153 @@ import type {
 } from "./types.ts";
 
 // ============================================================================
+// Predicate Support Wrapper for Remote Handlers
+// ============================================================================
+
+/**
+ * Wraps a remote handler (no direct page access) to support predicate-based
+ * waitFor* operations. Predicate ops are handled locally by issuing sub-operations
+ * through the handler and evaluating the predicate in the isolate.
+ */
+function wrapHandlerWithPredicateSupport(
+  handler: PlaywrightCallback,
+  evaluatePredicate: (predicateId: number, data: unknown) => boolean,
+  defaultTimeout: number,
+): PlaywrightCallback {
+  return async (op) => {
+    switch (op.type) {
+      case "waitForURLPredicate": {
+        const [predicateId, customTimeout, waitUntil] = op.args as [number, number?, string?];
+        const effectiveTimeout = customTimeout ?? defaultTimeout;
+        const startTime = Date.now();
+        const pollInterval = 100;
+
+        while (true) {
+          // Get current URL via the handler
+          const urlResult = await handler({ type: "url", args: [], pageId: op.pageId, contextId: op.contextId });
+          if (urlResult.ok) {
+            try {
+              if (evaluatePredicate(predicateId, urlResult.value as string)) {
+                return { ok: true };
+              }
+            } catch (e) {
+              const error = e as Error;
+              return { ok: false, error: { name: error.name, message: error.message } };
+            }
+          }
+          if (effectiveTimeout > 0 && Date.now() - startTime >= effectiveTimeout) {
+            return { ok: false, error: { name: "Error", message: `Timeout ${effectiveTimeout}ms exceeded waiting for URL` } };
+          }
+          await new Promise(r => setTimeout(r, pollInterval));
+        }
+      }
+      case "waitForResponsePredicateFinish": {
+        const [initialListenerId, predicateId, customTimeout] = op.args as [string, number, number?];
+        const effectiveTimeout = customTimeout ?? defaultTimeout;
+        const broadMatcher = { type: 'regex' as const, value: { $regex: '.*', $flags: '' } };
+        const startTime = Date.now();
+        let currentListenerId = initialListenerId;
+
+        while (true) {
+          // Wait for response data from current listener
+          const finishResult = await handler({
+            type: "waitForResponseFinish",
+            args: [currentListenerId],
+            pageId: op.pageId,
+            contextId: op.contextId,
+          });
+          if (!finishResult.ok) return finishResult;
+          const responseData = finishResult.value as Record<string, unknown>;
+
+          // Evaluate predicate
+          try {
+            const serialized = {
+              method: '',
+              headers: Object.entries((responseData.headers || {}) as Record<string, string>),
+              url: responseData.url as string,
+              status: responseData.status as number,
+              statusText: responseData.statusText as string,
+              body: (responseData.text as string) || '',
+            };
+            if (evaluatePredicate(predicateId, serialized)) {
+              return finishResult;
+            }
+          } catch (e) {
+            const error = e as Error;
+            return { ok: false, error: { name: error.name, message: error.message } };
+          }
+
+          if (effectiveTimeout > 0 && Date.now() - startTime >= effectiveTimeout) {
+            return { ok: false, error: { name: "Error", message: `Timeout ${effectiveTimeout}ms exceeded waiting for response` } };
+          }
+
+          // Not matched — start next listener
+          const remainingTimeout = effectiveTimeout > 0 ? Math.max(1, effectiveTimeout - (Date.now() - startTime)) : effectiveTimeout;
+          const nextStartResult = await handler({
+            type: "waitForResponseStart",
+            args: [broadMatcher, remainingTimeout],
+            pageId: op.pageId,
+            contextId: op.contextId,
+          });
+          if (!nextStartResult.ok) return nextStartResult;
+          currentListenerId = (nextStartResult.value as { listenerId: string }).listenerId;
+        }
+      }
+      case "waitForRequestPredicateFinish": {
+        const [initialListenerId, predicateId, customTimeout] = op.args as [string, number, number?];
+        const effectiveTimeout = customTimeout ?? defaultTimeout;
+        const broadMatcher = { type: 'regex' as const, value: { $regex: '.*', $flags: '' } };
+        const startTime = Date.now();
+        let currentListenerId = initialListenerId;
+
+        while (true) {
+          const finishResult = await handler({
+            type: "waitForRequestFinish",
+            args: [currentListenerId],
+            pageId: op.pageId,
+            contextId: op.contextId,
+          });
+          if (!finishResult.ok) return finishResult;
+          const requestData = finishResult.value as Record<string, unknown>;
+
+          try {
+            const serialized = {
+              method: requestData.method as string,
+              headers: Object.entries((requestData.headers || {}) as Record<string, string>),
+              url: requestData.url as string,
+              body: (requestData.postData as string) || '',
+            };
+            if (evaluatePredicate(predicateId, serialized)) {
+              return finishResult;
+            }
+          } catch (e) {
+            const error = e as Error;
+            return { ok: false, error: { name: error.name, message: error.message } };
+          }
+
+          if (effectiveTimeout > 0 && Date.now() - startTime >= effectiveTimeout) {
+            return { ok: false, error: { name: "Error", message: `Timeout ${effectiveTimeout}ms exceeded waiting for request` } };
+          }
+
+          // Not matched — start next listener
+          const remainingTimeout = effectiveTimeout > 0 ? Math.max(1, effectiveTimeout - (Date.now() - startTime)) : effectiveTimeout;
+          const nextStartResult = await handler({
+            type: "waitForRequestStart",
+            args: [broadMatcher, remainingTimeout],
+            pageId: op.pageId,
+            contextId: op.contextId,
+          });
+          if (!nextStartResult.ok) return nextStartResult;
+          currentListenerId = (nextStartResult.value as { listenerId: string }).listenerId;
+        }
+      }
+      default:
+        return handler(op);
+    }
+  };
+}
+
+// ============================================================================
 // Setup Playwright
 // ============================================================================
 
@@ -73,16 +220,7 @@ export async function setupPlaywright(
   const readFile = "readFile" in options ? options.readFile : undefined;
   const writeFile = "writeFile" in options ? options.writeFile : undefined;
 
-  // Create handler from page if needed
-  const effectiveHandler = handler ?? (page ? createPlaywrightHandler(page, {
-    timeout,
-    readFile,
-    writeFile,
-    createPage,
-    createContext,
-  }) : undefined);
-
-  if (!effectiveHandler) {
+  if (!handler && !page) {
     throw new Error("Either page or handler must be provided to setupPlaywright");
   }
 
@@ -182,20 +320,6 @@ export async function setupPlaywright(
   }
 
   // ========================================================================
-  // Unified Handler Reference
-  // ========================================================================
-
-  // Single handler reference that receives operation objects
-  global.setSync(
-    "__Playwright_handler_ref",
-    new ivm.Reference(async (opJson: string): Promise<string> => {
-      const op = JSON.parse(opJson) as PlaywrightOperation;
-      const result = await effectiveHandler(op);
-      return JSON.stringify(result);
-    })
-  );
-
-  // ========================================================================
   // Injected JavaScript
   // ========================================================================
 
@@ -219,6 +343,85 @@ export async function setupPlaywright(
   };
 })();
 `);
+
+  // Predicate registry for waitForURL/Request/Response with function predicates
+  context.evalSync(`
+(function() {
+  const __pw_predicates = new Map();
+  let __pw_next_id = 0;
+  globalThis.__pw_register_predicate = function(fn) {
+    const id = __pw_next_id++;
+    __pw_predicates.set(id, fn);
+    return id;
+  };
+  globalThis.__pw_unregister_predicate = function(id) {
+    __pw_predicates.delete(id);
+  };
+  globalThis.__pw_evaluate_predicate = function(id, data) {
+    const fn = __pw_predicates.get(id);
+    if (!fn) throw new Error('Predicate not found: ' + id);
+    const result = fn(data);
+    if (result && typeof result === 'object' && typeof result.then === 'function') {
+      throw new Error('Async predicates are not supported. Use a synchronous predicate function.');
+    }
+    return !!result;
+  };
+})();
+`);
+
+  // Get reference to the predicate evaluation function for host-side use
+  const evaluatePredicateRef = context.global.getSync(
+    '__pw_evaluate_predicate', { reference: true }
+  ) as ivm.Reference<(id: number, data: unknown) => boolean>;
+
+  // ========================================================================
+  // Create Handler and Unified Handler Reference
+  // ========================================================================
+
+  const evaluatePredicateFn = (predicateId: number, data: unknown): boolean => {
+    return evaluatePredicateRef.applySync(
+      undefined,
+      [new ivm.ExternalCopy(predicateId).copyInto(), new ivm.ExternalCopy(data).copyInto()]
+    ) as boolean;
+  };
+
+  // Create handler with evaluatePredicate support.
+  // When a page is available (either directly or through handler metadata),
+  // create a handler with evaluatePredicate for efficient event-based predicate evaluation.
+  // When only a remote handler is available (no page), wrap it to intercept predicate
+  // operations and implement them via polling/sub-operations.
+  let effectiveHandler: PlaywrightCallback;
+  if (handler && handlerMetadata?.page) {
+    // Handler-first mode with page metadata — recreate with evaluatePredicate
+    effectiveHandler = createPlaywrightHandler(handlerMetadata.page, {
+      ...handlerMetadata.options,
+      evaluatePredicate: evaluatePredicateFn,
+    });
+  } else if (handler) {
+    // Remote handler without page — wrap to handle predicate ops locally
+    effectiveHandler = wrapHandlerWithPredicateSupport(handler, evaluatePredicateFn, timeout);
+  } else if (page) {
+    effectiveHandler = createPlaywrightHandler(page, {
+      timeout,
+      readFile,
+      writeFile,
+      createPage,
+      createContext,
+      evaluatePredicate: evaluatePredicateFn,
+    });
+  } else {
+    throw new Error("Either page or handler must be provided to setupPlaywright");
+  }
+
+  // Single handler reference that receives operation objects
+  global.setSync(
+    "__Playwright_handler_ref",
+    new ivm.Reference(async (opJson: string): Promise<string> => {
+      const op = JSON.parse(opJson) as PlaywrightOperation;
+      const result = await effectiveHandler(op);
+      return JSON.stringify(result);
+    })
+  );
 
   // IsolatePage class and page/context/browser globals
   context.evalSync(`
@@ -295,14 +498,53 @@ export async function setupPlaywright(
       await __pw_invoke("goForward", [options?.waitUntil || null], { pageId: this.#pageId });
     }
     async waitForURL(url, options) {
-      let serializedUrl = url;
-      if (url && typeof url === 'object' && typeof url.source === 'string' && typeof url.flags === 'string') {
-        serializedUrl = { $regex: url.source, $flags: url.flags };
+      if (typeof url === 'function') {
+        const predicateId = __pw_register_predicate(url);
+        try {
+          await __pw_invoke("waitForURLPredicate", [predicateId, options?.timeout || null, options?.waitUntil || null], { pageId: this.#pageId });
+        } finally {
+          __pw_unregister_predicate(predicateId);
+        }
+        return;
+      }
+      let serializedUrl;
+      if (typeof url === 'string') {
+        serializedUrl = { type: 'string', value: url };
+      } else if (url && typeof url === 'object' && typeof url.source === 'string' && typeof url.flags === 'string') {
+        serializedUrl = { type: 'regex', value: { $regex: url.source, $flags: url.flags } };
+      } else {
+        serializedUrl = url;
       }
       return __pw_invoke("waitForURL", [serializedUrl, options?.timeout || null, options?.waitUntil || null], { pageId: this.#pageId });
     }
-    waitForResponse(urlOrPredicate, options) {
-      // Serialize the matcher
+    waitForRequest(urlOrPredicate, options) {
+      if (typeof urlOrPredicate === 'function') {
+        const userPredicate = urlOrPredicate;
+        const wrappedPredicate = (data) => {
+          const requestLike = {
+            url: () => data.url,
+            method: () => data.method,
+            headers: () => Object.fromEntries(data.headers),
+            headersArray: () => data.headers.map(h => ({ name: h[0], value: h[1] })),
+            postData: () => data.body || null,
+          };
+          return userPredicate(requestLike);
+        };
+        const predicateId = __pw_register_predicate(wrappedPredicate);
+        const pageId = this.#pageId;
+        // Start listening immediately (before the user triggers the request)
+        const broadMatcher = { type: 'regex', value: { $regex: '.*', $flags: '' } };
+        const startResult = __pw_invoke_sync("waitForRequestStart", [broadMatcher, options?.timeout || null], { pageId });
+        const listenerId = startResult.listenerId;
+        return {
+          then(resolve, reject) {
+            try {
+              const r = __pw_invoke_sync("waitForRequestPredicateFinish", [listenerId, predicateId, options?.timeout || null], { pageId });
+              resolve({ url: () => r.url, method: () => r.method, headers: () => r.headers, postData: () => r.postData });
+            } catch(e) { reject(e); } finally { __pw_unregister_predicate(predicateId); }
+          }
+        };
+      }
       let serializedMatcher;
       if (typeof urlOrPredicate === 'string') {
         serializedMatcher = { type: 'string', value: urlOrPredicate };
@@ -310,36 +552,77 @@ export async function setupPlaywright(
                  && typeof urlOrPredicate.source === 'string'
                  && typeof urlOrPredicate.flags === 'string') {
         serializedMatcher = { type: 'regex', value: { $regex: urlOrPredicate.source, $flags: urlOrPredicate.flags } };
-      } else if (typeof urlOrPredicate === 'function') {
-        serializedMatcher = { type: 'predicate', value: urlOrPredicate.toString() };
+      } else {
+        throw new Error('waitForRequest requires a URL string, RegExp, or predicate function');
+      }
+      const startResult = __pw_invoke_sync("waitForRequestStart", [serializedMatcher, options?.timeout || null], { pageId: this.#pageId });
+      const listenerId = startResult.listenerId;
+      const pageId = this.#pageId;
+      return {
+        then(resolve, reject) {
+          try {
+            const r = __pw_invoke_sync("waitForRequestFinish", [listenerId], { pageId });
+            resolve({ url: () => r.url, method: () => r.method, headers: () => r.headers, postData: () => r.postData });
+          } catch(e) { reject(e); }
+        }
+      };
+    }
+    waitForResponse(urlOrPredicate, options) {
+      if (typeof urlOrPredicate === 'function') {
+        const userPredicate = urlOrPredicate;
+        const wrappedPredicate = (data) => {
+          const responseLike = {
+            url: () => data.url,
+            status: () => data.status,
+            statusText: () => data.statusText,
+            headers: () => Object.fromEntries(data.headers),
+            headersArray: () => data.headers.map(h => ({ name: h[0], value: h[1] })),
+            ok: () => data.status >= 200 && data.status < 300,
+          };
+          return userPredicate(responseLike);
+        };
+        const predicateId = __pw_register_predicate(wrappedPredicate);
+        const pageId = this.#pageId;
+        // Start listening immediately (before the user triggers the response)
+        const broadMatcher = { type: 'regex', value: { $regex: '.*', $flags: '' } };
+        const startResult = __pw_invoke_sync("waitForResponseStart", [broadMatcher, options?.timeout || null], { pageId });
+        const listenerId = startResult.listenerId;
+        return {
+          then(resolve, reject) {
+            try {
+              const r = __pw_invoke_sync("waitForResponsePredicateFinish", [listenerId, predicateId, options?.timeout || null], { pageId });
+              resolve({
+                url: () => r.url, status: () => r.status, statusText: () => r.statusText,
+                headers: () => r.headers, headersArray: () => r.headersArray,
+                ok: () => r.ok, json: async () => r.json, text: async () => r.text, body: async () => r.body,
+              });
+            } catch(e) { reject(e); } finally { __pw_unregister_predicate(predicateId); }
+          }
+        };
+      }
+      let serializedMatcher;
+      if (typeof urlOrPredicate === 'string') {
+        serializedMatcher = { type: 'string', value: urlOrPredicate };
+      } else if (urlOrPredicate && typeof urlOrPredicate === 'object'
+                 && typeof urlOrPredicate.source === 'string'
+                 && typeof urlOrPredicate.flags === 'string') {
+        serializedMatcher = { type: 'regex', value: { $regex: urlOrPredicate.source, $flags: urlOrPredicate.flags } };
       } else {
         throw new Error('waitForResponse requires a URL string, RegExp, or predicate function');
       }
-
-      // Step 1: Start listening (blocks briefly, host returns listenerId immediately)
       const startResult = __pw_invoke_sync("waitForResponseStart", [serializedMatcher, options?.timeout || null], { pageId: this.#pageId });
       const listenerId = startResult.listenerId;
       const pageId = this.#pageId;
-
-      // Step 2: Return thenable — when awaited, blocks until response arrives
       return {
         then(resolve, reject) {
           try {
             const r = __pw_invoke_sync("waitForResponseFinish", [listenerId], { pageId });
             resolve({
-              url: () => r.url,
-              status: () => r.status,
-              statusText: () => r.statusText,
-              headers: () => r.headers,
-              headersArray: () => r.headersArray,
-              ok: () => r.ok,
-              json: async () => r.json,
-              text: async () => r.text,
-              body: async () => r.body,
+              url: () => r.url, status: () => r.status, statusText: () => r.statusText,
+              headers: () => r.headers, headersArray: () => r.headersArray,
+              ok: () => r.ok, json: async () => r.json, text: async () => r.text, body: async () => r.body,
             });
-          } catch(e) {
-            reject(e);
-          }
+          } catch(e) { reject(e); }
         }
       };
     }

@@ -72,6 +72,8 @@ export interface DefaultPlaywrightHandlerOptions {
   createPage?: (context: import("playwright").BrowserContext) => Promise<import("playwright").Page> | import("playwright").Page;
   /** Callback to create new contexts when browser.newContext() is called */
   createContext?: (options?: import("playwright").BrowserContextOptions) => Promise<import("playwright").BrowserContext> | import("playwright").BrowserContext;
+  /** Callback to evaluate a predicate function inside the isolate (used by waitForURL/Request/Response with function predicates) */
+  evaluatePredicate?: (predicateId: number, data: unknown) => boolean;
 }
 
 /**

@@ -924,6 +924,7 @@ export interface PlaywrightRegistry {
   nextPageId: number;
   nextContextId: number;
   pendingResponses: Map<string, Promise<Response>>;
+  pendingRequests: Map<string, Promise<import("playwright").Request>>;
   nextListenerId: number;
 }
 
@@ -949,6 +950,7 @@ export function createPlaywrightHandler(
     nextPageId: 1,
     nextContextId: 1,
     pendingResponses: new Map(),
+    pendingRequests: new Map(),
     nextListenerId: 0,
   };
 
@@ -1162,14 +1164,25 @@ export function createPlaywrightHandler(
         }
         case "waitForURL": {
           const [urlArg, customTimeout, waitUntil] = op.args as [
-            string | { $regex: string; $flags: string },
+            string | { type: 'string'; value: string } | { type: 'regex'; value: { $regex: string; $flags: string } } | { $regex: string; $flags: string },
             number?,
             string?
           ];
-          // Deserialize regex URL pattern
-          const url = urlArg && typeof urlArg === 'object' && '$regex' in urlArg
-            ? new RegExp(urlArg.$regex, urlArg.$flags)
-            : urlArg;
+          // Deserialize URL pattern - support both typed matcher and legacy format
+          let url: string | RegExp;
+          if (typeof urlArg === 'string') {
+            url = urlArg;
+          } else if (urlArg && typeof urlArg === 'object' && 'type' in urlArg) {
+            if (urlArg.type === 'string') {
+              url = urlArg.value;
+            } else {
+              url = new RegExp(urlArg.value.$regex, urlArg.value.$flags);
+            }
+          } else if (urlArg && typeof urlArg === 'object' && '$regex' in urlArg) {
+            url = new RegExp(urlArg.$regex, urlArg.$flags);
+          } else {
+            url = urlArg as string;
+          }
           await targetPage.waitForURL(url, {
             timeout: customTimeout ?? timeout,
             waitUntil: (waitUntil as "load" | "domcontentloaded" | "networkidle") ?? undefined,
@@ -1179,19 +1192,16 @@ export function createPlaywrightHandler(
         case "waitForResponseStart": {
           const [matcher, customTimeout] = op.args as [
             { type: 'string'; value: string }
-            | { type: 'regex'; value: { $regex: string; $flags: string } }
-            | { type: 'predicate'; value: string },
+            | { type: 'regex'; value: { $regex: string; $flags: string } },
             number?
           ];
           const effectiveTimeout = customTimeout ?? timeout;
 
-          let urlOrPredicate: string | RegExp | ((resp: Response) => boolean | Promise<boolean>);
+          let urlOrPredicate: string | RegExp;
           if (matcher.type === 'string') {
             urlOrPredicate = matcher.value;
-          } else if (matcher.type === 'regex') {
-            urlOrPredicate = new RegExp(matcher.value.$regex, matcher.value.$flags);
           } else {
-            urlOrPredicate = new Function('return (' + matcher.value + ')')() as (resp: Response) => boolean | Promise<boolean>;
+            urlOrPredicate = new RegExp(matcher.value.$regex, matcher.value.$flags);
           }
 
           // Start listening — do NOT await; store the promise
@@ -1228,6 +1238,190 @@ export function createPlaywrightHandler(
               body: null,
             },
           };
+        }
+        case "waitForURLPredicate": {
+          const [predicateId, customTimeout, waitUntil] = op.args as [number, number?, string?];
+          if (!options?.evaluatePredicate) throw new Error("evaluatePredicate not available");
+          const effectiveTimeout = customTimeout ?? timeout;
+
+          // Check current URL first
+          if (options.evaluatePredicate(predicateId, targetPage.url())) {
+            return { ok: true };
+          }
+
+          // Wait for navigation events
+          await new Promise<void>((resolve, reject) => {
+            const timeoutId = effectiveTimeout > 0 ? setTimeout(() => {
+              cleanup();
+              reject(new Error(`Timeout ${effectiveTimeout}ms exceeded waiting for URL`));
+            }, effectiveTimeout) : null;
+
+            const onNav = (frame: import("playwright").Frame) => {
+              if (frame === targetPage.mainFrame()) {
+                try {
+                  if (options.evaluatePredicate!(predicateId, targetPage.url())) {
+                    cleanup();
+                    resolve();
+                  }
+                } catch (e) { cleanup(); reject(e); }
+              }
+            };
+
+            const cleanup = () => {
+              targetPage.off('framenavigated', onNav);
+              if (timeoutId) clearTimeout(timeoutId);
+            };
+
+            targetPage.on('framenavigated', onNav);
+          });
+          return { ok: true };
+        }
+        case "waitForRequestStart": {
+          const [matcher, customTimeout] = op.args as [
+            { type: 'string'; value: string }
+            | { type: 'regex'; value: { $regex: string; $flags: string } },
+            number?
+          ];
+          const effectiveTimeout = customTimeout ?? timeout;
+
+          let urlOrPredicate: string | RegExp;
+          if (matcher.type === 'string') {
+            urlOrPredicate = matcher.value;
+          } else {
+            urlOrPredicate = new RegExp(matcher.value.$regex, matcher.value.$flags);
+          }
+
+          // Start listening — do NOT await; store the promise
+          const requestPromise = targetPage.waitForRequest(urlOrPredicate, { timeout: effectiveTimeout });
+          const listenerId = `req_${registry.nextListenerId++}`;
+          registry.pendingRequests.set(listenerId, requestPromise);
+          return { ok: true, value: { listenerId } };
+        }
+        case "waitForRequestFinish": {
+          const [listenerId] = op.args as [string];
+          const requestPromise = registry.pendingRequests.get(listenerId);
+          if (!requestPromise) {
+            return { ok: false, error: { name: "Error", message: `No pending request listener: ${listenerId}` } };
+          }
+          const request = await requestPromise;
+          registry.pendingRequests.delete(listenerId);
+
+          return {
+            ok: true,
+            value: {
+              url: request.url(),
+              method: request.method(),
+              headers: request.headers(),
+              postData: request.postData(),
+            },
+          };
+        }
+        case "waitForResponsePredicateFinish": {
+          const [initialListenerId, predicateId, customTimeout] = op.args as [string, number, number?];
+          if (!options?.evaluatePredicate) throw new Error("evaluatePredicate not available");
+          const effectiveTimeout = customTimeout ?? timeout;
+          const startTime = Date.now();
+          let currentListenerId = initialListenerId;
+
+          while (true) {
+            const responsePromise = registry.pendingResponses.get(currentListenerId);
+            if (!responsePromise) {
+              return { ok: false, error: { name: "Error", message: `No pending response listener: ${currentListenerId}` } };
+            }
+            const response = await responsePromise;
+            registry.pendingResponses.delete(currentListenerId);
+
+            // Evaluate predicate
+            try {
+              const serialized = {
+                method: response.request().method(),
+                headers: Object.entries(response.headers()),
+                url: response.url(),
+                status: response.status(),
+                statusText: response.statusText(),
+                body: '',
+              };
+              if (options.evaluatePredicate!(predicateId, serialized)) {
+                // Match found — resolve all response data
+                const text = await response.text();
+                let json: unknown = null;
+                try { json = JSON.parse(text); } catch { /* not JSON */ }
+                return {
+                  ok: true,
+                  value: {
+                    url: response.url(),
+                    status: response.status(),
+                    statusText: response.statusText(),
+                    headers: response.headers(),
+                    headersArray: await response.headersArray(),
+                    ok: response.ok(),
+                    text,
+                    json,
+                    body: null,
+                  },
+                };
+              }
+            } catch (e) {
+              const error = e as Error;
+              return { ok: false, error: { name: error.name, message: error.message } };
+            }
+
+            // Not matched — start a new listener
+            if (effectiveTimeout > 0 && Date.now() - startTime >= effectiveTimeout) {
+              return { ok: false, error: { name: "Error", message: `Timeout ${effectiveTimeout}ms exceeded waiting for response` } };
+            }
+            const remainingTimeout = effectiveTimeout > 0 ? Math.max(1, effectiveTimeout - (Date.now() - startTime)) : effectiveTimeout;
+            const nextPromise = targetPage.waitForResponse(/.*/,  { timeout: remainingTimeout });
+            currentListenerId = `resp_${registry.nextListenerId++}`;
+            registry.pendingResponses.set(currentListenerId, nextPromise);
+          }
+        }
+        case "waitForRequestPredicateFinish": {
+          const [initialListenerId, predicateId, customTimeout] = op.args as [string, number, number?];
+          if (!options?.evaluatePredicate) throw new Error("evaluatePredicate not available");
+          const effectiveTimeout = customTimeout ?? timeout;
+          const startTime = Date.now();
+          let currentListenerId = initialListenerId;
+
+          while (true) {
+            const requestPromise = registry.pendingRequests.get(currentListenerId);
+            if (!requestPromise) {
+              return { ok: false, error: { name: "Error", message: `No pending request listener: ${currentListenerId}` } };
+            }
+            const request = await requestPromise;
+            registry.pendingRequests.delete(currentListenerId);
+
+            try {
+              const serialized = {
+                method: request.method(),
+                headers: Object.entries(request.headers()),
+                url: request.url(),
+                body: request.postData() || '',
+              };
+              if (options.evaluatePredicate!(predicateId, serialized)) {
+                return {
+                  ok: true,
+                  value: {
+                    url: request.url(),
+                    method: request.method(),
+                    headers: request.headers(),
+                    postData: request.postData(),
+                  },
+                };
+              }
+            } catch (e) {
+              const error = e as Error;
+              return { ok: false, error: { name: error.name, message: error.message } };
+            }
+
+            if (effectiveTimeout > 0 && Date.now() - startTime >= effectiveTimeout) {
+              return { ok: false, error: { name: "Error", message: `Timeout ${effectiveTimeout}ms exceeded waiting for request` } };
+            }
+            const remainingTimeout = effectiveTimeout > 0 ? Math.max(1, effectiveTimeout - (Date.now() - startTime)) : effectiveTimeout;
+            const nextPromise = targetPage.waitForRequest(/.*/,  { timeout: remainingTimeout });
+            currentListenerId = `req_${registry.nextListenerId++}`;
+            registry.pendingRequests.set(currentListenerId, nextPromise);
+          }
         }
         case "clearCookies": {
           // Use contextId for cookie operations

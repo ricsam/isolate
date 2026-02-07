@@ -182,8 +182,13 @@ export interface PlaywrightOperation {
     | "goBack"
     | "goForward"
     | "waitForURL"
+    | "waitForURLPredicate"
+    | "waitForRequestStart"
+    | "waitForRequestFinish"
+    | "waitForRequestPredicateFinish"
     | "waitForResponseStart"
     | "waitForResponseFinish"
+    | "waitForResponsePredicateFinish"
     | "clearCookies"
     // Page-level operations
     | "screenshot"
