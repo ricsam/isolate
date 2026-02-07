@@ -57,18 +57,58 @@ describe("@ricsam/isolate-transform", () => {
       assert.ok(result.code.includes("bar"));
     });
 
-    test("rejects require()", async () => {
-      await assert.rejects(
-        () => transformEntryCode('const x = require("fs");', "/entry.ts"),
-        /require\(\) is not allowed/
+    test("rewrites require() to __require()", async () => {
+      const result = await transformEntryCode(
+        'const x = require("fs");',
+        "/entry.ts"
       );
+      assert.ok(result.code.includes('__require("fs", "/entry.ts")'));
+      assert.ok(!result.code.includes('require("fs")'));
     });
 
-    test("rejects dynamic import()", async () => {
-      await assert.rejects(
-        () => transformEntryCode('const x = import("./mod");', "/entry.ts"),
-        /Dynamic import\(\) is not allowed/
+    test("rewrites dynamic import() to __dynamicImport()", async () => {
+      const result = await transformEntryCode(
+        'const x = import("./mod");',
+        "/entry.ts"
       );
+      assert.ok(result.code.includes('__dynamicImport("./mod", "/entry.ts")'));
+      assert.ok(!result.code.includes('import("./mod")'));
+    });
+
+    test("does not rewrite method calls like obj.import()", async () => {
+      const result = await transformEntryCode(
+        'const x = obj.import("./mod");',
+        "/entry.ts"
+      );
+      assert.ok(result.code.includes('obj.import("./mod")'));
+      assert.ok(!result.code.includes("__dynamicImport"));
+    });
+
+    test("does not rewrite method calls like obj.require()", async () => {
+      const result = await transformEntryCode(
+        'const x = obj.require("fs");',
+        "/entry.ts"
+      );
+      assert.ok(result.code.includes('obj.require("fs")'));
+      assert.ok(!result.code.includes("__require"));
+    });
+
+    test("does not rewrite import/require inside strings", async () => {
+      const result = await transformEntryCode(
+        "const x = 'import(\"./mod\")';\nconst y = \"require('fs')\";",
+        "/entry.ts"
+      );
+      assert.ok(!result.code.includes("__dynamicImport"));
+      assert.ok(!result.code.includes("__require"));
+    });
+
+    test("does not rewrite import/require inside comments", async () => {
+      const result = await transformEntryCode(
+        '// import("./mod")\n/* require("fs") */\nconsole.log("ok");',
+        "/entry.ts"
+      );
+      assert.ok(!result.code.includes("__dynamicImport"));
+      assert.ok(!result.code.includes("__require"));
     });
 
     test("rejects top-level return", async () => {
@@ -131,6 +171,24 @@ describe("@ricsam/isolate-transform", () => {
         "/mod.ts"
       );
       assert.ok(result.sourceMap);
+    });
+
+    test("rewrites dynamic import() in module code", async () => {
+      const result = await transformModuleCode(
+        'export const x = await import("./dep");',
+        "/mod.ts"
+      );
+      assert.ok(result.code.includes('__dynamicImport("./dep", "/mod.ts")'));
+      assert.ok(!result.code.includes('import("./dep")'));
+    });
+
+    test("rewrites require() in module code", async () => {
+      const result = await transformModuleCode(
+        'export const x = require("./dep");',
+        "/mod.ts"
+      );
+      assert.ok(result.code.includes('__require("./dep", "/mod.ts")'));
+      assert.ok(!result.code.includes('require("./dep")'));
     });
   });
 
