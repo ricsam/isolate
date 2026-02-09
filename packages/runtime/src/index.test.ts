@@ -130,6 +130,8 @@ describe("@ricsam/isolate-runtime", () => {
               }
             `,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "utils",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -167,12 +169,16 @@ describe("@ricsam/isolate-runtime", () => {
               }
             `,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "math",
             };
           }
           if (moduleName === "@/constants") {
             return {
               code: `export const constant = 10;`,
               resolveDir: importer.resolveDir,
+              format: "esm",
+              filename: "constants",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -199,6 +205,8 @@ describe("@ricsam/isolate-runtime", () => {
             return {
               code: `export const count = ${loadCount};`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "counter",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -232,6 +240,8 @@ describe("@ricsam/isolate-runtime", () => {
             return {
               code: `export const value = 42;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "test",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -257,12 +267,16 @@ describe("@ricsam/isolate-runtime", () => {
             return {
               code: `import { b } from "@/moduleB"; export const a = b + 1;`,
               resolveDir: "/modules",
+              format: "esm" as const,
+              filename: "moduleA",
             };
           }
           if (moduleName === "@/moduleB") {
             return {
               code: `export const b = 10;`,
               resolveDir: "/modules",
+              format: "esm" as const,
+              filename: "moduleB",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -313,7 +327,7 @@ describe("@ricsam/isolate-runtime", () => {
           if (!code) {
             throw new Error(`Module not found: ${specifier} (resolved to ${resolvedPath})`);
           }
-          return { code, resolveDir: path.posix.dirname(resolvedPath) };
+          return { code, resolveDir: path.posix.dirname(resolvedPath), format: "esm", filename: path.posix.basename(resolvedPath) };
         },
       });
 
@@ -344,6 +358,8 @@ describe("@ricsam/isolate-runtime", () => {
             return {
               code: `import { dep } from "@/dep"; export const value = dep;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "shared",
             };
           }
           if (moduleName === "@/dep") {
@@ -351,6 +367,8 @@ describe("@ricsam/isolate-runtime", () => {
             return {
               code: `export const dep = 1;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "dep",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -376,12 +394,16 @@ describe("@ricsam/isolate-runtime", () => {
             return {
               code: `import { shared } from "@/shared"; export const a = shared + 1;`,
               resolveDir: importer.resolveDir,
+              format: "esm",
+              filename: "moduleA",
             };
           }
           if (moduleName === "@/moduleB") {
             return {
               code: `import { shared } from "@/shared"; export const b = shared + 2;`,
               resolveDir: importer.resolveDir,
+              format: "esm",
+              filename: "moduleB",
             };
           }
           if (moduleName === "@/shared") {
@@ -389,6 +411,8 @@ describe("@ricsam/isolate-runtime", () => {
             return {
               code: `export const shared = 10;`,
               resolveDir: importer.resolveDir,
+              format: "esm",
+              filename: "shared",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -416,6 +440,8 @@ describe("@ricsam/isolate-runtime", () => {
             return {
               code: `import { value } from "@/missing"; export const out = value;`,
               resolveDir: importer.resolveDir,
+              format: "esm",
+              filename: "bad",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -1137,6 +1163,592 @@ describe("@ricsam/isolate-runtime", () => {
             return true;
           }
         );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+  });
+
+  describe("built-in modules", () => {
+    describe("crypto", () => {
+      test("static import crypto from 'node:crypto'", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            import crypto from 'node:crypto';
+            const uuid = crypto.randomUUID();
+            console.log(typeof uuid);
+          `);
+          assert.strictEqual(logValue, "string");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("static import named exports from 'crypto'", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            import { randomUUID } from 'crypto';
+            const uuid = randomUUID();
+            console.log(typeof uuid);
+          `);
+          assert.strictEqual(logValue, "string");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("crypto works without moduleLoader", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+          // No moduleLoader provided
+        });
+        try {
+          await runtime.eval(`
+            import { randomUUID } from 'node:crypto';
+            console.log(typeof randomUUID());
+          `);
+          assert.strictEqual(logValue, "string");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
+
+    describe("events", () => {
+      test("static import EventEmitter from 'node:events'", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            import { EventEmitter } from 'node:events';
+            const ee = new EventEmitter();
+            let result = '';
+            ee.on('test', (msg) => { result = msg; });
+            ee.emit('test', 'hello');
+            console.log(result);
+          `);
+          assert.strictEqual(logValue, "hello");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("EventEmitter default export", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            import EventEmitter from 'events';
+            const ee = new EventEmitter();
+            ee.once('data', (val) => console.log(val));
+            ee.emit('data', 'once-test');
+          `);
+          assert.strictEqual(logValue, "once-test");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("EventEmitter listenerCount and removeAllListeners", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            import { EventEmitter } from 'node:events';
+            const ee = new EventEmitter();
+            ee.on('x', () => {});
+            ee.on('x', () => {});
+            const before = ee.listenerCount('x');
+            ee.removeAllListeners('x');
+            const after = ee.listenerCount('x');
+            console.log(before + ',' + after);
+          `);
+          assert.strictEqual(logValue, "2,0");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
+
+    describe("stream", () => {
+      test("static import Readable from 'node:stream'", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            import { Readable } from 'node:stream';
+            const r = new Readable({
+              read() {
+                this.push('hello');
+                this.push(null);
+              }
+            });
+            let data = '';
+            r.on('data', (chunk) => { data += chunk; });
+            r.on('end', () => { console.log(data); });
+            r.resume();
+          `);
+          assert.strictEqual(logValue, "hello");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("stream pipe: Readable -> Transform -> Writable", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            import { Readable, Transform, Writable } from 'node:stream';
+            const chunks = [];
+            const src = new Readable({
+              read() {
+                this.push('hello ');
+                this.push('world');
+                this.push(null);
+              }
+            });
+            const upper = new Transform({
+              transform(chunk, enc, cb) {
+                cb(null, String(chunk).toUpperCase());
+              }
+            });
+            const sink = new Writable({
+              write(chunk, enc, cb) {
+                chunks.push(String(chunk));
+                cb();
+              },
+              final(cb) {
+                console.log(chunks.join(''));
+                cb();
+              }
+            });
+            src.pipe(upper).pipe(sink);
+          `);
+          // Wait a tick for the pipe to complete
+          await new Promise((r) => setTimeout(r, 50));
+          assert.strictEqual(logValue, "HELLO WORLD");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("pipeline with callback", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            import { Readable, PassThrough, Writable, pipeline } from 'node:stream';
+            const result = [];
+            const src = new Readable({
+              read() {
+                this.push('data');
+                this.push(null);
+              }
+            });
+            const pass = new PassThrough();
+            const sink = new Writable({
+              write(chunk, enc, cb) {
+                result.push(String(chunk));
+                cb();
+              },
+              final(cb) { cb(); }
+            });
+            pipeline(src, pass, sink, (err) => {
+              console.log(err ? 'error' : result.join(''));
+            });
+          `);
+          await new Promise((r) => setTimeout(r, 50));
+          assert.strictEqual(logValue, "data");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("finished callback", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            import { Writable, finished } from 'node:stream';
+            const w = new Writable({
+              write(chunk, enc, cb) { cb(); }
+            });
+            finished(w, (err) => {
+              console.log(err ? 'error' : 'done');
+            });
+            w.end('test');
+          `);
+          await new Promise((r) => setTimeout(r, 50));
+          assert.strictEqual(logValue, "done");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
+
+    describe("stream/promises", () => {
+      test("import pipeline from 'node:stream/promises'", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            import { Readable, PassThrough, Writable } from 'node:stream';
+            import { pipeline } from 'node:stream/promises';
+            const result = [];
+            const src = new Readable({
+              read() {
+                this.push('async');
+                this.push(null);
+              }
+            });
+            const pass = new PassThrough();
+            const sink = new Writable({
+              write(chunk, enc, cb) {
+                result.push(String(chunk));
+                cb();
+              },
+              final(cb) { cb(); }
+            });
+            await pipeline(src, pass, sink);
+            console.log(result.join(''));
+          `);
+          assert.strictEqual(logValue, "async");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
+
+    describe("dynamic import/require", () => {
+      test("dynamic import('node:crypto') works", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            const crypto = await import('node:crypto');
+            console.log(typeof crypto.randomUUID);
+          `);
+          assert.strictEqual(logValue, "function");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("require('events') works", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+        });
+        try {
+          await runtime.eval(`
+            const events = require('events');
+            const ee = new events.default();
+            ee.on('test', (v) => console.log(v));
+            ee.emit('test', 'required');
+          `);
+          assert.strictEqual(logValue, "required");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
+
+    describe("user moduleLoader override", () => {
+      test("user moduleLoader takes priority over built-in", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+          moduleLoader: async (specifier, importer) => {
+            if (specifier === 'node:events' || specifier === 'events') {
+              return {
+                code: `export class EventEmitter { constructor() { this.custom = true; } }; export default EventEmitter;`,
+                resolveDir: importer.resolveDir,
+                format: 'esm',
+                filename: "events",
+              };
+            }
+            throw new Error(`Unknown module: ${specifier}`);
+          },
+        });
+        try {
+          await runtime.eval(`
+            import { EventEmitter } from 'node:events';
+            const ee = new EventEmitter();
+            console.log(String(ee.custom));
+          `);
+          assert.strictEqual(logValue, "true");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+
+      test("falls back to built-in when moduleLoader throws", async () => {
+        let logValue: string | null = null;
+        const runtime = await createRuntime({
+          console: {
+            onEntry: (entry) => {
+              if (entry.type === "output" && entry.level === "log") {
+                logValue = entry.stdout;
+              }
+            },
+          },
+          moduleLoader: async (specifier) => {
+            // Don't handle crypto — let it fall through to built-in
+            throw new Error(`Unknown module: ${specifier}`);
+          },
+        });
+        try {
+          await runtime.eval(`
+            import { randomUUID } from 'node:crypto';
+            console.log(typeof randomUUID());
+          `);
+          assert.strictEqual(logValue, "string");
+        } finally {
+          await runtime.dispose();
+        }
+      });
+    });
+  });
+
+  describe("process", () => {
+    test("process.cwd() returns configured cwd", async () => {
+      let logValue: string | null = null;
+      const runtime = await createRuntime({
+        cwd: "/home/user/project",
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.stdout;
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`console.log(process.cwd());`);
+        assert.strictEqual(logValue, "/home/user/project");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("process.cwd() defaults to /", async () => {
+      let logValue: string | null = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.stdout;
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`console.log(process.cwd());`);
+        assert.strictEqual(logValue, "/");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("process.env returns configured env", async () => {
+      let logValue: string | null = null;
+      const runtime = await createRuntime({
+        env: { FOO: "bar", NODE_ENV: "production" },
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.stdout;
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`console.log(process.env.FOO + ":" + process.env.NODE_ENV);`);
+        assert.strictEqual(logValue, "bar:production");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("process.env defaults to empty object", async () => {
+      let logValue: string | null = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.stdout;
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`console.log(JSON.stringify(process.env));`);
+        assert.strictEqual(logValue, "{}");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("import process from 'node:process'", async () => {
+      let logValue: string | null = null;
+      const runtime = await createRuntime({
+        cwd: "/test",
+        env: { KEY: "value" },
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.stdout;
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          import process from 'node:process';
+          console.log(process.cwd() + ":" + process.env.KEY);
+        `);
+        assert.strictEqual(logValue, "/test:value");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("import { env } from 'process'", async () => {
+      let logValue: string | null = null;
+      const runtime = await createRuntime({
+        env: { HELLO: "world" },
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.stdout;
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          import { env } from 'process';
+          console.log(env.HELLO);
+        `);
+        assert.strictEqual(logValue, "world");
       } finally {
         await runtime.dispose();
       }

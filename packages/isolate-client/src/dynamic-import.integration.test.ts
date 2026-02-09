@@ -74,6 +74,8 @@ describe("dynamic import/require", () => {
             return {
               code: `export const add = (a, b) => a + b; export const mul = (a, b) => a * b;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "math",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -117,6 +119,8 @@ describe("dynamic import/require", () => {
             return {
               code: `export const greet = (name) => "Hello, " + name + "!"; export default "utils-default";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "utils",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -163,12 +167,16 @@ describe("dynamic import/require", () => {
             return {
               code: `import { add } from "@/math"; export const sum = add(10, 20);`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "calc",
             };
           }
           if (moduleName === "@/math") {
             return {
               code: `export const add = (a, b) => a + b;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "math",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -211,18 +219,24 @@ describe("dynamic import/require", () => {
             return {
               code: `const b = await import("@/b"); export const value = "A+" + b.value;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "a",
             };
           }
           if (moduleName === "@/b") {
             return {
               code: `const c = await import("@/c"); export const value = "B+" + c.value;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "b",
             };
           }
           if (moduleName === "@/c") {
             return {
               code: `export const value = "C";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "c",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -267,6 +281,8 @@ describe("dynamic import/require", () => {
             return {
               code: `export const token = "shared-value";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "shared",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -389,12 +405,16 @@ describe("dynamic import/require", () => {
             return {
               code: `export async function load(name) { const mod = await import(name); return mod; }`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "loader",
             };
           }
           if (moduleName === "@/data") {
             return {
               code: `export const items = [1, 2, 3];`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "data",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -438,12 +458,16 @@ describe("dynamic import/require", () => {
             return {
               code: `export const greeting = "Hello";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "en",
             };
           }
           if (moduleName === "@/es") {
             return {
               code: `export const greeting = "Hola";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "es",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -487,6 +511,8 @@ describe("dynamic import/require", () => {
             return {
               code: `export default { port: 3000, host: "localhost" }; export const debug = true;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "config",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -535,18 +561,24 @@ describe("dynamic import/require", () => {
             return {
               code: `export const name = "module-a";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "a",
             };
           }
           if (moduleName === "@/b") {
             return {
               code: `export const name = "module-b";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "b",
             };
           }
           if (moduleName === "@/c") {
             return {
               code: `export const name = "module-c";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "c",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -593,6 +625,8 @@ describe("dynamic import/require", () => {
             return {
               code: `module.exports = { hello: "world", num: 42 };`,
               resolveDir: importer.resolveDir,
+              format: "cjs" as const,
+              filename: "cjs-lib",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -636,6 +670,8 @@ describe("dynamic import/require", () => {
             return {
               code: `module.exports = { greet: (name) => "Hi " + name };`,
               resolveDir: importer.resolveDir,
+              format: "cjs" as const,
+              filename: "cjs-lib",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -678,6 +714,8 @@ describe("dynamic import/require", () => {
             return {
               code: `exports.greet = (name) => "Hello, " + name;\nexports.farewell = (name) => "Bye, " + name;`,
               resolveDir: importer.resolveDir,
+              format: "cjs" as const,
+              filename: "helpers",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -721,6 +759,8 @@ describe("dynamic import/require", () => {
             return {
               code: `module.exports = function(x) { return x * 2; };`,
               resolveDir: importer.resolveDir,
+              format: "cjs" as const,
+              filename: "fn-module",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -763,6 +803,8 @@ describe("dynamic import/require", () => {
             return {
               code: `function createRandomStringGenerator() { return () => "random"; }\nexport { createRandomStringGenerator };`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "lib",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -806,6 +848,8 @@ describe("dynamic import/require", () => {
             return {
               code: `function createRandomStringGenerator() { return () => "random"; }\nexport { createRandomStringGenerator };`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "lib",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -849,12 +893,16 @@ describe("dynamic import/require", () => {
             return {
               code: `export { greet } from "@/impl";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "barrel",
             };
           }
           if (moduleName === "@/impl") {
             return {
               code: `export const greet = (name) => "Hello, " + name;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "impl",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -897,12 +945,16 @@ describe("dynamic import/require", () => {
             return {
               code: `export { add as sum } from "@/math";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "barrel",
             };
           }
           if (moduleName === "@/math") {
             return {
               code: `export const add = (a, b) => a + b;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "math",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -945,12 +997,16 @@ describe("dynamic import/require", () => {
             return {
               code: `export * from "@/math";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "barrel",
             };
           }
           if (moduleName === "@/math") {
             return {
               code: `export const add = (a, b) => a + b; export const mul = (a, b) => a * b;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "math",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -994,12 +1050,16 @@ describe("dynamic import/require", () => {
             return {
               code: `export * as math from "@/math";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "barrel",
             };
           }
           if (moduleName === "@/math") {
             return {
               code: `export const add = (a, b) => a + b; export const mul = (a, b) => a * b;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "math",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -1043,18 +1103,24 @@ describe("dynamic import/require", () => {
             return {
               code: `export { value } from "@/b";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "a",
             };
           }
           if (moduleName === "@/b") {
             return {
               code: `export { value } from "@/c";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "b",
             };
           }
           if (moduleName === "@/c") {
             return {
               code: `export const value = "deep";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "c",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -1097,12 +1163,16 @@ describe("dynamic import/require", () => {
             return {
               code: `export const local = "local-value";\nexport { remote } from "@/dep";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "mixed",
             };
           }
           if (moduleName === "@/dep") {
             return {
               code: `export const remote = "remote-value";`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "dep",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -1151,12 +1221,16 @@ describe("dynamic import/require", () => {
               code: `'use strict';\nfunction createRandomStringGenerator() { return () => "random-string"; }\nexports.createRandomStringGenerator = createRandomStringGenerator;`,
               resolveDir: "/node_modules/@better-auth/utils/dist",
               static: true,
+              format: "cjs" as const,
+              filename: "random",
             };
           }
           if (moduleName === "@/id") {
             return {
               code: `import { createRandomStringGenerator } from "@better-auth/utils/random";\nexport const generateId = () => createRandomStringGenerator()();`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "id",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -1200,6 +1274,8 @@ describe("dynamic import/require", () => {
               code: `module.exports = { value: 42, label: "hello" };`,
               resolveDir: importer.resolveDir,
               static: true,
+              format: "cjs" as const,
+              filename: "cjs-mod",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -1244,6 +1320,8 @@ describe("dynamic import/require", () => {
               code: `exports.greet = (name) => "Hello, " + name;\nexports.farewell = (name) => "Bye, " + name;`,
               resolveDir: importer.resolveDir,
               static: true,
+              format: "cjs" as const,
+              filename: "cjs-named",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -1269,6 +1347,470 @@ describe("dynamic import/require", () => {
     assert.deepStrictEqual(outcomes.direct, ["Hello, Alice", "Bye, Bob"]);
   });
 
+  it("CJS __exportStar(require('./sub'), exports) via static import", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/kysely") {
+            // Simulates kysely's CJS entry that uses __exportStar to re-export sub-modules
+            return {
+              code: `'use strict';\nexports.version = "0.27";\n__exportStar(require("@/kysely-core"), exports);`,
+              resolveDir: importer.resolveDir,
+              format: "cjs" as const,
+              filename: "kysely",
+            };
+          }
+          if (moduleName === "@/kysely-core") {
+            return {
+              code: `export class Kysely { query() { return "SELECT 1"; } }\nexport const sql = "raw-sql";`,
+              resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "kysely-core",
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          import { Kysely, sql, version } from "@/kysely";
+          const db = new Kysely();
+          console.log("query:", db.query());
+          console.log("sql:", sql);
+          console.log("version:", version);
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, [
+      "query: SELECT 1",
+      "sql: raw-sql",
+      "version: 0.27",
+    ]);
+  });
+
+  it("CJS __exportStar chain: A re-exports from B which re-exports from C", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/a") {
+            return {
+              code: `'use strict';\n__exportStar(require("@/b"), exports);`,
+              resolveDir: importer.resolveDir,
+              format: "cjs" as const,
+              filename: "a",
+            };
+          }
+          if (moduleName === "@/b") {
+            return {
+              code: `'use strict';\n__exportStar(require("@/c"), exports);`,
+              resolveDir: importer.resolveDir,
+              format: "cjs" as const,
+              filename: "b",
+            };
+          }
+          if (moduleName === "@/c") {
+            return {
+              code: `export const deepValue = "found-it";`,
+              resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "c",
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          import { deepValue } from "@/a";
+          console.log(deepValue);
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["found-it"]);
+  });
+
+  it("format: 'cjs' forces CJS treatment for ambiguous code", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/lib") {
+            // Code that doesn't have obvious CJS markers but should be treated as CJS
+            return {
+              code: `const x = 42; module.exports = { x };`,
+              resolveDir: importer.resolveDir,
+              format: "cjs" as const,
+              filename: "lib",
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          import lib from "@/lib";
+          console.log("x:", lib.x);
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["x: 42"]);
+  });
+
+  it("built-in: import crypto from 'node:crypto' without moduleLoader", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        // No moduleLoader — built-in should still work
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const { randomUUID } = await import("node:crypto");
+          console.log(typeof randomUUID());
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["string"]);
+  });
+
+  it("built-in: import EventEmitter from 'node:events' without moduleLoader", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const { EventEmitter } = await import("node:events");
+          const ee = new EventEmitter();
+          let result = '';
+          ee.on('test', (msg) => { result = msg; });
+          ee.emit('test', 'hello');
+          console.log(result);
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["hello"]);
+  });
+
+  it("built-in: require('events') without moduleLoader", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          const events = require("events");
+          const ee = new events.default();
+          ee.on('x', (v) => console.log(v));
+          ee.emit('x', 'required');
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["required"]);
+  });
+
+  it("built-in: static import from 'node:crypto' without moduleLoader", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          import { randomUUID } from 'node:crypto';
+          console.log(typeof randomUUID());
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["string"]);
+  });
+
+  it("built-in: static import from 'node:events' without moduleLoader", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          import { EventEmitter } from 'node:events';
+          const ee = new EventEmitter();
+          let result = '';
+          ee.on('data', (v) => { result = v; });
+          ee.emit('data', 'static-events');
+          console.log(result);
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["static-events"]);
+  });
+
+  it("built-in: static import from 'node:stream' without moduleLoader", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          import { Readable } from 'node:stream';
+          const r = new Readable({
+            read() {
+              this.push('stream-data');
+              this.push(null);
+            }
+          });
+          let data = '';
+          r.on('data', (chunk) => { data += chunk; });
+          r.on('end', () => { console.log(data); });
+          r.resume();
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["stream-data"]);
+  });
+
+  it("built-in: moduleLoader overrides built-in", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (specifier, importer) => {
+          if (specifier === "node:events" || specifier === "events") {
+            return {
+              code: `export class EventEmitter { constructor() { this.custom = true; } }; export default EventEmitter;`,
+              resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "events",
+            };
+          }
+          throw new Error(`Unknown module: ${specifier}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          import { EventEmitter } from 'node:events';
+          const ee = new EventEmitter();
+          console.log(String(ee.custom));
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["true"]);
+  });
+
+  it("built-in: falls back to built-in when moduleLoader throws for node: specifier", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+        moduleLoader: async (specifier) => {
+          throw new Error(`Unknown module: ${specifier}`);
+        },
+      });
+
+      try {
+        await runtime.eval(
+          `
+          import { randomUUID } from 'node:crypto';
+          console.log(typeof randomUUID());
+        `,
+          { filename: "/entry.ts" }
+        );
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["string"]);
+  });
+
   it("CJS module that uses require() internally", async () => {
     const outcomes: Record<string, string[]> = {};
 
@@ -1287,12 +1829,16 @@ describe("dynamic import/require", () => {
             return {
               code: `const utils = require("@/cjs-utils");\nmodule.exports = { result: utils.add(10, 20) };`,
               resolveDir: importer.resolveDir,
+              format: "cjs" as const,
+              filename: "cjs-main",
             };
           }
           if (moduleName === "@/cjs-utils") {
             return {
               code: `exports.add = (a, b) => a + b;`,
               resolveDir: importer.resolveDir,
+              format: "cjs" as const,
+              filename: "cjs-utils",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);

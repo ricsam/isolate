@@ -90,7 +90,8 @@ import type {
   CallbackStreamReceiver,
 } from "./types.ts";
 
-const LINKER_CONFLICT_ERROR = "Module is currently being linked by another linker";
+const LINKER_CONFLICT_ERROR =
+  "Module is currently being linked by another linker";
 
 function getErrorText(error: unknown): string {
   if (error instanceof Error) {
@@ -99,8 +100,8 @@ function getErrorText(error: unknown): string {
       cause instanceof Error
         ? `${cause.name}: ${cause.message}\n${cause.stack ?? ""}`
         : cause != null
-          ? String(cause)
-          : "";
+        ? String(cause)
+        : "";
     return [error.name, error.message, error.stack, causeText]
       .filter((part) => part != null && part !== "")
       .join("\n");
@@ -316,7 +317,11 @@ async function handleMessage(
       break;
 
     case MessageType.FETCH_WS_ERROR:
-      await handleFetchWsError(message as FetchWsErrorRequest, connection, state);
+      await handleFetchWsError(
+        message as FetchWsErrorRequest,
+        connection,
+        state
+      );
       break;
 
     case MessageType.TIMERS_CLEAR_ALL:
@@ -328,7 +333,11 @@ async function handleMessage(
       break;
 
     case MessageType.CONSOLE_RESET:
-      await handleConsoleReset(message as ConsoleResetRequest, connection, state);
+      await handleConsoleReset(
+        message as ConsoleResetRequest,
+        connection,
+        state
+      );
       break;
 
     case MessageType.CONSOLE_GET_TIMERS:
@@ -451,7 +460,10 @@ async function handleMessage(
 /**
  * Hard-delete a runtime and remove it from daemon indexes.
  */
-async function hardDeleteRuntime(instance: IsolateInstance, state: DaemonState): Promise<void> {
+async function hardDeleteRuntime(
+  instance: IsolateInstance,
+  state: DaemonState
+): Promise<void> {
   try {
     await instance.runtime.dispose();
   } finally {
@@ -475,7 +487,10 @@ async function hardDeleteRuntime(instance: IsolateInstance, state: DaemonState):
  * Soft-delete a namespaced runtime (keep cached for reuse).
  * Clears owner connection and callbacks but preserves isolate/context.
  */
-function softDeleteRuntime(instance: IsolateInstance, state: DaemonState): void {
+function softDeleteRuntime(
+  instance: IsolateInstance,
+  state: DaemonState
+): void {
   instance.isDisposed = true;
   instance.disposedAt = Date.now();
   instance.ownerConnection = null;
@@ -536,7 +551,8 @@ function reuseNamespacedRuntime(
     instance.callbackContext.connection = connection;
 
     // Update callback IDs
-    instance.callbackContext.consoleOnEntry = callbacks?.console?.onEntry?.callbackId;
+    instance.callbackContext.consoleOnEntry =
+      callbacks?.console?.onEntry?.callbackId;
     instance.callbackContext.fetch = callbacks?.fetch?.callbackId;
     instance.callbackContext.moduleLoader = callbacks?.moduleLoader?.callbackId;
     instance.callbackContext.testEnvironmentOnEvent =
@@ -596,7 +612,10 @@ function reuseNamespacedRuntime(
   }
 
   if (callbacks?.moduleLoader) {
-    instance.callbacks.set(callbacks.moduleLoader.callbackId, callbacks.moduleLoader);
+    instance.callbacks.set(
+      callbacks.moduleLoader.callbackId,
+      callbacks.moduleLoader
+    );
   }
 
   if (callbacks?.custom) {
@@ -621,11 +640,14 @@ function reuseNamespacedRuntime(
       type: "async",
     });
     if (callbacks.playwright.onBrowserConsoleLogCallbackId !== undefined) {
-      instance.callbacks.set(callbacks.playwright.onBrowserConsoleLogCallbackId, {
-        callbackId: callbacks.playwright.onBrowserConsoleLogCallbackId,
-        name: "playwright.onBrowserConsoleLog",
-        type: "sync",
-      });
+      instance.callbacks.set(
+        callbacks.playwright.onBrowserConsoleLogCallbackId,
+        {
+          callbackId: callbacks.playwright.onBrowserConsoleLogCallbackId,
+          name: "playwright.onBrowserConsoleLog",
+          type: "sync",
+        }
+      );
     }
     if (callbacks.playwright.onNetworkRequestCallbackId !== undefined) {
       instance.callbacks.set(callbacks.playwright.onNetworkRequestCallbackId, {
@@ -654,7 +676,9 @@ function reuseNamespacedRuntime(
  * Evict the oldest disposed runtime to make room for a new one.
  * Returns true if a runtime was evicted, false if no disposed runtimes available.
  */
-async function evictOldestDisposedRuntime(state: DaemonState): Promise<boolean> {
+async function evictOldestDisposedRuntime(
+  state: DaemonState
+): Promise<boolean> {
   let oldest: IsolateInstance | null = null;
   let oldestTime = Infinity;
 
@@ -783,7 +807,8 @@ async function handleCreateRuntime(
           ? message.options.testEnvironment.callbacks?.onEvent?.callbackId
           : undefined,
       playwright: {
-        handlerCallbackId: message.options.callbacks?.playwright?.handlerCallbackId,
+        handlerCallbackId:
+          message.options.callbacks?.playwright?.handlerCallbackId,
         onBrowserConsoleLogCallbackId:
           message.options.callbacks?.playwright?.onBrowserConsoleLogCallbackId,
         onNetworkRequestCallbackId:
@@ -802,7 +827,10 @@ async function handleCreateRuntime(
       },
       custom: new Map(
         customCallbacks
-          ? Object.entries(customCallbacks).map(([name, reg]) => [name, reg.callbackId])
+          ? Object.entries(customCallbacks).map(([name, reg]) => [
+              name,
+              reg.callbackId,
+            ])
           : []
       ),
     };
@@ -831,7 +859,13 @@ async function handleCreateRuntime(
     };
 
     // Build custom functions as local IPC-bridged implementations
-    type CustomFunctions = Record<string, { type: "sync" | "async" | "asyncIterator"; fn: (...args: unknown[]) => unknown }>;
+    type CustomFunctions = Record<
+      string,
+      {
+        type: "sync" | "async" | "asyncIterator";
+        fn: (...args: unknown[]) => unknown;
+      }
+    >;
     let bridgedCustomFunctions: CustomFunctions | undefined;
     let customFnMarshalOptions: CustomFunctionsMarshalOptions | undefined;
 
@@ -856,60 +890,87 @@ async function handleCreateRuntime(
       });
 
       const addCallbackIdsToRefs = (value: unknown): unknown => {
-        if (value === null || typeof value !== 'object') return value;
+        if (value === null || typeof value !== "object") return value;
 
         if (isPromiseRef(value)) {
-          if ('__resolveCallbackId' in value) return value;
+          if ("__resolveCallbackId" in value) return value;
           const resolveCallbackId = instance.nextLocalCallbackId!++;
-          instance.returnedCallbacks!.set(resolveCallbackId, async (promiseId: number) => {
-            const promise = instance.returnedPromises!.get(promiseId);
-            if (!promise) throw new Error(`Promise ${promiseId} not found`);
-            const result = await promise;
-            instance.returnedPromises!.delete(promiseId);
-            const ctx = createMarshalContext();
-            const marshalled = await marshalValue(result, ctx);
-            return addCallbackIdsToRefs(marshalled);
-          });
+          instance.returnedCallbacks!.set(
+            resolveCallbackId,
+            async (promiseId: number) => {
+              const promise = instance.returnedPromises!.get(promiseId);
+              if (!promise) throw new Error(`Promise ${promiseId} not found`);
+              const result = await promise;
+              instance.returnedPromises!.delete(promiseId);
+              const ctx = createMarshalContext();
+              const marshalled = await marshalValue(result, ctx);
+              return addCallbackIdsToRefs(marshalled);
+            }
+          );
           return { ...value, __resolveCallbackId: resolveCallbackId };
         }
 
         if (isAsyncIteratorRef(value)) {
-          if ('__nextCallbackId' in value) return value;
+          if ("__nextCallbackId" in value) return value;
           const nextCallbackId = instance.nextLocalCallbackId!++;
-          instance.returnedCallbacks!.set(nextCallbackId, async (iteratorId: number) => {
-            const iterator = instance.returnedIterators!.get(iteratorId);
-            if (!iterator) throw new Error(`Iterator ${iteratorId} not found`);
-            const result = await iterator.next();
-            if (result.done) instance.returnedIterators!.delete(iteratorId);
-            const ctx = createMarshalContext();
-            const marshalledValue = await marshalValue(result.value, ctx);
-            return { done: result.done, value: addCallbackIdsToRefs(marshalledValue) };
-          });
+          instance.returnedCallbacks!.set(
+            nextCallbackId,
+            async (iteratorId: number) => {
+              const iterator = instance.returnedIterators!.get(iteratorId);
+              if (!iterator)
+                throw new Error(`Iterator ${iteratorId} not found`);
+              const result = await iterator.next();
+              if (result.done) instance.returnedIterators!.delete(iteratorId);
+              const ctx = createMarshalContext();
+              const marshalledValue = await marshalValue(result.value, ctx);
+              return {
+                done: result.done,
+                value: addCallbackIdsToRefs(marshalledValue),
+              };
+            }
+          );
           const returnCallbackId = instance.nextLocalCallbackId!++;
-          instance.returnedCallbacks!.set(returnCallbackId, async (iteratorId: number, returnValue?: unknown) => {
-            const iterator = instance.returnedIterators!.get(iteratorId);
-            instance.returnedIterators!.delete(iteratorId);
-            if (!iterator || !iterator.return) return { done: true, value: undefined };
-            const result = await iterator.return(returnValue);
-            const ctx = createMarshalContext();
-            const marshalledValue = await marshalValue(result.value, ctx);
-            return { done: true, value: addCallbackIdsToRefs(marshalledValue) };
-          });
-          return { ...value, __nextCallbackId: nextCallbackId, __returnCallbackId: returnCallbackId };
+          instance.returnedCallbacks!.set(
+            returnCallbackId,
+            async (iteratorId: number, returnValue?: unknown) => {
+              const iterator = instance.returnedIterators!.get(iteratorId);
+              instance.returnedIterators!.delete(iteratorId);
+              if (!iterator || !iterator.return)
+                return { done: true, value: undefined };
+              const result = await iterator.return(returnValue);
+              const ctx = createMarshalContext();
+              const marshalledValue = await marshalValue(result.value, ctx);
+              return {
+                done: true,
+                value: addCallbackIdsToRefs(marshalledValue),
+              };
+            }
+          );
+          return {
+            ...value,
+            __nextCallbackId: nextCallbackId,
+            __returnCallbackId: returnCallbackId,
+          };
         }
 
-        if (Array.isArray(value)) return value.map(item => addCallbackIdsToRefs(item));
+        if (Array.isArray(value))
+          return value.map((item) => addCallbackIdsToRefs(item));
 
         const result: Record<string, unknown> = {};
         for (const key of Object.keys(value)) {
-          result[key] = addCallbackIdsToRefs((value as Record<string, unknown>)[key]);
+          result[key] = addCallbackIdsToRefs(
+            (value as Record<string, unknown>)[key]
+          );
         }
         return result;
       };
 
       const LOCAL_CALLBACK_THRESHOLD = 1_000_000;
 
-      const invokeCallback = async (callbackId: number, args: unknown[]): Promise<unknown> => {
+      const invokeCallback = async (
+        callbackId: number,
+        args: unknown[]
+      ): Promise<unknown> => {
         if (callbackId >= LOCAL_CALLBACK_THRESHOLD) {
           // Local callback (returned from a previous custom function call on the daemon)
           const callback = instance.returnedCallbacks!.get(callbackId);
@@ -921,13 +982,19 @@ async function handleCreateRuntime(
           // Client-side callback — forward via IPC
           const conn = callbackContext.connection;
           if (!conn) {
-            throw new Error(`No connection available for callback ${callbackId}`);
+            throw new Error(
+              `No connection available for callback ${callbackId}`
+            );
           }
           return invokeClientCallback(conn, callbackId, args);
         }
       };
 
-      customFnMarshalOptions = { createMarshalContext, addCallbackIdsToRefs, invokeCallback };
+      customFnMarshalOptions = {
+        createMarshalContext,
+        addCallbackIdsToRefs,
+        invokeCallback,
+      };
 
       // Build bridged custom functions
       // The invokeCallbackRef in setupCustomFunctions (in runtime) will call these bridged functions.
@@ -937,38 +1004,56 @@ async function handleCreateRuntime(
 
       for (const [name, registration] of Object.entries(customCallbacks)) {
         // Skip companion callbacks for asyncIterator (name:start, etc.)
-        if (name.includes(':')) continue;
+        if (name.includes(":")) continue;
 
         const callbackContext_ = callbackContext; // Capture for closure
 
-        if (registration.type === 'asyncIterator') {
+        if (registration.type === "asyncIterator") {
           // AsyncIterator: create start/next/return/throw as a single asyncIterator function
           bridgedCustomFunctions[name] = {
-            type: 'asyncIterator' as const,
+            type: "asyncIterator" as const,
             fn: (...args: unknown[]) => {
               // Return an async generator that bridges to client callbacks
-              const startCallbackId = callbackContext_.custom.get(`${name}:start`);
-              const nextCallbackId = callbackContext_.custom.get(`${name}:next`);
-              const returnCallbackId = callbackContext_.custom.get(`${name}:return`);
+              const startCallbackId = callbackContext_.custom.get(
+                `${name}:start`
+              );
+              const nextCallbackId = callbackContext_.custom.get(
+                `${name}:next`
+              );
+              const returnCallbackId = callbackContext_.custom.get(
+                `${name}:return`
+              );
 
               // Create async generator
               async function* bridgedIterator() {
                 // Start the iterator on the client
                 const conn = callbackContext_.connection;
                 if (!conn || startCallbackId === undefined) {
-                  throw new Error(`AsyncIterator callback '${name}' not available`);
+                  throw new Error(
+                    `AsyncIterator callback '${name}' not available`
+                  );
                 }
 
-                const startResult = await invokeClientCallback(conn, startCallbackId, args) as { iteratorId: number };
+                const startResult = (await invokeClientCallback(
+                  conn,
+                  startCallbackId,
+                  args
+                )) as { iteratorId: number };
                 const iteratorId = startResult.iteratorId;
 
                 try {
                   while (true) {
                     const nextConn = callbackContext_.connection;
                     if (!nextConn || nextCallbackId === undefined) {
-                      throw new Error(`AsyncIterator callback '${name}' not available`);
+                      throw new Error(
+                        `AsyncIterator callback '${name}' not available`
+                      );
                     }
-                    const nextResult = await invokeClientCallback(nextConn, nextCallbackId, [iteratorId]) as { done: boolean; value: unknown };
+                    const nextResult = (await invokeClientCallback(
+                      nextConn,
+                      nextCallbackId,
+                      [iteratorId]
+                    )) as { done: boolean; value: unknown };
                     if (nextResult.done) return nextResult.value;
                     yield nextResult.value;
                   }
@@ -976,7 +1061,9 @@ async function handleCreateRuntime(
                   // Call return on cleanup
                   const retConn = callbackContext_.connection;
                   if (retConn && returnCallbackId !== undefined) {
-                    await invokeClientCallback(retConn, returnCallbackId, [iteratorId]).catch(() => {});
+                    await invokeClientCallback(retConn, returnCallbackId, [
+                      iteratorId,
+                    ]).catch(() => {});
                   }
                 }
               }
@@ -988,12 +1075,14 @@ async function handleCreateRuntime(
           // Sync or async function — both bridge to IPC (which is always async)
           // The runtime's setupCustomFunctions handles the sync/async wrapping in the isolate
           bridgedCustomFunctions[name] = {
-            type: registration.type as 'sync' | 'async',
+            type: registration.type as "sync" | "async",
             fn: async (...args: unknown[]) => {
               const conn = callbackContext_.connection;
               const cbId = callbackContext_.custom.get(name);
               if (!conn || cbId === undefined) {
-                throw new Error(`Custom function callback '${name}' not available`);
+                throw new Error(
+                  `Custom function callback '${name}' not available`
+                );
               }
               return invokeClientCallback(conn, cbId, args);
             },
@@ -1003,23 +1092,60 @@ async function handleCreateRuntime(
     }
 
     // Build module loader if registered
-    let moduleLoader: ((specifier: string, importer: { path: string; resolveDir: string }) => Promise<{ code: string; resolveDir: string; static?: boolean }>) | undefined;
+    let moduleLoader:
+      | ((
+          specifier: string,
+          importer: {
+            path: string;
+            resolveDir: string;
+            format?: "cjs" | "esm" | "json";
+            importStack: string[];
+          }
+        ) => Promise<{
+          code: string;
+          filename: string;
+          resolveDir: string;
+          static?: boolean;
+          format: "cjs" | "esm" | "json";
+        }>)
+      | undefined;
     if (moduleLoaderCallback) {
-      moduleLoader = async (specifier: string, importer: { path: string; resolveDir: string }) => {
+      moduleLoader = async (
+        specifier: string,
+        importer: {
+          path: string;
+          resolveDir: string;
+          format?: "cjs" | "esm" | "json";
+          importStack: string[];
+        }
+      ) => {
         const conn = callbackContext.connection;
         const cbId = callbackContext.moduleLoader;
         if (!conn || cbId === undefined) {
           throw new Error("Module loader callback not available");
         }
-        return invokeClientCallback(conn, cbId, [specifier, importer]) as Promise<{ code: string; resolveDir: string; static?: boolean }>;
+        return invokeClientCallback(conn, cbId, [
+          specifier,
+          importer,
+        ]) as Promise<{
+          code: string;
+          filename: string;
+          resolveDir: string;
+          static?: boolean;
+          format: "cjs" | "esm" | "json";
+        }>;
       };
     }
 
     // Build test environment options
-    let testEnvironment: boolean | { onEvent?: (event: unknown) => void; testTimeout?: number } | undefined;
+    let testEnvironment:
+      | boolean
+      | { onEvent?: (event: unknown) => void; testTimeout?: number }
+      | undefined;
     if (message.options.testEnvironment) {
       const testEnvOption = message.options.testEnvironment;
-      const testEnvOptions = typeof testEnvOption === "object" ? testEnvOption : undefined;
+      const testEnvOptions =
+        typeof testEnvOption === "object" ? testEnvOption : undefined;
       testEnvironment = {
         onEvent: testEnvOptions?.callbacks?.onEvent
           ? (event: unknown) => {
@@ -1028,11 +1154,9 @@ async function handleCreateRuntime(
               if (!conn || callbackId === undefined) {
                 return;
               }
-              const promise = invokeClientCallback(
-                conn,
-                callbackId,
-                [JSON.stringify(event)]
-              ).catch(() => {});
+              const promise = invokeClientCallback(conn, callbackId, [
+                JSON.stringify(event),
+              ]).catch(() => {});
               // Push to runtime's pendingCallbacks (will be set after createRuntime)
               instance.runtime?.pendingCallbacks?.push(promise);
             }
@@ -1050,7 +1174,19 @@ async function handleCreateRuntime(
     }
 
     // Build playwright options
-    let playwrightOptions: { handler: (op: PlaywrightOperation) => Promise<PlaywrightResult>; console?: boolean; onEvent?: (event: { type: string; level?: string; stdout?: string; timestamp?: number; [key: string]: unknown }) => void } | undefined;
+    let playwrightOptions:
+      | {
+          handler: (op: PlaywrightOperation) => Promise<PlaywrightResult>;
+          console?: boolean;
+          onEvent?: (event: {
+            type: string;
+            level?: string;
+            stdout?: string;
+            timestamp?: number;
+            [key: string]: unknown;
+          }) => void;
+        }
+      | undefined;
     const playwrightCallbacks = message.options.callbacks?.playwright;
     if (playwrightCallbacks) {
       playwrightOptions = {
@@ -1067,19 +1203,26 @@ async function handleCreateRuntime(
             };
           }
           try {
-            const resultJson = await invokeClientCallback(
-              conn,
-              callbackId,
-              [JSON.stringify(op)],
-            );
+            const resultJson = await invokeClientCallback(conn, callbackId, [
+              JSON.stringify(op),
+            ]);
             return JSON.parse(resultJson as string) as PlaywrightResult;
           } catch (err) {
             const error = err as Error;
-            return { ok: false, error: { name: error.name, message: error.message } };
+            return {
+              ok: false,
+              error: { name: error.name, message: error.message },
+            };
           }
         },
         console: playwrightCallbacks.console,
-        onEvent: (event: { type: string; level?: string; stdout?: string; timestamp?: number; [key: string]: unknown }) => {
+        onEvent: (event: {
+          type: string;
+          level?: string;
+          stdout?: string;
+          timestamp?: number;
+          [key: string]: unknown;
+        }) => {
           const conn = callbackContext.connection;
           if (!conn) {
             return;
@@ -1087,12 +1230,19 @@ async function handleCreateRuntime(
 
           if (
             event.type === "browserConsoleLog" &&
-            callbackContext.playwright.onBrowserConsoleLogCallbackId !== undefined
+            callbackContext.playwright.onBrowserConsoleLogCallbackId !==
+              undefined
           ) {
             const promise = invokeClientCallback(
               conn,
               callbackContext.playwright.onBrowserConsoleLogCallbackId,
-              [{ level: event.level, stdout: event.stdout, timestamp: event.timestamp }]
+              [
+                {
+                  level: event.level,
+                  stdout: event.stdout,
+                  timestamp: event.timestamp,
+                },
+              ]
             ).catch(() => {});
             instance.runtime?.pendingCallbacks?.push(promise);
           } else if (
@@ -1122,15 +1272,19 @@ async function handleCreateRuntime(
 
     // Create the runtime using the unified createRuntime()
     const runtime = await createRuntime({
-      memoryLimitMB: message.options.memoryLimitMB ?? state.options.defaultMemoryLimitMB,
+      memoryLimitMB:
+        message.options.memoryLimitMB ?? state.options.defaultMemoryLimitMB,
       cwd: message.options.cwd,
+      env: message.options.env,
       // Console handler that bridges to client via IPC
       console: {
         onEntry: (entry) => {
           const conn = callbackContext.connection;
           const callbackId = callbackContext.consoleOnEntry;
           if (!conn || callbackId === undefined) return;
-          const promise = invokeClientCallback(conn, callbackId, [entry]).catch(() => {});
+          const promise = invokeClientCallback(conn, callbackId, [entry]).catch(
+            () => {}
+          );
           runtime.pendingCallbacks.push(promise);
         },
       },
@@ -1147,10 +1301,18 @@ async function handleCreateRuntime(
           headers: init.headers,
           body: init.rawBody,
         };
-        const result = await invokeClientCallback(conn, callbackId, [serialized]);
-        if (result && typeof result === 'object' && (result as { __streamingResponse?: boolean }).__streamingResponse) {
+        const result = await invokeClientCallback(conn, callbackId, [
+          serialized,
+        ]);
+        if (
+          result &&
+          typeof result === "object" &&
+          (result as { __streamingResponse?: boolean }).__streamingResponse
+        ) {
           const response = (result as { response: Response }).response;
-          (response as Response & { __isCallbackStream?: boolean }).__isCallbackStream = true;
+          (
+            response as Response & { __isCallbackStream?: boolean }
+          ).__isCallbackStream = true;
           return response;
         }
         return deserializeResponse(result as SerializedResponse);
@@ -1202,7 +1364,10 @@ async function handleCreateRuntime(
       }
     }
     if (moduleLoaderCallback) {
-      instance.callbacks.set(moduleLoaderCallback.callbackId, moduleLoaderCallback);
+      instance.callbacks.set(
+        moduleLoaderCallback.callbackId,
+        moduleLoaderCallback
+      );
     }
     if (customCallbacks) {
       for (const [name, reg] of Object.entries(customCallbacks)) {
@@ -1218,11 +1383,14 @@ async function handleCreateRuntime(
         type: "async",
       });
       if (playwrightCallbacks.onBrowserConsoleLogCallbackId !== undefined) {
-        instance.callbacks.set(playwrightCallbacks.onBrowserConsoleLogCallbackId, {
-          callbackId: playwrightCallbacks.onBrowserConsoleLogCallbackId,
-          name: "playwright.onBrowserConsoleLog",
-          type: "sync",
-        });
+        instance.callbacks.set(
+          playwrightCallbacks.onBrowserConsoleLogCallbackId,
+          {
+            callbackId: playwrightCallbacks.onBrowserConsoleLogCallbackId,
+            name: "playwright.onBrowserConsoleLog",
+            type: "sync",
+          }
+        );
       }
       if (playwrightCallbacks.onNetworkRequestCallbackId !== undefined) {
         instance.callbacks.set(playwrightCallbacks.onNetworkRequestCallbackId, {
@@ -1232,11 +1400,14 @@ async function handleCreateRuntime(
         });
       }
       if (playwrightCallbacks.onNetworkResponseCallbackId !== undefined) {
-        instance.callbacks.set(playwrightCallbacks.onNetworkResponseCallbackId, {
-          callbackId: playwrightCallbacks.onNetworkResponseCallbackId,
-          name: "playwright.onNetworkResponse",
-          type: "sync",
-        });
+        instance.callbacks.set(
+          playwrightCallbacks.onNetworkResponseCallbackId,
+          {
+            callbackId: playwrightCallbacks.onNetworkResponseCallbackId,
+            name: "playwright.onNetworkResponse",
+            type: "sync",
+          }
+        );
       }
     }
 
@@ -1498,7 +1669,10 @@ async function handleDispatchRequest(
 
     if (message.request.bodyStreamId !== undefined) {
       // Streaming body - wait for all chunks to arrive
-      requestBody = await receiveStreamedBody(connection, message.request.bodyStreamId) as BodyInit;
+      requestBody = (await receiveStreamedBody(
+        connection,
+        message.request.bodyStreamId
+      )) as BodyInit;
     } else if (message.request.body) {
       requestBody = message.request.body as unknown as BodyInit;
     }
@@ -1638,9 +1812,13 @@ async function handleWsMessage(
 
   try {
     // Convert Uint8Array to ArrayBuffer if needed
-    const data = message.data instanceof Uint8Array
-      ? message.data.buffer.slice(message.data.byteOffset, message.data.byteOffset + message.data.byteLength) as ArrayBuffer
-      : message.data;
+    const data =
+      message.data instanceof Uint8Array
+        ? (message.data.buffer.slice(
+            message.data.byteOffset,
+            message.data.byteOffset + message.data.byteLength
+          ) as ArrayBuffer)
+        : message.data;
     instance.runtime.fetch.dispatchWebSocketMessage(message.connectionId, data);
     sendOk(connection.socket, message.requestId);
   } catch (err) {
@@ -1678,7 +1856,11 @@ async function handleWsClose(
   instance.lastActivity = Date.now();
 
   try {
-    instance.runtime.fetch.dispatchWebSocketClose(message.connectionId, message.code, message.reason);
+    instance.runtime.fetch.dispatchWebSocketClose(
+      message.connectionId,
+      message.code,
+      message.reason
+    );
     sendOk(connection.socket, message.requestId);
   } catch (err) {
     const error = err as Error;
@@ -1723,13 +1905,17 @@ function handleClientEvent(
     case ClientEvents.WS_CLIENT_MESSAGE: {
       const payload = message.payload as WsClientMessagePayload;
       // Convert Uint8Array to ArrayBuffer if needed
-      const data = payload.data instanceof Uint8Array
-        ? payload.data.buffer.slice(
-            payload.data.byteOffset,
-            payload.data.byteOffset + payload.data.byteLength
-          ) as ArrayBuffer
-        : payload.data;
-      instance.runtime.fetch.dispatchClientWebSocketMessage(payload.socketId, data);
+      const data =
+        payload.data instanceof Uint8Array
+          ? (payload.data.buffer.slice(
+              payload.data.byteOffset,
+              payload.data.byteOffset + payload.data.byteLength
+            ) as ArrayBuffer)
+          : payload.data;
+      instance.runtime.fetch.dispatchClientWebSocketMessage(
+        payload.socketId,
+        data
+      );
       break;
     }
     case ClientEvents.WS_CLIENT_CLOSED: {
@@ -1893,7 +2079,10 @@ async function handleFetchWsError(
   instance.lastActivity = Date.now();
 
   try {
-    instance.runtime.fetch.dispatchWebSocketError(message.connectionId, new Error(message.error));
+    instance.runtime.fetch.dispatchWebSocketError(
+      message.connectionId,
+      new Error(message.error)
+    );
     sendOk(connection.socket, message.requestId);
   } catch (err) {
     const error = err as Error;
@@ -2128,7 +2317,7 @@ function handleCallbackResponse(
 async function invokeClientCallback(
   connection: ConnectionState,
   callbackId: number,
-  args: unknown[],
+  args: unknown[]
 ): Promise<unknown> {
   const requestId = connection.nextCallbackId++;
 
@@ -2158,7 +2347,10 @@ async function invokeClientCallback(
 /**
  * Handle STREAM_PUSH message (client uploading body chunks).
  */
-function handleStreamPush(message: StreamPush, connection: ConnectionState): void {
+function handleStreamPush(
+  message: StreamPush,
+  connection: ConnectionState
+): void {
   const receiver = connection.streamReceivers.get(message.streamId);
   if (!receiver) {
     sendMessage(connection.socket, {
@@ -2183,7 +2375,10 @@ function handleStreamPush(message: StreamPush, connection: ConnectionState): voi
 /**
  * Handle STREAM_PULL message (client granting credit for response streaming).
  */
-function handleStreamPull(message: StreamPull, connection: ConnectionState): void {
+function handleStreamPull(
+  message: StreamPull,
+  connection: ConnectionState
+): void {
   const session = connection.activeStreams.get(message.streamId);
   if (!session) {
     return; // Stream may have completed
@@ -2201,14 +2396,20 @@ function handleStreamPull(message: StreamPull, connection: ConnectionState): voi
 /**
  * Handle STREAM_CLOSE message (client signaling end of upload).
  */
-function handleStreamClose(message: StreamClose, connection: ConnectionState): void {
+function handleStreamClose(
+  message: StreamClose,
+  connection: ConnectionState
+): void {
   const receiver = connection.streamReceivers.get(message.streamId);
   if (!receiver) {
     return;
   }
 
   // Concatenate all chunks and resolve
-  const totalLength = receiver.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const totalLength = receiver.chunks.reduce(
+    (sum, chunk) => sum + chunk.length,
+    0
+  );
   const body = new Uint8Array(totalLength);
   let offset = 0;
   for (const chunk of receiver.chunks) {
@@ -2223,7 +2424,10 @@ function handleStreamClose(message: StreamClose, connection: ConnectionState): v
 /**
  * Handle STREAM_ERROR message (client signaling upload error).
  */
-function handleStreamError(message: StreamError, connection: ConnectionState): void {
+function handleStreamError(
+  message: StreamError,
+  connection: ConnectionState
+): void {
   const receiver = connection.streamReceivers.get(message.streamId);
   if (receiver) {
     receiver.reject(new Error(message.error));
@@ -2237,7 +2441,9 @@ function handleStreamError(message: StreamError, connection: ConnectionState): v
   }
 
   // Also handle callback stream receivers
-  const callbackReceiver = connection.callbackStreamReceivers.get(message.streamId);
+  const callbackReceiver = connection.callbackStreamReceivers.get(
+    message.streamId
+  );
   if (callbackReceiver && callbackReceiver.state === "active") {
     callbackReceiver.state = "errored";
     callbackReceiver.error = new Error(message.error);
@@ -2431,7 +2637,9 @@ function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
 /**
  * Wait for credit to become available on a stream session.
  */
-function waitForCredit(session: import("./types.ts").StreamSession): Promise<void> {
+function waitForCredit(
+  session: import("./types.ts").StreamSession
+): Promise<void> {
   return new Promise((resolve) => {
     session.creditResolver = resolve;
   });

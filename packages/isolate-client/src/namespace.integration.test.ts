@@ -100,6 +100,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             return {
               code: `export const value = "cached";`,
               resolveDir: importer.resolveDir,
+              filename: "cached-module",
+              format: "esm",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -124,12 +126,21 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             }
           },
         },
-        moduleLoader: async (moduleName: string, importer) => {
+        moduleLoader: async (
+          moduleName: string,
+          importer: {
+            path: string;
+            resolveDir: string;
+            format: "cjs" | "esm" | "json"
+          }
+        ) => {
           loadCount++;
           if (moduleName === "@/cached-module") {
             return {
               code: `export const value = "cached";`,
               resolveDir: importer.resolveDir,
+              filename: "cached-module",
+              format: "esm",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -146,7 +157,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
 
         // Module loader is called again on reuse (cache cleared to avoid stale transitive deps)
         assert.strictEqual(loadCount, 2);
-        assert.ok(logs1.some((l) => l.includes("module value:") && l.includes("cached")));
+        assert.ok(
+          logs1.some((l) => l.includes("module value:") && l.includes("cached"))
+        );
       } finally {
         await runtime2.dispose();
       }
@@ -170,6 +183,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             return {
               code: `export const version = 1;`,
               resolveDir: importer.resolveDir,
+              filename: "config",
+              format: "esm",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -198,6 +213,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             return {
               code: `export const version = 2;`,
               resolveDir: importer.resolveDir,
+              filename: "config",
+              format: "esm",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -223,17 +240,27 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       const namespace = client.createNamespace("transitive-dep-change-1");
       let configVersion = 1;
 
-      const moduleLoader = async (moduleName: string, importer: { resolveDir: string }) => {
+      const moduleLoader = async (
+        moduleName: string,
+        importer: {
+          resolveDir: string;
+          format?: "cjs" | "esm" | "json";
+        }
+      ) => {
         if (moduleName === "@/utils") {
           return {
             code: `import { version } from "@/config"; export const getVersion = () => version;`,
             resolveDir: importer.resolveDir,
+            filename: "utils",
+            format: "esm" as const,
           };
         }
         if (moduleName === "@/config") {
           return {
             code: `export const version = ${configVersion};`,
             resolveDir: importer.resolveDir,
+            filename: "config",
+            format: "esm" as const,
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -311,7 +338,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             return {
               code: `export const chunk = (arr, size) => { const r = []; for (let i = 0; i < arr.length; i += size) r.push(arr.slice(i, i + size)); return r; };`,
               resolveDir: importer.resolveDir,
+              filename: "lodash",
               static: true,
+              format: "esm" as const,
             };
           }
           if (moduleName === "@/config") {
@@ -319,6 +348,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             return {
               code: `export const version = 1;`,
               resolveDir: importer.resolveDir,
+              filename: "config",
+              format: "esm" as const,
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -333,7 +364,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       `);
       assert.strictEqual(lodashLoadCount, 1);
       assert.strictEqual(configLoadCount, 1);
-      assert.ok(logs1.some((l) => l.includes("chunk:") && l.includes("[[1,2],[3,4]]")));
+      assert.ok(
+        logs1.some((l) => l.includes("chunk:") && l.includes("[[1,2],[3,4]]"))
+      );
       assert.ok(logs1.some((l) => l.includes("version:") && l.includes("1")));
       await runtime1.dispose();
 
@@ -354,7 +387,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             return {
               code: `export const chunk = (arr, size) => { const r = []; for (let i = 0; i < arr.length; i += size) r.push(arr.slice(i, i + size)); return r; };`,
               resolveDir: importer.resolveDir,
+              filename: "lodash",
               static: true,
+              format: "esm" as const,
             };
           }
           if (moduleName === "@/config") {
@@ -362,6 +397,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             return {
               code: `export const version = 2;`,
               resolveDir: importer.resolveDir,
+              filename: "config",
+              format: "esm" as const,
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -383,7 +420,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         // Dynamic module — loader called again (incremented to 2)
         assert.strictEqual(configLoadCount, 2);
         // Static module still works
-        assert.ok(logs2.some((l) => l.includes("chunk:") && l.includes("[[5,6],[7,8]]")));
+        assert.ok(
+          logs2.some((l) => l.includes("chunk:") && l.includes("[[5,6],[7,8]]"))
+        );
         // Dynamic module picks up new content
         assert.ok(logs2.some((l) => l.includes("version:") && l.includes("2")));
       } finally {
@@ -493,7 +532,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       });
 
       try {
-        await runtime2.eval(`console.log("timerFired:", globalThis.timerFired);`);
+        await runtime2.eval(
+          `console.log("timerFired:", globalThis.timerFired);`
+        );
         // Timer should not have fired
         assert.ok(logs.some((l) => l === "timerFired: false"));
         assert.ok(!logs.some((l) => l === "timer fired!"));
@@ -521,7 +562,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       try {
         const counters2 = await runtime2.console.getCounters();
         // Counter should be reset (either 0 or not exist)
-        assert.ok(!counters2.has("myCounter") || counters2.get("myCounter") === 0);
+        assert.ok(
+          !counters2.has("myCounter") || counters2.get("myCounter") === 0
+        );
       } finally {
         await runtime2.dispose();
       }
@@ -670,6 +713,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             return {
               code: `export const value = "old";`,
               resolveDir: importer.resolveDir,
+              filename: "old-module",
+              format: "esm" as const,
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -692,6 +737,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             return {
               code: `export const value = "new";`,
               resolveDir: importer.resolveDir,
+              filename: "new-module",
+              format: "esm" as const,
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -748,7 +795,10 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         `);
         await runtime2.testEnvironment.runTests();
 
-        assert.ok(events2.length > 0, "Expected second callback to receive test events");
+        assert.ok(
+          events2.length > 0,
+          "Expected second callback to receive test events"
+        );
         assert.strictEqual(
           events1.length,
           events1AfterRun,
@@ -897,7 +947,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           assert.strictEqual(runtime2.reused, true);
           assert.strictEqual(runtime2.id, id1);
 
-          await runtime2.eval(`console.log("crossClientValue:", globalThis.crossClientValue);`);
+          await runtime2.eval(
+            `console.log("crossClientValue:", globalThis.crossClientValue);`
+          );
           assert.ok(logs.some((l) => l === "crossClientValue: shared"));
         } finally {
           await runtime2.dispose();
@@ -938,7 +990,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           assert.strictEqual(runtime2.reused, true);
           assert.strictEqual(runtime2.id, id1);
 
-          await runtime2.eval(`console.log("connectionCloseValue:", globalThis.connectionCloseValue);`);
+          await runtime2.eval(
+            `console.log("connectionCloseValue:", globalThis.connectionCloseValue);`
+          );
           assert.ok(logs.some((l) => l === "connectionCloseValue: persisted"));
         } finally {
           await runtime2.dispose();
@@ -980,16 +1034,24 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         );
 
         const responses = await Promise.all(requests);
-        const payloads = await Promise.all(responses.map((response) => response.json()));
+        const payloads = await Promise.all(
+          responses.map((response) => response.json())
+        );
 
         assert.strictEqual(payloads.length, requestCount);
 
-        const ids = payloads.map((payload: { id: string }) => payload.id).sort();
-        const expectedIds = Array.from({ length: requestCount }, (_, i) => String(i)).sort();
+        const ids = payloads
+          .map((payload: { id: string }) => payload.id)
+          .sort();
+        const expectedIds = Array.from({ length: requestCount }, (_, i) =>
+          String(i)
+        ).sort();
         assert.deepStrictEqual(ids, expectedIds);
 
         assert.ok(
-          payloads.every((payload: { tenant: string }) => payload.tenant === tenantId),
+          payloads.every(
+            (payload: { tenant: string }) => payload.tenant === tenantId
+          ),
           "Expected all responses to match tenant id"
         );
       } finally {
@@ -1038,7 +1100,8 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           result.status === "fulfilled"
       );
       const rejected = results.filter(
-        (result): result is PromiseRejectedResult => result.status === "rejected"
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected"
       );
 
       try {
@@ -1064,7 +1127,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         socketPath: "/tmp/isolate-lru-test.sock",
         maxIsolates: 3,
       });
-      const smallClient = await connect({ socket: "/tmp/isolate-lru-test.sock" });
+      const smallClient = await connect({
+        socket: "/tmp/isolate-lru-test.sock",
+      });
 
       try {
         // Create and dispose 3 namespaced runtimes
@@ -1116,7 +1181,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         socketPath: "/tmp/isolate-lru-active-test.sock",
         maxIsolates: 3,
       });
-      const smallClient = await connect({ socket: "/tmp/isolate-lru-active-test.sock" });
+      const smallClient = await connect({
+        socket: "/tmp/isolate-lru-active-test.sock",
+      });
 
       try {
         // Create 2 active runtimes
@@ -1157,7 +1224,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         socketPath: "/tmp/isolate-lru-full-test.sock",
         maxIsolates: 2,
       });
-      const smallClient = await connect({ socket: "/tmp/isolate-lru-full-test.sock" });
+      const smallClient = await connect({
+        socket: "/tmp/isolate-lru-full-test.sock",
+      });
 
       try {
         // Create 2 active runtimes (at limit)
@@ -1169,12 +1238,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
 
         // Try to create 3rd - should error
         const ns3 = smallClient.createNamespace("full-3");
-        await assert.rejects(
-          async () => {
-            await ns3.createRuntime();
-          },
-          /maximum.*isolates|limit.*reached|no.*disposed.*evict/i
-        );
+        await assert.rejects(async () => {
+          await ns3.createRuntime();
+        }, /maximum.*isolates|limit.*reached|no.*disposed.*evict/i);
 
         await rt1.dispose();
         await rt2.dispose();
@@ -1216,7 +1282,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         assert.strictEqual(rt2.reused, true);
         assert.strictEqual(rt2.id, id1);
 
-        await rt2.eval(`console.log("softDeleteTest:", globalThis.softDeleteTest);`);
+        await rt2.eval(
+          `console.log("softDeleteTest:", globalThis.softDeleteTest);`
+        );
         assert.ok(logs.some((l) => l === "softDeleteTest: survived"));
 
         await rt2.dispose();
@@ -1249,25 +1317,29 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       const runtime1 = await namespace.createRuntime({
         moduleLoader: async (moduleName: string) => {
           if (moduleName === "poisoned-module") {
-            throw new Error("Module is currently being linked by another linker");
+            throw new Error(
+              "Module is currently being linked by another linker"
+            );
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },
       });
 
       const id1 = runtime1.id;
-      await assert.rejects(
-        async () => {
-          await runtime1.eval(`import "poisoned-module";`);
-        },
-        /Module is currently being linked by another linker/
-      );
+      await assert.rejects(async () => {
+        await runtime1.eval(`import "poisoned-module";`);
+      }, /Module is currently being linked by another linker/);
       await runtime1.dispose();
 
       const runtime2 = await namespace.createRuntime({
         moduleLoader: async (moduleName: string, importer) => {
           if (moduleName === "poisoned-module") {
-            return { code: `export const ok = true;`, resolveDir: importer.resolveDir };
+            return {
+              code: `export const ok = true;`,
+              resolveDir: importer.resolveDir,
+              filename: "poisoned-module",
+              format: "esm" as const,
+            };
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },
@@ -1288,18 +1360,17 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       const rt1 = await ns1.createRuntime({
         moduleLoader: async (moduleName: string) => {
           if (moduleName === "poisoned-module") {
-            throw new Error("Module is currently being linked by another linker");
+            throw new Error(
+              "Module is currently being linked by another linker"
+            );
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },
       });
       const id1 = rt1.id;
-      await assert.rejects(
-        async () => {
-          await rt1.eval(`import "poisoned-module";`);
-        },
-        /Module is currently being linked by another linker/
-      );
+      await assert.rejects(async () => {
+        await rt1.eval(`import "poisoned-module";`);
+      }, /Module is currently being linked by another linker/);
       await client1.close();
 
       const client2 = await connect({ socket: TEST_SOCKET });
@@ -1401,7 +1472,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       });
       try {
         assert.strictEqual(runtime2.reused, true);
-        await runtime2.eval(`console.log("specialTest:", globalThis.specialTest);`);
+        await runtime2.eval(
+          `console.log("specialTest:", globalThis.specialTest);`
+        );
         assert.ok(logs.some((l) => l === "specialTest: works"));
       } finally {
         await runtime2.dispose();
@@ -1435,7 +1508,9 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       });
 
       try {
-        await finalRuntime.eval(`console.log("cycleCount:", globalThis.cycleCount);`);
+        await finalRuntime.eval(
+          `console.log("cycleCount:", globalThis.cycleCount);`
+        );
         assert.ok(logs.some((l) => l === "cycleCount: 10"));
       } finally {
         await finalRuntime.dispose();

@@ -116,34 +116,38 @@ describe("isolate-client integration", () => {
     }
   });
 
-  it("should create multiple runtimes concurrently", { timeout: 10000 }, async () => {
-    const count = 15;
-    const results = await Promise.allSettled(
-      Array.from({ length: count }, () => client.createRuntime())
-    );
-
-    const rejected = results.filter((result) => result.status === "rejected");
-    if (rejected.length > 0) {
-      assert.fail(
-        `Expected all runtimes to be created, but ${rejected.length} failed`
+  it(
+    "should create multiple runtimes concurrently",
+    { timeout: 10000 },
+    async () => {
+      const count = 15;
+      const results = await Promise.allSettled(
+        Array.from({ length: count }, () => client.createRuntime())
       );
-    }
 
-    const runtimes = results
-      .filter(
-        (result): result is PromiseFulfilledResult<RemoteRuntime> =>
-          result.status === "fulfilled"
-      )
-      .map((result) => result.value);
+      const rejected = results.filter((result) => result.status === "rejected");
+      if (rejected.length > 0) {
+        assert.fail(
+          `Expected all runtimes to be created, but ${rejected.length} failed`
+        );
+      }
 
-    try {
-      assert.strictEqual(runtimes.length, count);
-      const ids = new Set(runtimes.map((runtime) => runtime.id));
-      assert.strictEqual(ids.size, count);
-    } finally {
-      await Promise.all(runtimes.map((runtime) => runtime.dispose()));
+      const runtimes = results
+        .filter(
+          (result): result is PromiseFulfilledResult<RemoteRuntime> =>
+            result.status === "fulfilled"
+        )
+        .map((result) => result.value);
+
+      try {
+        assert.strictEqual(runtimes.length, count);
+        const ids = new Set(runtimes.map((runtime) => runtime.id));
+        assert.strictEqual(ids.size, count);
+      } finally {
+        await Promise.all(runtimes.map((runtime) => runtime.dispose()));
+      }
     }
-  });
+  );
 
   it("should dispatch HTTP requests", async () => {
     const runtime = await client.createRuntime();
@@ -253,7 +257,9 @@ describe("isolate-client integration", () => {
         });
       `);
 
-      await runtime.fetch.dispatchRequest(new Request("http://localhost/trigger"));
+      await runtime.fetch.dispatchRequest(
+        new Request("http://localhost/trigger")
+      );
 
       // The URL should preserve the %3A encoding, not decode it to ':'
       assert.strictEqual(
@@ -612,7 +618,7 @@ describe("isolate-client integration", () => {
             calls.push({ name: "hashPassword", args: [password] });
             return `hashed:${password}`;
           },
-          type: 'async',
+          type: "async",
         },
         queryDatabase: {
           fn: async (...args) => {
@@ -623,7 +629,7 @@ describe("isolate-client integration", () => {
               { id: 2, name: "Bob" },
             ];
           },
-          type: 'async',
+          type: "async",
         },
       },
     });
@@ -674,11 +680,11 @@ describe("isolate-client integration", () => {
       customFunctions: {
         getConfig: {
           fn: () => ({ apiKey: "sk-test", environment: "testing" }),
-          type: 'sync',
+          type: "sync",
         },
         formatDate: {
           fn: (...args) => new Date(args[0] as number).toISOString(),
-          type: 'sync',
+          type: "sync",
         },
       },
     });
@@ -717,7 +723,7 @@ describe("isolate-client integration", () => {
           fn: async () => {
             throw new Error("Custom function error");
           },
-          type: 'async',
+          type: "async",
         },
       },
     });
@@ -753,12 +759,12 @@ describe("isolate-client integration", () => {
       customFunctions: {
         sum: {
           fn: async (...args) => (args as number[]).reduce((a, b) => a + b, 0),
-          type: 'async',
+          type: "async",
         },
         concat: {
           fn: async (...args) =>
             (args[0] as string) + (args[1] as string) + (args[2] as string),
-          type: 'async',
+          type: "async",
         },
       },
     });
@@ -809,7 +815,7 @@ describe("isolate-client integration", () => {
             calls.push(`greet:${name}`);
             return `Hello, ${name}!`;
           },
-          type: 'async',
+          type: "async",
         },
         add: {
           fn: async (...args) => {
@@ -818,7 +824,7 @@ describe("isolate-client integration", () => {
             calls.push(`add:${a}+${b}`);
             return a + b;
           },
-          type: 'async',
+          type: "async",
         },
       },
     });
@@ -860,7 +866,7 @@ describe("isolate-client integration", () => {
             calls.push(`greet:${name}`);
             return `Hello, ${name}!`;
           },
-          type: 'sync',
+          type: "sync",
         },
         add: {
           fn: (...args) => {
@@ -869,7 +875,7 @@ describe("isolate-client integration", () => {
             calls.push(`add:${a}+${b}`);
             return a + b;
           },
-          type: 'sync',
+          type: "sync",
         },
       },
     });
@@ -912,6 +918,8 @@ describe("isolate-client integration", () => {
             export function multiply(a, b) { return a * b; }
           `,
             resolveDir: importer.resolveDir,
+            format: "esm",
+            filename: "utils",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -951,6 +959,8 @@ describe("isolate-client integration", () => {
             export function square(x) { return x * x; }
           `,
             resolveDir: importer.resolveDir,
+            format: "esm",
+            filename: "math",
           };
         }
         if (moduleName === "@/calc") {
@@ -962,6 +972,8 @@ describe("isolate-client integration", () => {
             }
           `,
             resolveDir: importer.resolveDir,
+            format: "esm",
+            filename: "calc",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -998,6 +1010,8 @@ describe("isolate-client integration", () => {
           return {
             code: `export const value = ${loadCount};`,
             resolveDir: importer.resolveDir,
+            format: "esm",
+            filename: "counter",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -1065,7 +1079,9 @@ describe("isolate-client integration", () => {
           await runtime.eval(`import { foo } from "@/bad-module";`);
         },
         (err: Error) => {
-          assert.ok(err.message.includes("Invalid module specifier: @/bad-module"));
+          assert.ok(
+            err.message.includes("Invalid module specifier: @/bad-module")
+          );
           return true;
         }
       );
@@ -1081,6 +1097,8 @@ describe("isolate-client integration", () => {
           return {
             code: `import { child } from "@/child"; export const parent = child;`,
             resolveDir: importer.resolveDir,
+            format: "esm" as const,
+            filename: "parent",
           };
         }
         if (moduleName === "@/child") {
@@ -1091,12 +1109,9 @@ describe("isolate-client integration", () => {
     });
 
     try {
-      await assert.rejects(
-        async () => {
-          await runtime.eval(`import { parent } from "@/parent";`);
-        },
-        /Failed to load child module/
-      );
+      await assert.rejects(async () => {
+        await runtime.eval(`import { parent } from "@/parent";`);
+      }, /Failed to load child module/);
     } finally {
       await runtime.dispose();
     }
@@ -1112,12 +1127,9 @@ describe("isolate-client integration", () => {
     });
 
     try {
-      await assert.rejects(
-        async () => {
-          await runtime.eval(`import { foo } from "@/async-fail";`);
-        },
-        /Async load failed: @\/async-fail/
-      );
+      await assert.rejects(async () => {
+        await runtime.eval(`import { foo } from "@/async-fail";`);
+      }, /Async load failed: @\/async-fail/);
     } finally {
       await runtime.dispose();
     }
@@ -1133,6 +1145,8 @@ describe("isolate-client integration", () => {
           return {
             code: `export const value = 42;`,
             resolveDir: importer.resolveDir,
+            format: "esm" as const,
+            filename: "test",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -1159,12 +1173,16 @@ describe("isolate-client integration", () => {
           return {
             code: `import { b } from "@/moduleB"; export const a = b + 1;`,
             resolveDir: "/modules",
+            format: "esm" as const,
+            filename: "moduleA",
           };
         }
         if (moduleName === "@/moduleB") {
           return {
             code: `export const b = 10;`,
             resolveDir: "/modules",
+            format: "esm" as const,
+            filename: "moduleB",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -1213,9 +1231,16 @@ describe("isolate-client integration", () => {
 
         const code = files[resolvedPath];
         if (!code) {
-          throw new Error(`Module not found: ${specifier} (resolved to ${resolvedPath})`);
+          throw new Error(
+            `Module not found: ${specifier} (resolved to ${resolvedPath})`
+          );
         }
-        return { code, resolveDir: path.posix.dirname(resolvedPath) };
+        return {
+          code,
+          resolveDir: path.posix.dirname(resolvedPath),
+          format: "esm" as const,
+          filename: path.posix.basename(resolvedPath),
+        };
       },
     });
 
@@ -1257,7 +1282,7 @@ describe("isolate-client integration", () => {
             }
             return users;
           },
-          type: 'async',
+          type: "async",
         },
       },
     });
@@ -1310,6 +1335,8 @@ describe("isolate-client integration", () => {
             }
           `,
             resolveDir: importer.resolveDir,
+            format: "esm" as const,
+            filename: "logger",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -1849,7 +1876,7 @@ describe("isolate-client integration", () => {
             fn: async function* () {
               yield { type: "delta", text: "Hello" };
               // Simulate delay between chunks
-              await new Promise(r => setTimeout(r, 10));
+              await new Promise((r) => setTimeout(r, 10));
               yield { type: "delta", text: " World" };
               yield { type: "done" };
             },
@@ -2006,9 +2033,9 @@ describe("isolate-client integration", () => {
           delayedChunks: {
             type: "asyncIterator" as const,
             fn: async function* () {
-              await new Promise(r => setTimeout(r, 50));
+              await new Promise((r) => setTimeout(r, 50));
               yield "delayed1";
-              await new Promise(r => setTimeout(r, 50));
+              await new Promise((r) => setTimeout(r, 50));
               yield "delayed2";
             },
           },
@@ -2069,7 +2096,11 @@ describe("isolate-client integration", () => {
               yield { type: "text-delta", textDelta: "Hello" };
               yield { type: "text-delta", textDelta: " " };
               yield { type: "text-delta", textDelta: "World" };
-              yield { type: "finish", finishReason: "stop", usage: { promptTokens: 10, completionTokens: 5 } };
+              yield {
+                type: "finish",
+                finishReason: "stop",
+                usage: { promptTokens: 10, completionTokens: 5 },
+              };
             },
           },
         },
@@ -2192,7 +2223,10 @@ describe("isolate-client integration", () => {
 
         assert.deepStrictEqual(result.chunks, ["Hello", " ", "World"]);
         assert.strictEqual(result.text, "Hello World");
-        assert.deepStrictEqual(result.usage, { promptTokens: 10, completionTokens: 5 });
+        assert.deepStrictEqual(result.usage, {
+          promptTokens: 10,
+          completionTokens: 5,
+        });
       } finally {
         await runtime.dispose();
       }
@@ -2271,7 +2305,11 @@ describe("isolate-client integration", () => {
         assert.strictEqual(result.readerCancelError, null);
         // stream.cancel() should reject when locked
         assert.strictEqual(result.streamCancelRejected, true);
-        assert.ok(result.streamCancelError.includes("Cannot cancel a stream that has a reader"));
+        assert.ok(
+          result.streamCancelError.includes(
+            "Cannot cancel a stream that has a reader"
+          )
+        );
       } finally {
         await runtime.dispose();
       }

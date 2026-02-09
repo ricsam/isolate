@@ -142,7 +142,8 @@ describe("@ricsam/isolate-transform", () => {
     test("strips TypeScript types from module code", async () => {
       const result = await transformModuleCode(
         "export const x: number = 42;",
-        "/mod.ts"
+        "/mod.ts",
+        "esm"
       );
       assert.ok(result.code.includes("export const x"));
       assert.ok(result.code.includes("= 42;"));
@@ -152,7 +153,8 @@ describe("@ricsam/isolate-transform", () => {
     test("preserves imports in module code", async () => {
       const result = await transformModuleCode(
         'import { foo } from "./bar";\nexport const x = foo + 1;',
-        "/mod.ts"
+        "/mod.ts",
+        "esm"
       );
       assert.ok(result.code.includes('import { foo } from "./bar";'));
       assert.ok(result.code.includes("export const x = foo + 1;"));
@@ -161,7 +163,8 @@ describe("@ricsam/isolate-transform", () => {
     test("does not wrap module code", async () => {
       const result = await transformModuleCode(
         "export const x = 42;",
-        "/mod.ts"
+        "/mod.ts",
+        "esm"
       );
       assert.ok(!result.code.includes("export default async function"));
     });
@@ -169,7 +172,8 @@ describe("@ricsam/isolate-transform", () => {
     test("produces source map for module code", async () => {
       const result = await transformModuleCode(
         "const x: number = 42;",
-        "/mod.ts"
+        "/mod.ts",
+        "esm"
       );
       assert.ok(result.sourceMap);
     });
@@ -177,7 +181,8 @@ describe("@ricsam/isolate-transform", () => {
     test("rewrites dynamic import() in module code", async () => {
       const result = await transformModuleCode(
         'export const x = await import("./dep");',
-        "/mod.ts"
+        "/mod.ts",
+        "esm"
       );
       assert.ok(result.code.includes('__dynamicImport("./dep", "/mod.ts")'));
       assert.ok(!result.code.includes('import("./dep")'));
@@ -186,7 +191,8 @@ describe("@ricsam/isolate-transform", () => {
     test("rewrites require() in module code", async () => {
       const result = await transformModuleCode(
         'export const x = require("./dep");',
-        "/mod.ts"
+        "/mod.ts",
+        "esm"
       );
       assert.ok(result.code.includes('__require("./dep", "/mod.ts")'));
       assert.ok(!result.code.includes('require("./dep")'));
@@ -195,7 +201,8 @@ describe("@ricsam/isolate-transform", () => {
     test("converts CJS exports.NAME to ESM named exports", async () => {
       const result = await transformModuleCode(
         `'use strict';\nfunction foo() { return 1; }\nexports.foo = foo;`,
-        "/mod.cjs"
+        "/mod.cjs",
+        "cjs"
       );
       assert.ok(result.code.includes("var __cjs_module = { exports: {} }"));
       assert.ok(result.code.includes("(function(module, exports) {"));
@@ -206,7 +213,8 @@ describe("@ricsam/isolate-transform", () => {
     test("converts CJS module.exports object to ESM default export", async () => {
       const result = await transformModuleCode(
         `module.exports = { hello: "world" };`,
-        "/mod.cjs"
+        "/mod.cjs",
+        "cjs"
       );
       assert.ok(result.code.includes("var __cjs_module = { exports: {} }"));
       assert.ok(result.code.includes("export default __cjs_module.exports;"));
@@ -215,16 +223,18 @@ describe("@ricsam/isolate-transform", () => {
     test("converts CJS with multiple exports.NAME assignments", async () => {
       const result = await transformModuleCode(
         `exports.greet = (name) => "Hello, " + name;\nexports.farewell = (name) => "Bye, " + name;`,
-        "/mod.cjs"
+        "/mod.cjs",
+        "cjs"
       );
       assert.ok(result.code.includes("export var greet = __cjs_module.exports.greet;"));
       assert.ok(result.code.includes("export var farewell = __cjs_module.exports.farewell;"));
     });
 
-    test("does NOT treat ESM with export keyword as CJS", async () => {
+    test("ESM format does not wrap in CJS IIFE", async () => {
       const result = await transformModuleCode(
         `export const foo = 1;`,
-        "/mod.ts"
+        "/mod.ts",
+        "esm"
       );
       assert.ok(result.code.includes("export const foo = 1;"));
       assert.ok(!result.code.includes("__cjs_module"));
@@ -232,7 +242,7 @@ describe("@ricsam/isolate-transform", () => {
 
     test("CJS code with exports.NAME pattern like better-auth", async () => {
       const code = `'use strict';\nfunction createRandomStringGenerator() { return () => "random"; }\nexports.createRandomStringGenerator = createRandomStringGenerator;`;
-      const result = await transformModuleCode(code, "/random.cjs");
+      const result = await transformModuleCode(code, "/random.cjs", "cjs");
       assert.ok(result.code.includes("export var createRandomStringGenerator = __cjs_module.exports.createRandomStringGenerator;"));
       assert.ok(result.code.includes("export default __cjs_module.exports;"));
     });
@@ -240,7 +250,8 @@ describe("@ricsam/isolate-transform", () => {
     test("CJS skips 'default' and '__esModule' in named exports", async () => {
       const result = await transformModuleCode(
         `Object.defineProperty(exports, "__esModule", { value: true });\nexports.z = {};\nexports.default = exports.z;`,
-        "/mod.cjs"
+        "/mod.cjs",
+        "cjs"
       );
       assert.ok(result.code.includes("export var z = __cjs_module.exports.z;"));
       assert.ok(!result.code.includes("export var default"));
@@ -248,13 +259,131 @@ describe("@ricsam/isolate-transform", () => {
       assert.ok(result.code.includes("export default __cjs_module.exports;"));
     });
 
+    test("CJS skips reserved words like 'null' in named exports", async () => {
+      const result = await transformModuleCode(
+        `exports.string = {};\nexports.null = {};\nexports.undefined = {};\nexports.void = {};`,
+        "/mod.cjs",
+        "cjs"
+      );
+      assert.ok(result.code.includes("export var string = __cjs_module.exports.string;"));
+      assert.ok(!result.code.includes("export var null"));
+      assert.ok(!result.code.includes("export var undefined"));
+      assert.ok(!result.code.includes("export var void"));
+      // Reserved words are still accessible via default export
+      assert.ok(result.code.includes("export default __cjs_module.exports;"));
+    });
+
     test("CJS conversion rewrites require() calls", async () => {
       const result = await transformModuleCode(
         `const dep = require("./dep");\nexports.value = dep.value;`,
-        "/mod.cjs"
+        "/mod.cjs",
+        "cjs"
       );
       assert.ok(result.code.includes('__require("./dep", "/mod.cjs")'));
       assert.ok(result.code.includes("export var value = __cjs_module.exports.value;"));
+    });
+
+    test("format: 'cjs' forces CJS conversion even without CJS patterns", async () => {
+      const result = await transformModuleCode(
+        `const x = 42;`,
+        "/mod.js",
+        "cjs"
+      );
+      assert.ok(result.code.includes("var __cjs_module = { exports: {} }"));
+      assert.ok(result.code.includes("export default __cjs_module.exports;"));
+    });
+
+    test("format: 'esm' skips CJS conversion even with CJS patterns", async () => {
+      const result = await transformModuleCode(
+        `module.exports = { x: 1 };`,
+        "/mod.js",
+        "esm"
+      );
+      assert.ok(!result.code.includes("__cjs_module"));
+      assert.ok(result.code.includes("module.exports = { x: 1 }"));
+    });
+
+    test("JSON format wraps in export default", async () => {
+      const result = await transformModuleCode(
+        '{"name":"test","version":"1.0.0"}',
+        "/package.json",
+        "json"
+      );
+      assert.strictEqual(result.code, 'export default {"name":"test","version":"1.0.0"};');
+      assert.strictEqual(result.sourceMap, undefined);
+    });
+
+    test("JSON format handles arrays", async () => {
+      const result = await transformModuleCode(
+        '[1, 2, 3]',
+        "/data.json",
+        "json"
+      );
+      assert.strictEqual(result.code, 'export default [1, 2, 3];');
+    });
+
+    test("JSON format handles strings", async () => {
+      const result = await transformModuleCode(
+        '"hello"',
+        "/data.json",
+        "json"
+      );
+      assert.strictEqual(result.code, 'export default "hello";');
+    });
+
+    test("JSON format handles numbers", async () => {
+      const result = await transformModuleCode(
+        '42',
+        "/data.json",
+        "json"
+      );
+      assert.strictEqual(result.code, 'export default 42;');
+    });
+
+    test("JSON format handles nested structures", async () => {
+      const json = '{"a":{"b":[1,2,3]},"c":null}';
+      const result = await transformModuleCode(json, "/nested.json", "json");
+      assert.strictEqual(result.code, 'export default {"a":{"b":[1,2,3]},"c":null};');
+    });
+
+    test("__exportStar(require('./sub'), exports) generates export * from", async () => {
+      const result = await transformModuleCode(
+        `'use strict';\n__exportStar(require("./kysely.js"), exports);\n__exportStar(require("./query-creator.js"), exports);`,
+        "/mod.cjs",
+        "cjs"
+      );
+      assert.ok(result.code.includes('export * from "./kysely.js"'));
+      assert.ok(result.code.includes('export * from "./query-creator.js"'));
+      assert.ok(!result.code.includes("__exportStar"));
+    });
+
+    test("tslib.__exportStar variant", async () => {
+      const result = await transformModuleCode(
+        `'use strict';\nconst tslib = require("tslib");\ntslib.__exportStar(require("./sub"), exports);`,
+        "/mod.cjs",
+        "cjs"
+      );
+      assert.ok(result.code.includes('export * from "./sub"'));
+      assert.ok(!result.code.includes("tslib.__exportStar"));
+    });
+
+    test("(0, tslib_1.__exportStar) variant", async () => {
+      const result = await transformModuleCode(
+        `'use strict';\n(0, tslib_1.__exportStar)(require("./sub"), exports);`,
+        "/mod.cjs",
+        "cjs"
+      );
+      assert.ok(result.code.includes('export * from "./sub"'));
+    });
+
+    test("mixed exports.NAME and __exportStar", async () => {
+      const result = await transformModuleCode(
+        `'use strict';\nexports.localThing = 42;\n__exportStar(require("./sub"), exports);`,
+        "/mod.cjs",
+        "cjs"
+      );
+      assert.ok(result.code.includes("export var localThing = __cjs_module.exports.localThing;"));
+      assert.ok(result.code.includes('export * from "./sub"'));
     });
   });
 
@@ -362,6 +491,32 @@ describe("@ricsam/isolate-transform", () => {
       assert.ok(result.includes("...__reexport_star_"));
       assert.ok(result.includes('"foo": __reexport_0["foo"]'));
       assert.ok(result.includes("local"));
+    });
+
+    test("JSON format produces eval-able IIFE (async)", async () => {
+      const result = await transformModuleCodeAsScript(
+        '{"name":"test"}',
+        "/package.json",
+        "async",
+        "json"
+      );
+      assert.strictEqual(result, '(function() { return {"name":"test"}; })()');
+    });
+
+    test("JSON format produces eval-able IIFE (sync)", async () => {
+      const result = await transformModuleCodeAsScript(
+        '[1,2,3]',
+        "/data.json",
+        "sync",
+        "json"
+      );
+      assert.strictEqual(result, '(function() { return [1,2,3]; })()');
+    });
+
+    test("JSON format ignores mode (no imports to resolve)", async () => {
+      const asyncResult = await transformModuleCodeAsScript('42', "/num.json", "async", "json");
+      const syncResult = await transformModuleCodeAsScript('42', "/num.json", "sync", "json");
+      assert.strictEqual(asyncResult, syncResult);
     });
 
     test("CJS fallback when no exports", async () => {

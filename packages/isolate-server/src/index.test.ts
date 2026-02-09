@@ -19,6 +19,8 @@ function createRuntimeOptions(sourceMap: Map<string, string>): RuntimeOptions {
         return {
           code: direct,
           resolveDir: "/",
+          format: "esm" as const,
+          filename: path.posix.basename(specifier),
         };
       }
 
@@ -29,6 +31,8 @@ function createRuntimeOptions(sourceMap: Map<string, string>): RuntimeOptions {
         return {
           code,
           resolveDir: path.posix.dirname(normalized),
+          format: "esm" as const,
+          filename: path.posix.basename(normalized),
         };
       }
 

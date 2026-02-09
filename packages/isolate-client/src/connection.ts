@@ -72,6 +72,7 @@ import {
   deserializeRequest,
   deserializeResponse,
   type MarshalContext,
+  type ModuleImporter,
 } from "@ricsam/isolate-protocol";
 import {
   getDefaultPlaywrightHandlerMetadata,
@@ -834,6 +835,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
     options: {
       memoryLimitMB: options.memoryLimitMB,
       cwd: options.cwd,
+      env: options.env,
       callbacks,
       testEnvironment: testEnvironmentOption,
       namespaceId,
@@ -1536,13 +1538,13 @@ function registerModuleLoaderCallback(
 
   state.callbacks.set(callbackId, async (moduleName: unknown, importer: unknown) => {
     const specifier = moduleName as string;
-    const importerInfo = importer as { path: string; resolveDir: string };
+    const importerInfo = importer as ModuleImporter;
 
-    // Call user's module loader - returns { code, resolveDir }
+    // Call user's module loader - returns { code, resolveDir, filename }
     const result = await callback(specifier, importerInfo);
 
-    // Cache using resolved path
-    const resolvedPath = path.posix.join(result.resolveDir, path.posix.basename(specifier));
+    // Cache using resolved path (resolveDir + filename)
+    const resolvedPath = path.posix.join(result.resolveDir, result.filename);
     state.moduleSourceCache.set(resolvedPath, result.code);
 
     return result;

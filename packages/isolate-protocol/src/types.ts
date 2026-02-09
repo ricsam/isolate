@@ -67,8 +67,8 @@ export const MessageType = {
   STREAM_ERROR: 0xa3,
 
   // Bidirectional: Generic events
-  ISOLATE_EVENT: 0xc0,  // daemon → client
-  CLIENT_EVENT: 0xc1,   // client → daemon
+  ISOLATE_EVENT: 0xc0, // daemon → client
+  CLIENT_EVENT: 0xc1, // client → daemon
 
   // Heartbeat
   PING: 0xf0,
@@ -126,7 +126,7 @@ export interface BaseMessage {
 // ============================================================================
 
 /** Custom function type indicator */
-export type CustomFunctionType = 'sync' | 'async' | 'asyncIterator';
+export type CustomFunctionType = "sync" | "async" | "asyncIterator";
 
 export interface CallbackRegistration {
   /** Unique ID for this callback */
@@ -288,6 +288,8 @@ export interface CreateRuntimeRequest extends BaseMessage {
     callbacks?: RuntimeCallbackRegistrations;
     /** Current working directory for path.resolve(). Defaults to "/" */
     cwd?: string;
+    /** Environment variables exposed as process.env */
+    env?: Record<string, string | undefined>;
     /** Enable test environment (describe, it, expect, etc.) */
     testEnvironment?: boolean | TestEnvironmentOptionsProtocol;
     /** Namespace ID for runtime pooling/reuse. If provided, runtime will be cached on dispose. */
@@ -755,6 +757,13 @@ export type Message = ClientMessage | DaemonMessage;
 // Shared Types (used by both isolate-runtime and isolate-client)
 // ============================================================================
 
+export type ModuleImporter = {
+  path: string;
+  resolveDir: string;
+  format: "cjs" | "esm" | "json";
+  importStack: string[];
+};
+
 /**
  * Module loader callback type.
  * Called when the isolate imports a module dynamically.
@@ -767,26 +776,34 @@ export type Message = ClientMessage | DaemonMessage;
  */
 export type ModuleLoaderCallback = (
   moduleName: string,
-  importer: { path: string; resolveDir: string }
+  importer: ModuleImporter
 ) => ModuleLoaderResult | Promise<ModuleLoaderResult>;
 
 export interface ModuleLoaderResult {
   code: string;
+  /** The filename for this module (basename only, no slashes). Combined with resolveDir to form the full path. */
+  filename: string;
   resolveDir: string;
   /** Mark as static to preserve across namespace reuse (e.g. node_modules).
    *  Static modules and their transitive deps should all be static. */
   static?: boolean;
+  /** Module format: 'cjs' = CommonJS (module.exports), 'esm' = ES modules (import/export), 'json' = JSON data. */
+  format: "cjs" | "esm" | "json";
 }
 
 /**
  * A custom function that can be called from within the isolate.
  */
-export type CustomFunction<T extends any[] = unknown[]> = (...args: T) => unknown | Promise<unknown>;
+export type CustomFunction<T extends any[] = unknown[]> = (
+  ...args: T
+) => unknown | Promise<unknown>;
 
 /**
  * An async generator function that can be consumed in the isolate via for await...of.
  */
-export type CustomAsyncGeneratorFunction<T extends any[] = unknown[]> = (...args: T) => AsyncGenerator<unknown, unknown, unknown>;
+export type CustomAsyncGeneratorFunction<T extends any[] = unknown[]> = (
+  ...args: T
+) => AsyncGenerator<unknown, unknown, unknown>;
 
 /**
  * Custom function definition with metadata.
@@ -828,9 +845,11 @@ export interface CustomFunctionDefinition<T extends any[] = unknown[]> {
  * }
  * ```
  */
-export type CustomFunctions<T extends Record<string, any[]> = Record<string, unknown[]>> = {
+export type CustomFunctions<
+  T extends Record<string, any[]> = Record<string, unknown[]>
+> = {
   [K in keyof T]: CustomFunctionDefinition<T[K]>;
-}
+};
 
 /**
  * Console entry types for structured console output.
@@ -901,14 +920,20 @@ export interface FetchRequestInit {
 /**
  * Fetch callback type.
  */
-export type FetchCallback = (url: string, init: FetchRequestInit) => Response | Promise<Response>;
+export type FetchCallback = (
+  url: string,
+  init: FetchRequestInit
+) => Response | Promise<Response>;
 
 /**
  * WebSocket callback type.
  * Called when isolate code creates an outbound WebSocket connection.
  * Return a WebSocket to proxy the connection, or null to block it.
  */
-export type WebSocketCallback = (url: string, protocols: string[]) => WebSocket | Promise<WebSocket | null> | null;
+export type WebSocketCallback = (
+  url: string,
+  protocols: string[]
+) => WebSocket | Promise<WebSocket | null> | null;
 
 /**
  * File system callback handlers.
@@ -985,7 +1010,9 @@ export interface PlaywrightOptions {
  * Base runtime options shared between isolate-client and isolate-runtime.
  * Each package extends this with its own `fs` type.
  */
-export interface BaseRuntimeOptions<T extends Record<string, any[]> = Record<string, unknown[]>> {
+export interface BaseRuntimeOptions<
+  T extends Record<string, any[]> = Record<string, unknown[]>
+> {
   /** Memory limit in megabytes (optional) */
   memoryLimitMB?: number;
   /** Console callback handlers */
@@ -1000,6 +1027,8 @@ export interface BaseRuntimeOptions<T extends Record<string, any[]> = Record<str
   customFunctions?: CustomFunctions<T>;
   /** Current working directory for path.resolve(). Defaults to "/" */
   cwd?: string;
+  /** Environment variables exposed as process.env */
+  env?: Record<string, string | undefined>;
   /** Enable test environment (describe, it, expect, etc.) */
   testEnvironment?: boolean | TestEnvironmentOptions;
   /** Playwright options (handler-first API) */
@@ -1161,7 +1190,7 @@ export function normalizeEntryFilename(filename: string | undefined): string {
   if (filename.startsWith("../")) {
     throw new Error(
       `Invalid entry filename "${filename}": cannot use "../" at the start. ` +
-      `Use an absolute path like "/app.js" or a relative path like "./app.js".`
+        `Use an absolute path like "/app.js" or a relative path like "./app.js".`
     );
   }
 
@@ -1200,7 +1229,7 @@ function normalizePosixPath(p: string, originalFilename: string): string {
   if (p === "") return ".";
 
   const isAbsolute = p.startsWith("/");
-  const segments = p.split("/").filter(s => s !== "" && s !== ".");
+  const segments = p.split("/").filter((s) => s !== "" && s !== ".");
   const result: string[] = [];
   let parentCount = 0; // Track how many .. we've seen at root level
 
@@ -1226,7 +1255,7 @@ function normalizePosixPath(p: string, originalFilename: string): string {
   }
 
   // Count segments before normalization to detect if we went above root
-  const originalSegments = p.split("/").filter(s => s !== "" && s !== ".");
+  const originalSegments = p.split("/").filter((s) => s !== "" && s !== ".");
   let depth = 0;
   for (const segment of originalSegments) {
     if (segment === "..") {
@@ -1242,5 +1271,5 @@ function normalizePosixPath(p: string, originalFilename: string): string {
   }
 
   const normalized = result.join("/");
-  return isAbsolute ? "/" + normalized : (normalized || ".");
+  return isAbsolute ? "/" + normalized : normalized || ".";
 }

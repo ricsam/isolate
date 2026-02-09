@@ -73,12 +73,16 @@ describe("parity conformance", () => {
             return {
               code: `export const add = (a, b) => a + b;`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "math",
             };
           }
           if (moduleName === "@/calc") {
             return {
               code: `import { add } from "@/math"; export const result = add(2, 3);`,
               resolveDir: importer.resolveDir,
+              format: "esm" as const,
+              filename: "calc",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);
@@ -265,6 +269,39 @@ describe("parity conformance", () => {
     } finally {
       await browser.close();
     }
+  });
+
+  it("process.env and process.cwd() parity", async () => {
+    const outcomes: Record<string, string[]> = {};
+
+    for (const adapter of adapters) {
+      const logs: string[] = [];
+      const runtime = await adapter.createRuntime({
+        cwd: "/my/project",
+        env: { NODE_ENV: "test", APP_NAME: "isolate" },
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          console.log(process.cwd());
+          console.log(process.env.NODE_ENV);
+          console.log(process.env.APP_NAME);
+        `);
+        outcomes[adapter.name] = logs;
+      } finally {
+        await runtime.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(outcomes.direct, outcomes.daemon);
+    assert.deepStrictEqual(outcomes.direct, ["/my/project", "test", "isolate"]);
   });
 });
 

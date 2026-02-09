@@ -1,6 +1,16 @@
 import { stripTypeScriptTypes } from "node:module";
 import { createHash } from "node:crypto";
 
+/** JS reserved words that cannot be used as variable names in `export var NAME = ...` */
+const JS_RESERVED_WORDS = new Set([
+  'break', 'case', 'catch', 'continue', 'debugger', 'default', 'delete', 'do',
+  'else', 'finally', 'for', 'function', 'if', 'in', 'instanceof', 'new',
+  'return', 'switch', 'this', 'throw', 'try', 'typeof', 'var', 'void',
+  'while', 'with', 'class', 'const', 'enum', 'export', 'extends', 'import',
+  'super', 'implements', 'interface', 'let', 'package', 'private', 'protected',
+  'public', 'static', 'yield', 'await', 'null', 'true', 'false', 'undefined',
+]);
+
 export interface SourceMap {
   version: number;
   sources: string[];
@@ -181,24 +191,6 @@ export async function transformEntryCode(
  * Transform module code: strip TypeScript types only (no wrapping).
  */
 /**
- * Detect whether code is CommonJS (no ES module syntax, uses module.exports/exports.X).
- * Returns false if code contains any `export` or static `import ... from` statements.
- */
-function isCJS(code: string): boolean {
-  // Quick check: if code has ES export/import keywords, it's ESM
-  // We check for common ES module patterns (avoiding matches inside strings/comments for simplicity)
-  if (/\bexport\s+(default|const|let|var|function|class|async\s+function)\b/.test(code)) return false;
-  if (/\bexport\s*\{/.test(code)) return false;
-  if (/\bexport\s*\*/.test(code)) return false;
-  if (/\bimport\s+.*\s+from\s+/.test(code)) return false;
-  if (/\bimport\s*\{.*\}\s*from\s+/.test(code)) return false;
-  if (/\bimport\s*\*\s*as\s+/.test(code)) return false;
-
-  // Check for CJS patterns
-  return /\bmodule\.exports\b/.test(code) || /\bexports\./.test(code);
-}
-
-/**
  * Extract named export names from CJS code by analyzing exports.NAME = ... patterns.
  * Returns deduplicated list of export names.
  */
@@ -228,14 +220,42 @@ function extractCJSExportNames(code: string): string[] {
 }
 
 /**
+ * Extract `__exportStar(require("./sub"), exports)` patterns from CJS code.
+ * Handles variants: `__exportStar(require(...), exports)`, `tslib.__exportStar(...)`,
+ * `(0, tslib_1.__exportStar)(...)`, etc.
+ * Returns the cleaned code (with those lines removed) and the extracted module specifiers.
+ */
+function extractCJSStarReExports(code: string): { cleaned: string; modules: string[] } {
+  const modules: string[] = [];
+
+  // Match patterns like:
+  //   __exportStar(require("./sub"), exports)
+  //   tslib.__exportStar(require("./sub"), exports)
+  //   (0, tslib_1.__exportStar)(require("./sub"), exports)
+  //   tslib_1.__exportStar(require("./sub"), exports)
+  const pattern = /(?:(?:\(\s*0\s*,\s*[\w$.]+\.__exportStar\s*\))|(?:[\w$.]*__exportStar))\s*\(\s*require\s*\(\s*(['"])([^'"]+)\1\s*\)\s*,\s*exports\s*\)\s*;?/g;
+
+  const cleaned = code.replace(pattern, (_, _quote, specifier) => {
+    modules.push(specifier);
+    return '';
+  });
+
+  return { cleaned, modules };
+}
+
+/**
  * Convert CJS code to an ES module by wrapping in a function scope and adding export declarations.
  * Wraps CJS code in an IIFE to avoid name conflicts between CJS declarations and ES export bindings.
  * Detects `exports.NAME = ...` patterns and generates corresponding named ES exports.
+ * Detects `__exportStar(require("./sub"), exports)` patterns and generates `export * from` statements.
  * Also generates `export default` for the full module.exports object.
  */
 function convertCJSToESModule(code: string, filename: string): string {
-  const names = extractCJSExportNames(code);
-  const rewrittenCode = rewriteDynamicImports(code, filename);
+  // Extract __exportStar patterns BEFORE rewriting require() calls
+  const { cleaned: codeWithoutStarReExports, modules: starReExportModules } = extractCJSStarReExports(code);
+
+  const names = extractCJSExportNames(codeWithoutStarReExports);
+  const rewrittenCode = rewriteDynamicImports(codeWithoutStarReExports, filename);
 
   const parts: string[] = [];
 
@@ -247,24 +267,36 @@ function convertCJSToESModule(code: string, filename: string): string {
   parts.push('})(__cjs_module, __cjs_module.exports);');
 
   // Add named exports extracted from CJS patterns
-  // Skip 'default' (handled by export default below) and '__esModule' (internal CJS marker)
+  // Skip 'default', '__esModule', and JS reserved words (can't be used in `export var`)
   for (const name of names) {
-    if (name === 'default' || name === '__esModule') continue;
+    if (name === 'default' || name === '__esModule' || JS_RESERVED_WORDS.has(name)) continue;
     parts.push(`export var ${name} = __cjs_module.exports.${name};`);
   }
 
   // Always export default as the full module.exports object
   parts.push('export default __cjs_module.exports;');
 
+  // Add star re-exports for __exportStar patterns
+  // V8's linker will recursively resolve these through the module resolver
+  for (const mod of starReExportModules) {
+    parts.push(`export * from ${JSON.stringify(mod)};`);
+  }
+
   return parts.join('\n');
 }
 
 export async function transformModuleCode(
   code: string,
-  filename: string
+  filename: string,
+  format: "cjs" | "esm" | "json"
 ): Promise<TransformResult> {
-  // Check if code is CJS — if so, convert to ESM wrapper
-  if (isCJS(code)) {
+  // JSON: wrap in export default (JSON is a valid JS expression since ES2019)
+  if (format === "json") {
+    return { code: "export default " + code + ";" };
+  }
+
+  // CJS code gets wrapped in an IIFE with ES export declarations
+  if (format === "cjs") {
     const esmCode = convertCJSToESModule(code, filename);
     return {
       code: esmCode,
@@ -781,8 +813,14 @@ function removeExports(body: string): RemoveExportsResult {
 export async function transformModuleCodeAsScript(
   code: string,
   specifier: string,
-  mode: 'async' | 'sync'
+  mode: 'async' | 'sync',
+  format?: "cjs" | "esm" | "json"
 ): Promise<string> {
+  // JSON: wrap in a simple IIFE that returns the parsed value
+  if (format === "json") {
+    return `(function() { return ${code}; })()`;
+  }
+
   const escapedSpecifier = specifier.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
   // Strip TypeScript types
