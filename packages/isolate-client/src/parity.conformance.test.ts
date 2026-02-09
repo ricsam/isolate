@@ -72,13 +72,13 @@ describe("parity conformance", () => {
           if (moduleName === "@/math") {
             return {
               code: `export const add = (a, b) => a + b;`,
-              resolveDir: importer.resolveDir,
+              resolveDir: importer.resolveDir, filename: "math",
             };
           }
           if (moduleName === "@/calc") {
             return {
               code: `import { add } from "@/math"; export const result = add(2, 3);`,
-              resolveDir: importer.resolveDir,
+              resolveDir: importer.resolveDir, filename: "calc",
             };
           }
           throw new Error(`Unknown module: ${moduleName}`);

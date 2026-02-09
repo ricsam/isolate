@@ -1542,7 +1542,7 @@ function registerModuleLoaderCallback(
     const result = await callback(specifier, importerInfo);
 
     // Cache using resolved path
-    const resolvedPath = path.posix.join(result.resolveDir, path.posix.basename(specifier));
+    const resolvedPath = path.posix.join(result.resolveDir, result.filename);
     state.moduleSourceCache.set(resolvedPath, result.code);
 
     return result;

@@ -3,7 +3,6 @@ import path from "node:path";
 import type {
   ModuleLoaderCallback,
   ModuleLoaderResult,
-  ModuleImporter,
 } from "@ricsam/isolate-protocol";
 import {
   parseMappings,
@@ -14,7 +13,6 @@ import {
 } from "./mappings.ts";
 import {
   resolveFilePath,
-  detectFormat,
   parseSpecifier,
   isBareSpecifier,
 } from "./resolve.ts";
@@ -55,7 +53,7 @@ export function defaultModuleLoader(
 
   const loader: ModuleLoaderCallback = async (
     moduleName: string,
-    importer: ModuleImporter,
+    importer: { path: string; resolveDir: string },
   ): Promise<ModuleLoaderResult> => {
     // A. Bare specifiers: npm packages
     if (isBareSpecifier(moduleName)) {
@@ -101,7 +99,6 @@ async function handleBareSpecifier(
     code,
     filename,
     resolveDir: nodeModulesMapping.virtualMount,
-    format: "esm",
     static: true,
   };
 }
@@ -111,7 +108,7 @@ async function handleBareSpecifier(
  */
 async function handlePathSpecifier(
   specifier: string,
-  importer: ModuleImporter,
+  importer: { path: string; resolveDir: string },
   mappings: PathMapping[],
 ): Promise<ModuleLoaderResult> {
   // Resolve virtual path relative to importer's resolveDir
@@ -144,9 +141,6 @@ async function handlePathSpecifier(
 
   // Read the file
   const code = fs.readFileSync(resolvedHostPath, "utf-8");
-
-  // Detect format
-  const format = detectFormat(resolvedHostPath, code);
 
   // Compute virtual resolveDir and filename
   const resolvedFilename = path.basename(resolvedHostPath);
@@ -181,7 +175,6 @@ async function handlePathSpecifier(
     code,
     filename: resolvedFilename,
     resolveDir: virtualDir,
-    format,
     // User files are NOT static — they can change between evaluations
   };
 }

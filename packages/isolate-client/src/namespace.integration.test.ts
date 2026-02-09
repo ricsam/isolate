@@ -99,6 +99,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           if (moduleName === "@/cached-module") {
             return {
               code: `export const value = "cached";`,
+              filename: "cached-module",
               resolveDir: importer.resolveDir,
             };
           }
@@ -129,6 +130,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           if (moduleName === "@/cached-module") {
             return {
               code: `export const value = "cached";`,
+              filename: "cached-module",
               resolveDir: importer.resolveDir,
             };
           }
@@ -169,6 +171,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           if (moduleName === "@/config") {
             return {
               code: `export const version = 1;`,
+              filename: "config",
               resolveDir: importer.resolveDir,
             };
           }
@@ -197,6 +200,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           if (moduleName === "@/config") {
             return {
               code: `export const version = 2;`,
+              filename: "config",
               resolveDir: importer.resolveDir,
             };
           }
@@ -227,12 +231,14 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         if (moduleName === "@/utils") {
           return {
             code: `import { version } from "@/config"; export const getVersion = () => version;`,
+            filename: "utils",
             resolveDir: importer.resolveDir,
           };
         }
         if (moduleName === "@/config") {
           return {
             code: `export const version = ${configVersion};`,
+            filename: "config",
             resolveDir: importer.resolveDir,
           };
         }
@@ -310,6 +316,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             lodashLoadCount++;
             return {
               code: `export const chunk = (arr, size) => { const r = []; for (let i = 0; i < arr.length; i += size) r.push(arr.slice(i, i + size)); return r; };`,
+              filename: "lodash",
               resolveDir: importer.resolveDir,
               static: true,
             };
@@ -318,6 +325,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             configLoadCount++;
             return {
               code: `export const version = 1;`,
+              filename: "config",
               resolveDir: importer.resolveDir,
             };
           }
@@ -353,6 +361,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             lodashLoadCount++;
             return {
               code: `export const chunk = (arr, size) => { const r = []; for (let i = 0; i < arr.length; i += size) r.push(arr.slice(i, i + size)); return r; };`,
+              filename: "lodash",
               resolveDir: importer.resolveDir,
               static: true,
             };
@@ -361,6 +370,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
             configLoadCount++;
             return {
               code: `export const version = 2;`,
+              filename: "config",
               resolveDir: importer.resolveDir,
             };
           }
@@ -669,6 +679,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           if (moduleName === "@/old-module") {
             return {
               code: `export const value = "old";`,
+              filename: "old-module",
               resolveDir: importer.resolveDir,
             };
           }
@@ -691,6 +702,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
           if (moduleName === "@/new-module") {
             return {
               code: `export const value = "new";`,
+              filename: "new-module",
               resolveDir: importer.resolveDir,
             };
           }
@@ -1267,7 +1279,7 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       const runtime2 = await namespace.createRuntime({
         moduleLoader: async (moduleName: string, importer) => {
           if (moduleName === "poisoned-module") {
-            return { code: `export const ok = true;`, resolveDir: importer.resolveDir };
+            return { code: `export const ok = true;`, filename: "poisoned-module", resolveDir: importer.resolveDir };
           }
           throw new Error(`Unknown module: ${moduleName}`);
         },

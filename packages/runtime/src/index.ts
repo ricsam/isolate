@@ -299,6 +299,8 @@ interface RuntimeState {
     (name: string, argsJson: string) => Promise<string>
   >;
   sourceMaps: Map<string, SourceMap>;
+  /** Tracks the import chain for each module (resolved path → list of ancestor paths) */
+  moduleImportChain: Map<string, string[]>;
   /** Pending callbacks to await after eval (for daemon IPC fire-and-forget pattern) */
   pendingCallbacks: Promise<unknown>[];
   /** Per-runtime eval queue to prevent overlapping module linking/evaluation */
@@ -1003,13 +1005,22 @@ function createModuleResolver(
     specifier: string,
     referrer: ivm.Module
   ): Promise<ivm.Module> => {
+    // Get importer info
+    const importerPath = state.moduleToFilename.get(referrer) ?? "<unknown>";
+    const importerResolveDir = path.posix.dirname(importerPath);
+    const importerStack = state.moduleImportChain.get(importerPath) ?? [];
+
+    // Resolve relative specifiers to absolute-like paths for cache key uniqueness.
+    // This prevents cross-package collisions (e.g. two different packages both importing "./utils.js").
+    const resolvedSpecifier = specifier.startsWith('.')
+      ? path.posix.normalize(path.posix.join(importerResolveDir, specifier))
+      : specifier;
+
     // Static cache first
-    const staticCached = state.staticModuleCache.get(specifier);
+    const staticCached = state.staticModuleCache.get(resolvedSpecifier);
     if (staticCached) return staticCached;
 
-    // Specifier-only fast path is safe here: each local runtime gets a fresh cache,
-    // so there's no cross-lifecycle staleness (unlike the daemon where caches persist across namespace reuse).
-    const cached = state.moduleCache.get(specifier);
+    const cached = state.moduleCache.get(resolvedSpecifier);
     if (cached) return cached;
 
     if (!state.moduleLoader) {
@@ -1018,10 +1029,6 @@ function createModuleResolver(
       );
     }
 
-    // Get importer info
-    const importerPath = state.moduleToFilename.get(referrer) ?? "<unknown>";
-    const importerResolveDir = path.posix.dirname(importerPath);
-
     // Invoke module loader - capture full result including static flag
     const result = await state.moduleLoader(specifier, {
       path: importerPath,
@@ -1029,16 +1036,27 @@ function createModuleResolver(
     });
     const { code, resolveDir } = result;
 
+    // Validate filename: must be a basename (no slashes)
+    if (result.filename.includes('/')) {
+      throw new Error(
+        `moduleLoader returned a filename with slashes: "${result.filename}". ` +
+        `filename must be a basename (e.g. "utils.js"), not a path.`
+      );
+    }
+
+    // Construct resolved filename using result.filename
+    const resolvedFilename = path.posix.join(resolveDir, result.filename);
+
     // Cache by specifier + content hash (allows invalidation when content changes)
     const hash = contentHash(code);
-    const cacheKey = `${specifier}:${hash}`;
+    const cacheKey = `${resolvedSpecifier}:${hash}`;
     const inFlightKey = `${result.static ? "static" : "dynamic"}:${cacheKey}`;
 
     // Cache checks again after await in case another resolver call won the race
-    const staticCachedAfterLoad = state.staticModuleCache.get(specifier);
+    const staticCachedAfterLoad = state.staticModuleCache.get(resolvedSpecifier);
     if (staticCachedAfterLoad) return staticCachedAfterLoad;
 
-    const cachedAfterLoad = state.moduleCache.get(specifier);
+    const cachedAfterLoad = state.moduleCache.get(resolvedSpecifier);
     if (cachedAfterLoad) return cachedAfterLoad;
 
     const hashCached = state.moduleCache.get(cacheKey);
@@ -1053,50 +1071,59 @@ function createModuleResolver(
         // Transform cache — check transform cache first (survives reuse in daemon)
         let transformed: TransformResult | undefined = state.transformCache.get(hash);
         if (!transformed) {
-          transformed = await transformModuleCode(code, specifier);
+          transformed = await transformModuleCode(code, resolvedSpecifier);
           state.transformCache.set(hash, transformed);
         }
 
         if (transformed.sourceMap) {
-          state.sourceMaps.set(specifier, transformed.sourceMap);
+          state.sourceMaps.set(resolvedSpecifier, transformed.sourceMap);
         }
 
-        // Compile the module
+        // Compile the module using resolvedSpecifier as filename
         mod = await state.isolate.compileModule(transformed.code, {
-          filename: specifier,
+          filename: resolvedSpecifier,
         });
 
-        // Construct resolved path and track for nested imports
-        const resolvedPath = path.posix.join(resolveDir, path.posix.basename(specifier));
-        state.moduleToFilename.set(mod, resolvedPath);
+        // Track resolved filename for nested imports
+        state.moduleToFilename.set(mod, resolvedFilename);
+
+        // Track import chain for error diagnostics
+        state.moduleImportChain.set(resolvedFilename, [...importerStack, importerPath]);
 
         // Cache the compiled module before linker uses it (supports circular deps)
         if (result.static) {
-          state.staticModuleCache.set(specifier, mod);
+          state.staticModuleCache.set(resolvedSpecifier, mod);
         } else {
-          state.moduleCache.set(specifier, mod);
+          state.moduleCache.set(resolvedSpecifier, mod);
           state.moduleCache.set(cacheKey, mod);
         }
 
         return mod;
       } catch (err) {
+        // Annotate error with module resolution context
+        const error = err instanceof Error ? err : new Error(String(err));
+        error.message = `Failed to compile module "${resolvedSpecifier}" (imported by "${importerPath}"):\n${error.message}`;
+        if (importerStack.length > 0) {
+          error.message += `\n\nImport chain:\n  ${[...importerStack, importerPath].join('\n    -> ')}`;
+        }
+
         // Remove partial cache state to avoid returning poisoned module entries later.
         if (mod) {
           state.moduleToFilename.delete(mod);
           if (result.static) {
-            if (state.staticModuleCache.get(specifier) === mod) {
-              state.staticModuleCache.delete(specifier);
+            if (state.staticModuleCache.get(resolvedSpecifier) === mod) {
+              state.staticModuleCache.delete(resolvedSpecifier);
             }
           } else {
-            if (state.moduleCache.get(specifier) === mod) {
-              state.moduleCache.delete(specifier);
+            if (state.moduleCache.get(resolvedSpecifier) === mod) {
+              state.moduleCache.delete(resolvedSpecifier);
             }
             if (state.moduleCache.get(cacheKey) === mod) {
               state.moduleCache.delete(cacheKey);
             }
           }
         }
-        throw err;
+        throw error;
       }
     })();
 
@@ -1167,6 +1194,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     transformCache: new Map(),
     moduleToFilename: new Map(),
     sourceMaps: new Map(),
+    moduleImportChain: new Map(),
     pendingCallbacks: [],
     evalChain: Promise.resolve(),
     moduleLoader: opts.moduleLoader,
@@ -1506,12 +1534,54 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
             filename,
           });
 
-          // Track entry module filename for nested imports
+          // Track entry module filename and import chain
           state.moduleToFilename.set(mod, filename);
+          state.moduleImportChain.set(filename, []);
 
           // Instantiate with module resolver
           const resolver = createModuleResolver(state);
-          await mod.instantiate(state.context, resolver);
+          try {
+            await mod.instantiate(state.context, resolver);
+          } catch (err) {
+            const error = err instanceof Error ? err : new Error(String(err));
+
+            // Extract failing specifier from V8 error message
+            const specifierMatch = error.message.match(/The requested module '([^']+)'/);
+            const failingSpecifier = specifierMatch?.[1];
+
+            // Find the import chain for the failing module
+            const lines: string[] = [];
+            if (failingSpecifier) {
+              for (const [modPath, chain] of state.moduleImportChain) {
+                if (modPath.endsWith(failingSpecifier) || modPath.includes(failingSpecifier)) {
+                  const fullChain = [...chain, modPath];
+                  const trimmed = fullChain.length > 10 ? fullChain.slice(-10) : fullChain;
+                  const prefix = fullChain.length > 10 ? '... -> ' : '';
+                  lines.push(`  ${prefix}${trimmed.join('\n    -> ')}`);
+                  break;
+                }
+              }
+              // Fallback: find any chain containing the specifier
+              if (lines.length === 0) {
+                for (const [modPath, chain] of state.moduleImportChain) {
+                  if (chain.some(p => p.endsWith(failingSpecifier!) || p.includes(failingSpecifier!))) {
+                    const fullChain = [...chain, modPath];
+                    const trimmed = fullChain.length > 10 ? fullChain.slice(-10) : fullChain;
+                    const prefix = fullChain.length > 10 ? '... -> ' : '';
+                    lines.push(`  ${prefix}${trimmed.join('\n    -> ')}`);
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (lines.length > 0) {
+              error.message = `Module instantiation failed: ${error.message}\n\nImport chain:\n${lines.join('\n')}`;
+            } else {
+              error.message = `Module instantiation failed: ${error.message}`;
+            }
+            throw error;
+          }
 
           // Evaluate - only resolves imports and defines the default function (no timeout needed)
           await mod.evaluate();
@@ -1553,6 +1623,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       state.moduleCache.clear();
       state.moduleLoadsInFlight.clear();
       state.moduleToFilename.clear();
+      state.moduleImportChain.clear();
       state.sourceMaps.clear();
       // staticModuleCache and transformCache intentionally preserved
     },

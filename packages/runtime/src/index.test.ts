@@ -129,6 +129,7 @@ describe("@ricsam/isolate-runtime", () => {
                 return a * b;
               }
             `,
+              filename: "utils",
               resolveDir: importer.resolveDir,
             };
           }
@@ -166,12 +167,14 @@ describe("@ricsam/isolate-runtime", () => {
                 return x + constant;
               }
             `,
+              filename: "math",
               resolveDir: importer.resolveDir,
             };
           }
           if (moduleName === "@/constants") {
             return {
               code: `export const constant = 10;`,
+              filename: "constants",
               resolveDir: importer.resolveDir,
             };
           }
@@ -198,6 +201,7 @@ describe("@ricsam/isolate-runtime", () => {
             loadCount++;
             return {
               code: `export const count = ${loadCount};`,
+              filename: "counter",
               resolveDir: importer.resolveDir,
             };
           }
@@ -231,6 +235,7 @@ describe("@ricsam/isolate-runtime", () => {
           if (moduleName === "@/test") {
             return {
               code: `export const value = 42;`,
+              filename: "test",
               resolveDir: importer.resolveDir,
             };
           }
@@ -256,12 +261,14 @@ describe("@ricsam/isolate-runtime", () => {
           if (moduleName === "@/moduleA") {
             return {
               code: `import { b } from "@/moduleB"; export const a = b + 1;`,
+              filename: "moduleA",
               resolveDir: "/modules",
             };
           }
           if (moduleName === "@/moduleB") {
             return {
               code: `export const b = 10;`,
+              filename: "moduleB",
               resolveDir: "/modules",
             };
           }
@@ -313,7 +320,7 @@ describe("@ricsam/isolate-runtime", () => {
           if (!code) {
             throw new Error(`Module not found: ${specifier} (resolved to ${resolvedPath})`);
           }
-          return { code, resolveDir: path.posix.dirname(resolvedPath) };
+          return { code, filename: path.posix.basename(resolvedPath), resolveDir: path.posix.dirname(resolvedPath) };
         },
       });
 
@@ -343,6 +350,7 @@ describe("@ricsam/isolate-runtime", () => {
           if (moduleName === "@/shared") {
             return {
               code: `import { dep } from "@/dep"; export const value = dep;`,
+              filename: "shared",
               resolveDir: importer.resolveDir,
             };
           }
@@ -350,6 +358,7 @@ describe("@ricsam/isolate-runtime", () => {
             await new Promise((resolve) => setTimeout(resolve, 20));
             return {
               code: `export const dep = 1;`,
+              filename: "dep",
               resolveDir: importer.resolveDir,
             };
           }
@@ -375,12 +384,14 @@ describe("@ricsam/isolate-runtime", () => {
           if (moduleName === "@/moduleA") {
             return {
               code: `import { shared } from "@/shared"; export const a = shared + 1;`,
+              filename: "moduleA",
               resolveDir: importer.resolveDir,
             };
           }
           if (moduleName === "@/moduleB") {
             return {
               code: `import { shared } from "@/shared"; export const b = shared + 2;`,
+              filename: "moduleB",
               resolveDir: importer.resolveDir,
             };
           }
@@ -388,6 +399,7 @@ describe("@ricsam/isolate-runtime", () => {
             await new Promise((resolve) => setTimeout(resolve, 5));
             return {
               code: `export const shared = 10;`,
+              filename: "shared",
               resolveDir: importer.resolveDir,
             };
           }
@@ -415,6 +427,7 @@ describe("@ricsam/isolate-runtime", () => {
           if (moduleName === "@/bad") {
             return {
               code: `import { value } from "@/missing"; export const out = value;`,
+              filename: "bad",
               resolveDir: importer.resolveDir,
             };
           }

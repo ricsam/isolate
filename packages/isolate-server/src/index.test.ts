@@ -18,6 +18,7 @@ function createRuntimeOptions(sourceMap: Map<string, string>): RuntimeOptions {
       if (direct) {
         return {
           code: direct,
+          filename: path.posix.basename(specifier),
           resolveDir: "/",
         };
       }
@@ -28,6 +29,7 @@ function createRuntimeOptions(sourceMap: Map<string, string>): RuntimeOptions {
       if (code) {
         return {
           code,
+          filename: path.posix.basename(normalized),
           resolveDir: path.posix.dirname(normalized),
         };
       }

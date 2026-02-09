@@ -911,7 +911,7 @@ describe("isolate-client integration", () => {
             export function add(a, b) { return a + b; }
             export function multiply(a, b) { return a * b; }
           `,
-            resolveDir: importer.resolveDir,
+            resolveDir: importer.resolveDir, filename: "utils",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -950,7 +950,7 @@ describe("isolate-client integration", () => {
             code: `
             export function square(x) { return x * x; }
           `,
-            resolveDir: importer.resolveDir,
+            resolveDir: importer.resolveDir, filename: "math",
           };
         }
         if (moduleName === "@/calc") {
@@ -961,7 +961,7 @@ describe("isolate-client integration", () => {
               return square(a) + square(b);
             }
           `,
-            resolveDir: importer.resolveDir,
+            resolveDir: importer.resolveDir, filename: "calc",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -997,7 +997,7 @@ describe("isolate-client integration", () => {
         if (moduleName === "@/counter") {
           return {
             code: `export const value = ${loadCount};`,
-            resolveDir: importer.resolveDir,
+            resolveDir: importer.resolveDir, filename: "counter",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -1080,7 +1080,7 @@ describe("isolate-client integration", () => {
         if (moduleName === "@/parent") {
           return {
             code: `import { child } from "@/child"; export const parent = child;`,
-            resolveDir: importer.resolveDir,
+            resolveDir: importer.resolveDir, filename: "parent",
           };
         }
         if (moduleName === "@/child") {
@@ -1132,7 +1132,7 @@ describe("isolate-client integration", () => {
         if (moduleName === "@/test") {
           return {
             code: `export const value = 42;`,
-            resolveDir: importer.resolveDir,
+            resolveDir: importer.resolveDir, filename: "test",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -1158,13 +1158,13 @@ describe("isolate-client integration", () => {
         if (moduleName === "@/moduleA") {
           return {
             code: `import { b } from "@/moduleB"; export const a = b + 1;`,
-            resolveDir: "/modules",
+            resolveDir: "/modules", filename: "moduleA",
           };
         }
         if (moduleName === "@/moduleB") {
           return {
             code: `export const b = 10;`,
-            resolveDir: "/modules",
+            resolveDir: "/modules", filename: "moduleB",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);
@@ -1215,7 +1215,7 @@ describe("isolate-client integration", () => {
         if (!code) {
           throw new Error(`Module not found: ${specifier} (resolved to ${resolvedPath})`);
         }
-        return { code, resolveDir: path.posix.dirname(resolvedPath) };
+        return { code, filename: path.posix.basename(resolvedPath), resolveDir: path.posix.dirname(resolvedPath) };
       },
     });
 
@@ -1309,7 +1309,7 @@ describe("isolate-client integration", () => {
               console.log("[MODULE]", msg);
             }
           `,
-            resolveDir: importer.resolveDir,
+            resolveDir: importer.resolveDir, filename: "logger",
           };
         }
         throw new Error(`Unknown module: ${moduleName}`);

@@ -1003,7 +1003,7 @@ async function handleCreateRuntime(
     }
 
     // Build module loader if registered
-    let moduleLoader: ((specifier: string, importer: { path: string; resolveDir: string }) => Promise<{ code: string; resolveDir: string; static?: boolean }>) | undefined;
+    let moduleLoader: ((specifier: string, importer: { path: string; resolveDir: string }) => Promise<{ code: string; filename: string; resolveDir: string; static?: boolean }>) | undefined;
     if (moduleLoaderCallback) {
       moduleLoader = async (specifier: string, importer: { path: string; resolveDir: string }) => {
         const conn = callbackContext.connection;
@@ -1011,7 +1011,7 @@ async function handleCreateRuntime(
         if (!conn || cbId === undefined) {
           throw new Error("Module loader callback not available");
         }
-        return invokeClientCallback(conn, cbId, [specifier, importer]) as Promise<{ code: string; resolveDir: string; static?: boolean }>;
+        return invokeClientCallback(conn, cbId, [specifier, importer]) as Promise<{ code: string; filename: string; resolveDir: string; static?: boolean }>;
       };
     }
 

@@ -206,14 +206,11 @@ describe("defaultModuleLoader", () => {
       const result = await loader("./utils", {
         path: "/app/entry.ts",
         resolveDir: "/app",
-        format: "esm",
-        importStack: [],
       });
 
       assert.ok(result.code.includes("greeting"));
       assert.strictEqual(result.filename, "utils.ts");
       assert.strictEqual(result.resolveDir, "/app");
-      assert.strictEqual(result.format, "esm");
       assert.strictEqual(result.static, undefined);
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
@@ -230,8 +227,6 @@ describe("defaultModuleLoader", () => {
         loader("./something", {
           path: "/app/entry.ts",
           resolveDir: "/app",
-          format: "esm",
-          importStack: [],
         }),
       /no mapping matches/,
     );
@@ -247,8 +242,6 @@ describe("defaultModuleLoader", () => {
         loader("lodash", {
           path: "/src/entry.ts",
           resolveDir: "/src",
-          format: "esm",
-          importStack: [],
         }),
       /no node_modules mapping/,
     );

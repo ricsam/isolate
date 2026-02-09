@@ -772,6 +772,8 @@ export type ModuleLoaderCallback = (
 
 export interface ModuleLoaderResult {
   code: string;
+  /** The filename for this module (basename only, no slashes). Combined with resolveDir to form the full path. */
+  filename: string;
   resolveDir: string;
   /** Mark as static to preserve across namespace reuse (e.g. node_modules).
    *  Static modules and their transitive deps should all be static. */
