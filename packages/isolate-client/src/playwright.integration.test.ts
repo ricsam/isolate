@@ -420,7 +420,7 @@ describe("predicate function support", () => {
   after(async () => {
     await client.close();
     await daemon.close();
-    server.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
   it("waitForURL with predicate function", async () => {
