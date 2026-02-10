@@ -13,8 +13,12 @@ describe("@ricsam/isolate-console", () => {
     context = await isolate.createContext();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     context.release();
+    // Yield to event loop before disposing isolate to allow V8 GC
+    // to process weak references from ivm.Callback objects, preventing
+    // assertion failure in environment.h during process exit on Linux.
+    await new Promise<void>((resolve) => setImmediate(resolve));
     isolate.dispose();
   });
 

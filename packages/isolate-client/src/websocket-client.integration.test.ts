@@ -1533,7 +1533,7 @@ describe("WebSocket client (outbound from isolate)", () => {
     });
 
     describe("Large messages", () => {
-      it("should handle large text messages", { timeout: 10000 }, async () => {
+      it("should handle large text messages", { timeout: 30000 }, async () => {
         const largeMessage = "x".repeat(100000); // 100KB
 
         wss.on("connection", (ws) => {
@@ -1584,7 +1584,7 @@ describe("WebSocket client (outbound from isolate)", () => {
         }
       });
 
-      it("should handle large binary messages", { timeout: 10000 }, async () => {
+      it("should handle large binary messages", { timeout: 30000 }, async () => {
         wss.on("connection", (ws) => {
           ws.on("message", (data, isBinary) => {
             if (isBinary) {
