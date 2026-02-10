@@ -71,7 +71,9 @@ const runtime = await createRuntime({
       throw new Error(`Module not found: ${specifier}`);
     }
     // For bundled modules, use a consistent resolveDir
-    return { code, resolveDir: "/bundled" };
+    // filename must be a basename (no slashes), so replace slashes for scoped packages
+    const filename = specifier.replace(/\//g, "__");
+    return { code, filename, resolveDir: "/bundled" };
   },
 });
 

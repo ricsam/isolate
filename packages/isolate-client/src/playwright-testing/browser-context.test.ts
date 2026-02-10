@@ -6,6 +6,7 @@
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
+import http from "node:http";
 import { connect } from "../connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
@@ -1621,6 +1622,15 @@ describe("playwright browser/context/page lifecycle", () => {
 
   describe("page.request on different pages", () => {
     it("should support page.request.get on different pages", async () => {
+      // Use a local HTTP server instead of external HTTPS sites to avoid SSL issues
+      const srv = http.createServer((req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ path: req.url }));
+      });
+      await new Promise<void>((resolve) => srv.listen(0, resolve));
+      const port = (srv.address() as { port: number }).port;
+      const baseUrl = `http://127.0.0.1:${port}`;
+
       const browserContext = await browser.newContext();
       const initialPage = await browserContext.newPage();
 
@@ -1632,13 +1642,13 @@ describe("playwright browser/context/page lifecycle", () => {
       try {
         await runtime.eval(`
           test('page.request.get on different pages', async () => {
-            await page.goto('https://example.com');
+            await page.goto('${baseUrl}/page1');
 
             const page2 = await page.context().newPage();
-            await page2.goto('https://example.org');
+            await page2.goto('${baseUrl}/page2');
 
-            const response1 = await page.request.get('https://example.com');
-            const response2 = await page2.request.get('https://example.org');
+            const response1 = await page.request.get('${baseUrl}/api1');
+            const response2 = await page2.request.get('${baseUrl}/api2');
 
             expect(response1.ok()).toBe(true);
             expect(response2.ok()).toBe(true);
@@ -1650,6 +1660,7 @@ describe("playwright browser/context/page lifecycle", () => {
       } finally {
         await runtime.dispose();
         await browserContext.close();
+        srv.close();
       }
     });
   });
