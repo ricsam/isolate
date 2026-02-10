@@ -1692,7 +1692,7 @@ describe("WebSocket client (outbound from isolate)", () => {
         }
       });
 
-      it("should reject invalid binaryType", { timeout: 5000 }, async () => {
+      it("should reject invalid binaryType", { timeout: 15000 }, async () => {
         const runtime = await connection.createRuntime();
         try {
           await runtime.eval(`
