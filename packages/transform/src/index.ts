@@ -16,63 +16,129 @@ export interface TransformResult {
 }
 
 /**
- * Separate import declarations from the rest of the code.
- * Handles single-line and multi-line import statements.
+ * Named import regex (handles single-line and multi-line).
+ * Captures: [1] optional default part, [2] specifier list, [3] module path
  */
-function separateImports(code: string): { imports: string; body: string; importLineCount: number } {
-  const lines = code.split("\n");
-  const importLines: string[] = [];
-  const bodyLines: string[] = [];
-  let inImport = false;
-  let pastImports = false;
+const NAMED_IMPORT_RE =
+  /import\s+([\w$]+\s*,\s*)?\{([\s\S]*?)\}\s*from\s*['"]([^'"]+)['"];?/g;
 
-  for (const line of lines) {
-    const trimmed = line.trim();
+/**
+ * Find the 0-based line index of the last import declaration's closing line.
+ * Returns -1 if no imports found.
+ * Handles single-line imports, multi-line imports, `import type`, side-effect imports.
+ */
+function findLastImportEnd(code: string): number {
+  const lines = code.split("\n");
+  let lastImportLine = -1;
+  let inImport = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i]!.trim();
 
     if (inImport) {
-      importLines.push(line);
-      // Check if this line closes the import statement
-      if (trimmed.includes("from ") && (trimmed.endsWith(";") || trimmed.endsWith("'"))) {
+      // Inside a multi-line import, look for closing
+      if (trimmed.includes("from ") && (trimmed.endsWith(";") || trimmed.endsWith("'") || trimmed.endsWith('"'))) {
         inImport = false;
+        lastImportLine = i;
       } else if (trimmed.endsWith(";")) {
         inImport = false;
+        lastImportLine = i;
       }
       continue;
     }
 
-    if (!pastImports && (trimmed.startsWith("import ") || trimmed.startsWith("import{"))) {
-      importLines.push(line);
-      // Check if it's a multi-line import (no `from` and no closing semicolon)
-      if (!trimmed.includes(" from ") && !trimmed.endsWith(";")) {
+    if (trimmed.startsWith("import ") || trimmed.startsWith("import{")) {
+      // Check if it's a single-line import
+      if (trimmed.includes(" from ") || trimmed.endsWith(";")) {
+        lastImportLine = i;
+      } else {
+        // Multi-line import
         inImport = true;
       }
-    } else if (!pastImports && trimmed === "") {
-      importLines.push(line);
-    } else {
-      pastImports = true;
-      bodyLines.push(line);
     }
   }
 
-  return {
-    imports: importLines.join("\n"),
-    body: bodyLines.join("\n"),
-    importLineCount: importLines.length,
-  };
+  return lastImportLine;
 }
 
 /**
- * Strip TypeScript types from code using node:module.
- * Throws SyntaxError with adjusted line numbers on failure.
+ * Elide unused imports from full stripped code.
+ * Works on the entire code: blanks out import declarations to build reference body,
+ * then removes specifiers not referenced in the body.
+ * Line-preserving: removed imports are replaced with equivalent newlines.
  */
-function stripTypes(code: string, lineOffset: number): string {
-  try {
-    return stripTypeScriptTypes(code, { mode: "strip" });
-  } catch (err: unknown) {
-    const e = err as Error;
-    const syntaxError = new SyntaxError(e.message);
-    throw syntaxError;
+function elideUnusedImports(code: string): string {
+  const entries: Array<{
+    fullMatch: string;
+    start: number;
+    end: number;
+    defaultPart: string;
+    specifiers: string[];
+    modulePath: string;
+  }> = [];
+
+  NAMED_IMPORT_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = NAMED_IMPORT_RE.exec(code)) !== null) {
+    entries.push({
+      fullMatch: m[0],
+      start: m.index,
+      end: m.index + m[0].length,
+      defaultPart: m[1] ?? "",
+      specifiers: m[2]!
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+      modulePath: m[3]!,
+    });
   }
+
+  if (entries.length === 0) return code;
+
+  // Build reference body: blank out import declarations
+  let body = code;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const { start, end } = entries[i]!;
+    body = body.slice(0, start) + " ".repeat(end - start) + body.slice(end);
+  }
+
+  // Process imports in reverse order to preserve string indices
+  let result = code;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]!;
+    const kept: string[] = [];
+
+    for (const spec of entry.specifiers) {
+      const asMatch = spec.match(/(\w+)\s+as\s+(\w+)/);
+      const localName = asMatch ? asMatch[2]! : spec;
+      const escaped = localName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const nameRe = new RegExp("\\b" + escaped + "\\b");
+
+      if (nameRe.test(body)) {
+        kept.push(spec);
+      }
+    }
+
+    if (kept.length === entry.specifiers.length) continue;
+
+    // Count newlines in the original match to preserve line count
+    const originalNewlines = (entry.fullMatch.match(/\n/g) || []).length;
+
+    let replacement: string;
+    if (kept.length === 0 && !entry.defaultPart) {
+      // Replace with equivalent newlines to preserve line positions
+      replacement = "\n".repeat(originalNewlines);
+    } else if (kept.length === 0) {
+      const def = entry.defaultPart.replace(/\s*,\s*$/, "").trim();
+      replacement = `import ${def} from '${entry.modulePath}';` + "\n".repeat(Math.max(0, originalNewlines));
+    } else {
+      replacement = `import ${entry.defaultPart}{ ${kept.join(", ")} } from '${entry.modulePath}';` + "\n".repeat(Math.max(0, originalNewlines));
+    }
+
+    result = result.slice(0, entry.start) + replacement + result.slice(entry.end);
+  }
+
+  return result;
 }
 
 /**
@@ -85,14 +151,6 @@ function buildOffsetSourceMap(
   outputOffset: number,
   originalImportLines: number
 ): SourceMap {
-  // The body in the wrapped output starts at line (outputOffset + 1).
-  // The body in the original source starts at line (originalImportLines + 1).
-  // Since strip mode preserves positions, the mapping is:
-  //   originalLine = wrappedLine - outputOffset + originalImportLines
-  // We encode this as a source map with empty lines for the offset, then an identity-ish mapping
-  // shifted by originalImportLines.
-
-  // For the first mapped line, origLine = originalImportLines (0-based)
   const vlqChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
   function encodeVLQ(value: number): string {
@@ -114,8 +172,6 @@ function buildOffsetSourceMap(
   const nextSegment = encodeVLQ(0) + encodeVLQ(0) + encodeVLQ(1) + encodeVLQ(0);
 
   const prefix = Array(outputOffset).fill("").join(";");
-  // We don't know exactly how many body lines there are, but we can generate a generous amount
-  // Actually, let's just generate 1000 lines of mapping — more than enough for any reasonable code
   const bodyMappings = [firstSegment, ...Array(999).fill(nextSegment)];
   const mappings = prefix + (prefix ? ";" : "") + bodyMappings.join(";");
 
@@ -129,44 +185,51 @@ function buildOffsetSourceMap(
 
 /**
  * Transform user entry code:
- * 1. Separate imports from body
- * 2. Strip TypeScript types from body
- * 3. Strip TypeScript types from imports
- * 4. Validate no require(), dynamic import(), or top-level return
+ * 1. Find import/body boundary
+ * 2. Validate body (on original code)
+ * 3. Strip TypeScript types from full code
+ * 4. Split at boundary, elide unused imports, clean blank lines
  * 5. Wrap body in `export default async function() { ... }`
  */
 export async function transformEntryCode(
   code: string,
   filename: string
 ): Promise<TransformResult> {
-  // Step 1: Separate imports from body
-  const { imports, body, importLineCount } = separateImports(code);
+  // Step 1: Find import/body boundary on original code
+  const lastImportLine = findLastImportEnd(code);
+  const lines = code.split("\n");
+  const bodyStartLine = lastImportLine + 1;
 
-  // Step 2: Validate no require(), dynamic import(), or top-level return in body
-  validateBody(body);
+  // Step 2: Validate body on original code (before stripping)
+  const originalBody = lines.slice(bodyStartLine).join("\n");
+  validateBody(originalBody);
 
-  // Step 3: Strip types from body
-  const strippedBody = stripTypes(body, importLineCount);
+  // Step 3: Strip types on full code
+  const stripped = stripTypeScriptTypes(code, { mode: "strip" });
 
-  // Step 4: Strip type-only imports
-  let strippedImports = "";
-  if (imports.trim()) {
-    strippedImports = stripTypeImports(imports);
-  }
+  // Step 4: Split stripped code at the boundary
+  const strippedLines = stripped.split("\n");
+  const strippedImportLines = strippedLines.slice(0, bodyStartLine);
+  const strippedBody = strippedLines.slice(bodyStartLine).join("\n");
 
-  // Step 5: Wrap body in async function
+  // Step 5: Clean up import section (remove blank lines left by stripped `import type` declarations)
+  let importSection = strippedImportLines
+    .filter((line) => line.trim() !== "")
+    .join("\n");
+
+  // Step 6: Wrap body in async function
   const parts: string[] = [];
-  if (strippedImports) {
-    parts.push(strippedImports);
+  if (importSection.trim()) {
+    parts.push(importSection);
   }
   parts.push("export default async function() {");
   parts.push(strippedBody);
   parts.push("}");
   const wrappedCode = parts.join("\n");
 
-  // Step 6: Build source map
-  const wrappedImportLines = strippedImports ? strippedImports.split("\n").length : 0;
-  const sourceMap = buildOffsetSourceMap(filename, wrappedImportLines + 1, importLineCount);
+  // Step 7: Build source map
+  const wrappedImportLineCount = importSection.trim() ? importSection.split("\n").length : 0;
+  const sourceMap = buildOffsetSourceMap(filename, wrappedImportLineCount + 1, bodyStartLine);
 
   return {
     code: wrappedCode,
@@ -175,34 +238,23 @@ export async function transformEntryCode(
 }
 
 /**
- * Transform module code: strip TypeScript types only (no wrapping).
+ * Transform module code:
+ * 1. Strip TypeScript types from full code
+ * 2. Elide unused imports (line-preserving)
+ * 3. Return with identity source map
  */
 export async function transformModuleCode(
   code: string,
   filename: string
 ): Promise<TransformResult> {
-  // For modules, we need to preserve imports. Separate, strip types on body, recombine.
-  const { imports, body, importLineCount } = separateImports(code);
+  // Step 1: Strip types on full code
+  const stripped = stripTypeScriptTypes(code, { mode: "strip" });
 
-  // Strip types from body
-  const strippedBody = stripTypes(body, importLineCount);
+  // Step 2: Elide unused imports (line-preserving)
+  const finalCode = elideUnusedImports(stripped);
 
-  // Strip type-only imports
-  let strippedImports = "";
-  if (imports.trim()) {
-    strippedImports = stripTypeImports(imports);
-  }
-
-  // Recombine
-  const parts: string[] = [];
-  if (strippedImports) {
-    parts.push(strippedImports);
-  }
-  parts.push(strippedBody);
-  const finalCode = parts.join("\n");
-
-  const outputImportLines = strippedImports ? strippedImports.split("\n").length : 0;
-  const sourceMap = buildOffsetSourceMap(filename, outputImportLines, importLineCount);
+  // Step 3: Identity source map (line positions preserved by strip + line-preserving elision)
+  const sourceMap = buildOffsetSourceMap(filename, 0, 0);
 
   return {
     code: finalCode,
@@ -238,53 +290,6 @@ export function mapErrorStack(
       return `${prefix}${file}:${originalPos.line}:${originalPos.column}${suffix}`;
     }
   );
-}
-
-/**
- * Strip type-only imports from import declarations.
- * - Removes `import type { ... } from "..."` entirely
- * - Converts `import { type Foo, Bar } from "..."` to `import { Bar } from "..."`
- * - Preserves value imports unchanged
- */
-function stripTypeImports(imports: string): string {
-  const lines = imports.split("\n");
-  const result: string[] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // Remove `import type ...` declarations entirely
-    if (/^import\s+type\s+/.test(trimmed)) {
-      continue;
-    }
-
-    // Handle `import { type Foo, Bar } from "..."`
-    // Remove `type ` prefix from individual specifiers
-    const replaced = line.replace(
-      /\{([^}]+)\}/,
-      (match, specifiers: string) => {
-        const cleaned = specifiers
-          .split(",")
-          .map((s: string) => s.trim())
-          .filter((s: string) => !s.startsWith("type "))
-          .join(", ");
-        if (!cleaned) return "{ }"; // All were type imports
-        return `{ ${cleaned} }`;
-      }
-    );
-
-    // If all specifiers were type-only, skip the entire import
-    if (replaced.includes("{ }")) {
-      continue;
-    }
-
-    // Skip empty lines
-    if (!trimmed) continue;
-
-    result.push(replaced);
-  }
-
-  return result.join("\n");
 }
 
 /**
@@ -420,7 +425,6 @@ function decodeMappingLineWithState(
     if (line[i] === ",") { i++; continue; }
 
     let fieldCount = 0;
-    const savedState = [...state];
 
     while (i < line.length && line[i] !== ",") {
       let value = 0;

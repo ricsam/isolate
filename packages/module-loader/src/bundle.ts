@@ -102,6 +102,11 @@ async function doBundleSpecifier(
 
   const bundle = await rollup({
     input: specifier,
+    // Disable tree-shaking: we're creating a virtual module that must faithfully
+    // expose all package exports. We can't predict which ones user code will import.
+    // Without this, exports like AWS SDK's ConverseStreamOutput (a namespace with
+    // a visit() helper that nothing inside the bundle references) get dropped.
+    treeshake: false,
     plugins: [
       externalizeDepsPlugin(packageName),
       nodeResolve({ browser: true, rootDir }),

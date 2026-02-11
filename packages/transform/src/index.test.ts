@@ -132,6 +132,84 @@ describe("@ricsam/isolate-transform", () => {
       );
       assert.ok(result.sourceMap);
     });
+
+    test("elides import specifiers only used in type positions", async () => {
+      const code = [
+        'import { ConverseStreamOutput, BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";',
+        "",
+        "const client: ConverseStreamOutput = new BedrockRuntimeClient({});",
+      ].join("\n");
+      const result = await transformModuleCode(code, "/mod.ts");
+      // ConverseStreamOutput was only used as a type annotation — should be elided
+      assert.ok(!result.code.includes("ConverseStreamOutput"));
+      // BedrockRuntimeClient is used as a value — should survive
+      assert.ok(result.code.includes("BedrockRuntimeClient"));
+    });
+
+    test("removes entire import when all specifiers are type-only", async () => {
+      const code = [
+        'import { SomeType } from "some-pkg";',
+        "",
+        "const x: SomeType = 42;",
+        "export default x;",
+      ].join("\n");
+      const result = await transformModuleCode(code, "/mod.ts");
+      assert.ok(!result.code.includes("some-pkg"));
+      assert.ok(result.code.includes("export default x"));
+    });
+
+    test("elides multi-line import specifiers only used in type positions", async () => {
+      const code = [
+        "import {",
+        "  ConverseStreamOutput,",
+        "  BedrockRuntimeClient,",
+        "  ConverseStreamCommand,",
+        '} from "@aws-sdk/client-bedrock-runtime";',
+        "",
+        "const client: ConverseStreamOutput = new BedrockRuntimeClient({});",
+        "const cmd = new ConverseStreamCommand({});",
+      ].join("\n");
+      const result = await transformModuleCode(code, "/mod.ts");
+      assert.ok(!result.code.includes("ConverseStreamOutput"), "ConverseStreamOutput should be elided");
+      assert.ok(result.code.includes("BedrockRuntimeClient"), "BedrockRuntimeClient should survive");
+      assert.ok(result.code.includes("ConverseStreamCommand"), "ConverseStreamCommand should survive");
+    });
+
+    test("elides unused import when file has leading comment block", async () => {
+      const code = [
+        "/**",
+        " * Handler module",
+        " */",
+        "import {",
+        "  BedrockRuntimeClient,",
+        "  ConverseCommand,",
+        "  ConverseStreamCommand,",
+        "  ConverseStreamOutput,",
+        '} from "@aws-sdk/client-bedrock-runtime";',
+        'import type { SomeType } from "./types";',
+        "",
+        "const client = new BedrockRuntimeClient({});",
+        "const cmd = new ConverseCommand({});",
+        "const stream = new ConverseStreamCommand({});",
+      ].join("\n");
+      const result = await transformModuleCode(code, "/handler.ts");
+      assert.ok(!result.code.includes("ConverseStreamOutput"), "ConverseStreamOutput should be elided");
+      assert.ok(!result.code.includes("SomeType"), "import type should be stripped");
+      assert.ok(result.code.includes("BedrockRuntimeClient"), "BedrockRuntimeClient should survive");
+      assert.ok(result.code.includes("ConverseCommand"), "ConverseCommand should survive");
+      assert.ok(result.code.includes("ConverseStreamCommand"), "ConverseStreamCommand should survive");
+    });
+
+    test("preserves import specifiers used as values", async () => {
+      const code = [
+        'import { MyClass, MyType } from "./mod";',
+        "",
+        "const x: MyType = new MyClass();",
+      ].join("\n");
+      const result = await transformModuleCode(code, "/mod.ts");
+      assert.ok(result.code.includes("MyClass"));
+      assert.ok(!result.code.includes("MyType"));
+    });
   });
 
   describe("mapErrorStack", () => {

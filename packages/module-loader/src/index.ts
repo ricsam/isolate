@@ -17,11 +17,13 @@ import {
   isBareSpecifier,
 } from "./resolve.ts";
 import { bundleSpecifier } from "./bundle.ts";
+import { isTypeScriptFile, processTypeScript } from "./strip-types.ts";
 
 export { parseMappings, virtualToHost, findNodeModulesMapping } from "./mappings.ts";
 export type { MappingConfig, PathMapping } from "./mappings.ts";
 export { resolveFilePath, detectFormat, parseSpecifier, isBareSpecifier } from "./resolve.ts";
 export { bundleSpecifier, clearBundleCache } from "./bundle.ts";
+export { isTypeScriptFile, processTypeScript } from "./strip-types.ts";
 
 /**
  * Create a module loader callback that handles common patterns:
@@ -140,10 +142,15 @@ async function handlePathSpecifier(
   }
 
   // Read the file
-  const code = fs.readFileSync(resolvedHostPath, "utf-8");
+  let code = fs.readFileSync(resolvedHostPath, "utf-8");
 
-  // Compute virtual resolveDir and filename
-  const resolvedFilename = path.basename(resolvedHostPath);
+  // Process TypeScript files: strip types, elide unused imports, add placeholders
+  let resolvedFilename = path.basename(resolvedHostPath);
+  if (isTypeScriptFile(resolvedHostPath)) {
+    code = processTypeScript(code, resolvedHostPath);
+    // Change extension to .js so V8 treats it as JavaScript
+    resolvedFilename = resolvedFilename.replace(/\.(tsx?|mts|cts)$/, ".js");
+  }
   // The host file may have a different name (due to extension probing), so rebuild virtual path
   const hostDir = path.dirname(resolvedHostPath);
 

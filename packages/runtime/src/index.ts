@@ -301,6 +301,8 @@ interface RuntimeState {
   sourceMaps: Map<string, SourceMap>;
   /** Tracks the import chain for each module (resolved path → list of ancestor paths) */
   moduleImportChain: Map<string, string[]>;
+  /** Tracks which file imported a given specifier (resolvedSpecifier → importerPath) */
+  specifierToImporter: Map<string, string>;
   /** Pending callbacks to await after eval (for daemon IPC fire-and-forget pattern) */
   pendingCallbacks: Promise<unknown>[];
   /** Per-runtime eval queue to prevent overlapping module linking/evaluation */
@@ -1016,6 +1018,9 @@ function createModuleResolver(
       ? path.posix.normalize(path.posix.join(importerResolveDir, specifier))
       : specifier;
 
+    // Track who imports this specifier (for error diagnostics)
+    state.specifierToImporter.set(resolvedSpecifier, importerPath);
+
     // Static cache first
     const staticCached = state.staticModuleCache.get(resolvedSpecifier);
     if (staticCached) return staticCached;
@@ -1195,6 +1200,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     moduleToFilename: new Map(),
     sourceMaps: new Map(),
     moduleImportChain: new Map(),
+    specifierToImporter: new Map(),
     pendingCallbacks: [],
     evalChain: Promise.resolve(),
     moduleLoader: opts.moduleLoader,
@@ -1545,41 +1551,49 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
           } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
 
-            // Extract failing specifier from V8 error message
+            // Extract failing module specifier and export name from V8 error
+            // e.g. "The requested module './foo' does not provide an export named 'Bar'"
             const specifierMatch = error.message.match(/The requested module '([^']+)'/);
+            const exportMatch = error.message.match(/export named '([^']+)'/);
             const failingSpecifier = specifierMatch?.[1];
+            const failingExport = exportMatch?.[1];
 
-            // Find the import chain for the failing module
-            const lines: string[] = [];
-            if (failingSpecifier) {
+            // Find which file imports the failing specifier
+            const importerFile = failingSpecifier
+              ? state.specifierToImporter.get(failingSpecifier)
+              : undefined;
+
+            // Build the full import chain from entry → importer → failing module
+            const details: string[] = [];
+
+            if (importerFile) {
+              const chain = state.moduleImportChain.get(importerFile) ?? [];
+              const fullChain = [...chain, importerFile];
+              if (failingSpecifier) fullChain.push(failingSpecifier);
+              const trimmed = fullChain.length > 12 ? fullChain.slice(-12) : fullChain;
+              const prefix = fullChain.length > 12 ? '  ...\n' : '';
+              details.push('Import chain:\n' + prefix + trimmed.map(p => `  ${p}`).join('\n    -> '));
+            } else if (failingSpecifier) {
+              // Fallback: search moduleImportChain for any path containing the specifier
               for (const [modPath, chain] of state.moduleImportChain) {
-                if (modPath.endsWith(failingSpecifier) || modPath.includes(failingSpecifier)) {
+                if (modPath.includes(failingSpecifier) || modPath.endsWith(failingSpecifier)) {
                   const fullChain = [...chain, modPath];
-                  const trimmed = fullChain.length > 10 ? fullChain.slice(-10) : fullChain;
-                  const prefix = fullChain.length > 10 ? '... -> ' : '';
-                  lines.push(`  ${prefix}${trimmed.join('\n    -> ')}`);
+                  const trimmed = fullChain.length > 12 ? fullChain.slice(-12) : fullChain;
+                  details.push('Import chain:\n' + trimmed.map(p => `  ${p}`).join('\n    -> '));
                   break;
                 }
               }
-              // Fallback: find any chain containing the specifier
-              if (lines.length === 0) {
-                for (const [modPath, chain] of state.moduleImportChain) {
-                  if (chain.some(p => p.endsWith(failingSpecifier!) || p.includes(failingSpecifier!))) {
-                    const fullChain = [...chain, modPath];
-                    const trimmed = fullChain.length > 10 ? fullChain.slice(-10) : fullChain;
-                    const prefix = fullChain.length > 10 ? '... -> ' : '';
-                    lines.push(`  ${prefix}${trimmed.join('\n    -> ')}`);
-                    break;
-                  }
-                }
-              }
             }
 
-            if (lines.length > 0) {
-              error.message = `Module instantiation failed: ${error.message}\n\nImport chain:\n${lines.join('\n')}`;
-            } else {
-              error.message = `Module instantiation failed: ${error.message}`;
+            if (failingExport && failingSpecifier) {
+              details.push(
+                `Hint: If '${failingExport}' is a TypeScript type/interface, use \`import type\` to prevent it from being resolved at runtime:\n` +
+                `  import type { ${failingExport} } from '${failingSpecifier}';`
+              );
             }
+
+            const suffix = details.length > 0 ? '\n\n' + details.join('\n\n') : '';
+            error.message = `Module instantiation failed: ${error.message}${suffix}`;
             throw error;
           }
 
@@ -1624,6 +1638,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       state.moduleLoadsInFlight.clear();
       state.moduleToFilename.clear();
       state.moduleImportChain.clear();
+      state.specifierToImporter.clear();
       state.sourceMaps.clear();
       // staticModuleCache and transformCache intentionally preserved
     },

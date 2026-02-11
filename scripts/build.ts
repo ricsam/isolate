@@ -25,6 +25,7 @@ const PACKAGES = [
   "isolate-daemon",
   "isolate-client",
   "isolate-server",
+  "module-loader",
   "test-utils",
 ];
 

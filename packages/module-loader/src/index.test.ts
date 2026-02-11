@@ -209,7 +209,7 @@ describe("defaultModuleLoader", () => {
       });
 
       assert.ok(result.code.includes("greeting"));
-      assert.strictEqual(result.filename, "utils.ts");
+      assert.strictEqual(result.filename, "utils.js");
       assert.strictEqual(result.resolveDir, "/app");
       assert.strictEqual(result.static, undefined);
     } finally {
