@@ -51,6 +51,9 @@ function findLastImportEnd(code: string): number {
       // Check if it's a single-line import
       if (trimmed.includes(" from ") || trimmed.endsWith(";")) {
         lastImportLine = i;
+      } else if (/^import\s+['"]/.test(trimmed)) {
+        // Side-effect import: import "module" or import 'module'
+        lastImportLine = i;
       } else {
         // Multi-line import
         inImport = true;
@@ -68,6 +71,16 @@ function findLastImportEnd(code: string): number {
  * Line-preserving: removed imports are replaced with equivalent newlines.
  */
 function elideUnusedImports(code: string): string {
+  // Only search for imports in the import section at the top of the file.
+  // Searching the entire code causes false matches inside strings/comments
+  // in large bundled files (e.g. zod at 525KB).
+  const lastImportLine = findLastImportEnd(code);
+  if (lastImportLine < 0) return code;
+
+  const lines = code.split("\n");
+  const importSectionEnd = lines.slice(0, lastImportLine + 1).join("\n").length;
+  const importSection = code.slice(0, importSectionEnd);
+
   const entries: Array<{
     fullMatch: string;
     start: number;
@@ -79,7 +92,7 @@ function elideUnusedImports(code: string): string {
 
   NAMED_IMPORT_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = NAMED_IMPORT_RE.exec(code)) !== null) {
+  while ((m = NAMED_IMPORT_RE.exec(importSection)) !== null) {
     entries.push({
       fullMatch: m[0],
       start: m.index,
@@ -95,7 +108,8 @@ function elideUnusedImports(code: string): string {
 
   if (entries.length === 0) return code;
 
-  // Build reference body: blank out import declarations
+  // Build reference body: the entire code with import declarations blanked out.
+  // This ensures we check for references everywhere outside imports.
   let body = code;
   for (let i = entries.length - 1; i >= 0; i--) {
     const { start, end } = entries[i]!;
