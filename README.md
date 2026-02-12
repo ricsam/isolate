@@ -26,6 +26,9 @@ A WHATWG-compliant JavaScript sandbox built on [isolated-vm](https://github.com/
 # For direct usage in Node.js
 npm add @ricsam/isolate-runtime isolated-vm
 
+# Module loader for filesystem + npm package resolution
+npm add @ricsam/isolate-module-loader
+
 # For daemon/client architecture (works with Bun, Deno, Node.js)
 npm add @ricsam/isolate-daemon  # Server (Node.js only)
 npm add @ricsam/isolate-client  # Client (any runtime)
@@ -33,6 +36,53 @@ npm add @ricsam/isolate-server  # Lifecycle wrapper for server-style runtimes
 ```
 
 ## Quick Start
+
+### Getting Started with Module Loader
+
+The fastest way to get up and running is with `@ricsam/isolate-module-loader`, which handles filesystem mapping, npm package bundling, and TypeScript out of the box:
+
+```typescript
+import { createRuntime } from "@ricsam/isolate-runtime";
+import { defaultModuleLoader } from "@ricsam/isolate-module-loader";
+
+const loader = defaultModuleLoader(
+  // Map your source directory into the isolate
+  { from: "/path/to/project/src/**/*", to: "/app" },
+  // Enable npm package imports (bundled automatically via Rollup)
+  { from: "/path/to/project/node_modules", to: "/node_modules" },
+);
+
+const runtime = await createRuntime({
+  moduleLoader: loader,
+  console: {
+    onEntry: (entry) => {
+      if (entry.type === "output") console.log(entry.stdout);
+    },
+  },
+  fetch: async (url, init) => fetch(url, init),
+});
+
+// Import your source files and npm packages directly
+await runtime.eval(
+  `
+  import { handler } from "./handler";  // reads from /path/to/project/src/handler.ts
+  import ms from "ms";                  // bundled from node_modules
+
+  console.log("Timeout:", ms("1 day"));
+  `,
+  "/app/entry.ts",
+);
+
+await runtime.dispose();
+```
+
+The module loader automatically:
+- Resolves TypeScript files (`.ts`, `.tsx`) and strips types
+- Probes extensions (`.tsx` → `.ts` → `.js` → etc.) and index files
+- Bundles npm packages with Rollup (browser conditions, CommonJS support)
+- Caches npm bundles for fast subsequent loads
+
+See the [module-loader README](./packages/module-loader/README.md) for full details.
 
 ### Local Runtime (Node.js)
 
@@ -1200,6 +1250,7 @@ await browser.close();
 | Package | Description |
 |---------|-------------|
 | [@ricsam/isolate-runtime](./packages/runtime) | Complete runtime with all APIs (Node.js) |
+| [@ricsam/isolate-module-loader](./packages/module-loader) | Filesystem + npm module loader with Rollup bundling |
 | [@ricsam/isolate-daemon](./packages/isolate-daemon) | Daemon server for IPC-based isolation |
 | [@ricsam/isolate-client](./packages/isolate-client) | Client for any JavaScript runtime |
 | [@ricsam/isolate-server](./packages/isolate-server) | Runtime lifecycle manager for server-style execution |
