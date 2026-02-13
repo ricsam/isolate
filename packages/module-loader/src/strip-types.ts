@@ -1,18 +1,54 @@
 import Module from "node:module";
 import path from "node:path";
 
-let _stripTypeScriptTypes: typeof Module.stripTypeScriptTypes | undefined;
-function getStripTypeScriptTypes() {
-  if (!_stripTypeScriptTypes) {
-    if (typeof Module.stripTypeScriptTypes !== "function") {
-      throw new Error(
-        "stripTypeScriptTypes is not available in this runtime. " +
-        "Requires Node.js >= 22.7.0. Bun does not support this API."
-      );
-    }
-    _stripTypeScriptTypes = Module.stripTypeScriptTypes;
+type StripTypeScriptTypesFn = NonNullable<typeof Module.stripTypeScriptTypes>;
+type TsLoader = "ts" | "tsx";
+type BunTranspilerLike = {
+  transformSync(code: string, options?: { loader?: TsLoader }): string;
+};
+type BunGlobalLike = {
+  Transpiler?: new (options: { loader: TsLoader }) => BunTranspilerLike;
+};
+
+let _stripTypeScriptTypes: StripTypeScriptTypesFn | undefined;
+const bunTranspilerCache: Partial<Record<TsLoader, BunTranspilerLike>> = {};
+
+function getStripTypeScriptTypes(): StripTypeScriptTypesFn | undefined {
+  const strip = Module.stripTypeScriptTypes;
+  if (typeof strip !== "function") {
+    _stripTypeScriptTypes = undefined;
+    return undefined;
   }
+
+  if (_stripTypeScriptTypes !== strip) {
+    _stripTypeScriptTypes = strip;
+  }
+
   return _stripTypeScriptTypes;
+}
+
+function getBunTranspiler(loader: TsLoader): BunTranspilerLike | undefined {
+  const cached = bunTranspilerCache[loader];
+  if (cached) return cached;
+
+  const bunGlobal = (globalThis as { Bun?: BunGlobalLike }).Bun;
+  if (!bunGlobal?.Transpiler) {
+    return undefined;
+  }
+
+  const transpiler = new bunGlobal.Transpiler({ loader });
+  bunTranspilerCache[loader] = transpiler;
+  return transpiler;
+}
+
+function transpileWithBunFallback(code: string, filename: string): string | null {
+  const loader: TsLoader = path.extname(filename) === ".tsx" ? "tsx" : "ts";
+  const transpiler = getBunTranspiler(loader);
+  if (!transpiler) {
+    return null;
+  }
+
+  return transpiler.transformSync(code, { loader });
 }
 
 const TS_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts"]);
@@ -42,18 +78,31 @@ export function processTypeScript(code: string, filename: string): string {
   // Find type-only export names BEFORE stripping
   const typeExportNames = findTypeOnlyExports(code);
 
-  // Strip TypeScript types
+  // Prefer Node's native strip API when available.
+  // Fall back to Bun.Transpiler for Bun-hosted callbacks.
   const stripTypes = getStripTypeScriptTypes();
   let stripped: string;
-  try {
-    stripped = stripTypes(code, {
-      mode: "transform",
-      sourceMap: false,
-    });
-  } catch {
-    stripped = stripTypes(code, {
-      mode: "strip",
-    });
+  if (stripTypes) {
+    try {
+      stripped = stripTypes(code, {
+        mode: "transform",
+        sourceMap: false,
+      });
+    } catch {
+      stripped = stripTypes(code, {
+        mode: "strip",
+      });
+    }
+  } else {
+    const bunTranspiled = transpileWithBunFallback(code, filename);
+    if (bunTranspiled === null) {
+      throw new Error(
+        "TypeScript processing is unavailable in this runtime. " +
+        "Requires Node.js >= 22.7.0 (Module.stripTypeScriptTypes) " +
+        "or Bun.Transpiler."
+      );
+    }
+    stripped = bunTranspiled;
   }
 
   // Elide unused import specifiers

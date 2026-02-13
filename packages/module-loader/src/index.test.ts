@@ -3,6 +3,7 @@ import assert from "node:assert";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import Module from "node:module";
 import { createRuntime, type RuntimeHandle } from "@ricsam/isolate-runtime";
 import {
   defaultModuleLoader,
@@ -245,6 +246,52 @@ describe("defaultModuleLoader", () => {
         }),
       /no node_modules mapping/,
     );
+  });
+
+  test("loads TypeScript files with Bun fallback when stripTypeScriptTypes is unavailable", async () => {
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "module-loader-bun-fallback-test-"),
+    );
+    const moduleRef = Module as typeof Module & { stripTypeScriptTypes: unknown };
+    const originalStrip = moduleRef.stripTypeScriptTypes;
+    const globalRef = globalThis as { Bun?: unknown };
+    const originalBun = globalRef.Bun;
+
+    class FakeTranspiler {
+      transformSync(source: string): string {
+        return source.replace(/:\s*string\b/g, "");
+      }
+    }
+
+    try {
+      moduleRef.stripTypeScriptTypes = undefined;
+      globalRef.Bun = { Transpiler: FakeTranspiler } as unknown;
+
+      fs.writeFileSync(
+        path.join(tmpDir, "utils.ts"),
+        'export const greeting: string = "hello";',
+      );
+
+      const loader = defaultModuleLoader(
+        { from: tmpDir + "/**/*", to: "/app" },
+      );
+
+      const result = await loader("./utils", {
+        path: "/app/entry.ts",
+        resolveDir: "/app",
+      });
+
+      assert.ok(result.code.includes('export const greeting = "hello";'));
+      assert.strictEqual(result.filename, "utils.js");
+    } finally {
+      moduleRef.stripTypeScriptTypes = originalStrip;
+      if (originalBun === undefined) {
+        delete globalRef.Bun;
+      } else {
+        globalRef.Bun = originalBun;
+      }
+      fs.rmSync(tmpDir, { recursive: true });
+    }
   });
 });
 
