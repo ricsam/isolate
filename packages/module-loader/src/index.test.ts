@@ -243,6 +243,37 @@ describe("resolve", () => {
   });
 });
 
+describe("bundleHostFile", () => {
+  test("shims Node.js builtins to empty modules", async () => {
+    clearBundleCache();
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "builtin-shim-test-"),
+    );
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "entry.js"),
+        `
+import fs from "fs";
+import { readFile } from "fs/promises";
+export const value = "pure-js-value";
+        `.trim(),
+      );
+
+      const result = await bundleHostFile(path.join(tmpDir, "entry.js"));
+
+      // The pure JS value should be in the bundle
+      assert.ok(result.code.includes("pure-js-value"));
+      // Node.js builtins should NOT appear as external imports
+      assert.ok(!result.code.includes("from 'fs'"), "fs should be shimmed, not external");
+      assert.ok(!result.code.includes('from "fs"'), "fs should be shimmed, not external");
+      assert.ok(!result.code.includes("from 'fs/promises'"), "fs/promises should be shimmed, not external");
+      assert.ok(!result.code.includes('from "fs/promises"'), "fs/promises should be shimmed, not external");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+});
+
 describe("defaultModuleLoader", () => {
   test("loads user files via path mapping", async () => {
     const tmpDir = fs.mkdtempSync(

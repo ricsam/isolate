@@ -1,4 +1,5 @@
 import path from "node:path";
+import { builtinModules } from "node:module";
 import { rollup, type Plugin } from "rollup";
 import * as nodeResolveModule from "@rollup/plugin-node-resolve";
 import * as commonjsModule from "@rollup/plugin-commonjs";
@@ -24,6 +25,46 @@ const replace = ((replaceModule as any).default || replaceModule) as (
 ) => Plugin;
 
 /**
+ * Set of Node.js built-in module names (e.g. "fs", "path", "crypto").
+ */
+const nodeBuiltins = new Set(builtinModules);
+
+/**
+ * Check if a specifier refers to a Node.js built-in module.
+ * Handles bare names ("fs"), subpaths ("fs/promises"), and node: prefix ("node:fs").
+ */
+function isNodeBuiltin(source: string): boolean {
+  const name = source.startsWith("node:") ? source.slice(5) : source;
+  const topLevel = name.split("/")[0]!;
+  return nodeBuiltins.has(topLevel);
+}
+
+const NODE_BUILTIN_SHIM_PREFIX = "\0node-builtin-shim:";
+
+/**
+ * Rollup plugin that provides empty shims for Node.js built-in modules.
+ * Place after nodeResolve — acts as a catch-all for builtins that the
+ * package's browser field didn't map to false.
+ */
+function shimNodeBuiltinsPlugin(): Plugin {
+  return {
+    name: "shim-node-builtins",
+    resolveId(source) {
+      if (isNodeBuiltin(source)) {
+        return { id: `${NODE_BUILTIN_SHIM_PREFIX}${source}`, moduleSideEffects: false };
+      }
+      return null;
+    },
+    load(id) {
+      if (id.startsWith(NODE_BUILTIN_SHIM_PREFIX)) {
+        return "export default {};\n";
+      }
+      return null;
+    },
+  };
+}
+
+/**
  * Cache for bundled npm packages. Key is the bare specifier (e.g. "lodash/chunk").
  */
 const bundleCache = new Map<string, { code: string }>();
@@ -47,6 +88,10 @@ function externalizeDepsPlugin(currentPackageName: string): Plugin {
 
       // Don't externalize relative imports (internal to the package)
       if (source.startsWith(".") || source.startsWith("/")) return null;
+
+      // Don't externalize Node.js builtins — let nodeResolve handle them
+      // via the package's browser field (e.g. "fs": false → empty module)
+      if (isNodeBuiltin(source)) return null;
 
       // Check if this is a different npm package
       const { packageName } = parseSpecifier(source);
@@ -112,6 +157,7 @@ async function doBundleSpecifier(
     plugins: [
       externalizeDepsPlugin(packageName),
       nodeResolve({ browser: true, rootDir }),
+      shimNodeBuiltinsPlugin(),
       commonjs(),
       json(),
       replace({
@@ -124,6 +170,8 @@ async function doBundleSpecifier(
       if (warning.code === "THIS_IS_UNDEFINED") return;
       if (warning.code === "UNUSED_EXTERNAL_IMPORT") return;
       if (warning.code === "EMPTY_BUNDLE") return;
+      // Suppress warnings about named imports from shimmed Node.js builtins
+      if (warning.code === "MISSING_EXPORT" && warning.exporter?.startsWith(NODE_BUILTIN_SHIM_PREFIX)) return;
       warn(warning);
     },
   });
@@ -150,6 +198,8 @@ function externalizeAllBareSpecifiersPlugin(): Plugin {
     resolveId(source, importer) {
       if (!importer) return null;
       if (source.startsWith(".") || source.startsWith("/")) return null;
+      // Don't externalize Node.js builtins — let nodeResolve/shim handle them
+      if (isNodeBuiltin(source)) return null;
       return { id: source, external: true };
     },
   };
@@ -219,6 +269,7 @@ async function doBundleHostFile(
         rootDir,
         extensions: [".mjs", ".js", ".json", ".node", ...TS_EXTENSIONS],
       }),
+      shimNodeBuiltinsPlugin(),
       commonjs(),
       json(),
       replace({
@@ -231,6 +282,8 @@ async function doBundleHostFile(
       if (warning.code === "THIS_IS_UNDEFINED") return;
       if (warning.code === "UNUSED_EXTERNAL_IMPORT") return;
       if (warning.code === "EMPTY_BUNDLE") return;
+      // Suppress warnings about named imports from shimmed Node.js builtins
+      if (warning.code === "MISSING_EXPORT" && warning.exporter?.startsWith(NODE_BUILTIN_SHIM_PREFIX)) return;
       warn(warning);
     },
   });
