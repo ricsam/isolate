@@ -13,6 +13,8 @@ export interface PathMapping {
   virtualMount: string;
   /** Whether the host base ends with node_modules */
   isNodeModules: boolean;
+  /** Whether this mapping is a module alias (to doesn't start with '/') */
+  isModuleAlias: boolean;
 }
 
 export interface MappingConfig {
@@ -30,6 +32,14 @@ export interface MappingConfig {
 export function parseMappings(configs: MappingConfig[]): PathMapping[] {
   return configs.map((config) => {
     const isGlob = config.from.includes("*");
+    const isModuleAlias = !config.to.startsWith("/");
+
+    if (isModuleAlias && isGlob) {
+      throw new Error(
+        `Module alias "${config.to}" cannot use a glob pattern in "from" ("${config.from}"). ` +
+        `Module aliases must map a single host file.`
+      );
+    }
 
     let hostBase: string;
     if (isGlob) {
@@ -47,7 +57,7 @@ export function parseMappings(configs: MappingConfig[]): PathMapping[] {
 
     // Normalize trailing slashes
     hostBase = hostBase.replace(/\/+$/, "");
-    const virtualMount = config.to.replace(/\/+$/, "");
+    const virtualMount = isModuleAlias ? config.to : config.to.replace(/\/+$/, "");
 
     const isNodeModules = hostBase.endsWith("/node_modules") || hostBase === "node_modules";
 
@@ -58,6 +68,7 @@ export function parseMappings(configs: MappingConfig[]): PathMapping[] {
       hostBase,
       virtualMount,
       isNodeModules,
+      isModuleAlias,
     };
   });
 }
@@ -109,4 +120,12 @@ export function hostToVirtual(hostPath: string, mappings: PathMapping[]): string
  */
 export function findNodeModulesMapping(mappings: PathMapping[]): PathMapping | undefined {
   return mappings.find((m) => m.isNodeModules);
+}
+
+/**
+ * Find a module alias mapping that matches the given bare specifier.
+ * Returns undefined if no module alias matches.
+ */
+export function findModuleAlias(specifier: string, mappings: PathMapping[]): PathMapping | undefined {
+  return mappings.find((m) => m.isModuleAlias && m.to === specifier);
 }

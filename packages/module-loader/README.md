@@ -63,6 +63,27 @@ defaultModuleLoader(
 
 **Node modules mapping** — when a mapping's host base ends with `node_modules`, bare specifiers like `"lodash"` or `"@aws-sdk/client-s3"` are bundled with Rollup using browser conditions, CommonJS conversion, and JSON support. Each package subpath is bundled independently and cached.
 
+## Module Aliases
+
+Map a host file to a bare-specifier import. If a mapping's `to` doesn't start with `/`, it's treated as a module alias:
+
+```typescript
+defaultModuleLoader(
+  // Module alias: import { thing } from "@/custom-module" resolves to the host file
+  { from: "/host/project/custom_entry.ts", to: "@/custom-module" },
+
+  // Regular filesystem mapping
+  { from: "/host/project/src/**/*", to: "/app" },
+
+  // npm packages
+  { from: "/host/project/node_modules", to: "/node_modules" },
+);
+```
+
+When an import matches a module alias, the host file is bundled with Rollup — relative imports within it are inlined, while npm package imports are left as external `import` statements (resolved by subsequent loader calls). TypeScript files are automatically processed.
+
+Module aliases cannot use glob patterns in `from` — each alias maps a single host file entry point.
+
 ## Features
 
 ### TypeScript Support
@@ -117,6 +138,7 @@ interface MappingConfig {
 parseMappings(configs: MappingConfig[]): PathMapping[];
 virtualToHost(virtualPath: string, mappings: PathMapping[]): string | null;
 findNodeModulesMapping(mappings: PathMapping[]): PathMapping | undefined;
+findModuleAlias(specifier: string, mappings: PathMapping[]): PathMapping | undefined;
 
 // File resolution
 resolveFilePath(basePath: string): string | null;
@@ -126,6 +148,7 @@ isBareSpecifier(specifier: string): boolean;
 
 // Bundling
 bundleSpecifier(specifier: string, rootDir: string): Promise<{ code: string }>;
+bundleHostFile(hostFilePath: string): Promise<{ code: string }>;
 clearBundleCache(): void;
 
 // TypeScript processing

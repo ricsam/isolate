@@ -8,6 +8,7 @@ import {
   parseMappings,
   virtualToHost,
   findNodeModulesMapping,
+  findModuleAlias,
   type MappingConfig,
   type PathMapping,
 } from "./mappings.ts";
@@ -16,13 +17,13 @@ import {
   parseSpecifier,
   isBareSpecifier,
 } from "./resolve.ts";
-import { bundleSpecifier } from "./bundle.ts";
+import { bundleSpecifier, bundleHostFile } from "./bundle.ts";
 import { isTypeScriptFile, processTypeScript } from "./strip-types.ts";
 
-export { parseMappings, virtualToHost, findNodeModulesMapping } from "./mappings.ts";
+export { parseMappings, virtualToHost, findNodeModulesMapping, findModuleAlias } from "./mappings.ts";
 export type { MappingConfig, PathMapping } from "./mappings.ts";
 export { resolveFilePath, detectFormat, parseSpecifier, isBareSpecifier } from "./resolve.ts";
-export { bundleSpecifier, clearBundleCache } from "./bundle.ts";
+export { bundleSpecifier, bundleHostFile, clearBundleCache } from "./bundle.ts";
 export { isTypeScriptFile, processTypeScript } from "./strip-types.ts";
 
 /**
@@ -57,8 +58,12 @@ export function defaultModuleLoader(
     moduleName: string,
     importer: { path: string; resolveDir: string },
   ): Promise<ModuleLoaderResult> => {
-    // A. Bare specifiers: npm packages
+    // A. Bare specifiers: module aliases or npm packages
     if (isBareSpecifier(moduleName)) {
+      const alias = findModuleAlias(moduleName, mappings);
+      if (alias) {
+        return handleModuleAlias(alias);
+      }
       return handleBareSpecifier(moduleName, nodeModulesMapping, mappings);
     }
 
@@ -102,6 +107,27 @@ async function handleBareSpecifier(
     filename,
     resolveDir: nodeModulesMapping.virtualMount,
     static: true,
+  };
+}
+
+/**
+ * Handle module alias specifiers by bundling the host file with Rollup.
+ */
+async function handleModuleAlias(
+  alias: PathMapping,
+): Promise<ModuleLoaderResult> {
+  const { code } = await bundleHostFile(alias.hostBase);
+
+  // Sanitize the alias name into a filename (e.g. "@/custom-module" -> "custom-module.bundled.js")
+  const filename = alias.to
+    .replace(/^@[^/]*\//, "") // strip scope prefix
+    .replace(/[^a-zA-Z0-9_.-]/g, "-") // replace non-safe chars
+    + ".bundled.js";
+
+  return {
+    code,
+    filename,
+    resolveDir: "/",
   };
 }
 

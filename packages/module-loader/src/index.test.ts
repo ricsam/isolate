@@ -9,11 +9,13 @@ import {
   parseMappings,
   virtualToHost,
   findNodeModulesMapping,
+  findModuleAlias,
   resolveFilePath,
   detectFormat,
   parseSpecifier,
   isBareSpecifier,
   clearBundleCache,
+  bundleHostFile,
 } from "./index.ts";
 
 describe("mappings", () => {
@@ -97,6 +99,58 @@ describe("mappings", () => {
     const nm = findNodeModulesMapping(mappings);
     assert.ok(nm);
     assert.strictEqual(nm.hostBase, "/host/node_modules");
+  });
+
+  test("parseMappings detects module alias when to doesn't start with /", () => {
+    const mappings = parseMappings([
+      { from: "/host/project/custom.ts", to: "@/custom-module" },
+    ]);
+
+    assert.strictEqual(mappings.length, 1);
+    assert.strictEqual(mappings[0]!.isModuleAlias, true);
+    assert.strictEqual(mappings[0]!.hostBase, "/host/project/custom.ts");
+    assert.strictEqual(mappings[0]!.to, "@/custom-module");
+  });
+
+  test("parseMappings sets isModuleAlias to false for path mappings", () => {
+    const mappings = parseMappings([
+      { from: "/host/src/**/*", to: "/app" },
+      { from: "/host/entry.ts", to: "/app/entry.ts" },
+    ]);
+
+    assert.strictEqual(mappings[0]!.isModuleAlias, false);
+    assert.strictEqual(mappings[1]!.isModuleAlias, false);
+  });
+
+  test("parseMappings throws on glob + module alias", () => {
+    assert.throws(
+      () => parseMappings([
+        { from: "/host/project/src/**/*", to: "@/custom" },
+      ]),
+      /Module alias.*cannot use a glob pattern/,
+    );
+  });
+
+  test("findModuleAlias finds matching alias", () => {
+    const mappings = parseMappings([
+      { from: "/host/src/**/*", to: "/app" },
+      { from: "/host/project/custom.ts", to: "@/custom-module" },
+      { from: "/host/node_modules", to: "/node_modules" },
+    ]);
+
+    const alias = findModuleAlias("@/custom-module", mappings);
+    assert.ok(alias);
+    assert.strictEqual(alias.hostBase, "/host/project/custom.ts");
+    assert.strictEqual(alias.to, "@/custom-module");
+  });
+
+  test("findModuleAlias returns undefined for non-matching specifier", () => {
+    const mappings = parseMappings([
+      { from: "/host/project/custom.ts", to: "@/custom-module" },
+    ]);
+
+    assert.strictEqual(findModuleAlias("@/other", mappings), undefined);
+    assert.strictEqual(findModuleAlias("lodash", mappings), undefined);
   });
 });
 
@@ -338,6 +392,44 @@ describe("integration with createRuntime", () => {
     }
   });
 
+  test("module alias resolves via bundleHostFile", async () => {
+    clearBundleCache();
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "module-alias-test-"),
+    );
+    try {
+      // Create a helper that the entry file imports
+      fs.writeFileSync(
+        path.join(tmpDir, "helper.ts"),
+        'export const secret: string = "bundled-value";',
+      );
+      // Create the entry file that re-exports from helper
+      fs.writeFileSync(
+        path.join(tmpDir, "entry.ts"),
+        `
+import { secret } from "./helper";
+export const value = "got:" + secret;
+        `.trim(),
+      );
+
+      const loader = defaultModuleLoader(
+        { from: path.join(tmpDir, "entry.ts"), to: "@/my-module" },
+      );
+
+      const result = await loader("@/my-module", {
+        path: "/app/entry.ts",
+        resolveDir: "/app",
+      });
+
+      assert.ok(result.code.includes("bundled-value"));
+      assert.strictEqual(result.filename, "my-module.bundled.js");
+      assert.strictEqual(result.resolveDir, "/");
+      assert.strictEqual(result.static, undefined);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
   test("nested user file imports", async () => {
     const tmpDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "nested-test-"),
@@ -382,6 +474,58 @@ export const result: number = double(21);
       );
 
       assert.strictEqual(logValue, "42");
+    } finally {
+      await runtime?.dispose();
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test("module alias import works end-to-end with createRuntime", async () => {
+    clearBundleCache();
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "alias-e2e-test-"),
+    );
+    let runtime: RuntimeHandle | undefined;
+    try {
+      // Create helper file
+      fs.writeFileSync(
+        path.join(tmpDir, "helper.ts"),
+        'export function greet(name: string): string { return "hello " + name; }',
+      );
+      // Create entry file that re-exports
+      fs.writeFileSync(
+        path.join(tmpDir, "my-lib.ts"),
+        `
+import { greet } from "./helper";
+export const value: string = greet("world");
+        `.trim(),
+      );
+
+      const loader = defaultModuleLoader(
+        { from: path.join(tmpDir, "my-lib.ts"), to: "@/my-module" },
+      );
+
+      let logValue: string | null = null;
+      runtime = await createRuntime({
+        moduleLoader: loader,
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.stdout;
+            }
+          },
+        },
+      });
+
+      await runtime.eval(
+        `
+        import { value } from "@/my-module";
+        console.log(value);
+        `,
+        "/app/entry.ts",
+      );
+
+      assert.strictEqual(logValue, "hello world");
     } finally {
       await runtime?.dispose();
       fs.rmSync(tmpDir, { recursive: true });

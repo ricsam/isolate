@@ -1,9 +1,11 @@
+import path from "node:path";
 import { rollup, type Plugin } from "rollup";
 import * as nodeResolveModule from "@rollup/plugin-node-resolve";
 import * as commonjsModule from "@rollup/plugin-commonjs";
 import * as jsonModule from "@rollup/plugin-json";
 import * as replaceModule from "@rollup/plugin-replace";
 import { parseSpecifier } from "./resolve.ts";
+import { processTypeScript, isTypeScriptFile } from "./strip-types.ts";
 import type { RollupCommonJSOptions } from "@rollup/plugin-commonjs";
 import type { RollupJsonOptions } from "@rollup/plugin-json";
 import type { RollupReplaceOptions } from "@rollup/plugin-replace";
@@ -110,6 +112,113 @@ async function doBundleSpecifier(
     plugins: [
       externalizeDepsPlugin(packageName),
       nodeResolve({ browser: true, rootDir }),
+      commonjs(),
+      json(),
+      replace({
+        preventAssignment: true,
+        values: { "process.env.NODE_ENV": JSON.stringify("development") },
+      }),
+    ],
+    onwarn: (warning, warn) => {
+      if (warning.code === "CIRCULAR_DEPENDENCY") return;
+      if (warning.code === "THIS_IS_UNDEFINED") return;
+      if (warning.code === "UNUSED_EXTERNAL_IMPORT") return;
+      if (warning.code === "EMPTY_BUNDLE") return;
+      warn(warning);
+    },
+  });
+
+  const { output } = await bundle.generate({
+    format: "es",
+    sourcemap: "inline",
+    inlineDynamicImports: true,
+  });
+  await bundle.close();
+
+  const code = output[0]!.code;
+  return { code };
+}
+
+/**
+ * Create a Rollup plugin that externalizes ALL bare specifiers.
+ * Used for module aliases where the host file's relative imports are bundled
+ * but npm package dependencies are left as external imports.
+ */
+function externalizeAllBareSpecifiersPlugin(): Plugin {
+  return {
+    name: "externalize-all-bare-specifiers",
+    resolveId(source, importer) {
+      if (!importer) return null;
+      if (source.startsWith(".") || source.startsWith("/")) return null;
+      return { id: source, external: true };
+    },
+  };
+}
+
+/**
+ * Create a Rollup transform plugin that strips TypeScript types.
+ */
+function stripTypeScriptPlugin(): Plugin {
+  return {
+    name: "strip-typescript",
+    transform(code, id) {
+      if (isTypeScriptFile(id)) {
+        return { code: processTypeScript(code, id), map: null };
+      }
+      return null;
+    },
+  };
+}
+
+const TS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"];
+
+/**
+ * Bundle a host file using Rollup, inlining its relative imports.
+ *
+ * - Uses the host file path as Rollup input
+ * - Externalizes ALL bare specifiers (npm packages)
+ * - Strips TypeScript via processTypeScript
+ * - Shares the bundleCache/bundlesInFlight (no key collision since file paths start with `/`)
+ *
+ * Results are cached permanently.
+ */
+export async function bundleHostFile(
+  hostFilePath: string,
+): Promise<{ code: string }> {
+  const cached = bundleCache.get(hostFilePath);
+  if (cached) return cached;
+
+  const inFlight = bundlesInFlight.get(hostFilePath);
+  if (inFlight) return inFlight;
+
+  const promise = doBundleHostFile(hostFilePath);
+  bundlesInFlight.set(hostFilePath, promise);
+
+  try {
+    const result = await promise;
+    bundleCache.set(hostFilePath, result);
+    return result;
+  } finally {
+    bundlesInFlight.delete(hostFilePath);
+  }
+}
+
+async function doBundleHostFile(
+  hostFilePath: string,
+): Promise<{ code: string }> {
+  const rootDir = path.dirname(hostFilePath);
+
+  const bundle = await rollup({
+    input: hostFilePath,
+    treeshake: false,
+    plugins: [
+      externalizeAllBareSpecifiersPlugin(),
+      stripTypeScriptPlugin(),
+      nodeResolve({
+        browser: true,
+        rootDir,
+        extensions: [".mjs", ".js", ".json", ".node", ...TS_EXTENSIONS],
+      }),
       commonjs(),
       json(),
       replace({

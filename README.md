@@ -50,6 +50,8 @@ const loader = defaultModuleLoader(
   { from: "/path/to/project/src/**/*", to: "/app" },
   // Enable npm package imports (bundled automatically via Rollup)
   { from: "/path/to/project/node_modules", to: "/node_modules" },
+  // Module alias: bundle a host file and import it as a bare specifier
+  { from: "/path/to/project/lib/entry.ts", to: "@/my-lib" },
 );
 
 const runtime = await createRuntime({
@@ -62,11 +64,12 @@ const runtime = await createRuntime({
   fetch: async (url, init) => fetch(url, init),
 });
 
-// Import your source files and npm packages directly
+// Import your source files, npm packages, and module aliases directly
 await runtime.eval(
   `
   import { handler } from "./handler";  // reads from /path/to/project/src/handler.ts
   import ms from "ms";                  // bundled from node_modules
+  import { util } from "@/my-lib";      // bundled from /path/to/project/lib/entry.ts
 
   console.log("Timeout:", ms("1 day"));
   `,
