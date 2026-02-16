@@ -4,6 +4,7 @@
 
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert";
+import { createServer, connect as netConnect, type Socket, type Server } from "node:net";
 import { connect } from "./connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import type { DaemonConnection, RemoteRuntime, Namespace } from "./types.ts";
@@ -1477,5 +1478,328 @@ describe("Namespace Runtime Caching Integration Tests", () => {
         await runtime2.dispose();
       }
     });
+  });
+});
+
+// ============================================================================
+// Connection Recovery Tests
+// ============================================================================
+
+/**
+ * Create a TCP proxy that forwards between client and daemon.
+ * Returns helpers to drop and restore the connection.
+ */
+function createProxy(targetSocket: string): Promise<{
+  proxySocket: string;
+  server: Server;
+  dropConnection: () => void;
+  getClientSockets: () => Socket[];
+}> {
+  const proxySocket = targetSocket + ".proxy";
+  const clientSockets: Socket[] = [];
+
+  return new Promise((resolve, reject) => {
+    const server = createServer((clientSocket) => {
+      clientSockets.push(clientSocket);
+      const daemonSocket = netConnect(targetSocket);
+
+      clientSocket.pipe(daemonSocket);
+      daemonSocket.pipe(clientSocket);
+
+      clientSocket.on("close", () => {
+        daemonSocket.destroy();
+      });
+      daemonSocket.on("close", () => {
+        clientSocket.destroy();
+      });
+      clientSocket.on("error", () => daemonSocket.destroy());
+      daemonSocket.on("error", () => clientSocket.destroy());
+    });
+
+    server.on("error", reject);
+    server.listen(proxySocket, () => {
+      server.removeListener("error", reject);
+      resolve({
+        proxySocket,
+        server,
+        dropConnection: () => {
+          for (const s of clientSockets) {
+            s.destroy();
+          }
+          clientSockets.length = 0;
+        },
+        getClientSockets: () => clientSockets,
+      });
+    });
+  });
+}
+
+const RECOVERY_SOCKET = "/tmp/isolate-recovery-test-daemon.sock";
+
+describe("Connection Recovery Tests", () => {
+  let daemon: DaemonHandle;
+
+  before(async () => {
+    daemon = await startDaemon({ socketPath: RECOVERY_SOCKET, maxIsolates: 10 });
+  });
+
+  after(async () => {
+    await daemon.close();
+  });
+
+  it("should reconnect idle namespaced runtime after connection drop", async () => {
+    const proxy = await createProxy(RECOVERY_SOCKET);
+    try {
+      const logs: string[] = [];
+      const client = await connect({ socket: proxy.proxySocket });
+
+      const namespace = client.createNamespace("recovery-idle-1");
+      const runtime = await namespace.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logs.push(entry.stdout);
+            }
+          },
+        },
+      });
+
+      // Set some global state and verify it works
+      await runtime.eval(`globalThis.recoveryTest = "alive";`);
+      await runtime.eval(`console.log("before:", globalThis.recoveryTest);`);
+      assert.ok(logs.some((l) => l === "before: alive"));
+
+      // Drop the connection
+      proxy.dropConnection();
+
+      // Wait for auto-reconnect to complete
+      await new Promise((r) => setTimeout(r, 500));
+
+      // Client should have reconnected
+      assert.strictEqual(client.isConnected(), true);
+
+      // The same runtime handle should still work after reconnect
+      // The auto-reconnect re-registered the same callbacks on a new connection
+      await runtime.eval(`console.log("after:", globalThis.recoveryTest);`);
+      assert.ok(logs.some((l) => l === "after: alive"));
+
+      await runtime.dispose();
+      await client.close();
+    } finally {
+      proxy.server.close();
+    }
+  });
+
+  it("should reconnect and run fetch callback after connection drop", async () => {
+    const proxy = await createProxy(RECOVERY_SOCKET);
+    try {
+      let fetchCallCount = 0;
+      const client = await connect({ socket: proxy.proxySocket });
+
+      const namespace = client.createNamespace("recovery-fetch-1");
+      const runtime = await namespace.createRuntime({
+        fetch: async (url) => {
+          fetchCallCount++;
+          return new Response(`fetched: ${url}`);
+        },
+      });
+
+      // Verify fetch works before disconnect
+      await runtime.eval(`
+        serve({
+          fetch: async (request) => {
+            const r = await fetch("https://example.com/test");
+            return new Response(await r.text());
+          }
+        });
+      `);
+
+      const response1 = await runtime.fetch.dispatchRequest(
+        new Request("http://localhost/test1")
+      );
+      assert.strictEqual(await response1.text(), "fetched: https://example.com/test");
+      assert.strictEqual(fetchCallCount, 1);
+
+      // Drop and wait for reconnect
+      proxy.dropConnection();
+      await new Promise((r) => setTimeout(r, 500));
+
+      // After reconnect, the same runtime handle should work
+      // (daemon reused runtime with reconnect, same fetch callback re-registered)
+      const response2 = await runtime.fetch.dispatchRequest(
+        new Request("http://localhost/test2")
+      );
+      assert.strictEqual(await response2.text(), "fetched: https://example.com/test");
+      assert.strictEqual(fetchCallCount, 2);
+
+      await runtime.dispose();
+      await client.close();
+    } finally {
+      proxy.server.close();
+    }
+  });
+
+  it("should handle multiple namespaced runtimes on reconnect", async () => {
+    const proxy = await createProxy(RECOVERY_SOCKET);
+    try {
+      const logs1: string[] = [];
+      const logs2: string[] = [];
+      const client = await connect({ socket: proxy.proxySocket });
+
+      const ns1 = client.createNamespace("recovery-multi-1");
+      const ns2 = client.createNamespace("recovery-multi-2");
+
+      const rt1 = await ns1.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") logs1.push(entry.stdout);
+          },
+        },
+      });
+      const rt2 = await ns2.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") logs2.push(entry.stdout);
+          },
+        },
+      });
+
+      await rt1.eval(`globalThis.ns1 = "one";`);
+      await rt2.eval(`globalThis.ns2 = "two";`);
+
+      // Drop
+      proxy.dropConnection();
+      await new Promise((r) => setTimeout(r, 500));
+
+      assert.strictEqual(client.isConnected(), true);
+
+      // Both runtimes should still work after reconnect
+      await rt1.eval(`console.log("ns1:", globalThis.ns1);`);
+      await rt2.eval(`console.log("ns2:", globalThis.ns2);`);
+
+      assert.ok(logs1.some((l) => l === "ns1: one"));
+      assert.ok(logs2.some((l) => l === "ns2: two"));
+
+      await rt1.dispose();
+      await rt2.dispose();
+      await client.close();
+    } finally {
+      proxy.server.close();
+    }
+  });
+
+  it("should NOT auto-reconnect after explicit close()", async () => {
+    const proxy = await createProxy(RECOVERY_SOCKET);
+    try {
+      const client = await connect({ socket: proxy.proxySocket });
+
+      const namespace = client.createNamespace("recovery-no-reconnect-1");
+      const runtime = await namespace.createRuntime({
+        console: { onEntry: () => {} },
+      });
+      await runtime.eval(`globalThis.x = 1;`);
+
+      // Explicit close - should NOT trigger reconnect
+      await client.close();
+
+      await new Promise((r) => setTimeout(r, 300));
+      assert.strictEqual(client.isConnected(), false);
+    } finally {
+      proxy.server.close();
+    }
+  });
+
+  it("should reconnect and run tests with fetch callback after connection drop", async () => {
+    const proxy = await createProxy(RECOVERY_SOCKET);
+    try {
+      let fetchCallCount = 0;
+      const client = await connect({ socket: proxy.proxySocket });
+
+      const namespace = client.createNamespace("recovery-runtests-1");
+      const runtime = await namespace.createRuntime({
+        testEnvironment: true,
+        fetch: async (url) => {
+          fetchCallCount++;
+          return new Response("hello from fetch");
+        },
+      });
+
+      // Register a test that uses fetch
+      await runtime.eval(`
+        test("fetch test", async () => {
+          const resp = await fetch("https://example.com/data");
+          const text = await resp.text();
+          expect(text).toBe("hello from fetch");
+        });
+      `);
+
+      // Drop connection and wait for auto-reconnect
+      proxy.dropConnection();
+      await new Promise((r) => setTimeout(r, 500));
+      assert.strictEqual(client.isConnected(), true);
+
+      // After reconnect, runTests should work (daemon reused runtime, client re-registered callbacks)
+      const results = await runtime.testEnvironment.runTests(10000);
+      assert.ok(results);
+      assert.strictEqual(results.passed, 1);
+      assert.strictEqual(results.failed, 0);
+      assert.ok(fetchCallCount > 0, "Fetch callback should have been called");
+
+      await runtime.dispose();
+      await client.close();
+    } finally {
+      proxy.server.close();
+    }
+  });
+
+  it("should reconnect and re-register custom functions after connection drop", async () => {
+    const proxy = await createProxy(RECOVERY_SOCKET);
+    try {
+      let callCount = 0;
+      const client = await connect({ socket: proxy.proxySocket });
+
+      const namespace = client.createNamespace("recovery-custom-1");
+      const logs: string[] = [];
+      const runtime = await namespace.createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") logs.push(entry.stdout);
+          },
+        },
+        customFunctions: {
+          getCounter: {
+            fn: () => {
+              callCount++;
+              return callCount;
+            },
+            type: "sync",
+          },
+        },
+      });
+
+      // Verify custom function works before drop
+      await runtime.eval(`
+        const result = getCounter();
+        console.log("before:", result);
+      `);
+      assert.ok(logs.some((l) => l === "before: 1"));
+
+      // Drop and reconnect
+      proxy.dropConnection();
+      await new Promise((r) => setTimeout(r, 500));
+      assert.strictEqual(client.isConnected(), true);
+
+      // Custom function should work after reconnect
+      await runtime.eval(`
+        const result2 = getCounter();
+        console.log("after:", result2);
+      `);
+      assert.ok(logs.some((l) => l === "after: 2"));
+
+      await runtime.dispose();
+      await client.close();
+    } finally {
+      proxy.server.close();
+    }
   });
 });

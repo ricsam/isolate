@@ -466,14 +466,29 @@ async function hardDeleteRuntime(instance: IsolateInstance, state: DaemonState):
     instance.disposedAt = undefined;
     instance.ownerConnection = null;
     if (instance.callbackContext) {
+      // Reject any pending reconnection promise before clearing connection.
+      // Attach a no-op catch before rejecting to prevent unhandled promise rejections
+      // (e.g. when evicting disposed runtimes that nobody is waiting on).
+      if (instance.callbackContext.reconnectionPromise) {
+        clearTimeout(instance.callbackContext.reconnectionPromise.timeoutId);
+        instance.callbackContext.reconnectionPromise.promise.catch(() => {});
+        instance.callbackContext.reconnectionPromise.reject(
+          new Error("Runtime was permanently disposed")
+        );
+        instance.callbackContext.reconnectionPromise = undefined;
+      }
       instance.callbackContext.connection = null;
     }
   }
 }
 
+/** Default timeout for waiting for reconnection (30 seconds) */
+const RECONNECTION_TIMEOUT_MS = 30_000;
+
 /**
  * Soft-delete a namespaced runtime (keep cached for reuse).
  * Clears owner connection and callbacks but preserves isolate/context.
+ * Creates a reconnection promise so in-flight callbacks can wait for a new connection.
  */
 function softDeleteRuntime(instance: IsolateInstance, state: DaemonState): void {
   instance.isDisposed = true;
@@ -481,6 +496,29 @@ function softDeleteRuntime(instance: IsolateInstance, state: DaemonState): void 
   instance.ownerConnection = null;
   if (instance.callbackContext) {
     instance.callbackContext.connection = null;
+
+    // Create a reconnection promise so in-flight callbacks can wait.
+    // Attach a no-op catch to prevent unhandled rejection when timeout fires
+    // and nobody is awaiting the promise (e.g. runtime was idle at disconnect).
+    let resolve: (conn: ConnectionState) => void;
+    let reject: (err: Error) => void;
+    const promise = new Promise<ConnectionState>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    promise.catch(() => {});
+    const timeoutId = setTimeout(() => {
+      if (instance.callbackContext?.reconnectionPromise) {
+        instance.callbackContext.reconnectionPromise = undefined;
+        reject!(new Error("Reconnection timeout: no client reconnected within timeout"));
+      }
+    }, RECONNECTION_TIMEOUT_MS);
+    instance.callbackContext.reconnectionPromise = {
+      promise,
+      resolve: resolve!,
+      reject: reject!,
+      timeoutId,
+    };
   }
   instance.callbacks.clear();
 
@@ -534,6 +572,13 @@ function reuseNamespacedRuntime(
   if (instance.callbackContext) {
     // Update connection reference
     instance.callbackContext.connection = connection;
+
+    // Resolve the reconnection promise so waiting callbacks can proceed
+    if (instance.callbackContext.reconnectionPromise) {
+      clearTimeout(instance.callbackContext.reconnectionPromise.timeoutId);
+      instance.callbackContext.reconnectionPromise.resolve(connection);
+      instance.callbackContext.reconnectionPromise = undefined;
+    }
 
     // Update callback IDs
     instance.callbackContext.consoleOnEntry = callbacks?.console?.onEntry?.callbackId;
@@ -648,6 +693,53 @@ function reuseNamespacedRuntime(
   instance.returnedPromises = new Map();
   instance.returnedIterators = new Map();
   instance.nextLocalCallbackId = 1_000_000;
+}
+
+/**
+ * Get the current connection or wait for reconnection.
+ * Returns the connection, or throws if no reconnection is possible.
+ */
+async function waitForConnection(callbackContext: CallbackContext): Promise<ConnectionState> {
+  if (callbackContext.connection) {
+    return callbackContext.connection;
+  }
+  if (callbackContext.reconnectionPromise) {
+    return callbackContext.reconnectionPromise.promise;
+  }
+  throw new Error("No connection available and no reconnection pending");
+}
+
+/**
+ * Invoke a client callback with reconnection support.
+ * If the connection is null, waits for reconnection. If the call fails with a
+ * connection error and a reconnection promise exists, retries once after reconnection.
+ */
+async function invokeCallbackWithReconnect(
+  callbackContext: CallbackContext,
+  getCallbackId: () => number | undefined,
+  args: unknown[],
+  label: string,
+  invokeClientCallback: (conn: ConnectionState, callbackId: number, args: unknown[]) => Promise<unknown>,
+): Promise<unknown> {
+  const conn = await waitForConnection(callbackContext);
+  const cbId = getCallbackId();
+  if (cbId === undefined) {
+    throw new Error(`${label} callback not available`);
+  }
+  try {
+    return await invokeClientCallback(conn, cbId, args);
+  } catch (err) {
+    // If the call failed and a reconnection promise now exists, retry once
+    if (callbackContext.reconnectionPromise && !callbackContext.connection) {
+      const newConn = await callbackContext.reconnectionPromise.promise;
+      const newCbId = getCallbackId();
+      if (newCbId === undefined) {
+        throw new Error(`${label} callback not available after reconnection`);
+      }
+      return invokeClientCallback(newConn, newCbId, args);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -918,12 +1010,17 @@ async function handleCreateRuntime(
           }
           return await callback(...args);
         } else {
-          // Client-side callback — forward via IPC
-          const conn = callbackContext.connection;
-          if (!conn) {
-            throw new Error(`No connection available for callback ${callbackId}`);
+          // Client-side callback — forward via IPC (with reconnection support)
+          const conn = await waitForConnection(callbackContext);
+          try {
+            return await invokeClientCallback(conn, callbackId, args);
+          } catch (err) {
+            if (callbackContext.reconnectionPromise && !callbackContext.connection) {
+              const newConn = await callbackContext.reconnectionPromise.promise;
+              return invokeClientCallback(newConn, callbackId, args);
+            }
+            throw err;
           }
-          return invokeClientCallback(conn, callbackId, args);
         }
       };
 
@@ -951,32 +1048,36 @@ async function handleCreateRuntime(
               const nextCallbackId = callbackContext_.custom.get(`${name}:next`);
               const returnCallbackId = callbackContext_.custom.get(`${name}:return`);
 
-              // Create async generator
+              // Create async generator (with reconnection support)
               async function* bridgedIterator() {
                 // Start the iterator on the client
-                const conn = callbackContext_.connection;
-                if (!conn || startCallbackId === undefined) {
-                  throw new Error(`AsyncIterator callback '${name}' not available`);
-                }
-
-                const startResult = await invokeClientCallback(conn, startCallbackId, args) as { iteratorId: number };
+                const startResult = await invokeCallbackWithReconnect(
+                  callbackContext_,
+                  () => callbackContext_.custom.get(`${name}:start`),
+                  args,
+                  `AsyncIterator '${name}' start`,
+                  invokeClientCallback,
+                ) as { iteratorId: number };
                 const iteratorId = startResult.iteratorId;
 
                 try {
                   while (true) {
-                    const nextConn = callbackContext_.connection;
-                    if (!nextConn || nextCallbackId === undefined) {
-                      throw new Error(`AsyncIterator callback '${name}' not available`);
-                    }
-                    const nextResult = await invokeClientCallback(nextConn, nextCallbackId, [iteratorId]) as { done: boolean; value: unknown };
+                    const nextResult = await invokeCallbackWithReconnect(
+                      callbackContext_,
+                      () => callbackContext_.custom.get(`${name}:next`),
+                      [iteratorId],
+                      `AsyncIterator '${name}' next`,
+                      invokeClientCallback,
+                    ) as { done: boolean; value: unknown };
                     if (nextResult.done) return nextResult.value;
                     yield nextResult.value;
                   }
                 } finally {
-                  // Call return on cleanup
+                  // Call return on cleanup — best-effort, don't fail if connection is gone
                   const retConn = callbackContext_.connection;
-                  if (retConn && returnCallbackId !== undefined) {
-                    await invokeClientCallback(retConn, returnCallbackId, [iteratorId]).catch(() => {});
+                  const retCbId = callbackContext_.custom.get(`${name}:return`);
+                  if (retConn && retCbId !== undefined) {
+                    await invokeClientCallback(retConn, retCbId, [iteratorId]).catch(() => {});
                   }
                 }
               }
@@ -987,31 +1088,34 @@ async function handleCreateRuntime(
         } else {
           // Sync or async function — both bridge to IPC (which is always async)
           // The runtime's setupCustomFunctions handles the sync/async wrapping in the isolate
+          // Uses reconnection support so in-flight calls can wait for a new connection
           bridgedCustomFunctions[name] = {
             type: registration.type as 'sync' | 'async',
             fn: async (...args: unknown[]) => {
-              const conn = callbackContext_.connection;
-              const cbId = callbackContext_.custom.get(name);
-              if (!conn || cbId === undefined) {
-                throw new Error(`Custom function callback '${name}' not available`);
-              }
-              return invokeClientCallback(conn, cbId, args);
+              return invokeCallbackWithReconnect(
+                callbackContext_,
+                () => callbackContext_.custom.get(name),
+                args,
+                `Custom function '${name}'`,
+                invokeClientCallback,
+              );
             },
           };
         }
       }
     }
 
-    // Build module loader if registered
+    // Build module loader if registered (with reconnection support)
     let moduleLoader: ((specifier: string, importer: { path: string; resolveDir: string }) => Promise<{ code: string; filename: string; resolveDir: string; static?: boolean }>) | undefined;
     if (moduleLoaderCallback) {
       moduleLoader = async (specifier: string, importer: { path: string; resolveDir: string }) => {
-        const conn = callbackContext.connection;
-        const cbId = callbackContext.moduleLoader;
-        if (!conn || cbId === undefined) {
-          throw new Error("Module loader callback not available");
-        }
-        return invokeClientCallback(conn, cbId, [specifier, importer]) as Promise<{ code: string; filename: string; resolveDir: string; static?: boolean }>;
+        return invokeCallbackWithReconnect(
+          callbackContext,
+          () => callbackContext.moduleLoader,
+          [specifier, importer],
+          "Module loader",
+          invokeClientCallback,
+        ) as Promise<{ code: string; filename: string; resolveDir: string; static?: boolean }>;
       };
     }
 
@@ -1055,22 +1159,13 @@ async function handleCreateRuntime(
     if (playwrightCallbacks) {
       playwrightOptions = {
         handler: async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
-          const conn = callbackContext.connection;
-          const callbackId = callbackContext.playwright.handlerCallbackId;
-          if (!conn || callbackId === undefined) {
-            return {
-              ok: false,
-              error: {
-                name: "Error",
-                message: "Playwright handler callback not available",
-              },
-            };
-          }
           try {
-            const resultJson = await invokeClientCallback(
-              conn,
-              callbackId,
+            const resultJson = await invokeCallbackWithReconnect(
+              callbackContext,
+              () => callbackContext.playwright.handlerCallbackId,
               [JSON.stringify(op)],
+              "Playwright handler",
+              invokeClientCallback,
             );
             return JSON.parse(resultJson as string) as PlaywrightResult;
           } catch (err) {
@@ -1134,20 +1229,21 @@ async function handleCreateRuntime(
           runtime.pendingCallbacks.push(promise);
         },
       },
-      // Fetch handler that bridges to client via IPC
+      // Fetch handler that bridges to client via IPC (with reconnection support)
       fetch: async (url: string, init: FetchRequestInit) => {
-        const conn = callbackContext.connection;
-        const callbackId = callbackContext.fetch;
-        if (!conn || callbackId === undefined) {
-          throw new Error("Fetch callback not available");
-        }
         const serialized: SerializedRequest = {
           url,
           method: init.method,
           headers: init.headers,
           body: init.rawBody,
         };
-        const result = await invokeClientCallback(conn, callbackId, [serialized]);
+        const result = await invokeCallbackWithReconnect(
+          callbackContext,
+          () => callbackContext.fetch,
+          [serialized],
+          "Fetch",
+          invokeClientCallback,
+        );
         if (result && typeof result === 'object' && (result as { __streamingResponse?: boolean }).__streamingResponse) {
           const response = (result as { response: Response }).response;
           (response as Response & { __isCallbackStream?: boolean }).__isCallbackStream = true;
@@ -1155,13 +1251,10 @@ async function handleCreateRuntime(
         }
         return deserializeResponse(result as SerializedResponse);
       },
-      // FS handler that bridges to client via IPC
+      // FS handler that bridges to client via IPC (with reconnection support)
       fs: {
         getDirectory: async (dirPath: string) => {
-          const conn = callbackContext.connection;
-          if (!conn) {
-            throw new Error("FS callbacks not available");
-          }
+          const conn = await waitForConnection(callbackContext);
           return createCallbackFileSystemHandler({
             connection: conn,
             callbackContext,
@@ -2568,14 +2661,49 @@ async function handleRunTests(
 
   instance.lastActivity = Date.now();
 
+  // If there's already an in-flight test run (from before reconnection), await it
+  if (instance.pendingTestRun) {
+    try {
+      const results = await instance.pendingTestRun.promise;
+      // Use current connection (may have changed due to reconnection)
+      const currentConn = instance.callbackContext?.connection;
+      if (currentConn) {
+        sendOk(currentConn.socket, message.requestId, results);
+      }
+    } catch (err) {
+      const error = err as Error;
+      const currentConn = instance.callbackContext?.connection;
+      if (currentConn) {
+        sendError(
+          currentConn.socket,
+          message.requestId,
+          ErrorCode.SCRIPT_ERROR,
+          error.message,
+          { name: error.name, stack: error.stack }
+        );
+      }
+    }
+    return;
+  }
+
   try {
     const timeout = message.timeout ?? 30000;
-    const results = await instance.runtime.testEnvironment.runTests(timeout);
-    sendOk(connection.socket, message.requestId, results);
+    const runPromise = instance.runtime.testEnvironment.runTests(timeout);
+    instance.pendingTestRun = { promise: runPromise };
+
+    const results = await runPromise;
+    instance.pendingTestRun = undefined;
+
+    // Send result using CURRENT connection (may have changed due to reconnection)
+    const currentConn = instance.callbackContext?.connection ?? connection;
+    sendOk(currentConn.socket, message.requestId, results);
   } catch (err) {
+    instance.pendingTestRun = undefined;
     const error = err as Error;
+    // Send error using CURRENT connection
+    const currentConn = instance.callbackContext?.connection ?? connection;
     sendError(
-      connection.socket,
+      currentConn.socket,
       message.requestId,
       ErrorCode.SCRIPT_ERROR,
       error.message,

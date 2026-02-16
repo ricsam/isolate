@@ -148,6 +148,12 @@ interface StreamUploadSession {
   creditResolver?: () => void;
 }
 
+/** Tracked descriptor for a namespaced runtime, for auto-reconnection */
+interface NamespacedRuntimeDescriptor {
+  isolateId: string;
+  runtimeOptions: RuntimeOptions;
+}
+
 interface ConnectionState {
   socket: Socket;
   pendingRequests: Map<number, PendingRequest>;
@@ -166,6 +172,12 @@ interface ConnectionState {
   moduleSourceCache: Map<string, string>;
   /** Track active callback stream readers (for cancellation from daemon) */
   callbackStreamReaders: Map<number, ReadableStreamDefaultReader<Uint8Array>>;
+  /** True when close() was called explicitly (prevents auto-reconnect) */
+  closing: boolean;
+  /** Tracked namespaced runtimes for auto-reconnection */
+  namespacedRuntimes: Map<string, NamespacedRuntimeDescriptor>;
+  /** Promise that resolves when reconnection completes (set during auto-reconnect) */
+  reconnecting?: Promise<void>;
 }
 
 /**
@@ -187,53 +199,176 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
     uploadStreams: new Map(),
     moduleSourceCache: new Map(),
     callbackStreamReaders: new Map(),
+    closing: false,
+    namespacedRuntimes: new Map(),
   };
 
-  const parser = createFrameParser();
+  function setupSocket(sock: Socket): void {
+    const parser = createFrameParser();
 
-  socket.on("data", (data) => {
+    sock.on("data", (data) => {
+      try {
+        for (const frame of parser.feed(new Uint8Array(data))) {
+          handleMessage(frame.message, state);
+        }
+      } catch (err) {
+        console.error("Error parsing frame:", err);
+      }
+    });
+
+    sock.on("close", () => {
+      state.connected = false;
+      // Reject all pending requests
+      for (const [, pending] of state.pendingRequests) {
+        pending.reject(new Error("Connection closed"));
+      }
+      state.pendingRequests.clear();
+
+      // Clean up streaming responses - error any pending streams
+      for (const [, receiver] of state.streamResponses) {
+        receiver.state = "errored";
+        receiver.error = new Error("Connection closed");
+        // Resolve all pending pull promises so the stream can error properly
+        const resolvers = receiver.pullResolvers.splice(0);
+        for (const resolver of resolvers) {
+          resolver();
+        }
+      }
+      state.streamResponses.clear();
+
+      // Clean up upload streams
+      for (const [, session] of state.uploadStreams) {
+        session.state = "closed";
+        if (session.creditResolver) {
+          session.creditResolver();
+        }
+      }
+      state.uploadStreams.clear();
+
+      // Auto-reconnect if not intentional close and we have namespaced runtimes
+      if (!state.closing && state.namespacedRuntimes.size > 0) {
+        state.reconnecting = reconnect(state, options).catch(() => {
+          // Reconnection failed — mark all runtimes as dead
+          state.namespacedRuntimes.clear();
+          state.reconnecting = undefined;
+        });
+      }
+    });
+
+    sock.on("error", (err) => {
+      // Suppress error logging during reconnection attempts
+      if (!state.closing && state.namespacedRuntimes.size > 0) return;
+      console.error("Socket error:", err);
+    });
+  }
+
+  setupSocket(socket);
+
+  /**
+   * Auto-reconnect: create a new socket, re-register namespaced runtimes.
+   */
+  async function reconnect(st: ConnectionState, opts: ConnectOptions): Promise<void> {
     try {
-      for (const frame of parser.feed(new Uint8Array(data))) {
-        handleMessage(frame.message, state);
+      const newSocket = await createSocket(opts);
+
+      // Replace socket in state
+      st.socket = newSocket;
+      st.connected = true;
+
+      // Set up listeners on new socket
+      setupSocket(newSocket);
+
+      // Re-register all namespaced runtimes
+      for (const [namespaceId, descriptor] of st.namespacedRuntimes) {
+        // Clear old callbacks for this runtime before re-registering
+        // (the old callback IDs are stale on the new connection)
+        const runtimeOptions = descriptor.runtimeOptions;
+
+        // Re-register callbacks with new IDs
+        const callbacks: RuntimeCallbackRegistrations = {};
+        if (runtimeOptions.console) {
+          callbacks.console = registerConsoleCallbacks(st, runtimeOptions.console);
+        }
+        if (runtimeOptions.fetch) {
+          callbacks.fetch = registerFetchCallback(st, runtimeOptions.fetch);
+        }
+        if (runtimeOptions.fs) {
+          callbacks.fs = registerFsCallbacks(st, runtimeOptions.fs);
+        }
+        if (runtimeOptions.moduleLoader) {
+          callbacks.moduleLoader = registerModuleLoaderCallback(st, runtimeOptions.moduleLoader);
+        }
+        if (runtimeOptions.customFunctions) {
+          callbacks.custom = registerCustomFunctions(st, runtimeOptions.customFunctions as CustomFunctions<Record<string, unknown[]>>);
+        }
+
+        // Playwright callback re-registration
+        if (runtimeOptions.playwright) {
+          const playwrightHandler = runtimeOptions.playwright.handler;
+          if (playwrightHandler) {
+            const handlerCallbackId = st.nextCallbackId++;
+            st.callbacks.set(handlerCallbackId, async (opJson: unknown) => {
+              const op = JSON.parse(opJson as string) as PlaywrightOperation;
+              const result = await playwrightHandler(op);
+              return JSON.stringify(result);
+            });
+            callbacks.playwright = {
+              handlerCallbackId,
+              console: runtimeOptions.playwright.console && !runtimeOptions.console?.onEntry,
+            };
+          }
+        }
+
+        // Test environment callback re-registration
+        let testEnvironmentOption: boolean | TestEnvironmentOptionsProtocol | undefined;
+        if (runtimeOptions.testEnvironment) {
+          if (typeof runtimeOptions.testEnvironment === "object") {
+            const testEnvOptions = runtimeOptions.testEnvironment;
+            const testEnvCallbacks: TestEnvironmentCallbackRegistrations = {};
+            if (testEnvOptions.onEvent) {
+              const userOnEvent = testEnvOptions.onEvent;
+              const onEventCallbackId = registerEventCallback(st, (eventJson: unknown) => {
+                const event = JSON.parse(eventJson as string);
+                userOnEvent(event);
+              });
+              testEnvCallbacks.onEvent = {
+                callbackId: onEventCallbackId,
+                name: "testEnvironment.onEvent",
+                type: 'sync',
+              };
+            }
+            testEnvironmentOption = {
+              callbacks: testEnvCallbacks,
+              testTimeout: testEnvOptions.testTimeout,
+            };
+          } else {
+            testEnvironmentOption = true;
+          }
+        }
+
+        const requestId = st.nextRequestId++;
+        const request: CreateRuntimeRequest = {
+          type: MessageType.CREATE_RUNTIME,
+          requestId,
+          options: {
+            memoryLimitMB: runtimeOptions.memoryLimitMB,
+            cwd: runtimeOptions.cwd,
+            callbacks,
+            testEnvironment: testEnvironmentOption,
+            namespaceId,
+          },
+        };
+
+        const result = await sendRequest<CreateRuntimeResult>(st, request);
+        descriptor.isolateId = result.isolateId;
       }
-    } catch (err) {
-      console.error("Error parsing frame:", err);
-    }
-  });
 
-  socket.on("close", () => {
-    state.connected = false;
-    // Reject all pending requests
-    for (const [, pending] of state.pendingRequests) {
-      pending.reject(new Error("Connection closed"));
+      st.reconnecting = undefined;
+    } catch {
+      st.reconnecting = undefined;
+      throw new Error("Failed to reconnect to daemon");
     }
-    state.pendingRequests.clear();
-
-    // Clean up streaming responses - error any pending streams
-    for (const [, receiver] of state.streamResponses) {
-      receiver.state = "errored";
-      receiver.error = new Error("Connection closed");
-      // Resolve all pending pull promises so the stream can error properly
-      const resolvers = receiver.pullResolvers.splice(0);
-      for (const resolver of resolvers) {
-        resolver();
-      }
-    }
-    state.streamResponses.clear();
-
-    // Clean up upload streams
-    for (const [, session] of state.uploadStreams) {
-      session.state = "closed";
-      if (session.creditResolver) {
-        session.creditResolver();
-      }
-    }
-    state.uploadStreams.clear();
-  });
-
-  socket.on("error", (err) => {
-    console.error("Socket error:", err);
-  });
+  }
 
   return {
     createRuntime: (runtimeOptions) =>
@@ -244,8 +379,9 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
         createRuntime(state, runtimeOptions, id),
     }),
     close: async () => {
+      state.closing = true;
       state.connected = false;
-      socket.destroy();
+      state.socket.destroy();
     },
     isConnected: () => state.connected,
   };
@@ -844,6 +980,14 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   const isolateId = result.isolateId;
   const reused = result.reused ?? false;
 
+  // Track namespaced runtimes for auto-reconnection
+  if (namespaceId != null) {
+    state.namespacedRuntimes.set(namespaceId, {
+      isolateId,
+      runtimeOptions: options as RuntimeOptions,
+    });
+  }
+
   // WebSocket command callbacks - store in module-level Map for WS_COMMAND message handling
   const wsCommandCallbacks: Set<(cmd: WebSocketCommand) => void> = new Set();
   isolateWsCallbacks.set(isolateId, wsCommandCallbacks);
@@ -1093,7 +1237,27 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         isolateId,
         timeout,
       };
-      return sendRequest<RunTestsResult>(state, req);
+      try {
+        return await sendRequest<RunTestsResult>(state, req);
+      } catch (err) {
+        // If connection dropped, wait for auto-reconnect and retry
+        if (
+          err instanceof Error &&
+          /connection closed|not connected/i.test(err.message) &&
+          state.reconnecting
+        ) {
+          await state.reconnecting;
+          const retryReqId = state.nextRequestId++;
+          const retryReq: RunTestsRequest = {
+            type: MessageType.RUN_TESTS,
+            requestId: retryReqId,
+            isolateId,
+            timeout,
+          };
+          return sendRequest<RunTestsResult>(state, retryReq);
+        }
+        throw err;
+      }
     },
 
     async hasTests(): Promise<boolean> {
@@ -1241,6 +1405,11 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
           }
         }
         isolateClientWebSockets.delete(isolateId);
+      }
+
+      // Remove from namespaced tracking (no auto-reconnect after explicit dispose)
+      if (namespaceId != null) {
+        state.namespacedRuntimes.delete(namespaceId);
       }
 
       const reqId = state.nextRequestId++;

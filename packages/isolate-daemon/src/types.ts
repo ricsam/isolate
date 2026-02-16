@@ -78,6 +78,8 @@ export interface IsolateInstance {
   // Mutable callback context for runtime reuse
   /** Mutable context for callbacks - allows updating callback IDs/connection on reuse */
   callbackContext?: CallbackContext;
+  /** In-flight test run (for result forwarding across reconnections) */
+  pendingTestRun?: { promise: Promise<unknown> };
 }
 
 /**
@@ -114,6 +116,13 @@ export interface CallbackContext {
   };
   /** Custom function callback IDs by name */
   custom: Map<string, number>;
+  /** Reconnection promise — set when connection drops, resolved when a new connection arrives */
+  reconnectionPromise?: {
+    promise: Promise<ConnectionState>;
+    resolve: (conn: ConnectionState) => void;
+    reject: (err: Error) => void;
+    timeoutId: ReturnType<typeof setTimeout>;
+  };
 }
 
 /**

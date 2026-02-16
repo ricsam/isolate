@@ -64,15 +64,22 @@ export function createCallbackFileSystemHandler(
     return callbackContext.fs[name];
   };
 
-  // Helper to get current connection (supports runtime reuse)
-  const getConnection = (): ConnectionState => {
-    return callbackContext.connection || connection;
+  // Helper to get current connection (supports runtime reuse and reconnection)
+  const getConnection = async (): Promise<ConnectionState> => {
+    if (callbackContext.connection) {
+      return callbackContext.connection;
+    }
+    if (callbackContext.reconnectionPromise) {
+      return callbackContext.reconnectionPromise.promise;
+    }
+    // Fall back to the originally captured connection
+    return connection;
   };
 
   return {
     async getFileHandle(path: string, opts?: { create?: boolean }): Promise<void> {
       const fullPath = resolvePath(path);
-      const conn = getConnection();
+      const conn = await getConnection();
 
       if (opts?.create) {
         // Ensure file exists by writing empty content if it doesn't exist
@@ -123,7 +130,7 @@ export function createCallbackFileSystemHandler(
 
     async getDirectoryHandle(path: string, opts?: { create?: boolean }): Promise<void> {
       const fullPath = resolvePath(path);
-      const conn = getConnection();
+      const conn = await getConnection();
 
       if (opts?.create) {
         const mkdirId = getCallbackId("mkdir");
@@ -160,7 +167,7 @@ export function createCallbackFileSystemHandler(
 
     async removeEntry(path: string, opts?: { recursive?: boolean }): Promise<void> {
       const fullPath = resolvePath(path);
-      const conn = getConnection();
+      const conn = await getConnection();
 
       // Check if it's a file or directory
       let isFile = true;
@@ -196,7 +203,7 @@ export function createCallbackFileSystemHandler(
       path: string
     ): Promise<Array<{ name: string; kind: "file" | "directory" }>> {
       const fullPath = resolvePath(path);
-      const conn = getConnection();
+      const conn = await getConnection();
 
       const readdirId = getCallbackId("readdir");
       if (readdirId === undefined) {
@@ -236,7 +243,7 @@ export function createCallbackFileSystemHandler(
       path: string
     ): Promise<{ data: Uint8Array; size: number; lastModified: number; type: string }> {
       const fullPath = resolvePath(path);
-      const conn = getConnection();
+      const conn = await getConnection();
 
       const readFileId = getCallbackId("readFile");
       if (readFileId === undefined) {
@@ -287,7 +294,7 @@ export function createCallbackFileSystemHandler(
 
     async writeFile(path: string, data: Uint8Array, position?: number): Promise<void> {
       const fullPath = resolvePath(path);
-      const conn = getConnection();
+      const conn = await getConnection();
 
       const writeFileId = getCallbackId("writeFile");
       if (writeFileId === undefined) {
@@ -347,7 +354,7 @@ export function createCallbackFileSystemHandler(
 
     async truncateFile(path: string, size: number): Promise<void> {
       const fullPath = resolvePath(path);
-      const conn = getConnection();
+      const conn = await getConnection();
 
       const readFileId = getCallbackId("readFile");
       const writeFileId = getCallbackId("writeFile");
@@ -382,7 +389,7 @@ export function createCallbackFileSystemHandler(
       path: string
     ): Promise<{ size: number; lastModified: number; type: string }> {
       const fullPath = resolvePath(path);
-      const conn = getConnection();
+      const conn = await getConnection();
 
       const statId = getCallbackId("stat");
       if (statId === undefined) {
