@@ -2373,7 +2373,7 @@ function handleClientWsSend(
     const binary = Buffer.from(base64, "base64");
     ws.send(binary);
   } else if (data instanceof Uint8Array) {
-    ws.send(data);
+    ws.send(Buffer.from(data));
   } else {
     ws.send(data as string);
   }
