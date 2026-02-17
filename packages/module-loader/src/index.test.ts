@@ -349,7 +349,7 @@ describe("defaultModuleLoader", () => {
     }
 
     try {
-      moduleRef.stripTypeScriptTypes = undefined;
+      moduleRef.stripTypeScriptTypes = undefined!;
       globalRef.Bun = { Transpiler: FakeTranspiler } as unknown;
 
       fs.writeFileSync(
