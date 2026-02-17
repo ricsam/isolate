@@ -1,5 +1,13 @@
 # @ricsam/isolate-crypto
 
+## 0.1.14
+
+### Patch Changes
+
+- new release
+- Updated dependencies
+  - @ricsam/isolate-core@0.1.14
+
 ## 0.1.13
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @ricsam/isolate-daemon
 
+## 0.1.16
+
+### Patch Changes
+
+- new release
+- Updated dependencies
+  - @ricsam/isolate-fs@0.1.14
+  - @ricsam/isolate-protocol@0.1.15
+  - @ricsam/isolate-playwright@0.1.15
+  - @ricsam/isolate-runtime@0.1.17
+  - @ricsam/isolate-test-environment@0.1.14
+  - @ricsam/isolate-transform@0.1.4
+
 ## 0.1.15
 
 ### Patch Changes

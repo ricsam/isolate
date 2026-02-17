@@ -1,5 +1,14 @@
 # @ricsam/isolate-client
 
+## 0.1.17
+
+### Patch Changes
+
+- new release
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.15
+  - @ricsam/isolate-playwright@0.1.15
+
 ## 0.1.16
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @ricsam/isolate-fetch
 
+## 0.1.16
+
+### Patch Changes
+
+- new release
+- Updated dependencies
+  - @ricsam/isolate-core@0.1.14
+
 ## 0.1.15
 
 ### Patch Changes
