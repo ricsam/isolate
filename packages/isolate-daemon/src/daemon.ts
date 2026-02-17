@@ -115,14 +115,6 @@ async function main() {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-
-  // Log stats periodically
-  setInterval(() => {
-    const stats = daemon.getStats();
-    console.log(
-      `[stats] connections: ${stats.activeConnections}, isolates: ${stats.activeIsolates}, total requests: ${stats.totalRequestsProcessed}`
-    );
-  }, 60000);
 }
 
 main().catch((err) => {
