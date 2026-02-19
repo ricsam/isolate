@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * E2E tests for richie-rpc CRUD endpoints and streaming features running inside QuickJS.
+ * E2E tests for richie-rpc CRUD endpoints and streaming features running inside Isolate.
  */
 test.describe("richie-rpc Standard CRUD Endpoints", () => {
   // Clean up any leftover items from previous tests
@@ -169,7 +169,7 @@ test.describe("richie-rpc Standard CRUD Endpoints", () => {
 });
 
 /**
- * Streaming tests for QuickJS - testing ReadableStream, SSE, and NDJSON streaming
+ * Streaming tests for Isolate - testing ReadableStream, SSE, and NDJSON streaming
  */
 test.describe("Streaming Tests", () => {
   test("GET /api/stream returns streaming response", async ({ page }) => {

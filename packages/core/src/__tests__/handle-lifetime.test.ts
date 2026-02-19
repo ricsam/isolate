@@ -39,7 +39,7 @@ describe("Handle lifetime experiments", () => {
       // context.setProp(context.global, "createObject", fn);
       // fn.dispose();
       //
-      // // Call from QuickJS and verify it works
+      // // Call from Isolate and verify it works
       // const callResult = context.evalCode("createObject()");
       // assert.strictEqual(callResult.error, undefined);
       //
@@ -76,7 +76,7 @@ describe("Handle lifetime experiments", () => {
     test("evalCode handle returned through external callback", async () => {
       // TODO: Implement test
       // Simulate the __hostCall__ pattern with an external callback
-      // let externalCallback: (() => QuickJSHandle) | null = null;
+      // let externalCallback: (() => IsolateHandle) | null = null;
       //
       // const fn = context.newFunction("callExternal", () => {
       //   if (!externalCallback) {
@@ -98,7 +98,7 @@ describe("Handle lifetime experiments", () => {
       //   return result.value;
       // };
       //
-      // // Call from QuickJS
+      // // Call from Isolate
       // const callResult = context.evalCode("callExternal()");
       // assert.strictEqual(callResult.error, undefined);
       //
@@ -111,7 +111,7 @@ describe("Handle lifetime experiments", () => {
     test("evalCode handle returned through Map-based callback registry", async () => {
       // TODO: Implement test
       // This more closely simulates the __hostCall__ pattern
-      // const callbackRegistry = new Map<string, () => QuickJSHandle>();
+      // const callbackRegistry = new Map<string, () => IsolateHandle>();
       //
       // const fn = context.newFunction("callRegistry", (nameHandle) => {
       //   const name = context.getString(nameHandle);
@@ -135,7 +135,7 @@ describe("Handle lifetime experiments", () => {
       //   return result.value;
       // });
       //
-      // // Call from QuickJS
+      // // Call from Isolate
       // const callResult = context.evalCode("callRegistry('myGetter')");
       // assert.strictEqual(callResult.error, undefined);
       //

@@ -99,7 +99,7 @@ export function AIPage() {
   return (
     <div className="page ai-page">
       <h1>AI Streaming Demo</h1>
-      <p>Simulated AI responses with word-by-word streaming from QuickJS</p>
+      <p>Simulated AI responses with word-by-word streaming from Isolate</p>
 
       <div className="prompt-section">
         <textarea

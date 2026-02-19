@@ -90,7 +90,7 @@ export function WebSocketTester() {
   return (
     <div className="page websocket-tester-page">
       <h1>WebSocket Tester</h1>
-      <p>Test WebSocket connections handled by QuickJS</p>
+      <p>Test WebSocket connections handled by Isolate</p>
 
       <div className="connection-section">
         <div className="status">

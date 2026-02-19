@@ -91,7 +91,7 @@ export function FileUploader() {
   return (
     <div className="page file-uploader-page">
       <h1>File Uploader</h1>
-      <p>Upload and manage files via QuickJS fs API</p>
+      <p>Upload and manage files via Isolate fs API</p>
 
       <div className="upload-section">
         <h3>Upload File</h3>

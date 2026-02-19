@@ -6,8 +6,8 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "./e2e",
   testMatch: "**/*.e2e.ts",
-  /* Run tests serially to avoid QuickJS memory corruption.
-   * The QuickJS runtime can become corrupted after extended timer usage
+  /* Run tests serially to avoid Isolate memory corruption.
+   * The Isolate runtime can become corrupted after extended timer usage
    * (see KNOWN_ISSUES.md #2). Running with 1 worker serializes test execution. */
   fullyParallel: false,
   workers: 1,

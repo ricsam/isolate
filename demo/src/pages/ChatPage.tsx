@@ -283,7 +283,7 @@ export function ChatPage() {
   return (
     <div className="page chat-page">
       <h1>Chat Room</h1>
-      <p>Real-time WebSocket chat running in QuickJS</p>
+      <p>Real-time WebSocket chat running in Isolate</p>
 
       {!joined ? (
         <div className="join-section">

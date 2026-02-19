@@ -1,14 +1,14 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("HTTP API Tests", () => {
-  test("GET /api/hello returns JSON from QuickJS", async ({ request }) => {
+  test("GET /api/hello returns JSON from Isolate", async ({ request }) => {
     const response = await request.get("/api/hello");
 
     expect(response.ok()).toBe(true);
     expect(response.status()).toBe(200);
 
     const data = await response.json();
-    expect(data.message).toBe("Hello from QuickJS!");
+    expect(data.message).toBe("Hello from Isolate!");
     expect(data.timestamp).toBeDefined();
     expect(typeof data.timestamp).toBe("number");
   });

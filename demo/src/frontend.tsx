@@ -33,7 +33,7 @@ const rootRoute = createRootRoute({
   component: () => (
     <div className="app-layout">
       <nav className="main-nav">
-        <div className="nav-brand">QuickJS Demo</div>
+        <div className="nav-brand">Isolate Demo</div>
         <div className="nav-links">
           <Link
             to="/"

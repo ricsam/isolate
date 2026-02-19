@@ -104,7 +104,7 @@ describe("demo server tests", () => {
    * HTTP API Tests (mirrors demo/e2e/api.e2e.ts)
    */
   describe("HTTP API Tests", () => {
-    it("GET /api/hello returns JSON from QuickJS", async () => {
+    it("GET /api/hello returns JSON from Isolate", async () => {
       const page = await browserContext.newPage();
       try {
         const runtime = await client.createRuntime({
@@ -113,13 +113,13 @@ describe("demo server tests", () => {
 
         try {
           await runtime.eval(`
-            test("GET /api/hello returns JSON from QuickJS", async () => {
+            test("GET /api/hello returns JSON from Isolate", async () => {
               const response = await page.request.get("/api/hello");
               const data = await response.json();
 
               expect(response.ok()).toBe(true);
               expect(response.status()).toBe(200);
-              expect(data.message).toBe("Hello from QuickJS!");
+              expect(data.message).toBe("Hello from Isolate!");
               expect(data.timestamp).toBeDefined();
               expect(typeof data.timestamp).toBe("number");
             });
@@ -650,7 +650,7 @@ describe("demo server tests", () => {
 
               const data = JSON.parse(welcomeMessage);
               expect(data.type).toBe("connected");
-              expect(data.message).toBe("Welcome to QuickJS WebSocket!");
+              expect(data.message).toBe("Welcome to Isolate WebSocket!");
               expect(data.data).toBeDefined();
               expect(data.data.connectedAt).toBeDefined();
             });

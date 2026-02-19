@@ -29,7 +29,7 @@ test.describe("WebSocket Tests", () => {
 
     const data = JSON.parse(welcomeMessage);
     expect(data.type).toBe("connected");
-    expect(data.message).toBe("Welcome to QuickJS WebSocket!");
+    expect(data.message).toBe("Welcome to Isolate WebSocket!");
     expect(data.data).toBeDefined();
     expect(data.data.connectedAt).toBeDefined();
   });

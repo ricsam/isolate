@@ -1,8 +1,8 @@
 /**
- * QuickJS handler code that runs inside the sandboxed QuickJS environment.
+ * Isolate handler code that runs inside the sandboxed isolate environment.
  * This code is evaluated via context.evalCode() and registers HTTP and WebSocket handlers.
  */
-export const quickjsHandlerCode = `
+export const isolateHandlerCode = `
 serve({
   async fetch(request, server) {
     const url = new URL(request.url);
@@ -16,7 +16,7 @@ serve({
     // GET /api/hello - Simple JSON response
     if (url.pathname === "/api/hello" && request.method === "GET") {
       return Response.json({
-        message: "Hello from QuickJS!",
+        message: "Hello from Isolate!",
         timestamp: Date.now()
       });
     }
@@ -133,7 +133,7 @@ serve({
       ws.send(JSON.stringify({
         type: "connected",
         data: ws.data,
-        message: "Welcome to QuickJS WebSocket!"
+        message: "Welcome to Isolate WebSocket!"
       }));
     },
 

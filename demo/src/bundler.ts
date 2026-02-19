@@ -14,7 +14,7 @@ const KNOWN_MODULES = ["zod", "@richie-rpc/core", "@richie-rpc/server"];
 const bundleCache = new Map<string, string>();
 
 /**
- * Bundle a package for use in QuickJS.
+ * Bundle a package for use in Isolate.
  * Externalizes known modules so they can be resolved by the module loader.
  */
 export async function bundlePackage(packageName: string): Promise<string> {

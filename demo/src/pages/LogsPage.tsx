@@ -131,7 +131,7 @@ export function LogsPage() {
   return (
     <div className="page logs-page">
       <h1>Live Logs</h1>
-      <p>Server-Sent Events streaming log data from QuickJS</p>
+      <p>Server-Sent Events streaming log data from Isolate</p>
 
       <div className="controls">
         <div className="filter-group">

@@ -45,7 +45,7 @@ export function APITester() {
   return (
     <div className="page api-tester-page">
       <h1>API Tester</h1>
-      <p>Test HTTP endpoints handled by QuickJS</p>
+      <p>Test HTTP endpoints handled by Isolate</p>
 
       <form onSubmit={testEndpoint} className="api-form">
         <div className="form-row">
@@ -81,7 +81,7 @@ export function APITester() {
         <h3>Available Endpoints</h3>
         <ul>
           <li>
-            <code>GET /api/hello</code> - Returns a greeting from QuickJS
+            <code>GET /api/hello</code> - Returns a greeting from Isolate
           </li>
           <li>
             <code>POST /api/echo</code> - Echoes the JSON body back with
