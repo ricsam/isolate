@@ -104,6 +104,25 @@ describe("Request Consistency", () => {
         `);
         assert.strictEqual(ctx.getResult(), true);
       });
+
+      test(`signal property exists when from ${origin}`, async () => {
+        await getRequestFromOrigin(ctx, origin, "https://example.com");
+        await ctx.eval(`
+          setResult({
+            isNull: __testRequest.signal === null,
+            isAbortSignal: __testRequest.signal instanceof AbortSignal,
+            hasAborted: typeof __testRequest.signal?.aborted === 'boolean',
+          });
+        `);
+        const result = ctx.getResult() as {
+          isNull: boolean;
+          isAbortSignal: boolean;
+          hasAborted: boolean;
+        };
+        assert.strictEqual(result.isNull, false);
+        assert.strictEqual(result.isAbortSignal, true);
+        assert.strictEqual(result.hasAborted, true);
+      });
     }
   });
 
@@ -143,6 +162,14 @@ describe("Request Consistency", () => {
         await getRequestFromOrigin(ctx, origin, "https://example.com");
         await ctx.eval(`
           setResult(__testRequest.bodyUsed);
+        `);
+        assert.strictEqual(ctx.getResult(), false);
+      });
+
+      test(`signal.aborted is initially false when from ${origin}`, async () => {
+        await getRequestFromOrigin(ctx, origin, "https://example.com");
+        await ctx.eval(`
+          setResult(__testRequest.signal.aborted);
         `);
         assert.strictEqual(ctx.getResult(), false);
       });

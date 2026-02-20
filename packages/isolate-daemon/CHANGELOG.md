@@ -1,5 +1,13 @@
 # @ricsam/isolate-daemon
 
+## 0.1.17
+
+### Patch Changes
+
+- fix abort fetch
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.16
+
 ## 0.1.16
 
 ### Patch Changes

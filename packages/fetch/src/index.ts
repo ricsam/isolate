@@ -54,7 +54,8 @@ interface ServeState {
 }
 
 export interface DispatchRequestOptions {
-  // Reserved for future options
+  /** AbortSignal to mirror cancellation into request.signal inside isolate */
+  signal?: AbortSignal;
 }
 
 export interface FetchHandle {
@@ -155,6 +156,7 @@ interface RequestState {
   body: Uint8Array | null;
   bodyUsed: boolean;
   streamId: number | null;
+  signalAborted: boolean;
   mode: string;
   credentials: string;
   cache: string;
@@ -1330,7 +1332,7 @@ function setupResponse(
 function setupRequest(
   context: ivm.Context,
   stateMap: Map<number, unknown>
-): void {
+): ivm.Reference<(instanceId: number) => void> {
   const global = context.global;
 
   // Register host callbacks
@@ -1358,6 +1360,7 @@ function setupRequest(
           body,
           bodyUsed: false,
           streamId: null,
+          signalAborted: false,
           mode,
           credentials,
           cache,
@@ -1522,6 +1525,14 @@ function setupRequest(
     })
   );
 
+  global.setSync(
+    "__Request_get_signalAborted",
+    new ivm.Callback((instanceId: number) => {
+      const state = stateMap.get(instanceId) as RequestState | undefined;
+      return state?.signalAborted ?? false;
+    })
+  );
+
   // Inject Request class
   const requestCode = `
 (function() {
@@ -1586,6 +1597,8 @@ function setupRequest(
     return result;
   }
 
+  const __requestSignalControllers = new Map();
+
   class Request {
     #instanceId;
     #headers;
@@ -1596,9 +1609,15 @@ function setupRequest(
     constructor(input, init = {}) {
       // Handle internal construction from instance ID
       if (typeof input === 'number' && init === null) {
+        const controller = new AbortController();
+        if (__Request_get_signalAborted(input)) {
+          controller.abort();
+        }
+        __requestSignalControllers.set(input, controller);
+
         this.#instanceId = input;
         this.#headers = new Headers(__Request_get_headers(input));
-        this.#signal = null;
+        this.#signal = controller.signal;
         this.#streamId = __Request_getStreamId(input);
         return;
       }
@@ -1607,7 +1626,7 @@ function setupRequest(
       let method = 'GET';
       let headers;
       let body = null;
-      let signal = null;
+      let signal = new AbortController().signal;
       let mode = 'cors';
       let credentials = 'same-origin';
       let cache = 'default';
@@ -1643,6 +1662,11 @@ function setupRequest(
       if (init.redirect !== undefined) redirect = init.redirect;
       if (init.referrer !== undefined) referrer = init.referrer;
       if (init.integrity !== undefined) integrity = init.integrity;
+
+      // Ensure signal is always a valid AbortSignal
+      if (signal == null) {
+        signal = new AbortController().signal;
+      }
 
       // Validate: body with GET/HEAD
       if (body !== null && (method === 'GET' || method === 'HEAD')) {
@@ -1837,11 +1861,22 @@ function setupRequest(
     }
   }
 
+  globalThis.__Request_abortSignalByInstanceId = function(instanceId) {
+    const controller = __requestSignalControllers.get(instanceId);
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
+    }
+  };
+
   globalThis.Request = Request;
 })();
 `;
 
   context.evalSync(requestCode);
+  return context.evalSync(
+    "globalThis.__Request_abortSignalByInstanceId",
+    { reference: true }
+  ) as ivm.Reference<(instanceId: number) => void>;
 }
 
 // ============================================================================
@@ -2665,7 +2700,7 @@ export async function setupFetch(
   setupResponse(context, stateMap, streamRegistry);
 
   // Setup Request (host state + isolate class)
-  setupRequest(context, stateMap);
+  const requestAbortSignalRef = setupRequest(context, stateMap);
 
   // Setup fetch function
   setupFetchFunction(context, stateMap, streamRegistry, options);
@@ -2746,11 +2781,16 @@ export async function setupFetch(
       // Clear serve state
       serveState.activeConnections.clear();
       serveState.pendingUpgrade = null;
+      try {
+        requestAbortSignalRef.release();
+      } catch {
+        // Ignore repeated dispose races
+      }
     },
 
     async dispatchRequest(
       request: Request,
-      _dispatchOptions?: DispatchRequestOptions
+      dispatchOptions?: DispatchRequestOptions
     ): Promise<Response> {
       // Clean up previous pending upgrade if not consumed
       if (serveState.pendingUpgrade) {
@@ -2765,10 +2805,15 @@ export async function setupFetch(
         throw new Error("No serve() handler registered");
       }
 
+      const forwardedSignal = dispatchOptions?.signal ?? request.signal;
+      const forwardedSignalInitiallyAborted = forwardedSignal?.aborted ?? false;
+
       // Setup streaming for request body
       // Per WHATWG Fetch spec, GET/HEAD requests cannot have bodies
       let requestStreamId: number | null = null;
+      let requestInstanceId: number | null = null;
       let streamCleanup: (() => Promise<void>) | null = null;
+      let onForwardedSignalAbort: (() => void) | undefined;
       const canHaveBody = !['GET', 'HEAD'].includes(request.method.toUpperCase());
 
       if (canHaveBody && request.body) {
@@ -2787,7 +2832,7 @@ export async function setupFetch(
         const headersArray = Array.from(request.headers.entries());
 
         // Create Request instance in isolate
-        const requestInstanceId = nextInstanceId++;
+        requestInstanceId = nextInstanceId++;
         const requestState: RequestState = {
           url: request.url,
           method: request.method,
@@ -2795,6 +2840,7 @@ export async function setupFetch(
           body: null, // No buffered body - using stream
           bodyUsed: false,
           streamId: requestStreamId,
+          signalAborted: forwardedSignalInitiallyAborted,
           mode: request.mode,
           credentials: request.credentials,
           cache: request.cache,
@@ -2803,6 +2849,28 @@ export async function setupFetch(
           integrity: request.integrity,
         };
         stateMap.set(requestInstanceId, requestState);
+
+        if (forwardedSignal && !forwardedSignalInitiallyAborted) {
+          onForwardedSignalAbort = () => {
+            if (requestInstanceId == null) return;
+            const currentState = stateMap.get(requestInstanceId) as RequestState | undefined;
+            if (!currentState || currentState.signalAborted) {
+              return;
+            }
+            currentState.signalAborted = true;
+            try {
+              requestAbortSignalRef.applyIgnored(undefined, [requestInstanceId], {
+                arguments: { copy: true },
+              });
+            } catch {
+              // Ignore abort propagation errors during teardown/races
+            }
+          };
+          forwardedSignal.addEventListener("abort", onForwardedSignalAbort, { once: true });
+          if (forwardedSignal.aborted) {
+            onForwardedSignalAbort();
+          }
+        }
 
         // Call the fetch handler and get response
         // We use eval with promise: true to handle async handlers
@@ -2937,6 +3005,10 @@ export async function setupFetch(
 
         return response;
       } finally {
+        if (forwardedSignal && onForwardedSignalAbort) {
+          forwardedSignal.removeEventListener("abort", onForwardedSignalAbort);
+        }
+
         // Wait for native body to finish streaming into registry
         if (requestStreamId !== null) {
           // Give time for small bodies to fully stream

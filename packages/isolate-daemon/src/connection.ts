@@ -26,6 +26,7 @@ import {
   type DisposeRuntimeRequest,
   type EvalRequest,
   type DispatchRequestRequest,
+  type DispatchRequestAbort,
   type CallbackResponseMsg,
   type CallbackInvoke,
   type RunTestsRequest,
@@ -137,6 +138,8 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
     activeStreams: new Map(),
     streamReceivers: new Map(),
     callbackStreamReceivers: new Map(),
+    dispatchAbortControllers: new Map(),
+    earlyAbortedDispatches: new Set(),
   };
 
   state.connections.set(socket, connection);
@@ -157,6 +160,12 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
   });
 
   socket.on("close", () => {
+    for (const [, controller] of connection.dispatchAbortControllers) {
+      controller.abort();
+    }
+    connection.dispatchAbortControllers.clear();
+    connection.earlyAbortedDispatches.clear();
+
     // Dispose or soft-delete isolates owned by this connection
     for (const isolateId of connection.isolates) {
       const instance = state.isolates.get(isolateId);
@@ -270,6 +279,13 @@ async function handleMessage(
         message as DispatchRequestRequest,
         connection,
         state
+      );
+      break;
+
+    case MessageType.DISPATCH_REQUEST_ABORT:
+      handleDispatchRequestAbort(
+        message as DispatchRequestAbort,
+        connection
       );
       break;
 
@@ -1236,6 +1252,7 @@ async function handleCreateRuntime(
           method: init.method,
           headers: init.headers,
           body: init.rawBody,
+          signalAborted: init.signal.aborted,
         };
         const result = await invokeCallbackWithReconnect(
           callbackContext,
@@ -1584,6 +1601,13 @@ async function handleDispatchRequest(
   }
 
   instance.lastActivity = Date.now();
+  const dispatchAbortController = new AbortController();
+  connection.dispatchAbortControllers.set(message.requestId, dispatchAbortController);
+
+  if (connection.earlyAbortedDispatches.has(message.requestId) || message.request.signalAborted) {
+    dispatchAbortController.abort();
+    connection.earlyAbortedDispatches.delete(message.requestId);
+  }
 
   try {
     // Handle request body (inline or streamed)
@@ -1601,10 +1625,13 @@ async function handleDispatchRequest(
       method: message.request.method,
       headers: message.request.headers,
       body: requestBody,
+      signal: dispatchAbortController.signal,
     });
 
     // Dispatch to isolate
-    const response = await instance.runtime.fetch.dispatchRequest(request);
+    const response = await instance.runtime.fetch.dispatchRequest(request, {
+      signal: dispatchAbortController.signal,
+    });
 
     // Always stream responses with a body to preserve chunk boundaries
     // Only inline responses without a body (e.g., 204 No Content)
@@ -1635,7 +1662,27 @@ async function handleDispatchRequest(
       error.message,
       { name: error.name, stack: error.stack }
     );
+  } finally {
+    connection.dispatchAbortControllers.delete(message.requestId);
+    connection.earlyAbortedDispatches.delete(message.requestId);
   }
+}
+
+/**
+ * Handle DISPATCH_REQUEST_ABORT message.
+ */
+function handleDispatchRequestAbort(
+  message: DispatchRequestAbort,
+  connection: ConnectionState
+): void {
+  const controller = connection.dispatchAbortControllers.get(message.targetRequestId);
+  if (controller) {
+    controller.abort();
+    return;
+  }
+
+  // Abort can arrive before DISPATCH_REQUEST is fully registered.
+  connection.earlyAbortedDispatches.add(message.targetRequestId);
 }
 
 /**

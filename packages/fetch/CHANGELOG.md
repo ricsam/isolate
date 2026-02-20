@@ -1,5 +1,11 @@
 # @ricsam/isolate-fetch
 
+## 0.1.17
+
+### Patch Changes
+
+- fix abort fetch
+
 ## 0.1.16
 
 ### Patch Changes

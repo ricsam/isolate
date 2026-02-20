@@ -18,6 +18,7 @@ export const MessageType = {
   DISPOSE_RUNTIME: 0x02,
   EVAL: 0x03,
   DISPATCH_REQUEST: 0x04,
+  DISPATCH_REQUEST_ABORT: 0x05,
 
   // Client → Daemon: WebSocket operations
   WS_OPEN: 0x10,
@@ -315,12 +316,25 @@ export interface SerializedRequest {
   body?: Uint8Array | null;
   /** Stream reference for large/streaming bodies */
   bodyStreamId?: number;
+  /** Whether the request signal was already aborted when serialized */
+  signalAborted?: boolean;
 }
 
 export interface DispatchRequestRequest extends BaseMessage {
   type: typeof MessageType.DISPATCH_REQUEST;
   isolateId: string;
   request: SerializedRequest;
+}
+
+/**
+ * Abort an in-flight DISPATCH_REQUEST.
+ * This is fire-and-forget and does not produce a response.
+ */
+export interface DispatchRequestAbort {
+  type: typeof MessageType.DISPATCH_REQUEST_ABORT;
+  isolateId: string;
+  /** requestId of the corresponding DISPATCH_REQUEST */
+  targetRequestId: number;
 }
 
 // WebSocket messages
@@ -705,6 +719,7 @@ export type ClientMessage =
   | DisposeRuntimeRequest
   | EvalRequest
   | DispatchRequestRequest
+  | DispatchRequestAbort
   | WsOpenRequest
   | WsMessageRequest
   | WsCloseRequest

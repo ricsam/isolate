@@ -18,6 +18,7 @@ import {
   type DisposeRuntimeRequest,
   type EvalRequest,
   type DispatchRequestRequest,
+  type DispatchRequestAbort,
   type CallbackInvoke,
   type CallbackResponseMsg,
   type CallbackRegistration,
@@ -1008,6 +1009,9 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         throw new DOMException("The operation was aborted", "AbortError");
       }
 
+      const requestSignal = req.signal;
+      const requestSignalInitiallyAborted = requestSignal?.aborted ?? false;
+
       const reqId = state.nextRequestId++;
       const serialized = await serializeRequestWithStreaming(state, req);
 
@@ -1044,6 +1048,24 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         signal.addEventListener("abort", onAbort, { once: true });
       }
 
+      let onRequestAbort: (() => void) | undefined;
+      if (requestSignal && !requestSignalInitiallyAborted) {
+        onRequestAbort = () => {
+          const abortMessage: DispatchRequestAbort = {
+            type: MessageType.DISPATCH_REQUEST_ABORT,
+            isolateId,
+            targetRequestId: reqId,
+          };
+          if (state.connected) {
+            sendMessage(state.socket, abortMessage);
+          }
+        };
+        requestSignal.addEventListener("abort", onRequestAbort, { once: true });
+        if (requestSignal.aborted) {
+          onRequestAbort();
+        }
+      }
+
       try {
         // If streaming body, start sending chunks after request is sent
         if (serialized.bodyStreamId !== undefined && bodyStream) {
@@ -1071,6 +1093,9 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       } finally {
         if (signal && onAbort) {
           signal.removeEventListener("abort", onAbort);
+        }
+        if (requestSignal && onRequestAbort) {
+          requestSignal.removeEventListener("abort", onRequestAbort);
         }
       }
     },
@@ -1485,13 +1510,16 @@ function registerFetchCallback(
   state.callbacks.set(callbackId, async (serialized: unknown, requestId: unknown) => {
     const data = serialized as SerializedRequest;
     // Create a FetchRequestInit from the serialized data
-    // Note: signal is not serialized over the wire, so we create a dummy one
+    const signalController = new AbortController();
+    if (data.signalAborted) {
+      signalController.abort();
+    }
     const init = {
       method: data.method,
       headers: data.headers,
       rawBody: data.body ?? null,
       body: (data.body ?? null) as BodyInit | null,
-      signal: new AbortController().signal,
+      signal: signalController.signal,
     };
     const response = await callback(data.url, init);
 
@@ -2029,6 +2057,7 @@ async function serializeRequestWithStreaming(
     url: request.url,
     headers,
     body,
+    signalAborted: request.signal?.aborted ?? false,
   };
 
   // Only include streaming fields if actually streaming

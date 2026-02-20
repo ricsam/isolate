@@ -26,6 +26,7 @@ export async function serializeRequest(request: Request): Promise<SerializedRequ
     url: request.url,
     headers,
     body,
+    signalAborted: request.signal?.aborted ?? false,
   };
 }
 
@@ -55,10 +56,20 @@ export async function serializeResponse(response: Response): Promise<SerializedR
  * Deserialize a plain object back into a Request.
  */
 export function deserializeRequest(data: SerializedRequest): Request {
+  let signal: AbortSignal | undefined;
+  if (data.signalAborted !== undefined) {
+    const controller = new AbortController();
+    if (data.signalAborted) {
+      controller.abort();
+    }
+    signal = controller.signal;
+  }
+
   return new Request(data.url, {
     method: data.method,
     headers: data.headers,
     body: data.body as unknown as BodyInit | null | undefined,
+    signal,
   });
 }
 

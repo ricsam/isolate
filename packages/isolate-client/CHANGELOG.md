@@ -1,5 +1,13 @@
 # @ricsam/isolate-client
 
+## 0.1.18
+
+### Patch Changes
+
+- fix abort fetch
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.16
+
 ## 0.1.17
 
 ### Patch Changes

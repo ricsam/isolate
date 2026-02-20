@@ -68,6 +68,86 @@ describe("handle-based API", () => {
       }
     });
 
+    it("should expose non-null request.signal in serve handler", async () => {
+      const runtime = await client.createRuntime();
+      try {
+        await runtime.eval(`
+          serve({
+            fetch(request) {
+              return Response.json({
+                isNull: request.signal === null,
+                isAbortSignal: request.signal instanceof AbortSignal,
+                abortedType: typeof request.signal.aborted,
+                aborted: request.signal.aborted,
+              });
+            }
+          });
+        `);
+
+        const response = await runtime.fetch.dispatchRequest(
+          new Request("http://localhost/signal-check")
+        );
+
+        assert.strictEqual(response.status, 200);
+        const body = await response.json() as {
+          isNull: boolean;
+          isAbortSignal: boolean;
+          abortedType: string;
+          aborted: boolean;
+        };
+        assert.strictEqual(body.isNull, false);
+        assert.strictEqual(body.isAbortSignal, true);
+        assert.strictEqual(body.abortedType, "boolean");
+        assert.strictEqual(body.aborted, false);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    it("should forward host request.signal aborts to isolate request.signal", async () => {
+      const runtime = await client.createRuntime();
+      try {
+        await runtime.eval(`
+          serve({
+            fetch(request) {
+              return new Promise((resolve) => {
+                request.signal.addEventListener("abort", () => {
+                  resolve(Response.json({
+                    source: "abort",
+                    aborted: request.signal.aborted,
+                  }));
+                }, { once: true });
+
+                setTimeout(() => {
+                  resolve(Response.json({
+                    source: "timeout",
+                    aborted: request.signal.aborted,
+                  }));
+                }, 300);
+              });
+            }
+          });
+        `);
+
+        const requestController = new AbortController();
+        const dispatchPromise = runtime.fetch.dispatchRequest(
+          new Request("http://localhost/abort-forward", {
+            signal: requestController.signal,
+          })
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        requestController.abort();
+
+        const response = await dispatchPromise;
+        const body = await response.json() as { source: string; aborted: boolean };
+        assert.strictEqual(body.source, "abort");
+        assert.strictEqual(body.aborted, true);
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
     it("should check serve handler via fetch.hasServeHandler", async () => {
       const runtime = await client.createRuntime();
       try {

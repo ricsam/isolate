@@ -195,6 +195,10 @@ export interface ConnectionState {
   streamReceivers: Map<number, StreamReceiver>;
   /** Active callback stream receivers (for streaming fetch callback responses) */
   callbackStreamReceivers: Map<number, CallbackStreamReceiver>;
+  /** Abort controllers for in-flight DISPATCH_REQUEST calls keyed by requestId */
+  dispatchAbortControllers: Map<number, AbortController>;
+  /** Request IDs aborted before DISPATCH_REQUEST was registered */
+  earlyAbortedDispatches: Set<number>;
 }
 
 /**

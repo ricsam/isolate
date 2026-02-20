@@ -139,6 +139,29 @@ describe("Request", () => {
     assert.strictEqual(isStream, true);
   });
 
+  test("signal is always a non-null AbortSignal", () => {
+    const data = evalCode<string>(
+      ctx.context,
+      `
+      const request = new Request("https://example.com");
+      JSON.stringify({
+        isNull: request.signal === null,
+        isAbortSignal: request.signal instanceof AbortSignal,
+        aborted: request.signal.aborted,
+      })
+      `
+    );
+    const result = JSON.parse(data) as {
+      isNull: boolean;
+      isAbortSignal: boolean;
+      aborted: boolean;
+    };
+
+    assert.strictEqual(result.isNull, false);
+    assert.strictEqual(result.isAbortSignal, true);
+    assert.strictEqual(result.aborted, false);
+  });
+
   test("can read body via stream reader", async () => {
     const result = await evalCodeAsync<string>(
       ctx.context,

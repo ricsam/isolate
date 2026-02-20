@@ -76,6 +76,49 @@ describe("serve()", () => {
     assert.strictEqual(await response.text(), "URL: http://localhost/test, Method: POST");
   });
 
+  test("dispatchRequest mirrors abort to request.signal inside isolate", async () => {
+    context.evalSync(`
+      serve({
+        fetch(request) {
+          return new Promise((resolve) => {
+            let abortEvents = 0;
+
+            request.signal.addEventListener("abort", () => {
+              abortEvents++;
+              resolve(Response.json({
+                aborted: request.signal.aborted,
+                abortEvents
+              }));
+            }, { once: true });
+          });
+        }
+      });
+    `);
+
+    const controller = new AbortController();
+    const responsePromise = fetchHandle.dispatchRequest(
+      new Request("http://localhost/abort"),
+      { signal: controller.signal }
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    controller.abort();
+
+    const response = await Promise.race([
+      responsePromise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Timed out waiting for abort propagation")), 2000)
+      ),
+    ]);
+    const result = await response.json() as {
+      aborted: boolean;
+      abortEvents: number;
+    };
+
+    assert.strictEqual(result.aborted, true);
+    assert.strictEqual(result.abortEvents, 1);
+  });
+
   test("serve() with async fetch handler", async () => {
     context.evalSync(`
       serve({
