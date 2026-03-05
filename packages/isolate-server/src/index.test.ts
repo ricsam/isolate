@@ -11,6 +11,27 @@ function testNamespace(name: string): string {
   return `isolate-server/${name}/${Date.now()}/${Math.random().toString(16).slice(2)}`;
 }
 
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Timed out after ${timeoutMs}ms: ${label}`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
 function createRuntimeOptions(sourceMap: Map<string, string>): RuntimeOptions {
   return {
     moduleLoader: (specifier, importer) => {
@@ -259,6 +280,125 @@ describe("isolate-server", () => {
       });
 
       assert.strictEqual(instrumented.getCreateRuntimeCalls(), 1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("reload remains healthy after stream-cancel churn", { timeout: 45000 }, async () => {
+    const modules = new Map<string, string>([
+      [
+        "server.js",
+        `
+          serve({
+            fetch(request) {
+              const pathname = new URL(request.url).pathname;
+              if (pathname === "/ping") {
+                return new Response("ok", {
+                  headers: { "Content-Type": "text/plain" }
+                });
+              }
+
+              if (pathname === "/stream") {
+                const stream = new ReadableStream({
+                  async pull(controller) {
+                    await new Promise((resolve) => setTimeout(resolve, 1));
+                    controller.enqueue(new Uint8Array(256 * 1024));
+                  }
+                });
+                return new Response(stream, {
+                  headers: { "Content-Type": "application/octet-stream" }
+                });
+              }
+
+              return new Response("not found", { status: 404 });
+            }
+          });
+        `,
+      ],
+    ]);
+
+    const server = new IsolateServer({
+      namespaceId: testNamespace("reload-after-cancel-churn"),
+      getConnection: async () => client,
+    });
+
+    try {
+      await server.start({
+        entry: "server.js",
+        runtimeOptions: createRuntimeOptions(modules),
+      });
+
+      const iterations = 20;
+      for (let iteration = 1; iteration <= iterations; iteration++) {
+        const response = await withTimeout(
+          server.fetch.dispatchRequest(new Request("http://localhost/stream")),
+          12000,
+          `dispatch ${iteration}`
+        );
+        assert.ok(response.body, `expected response body at iteration ${iteration}`);
+
+        const reader = response.body!.getReader();
+        await withTimeout(
+          reader.read(),
+          5000,
+          `read ${iteration}`
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        await withTimeout(
+          reader.cancel(`cancel ${iteration}`),
+          5000,
+          `cancel ${iteration}`
+        );
+
+        if (iteration % 10 === 0) {
+          const pingDuringChurn = await withTimeout(
+            server.fetch.dispatchRequest(new Request("http://localhost/ping")),
+            5000,
+            `ping during churn dispatch ${iteration}`
+          );
+          assert.strictEqual(
+            await withTimeout(
+              pingDuringChurn.text(),
+              1000,
+              `ping during churn text ${iteration}`
+            ),
+            "ok"
+          );
+        }
+      }
+
+      const pingBeforeReload = await withTimeout(
+        server.fetch.dispatchRequest(new Request("http://localhost/ping")),
+        3000,
+        "ping before reload dispatch"
+      );
+      assert.strictEqual(
+        await withTimeout(
+          pingBeforeReload.text(),
+          1000,
+          "ping before reload text"
+        ),
+        "ok"
+      );
+
+      await withTimeout(server.reload(), 5000, "server reload");
+
+      const pingAfterReload = await withTimeout(
+        server.fetch.dispatchRequest(new Request("http://localhost/ping")),
+        3000,
+        "ping after reload dispatch"
+      );
+      assert.strictEqual(
+        await withTimeout(
+          pingAfterReload.text(),
+          1000,
+          "ping after reload text"
+        ),
+        "ok"
+      );
     } finally {
       await server.close();
     }

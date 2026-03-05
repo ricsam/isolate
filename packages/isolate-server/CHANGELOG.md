@@ -1,5 +1,13 @@
 # @ricsam/isolate-server
 
+## 0.2.2
+
+### Patch Changes
+
+- fix dispatch hang
+- Updated dependencies
+  - @ricsam/isolate-client@0.1.19
+
 ## 0.2.1
 
 ### Patch Changes

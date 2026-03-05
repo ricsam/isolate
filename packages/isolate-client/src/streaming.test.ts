@@ -753,8 +753,9 @@ describe("isolate-client streaming", () => {
               let count = 0;
 
               const stream = new ReadableStream({
-                pull(controller) {
+                async pull(controller) {
                   count++;
+                  await new Promise(resolve => setTimeout(resolve, 0));
                   controller.enqueue(encoder.encode("chunk" + count));
                   // Never close - infinite stream
                 }
@@ -889,8 +890,9 @@ describe("isolate-client streaming", () => {
               let count = 0;
 
               const stream = new ReadableStream({
-                pull(controller) {
+                async pull(controller) {
                   count++;
+                  await new Promise(resolve => setTimeout(resolve, 0));
                   controller.enqueue(encoder.encode("data" + count));
                   // Never close - infinite stream
                 }
@@ -1271,4 +1273,5 @@ describe("isolate-client streaming", () => {
       }
     });
   });
+
 });

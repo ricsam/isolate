@@ -144,6 +144,7 @@ export interface StreamSession {
   bytesTransferred: number;
   credit: number;
   creditResolver?: () => void;
+  cancelReader?: () => void;
 }
 
 /**

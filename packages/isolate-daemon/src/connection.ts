@@ -160,6 +160,10 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
   });
 
   socket.on("close", () => {
+    for (const streamId of Array.from(connection.activeStreams.keys())) {
+      closeActiveDownloadSession(connection, streamId);
+    }
+
     for (const [, controller] of connection.dispatchAbortControllers) {
       controller.abort();
     }
@@ -209,6 +213,31 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
 function sendMessage(socket: Socket, message: Message): void {
   const frame = buildFrame(message);
   socket.write(frame);
+}
+
+/**
+ * Close an active daemon->client download session and wake any blocked credit waiters.
+ */
+function closeActiveDownloadSession(
+  connection: ConnectionState,
+  streamId: number
+): void {
+  const session = connection.activeStreams.get(streamId);
+  if (!session) {
+    return;
+  }
+
+  session.state = "closed";
+  if (session.creditResolver) {
+    session.creditResolver();
+    session.creditResolver = undefined;
+  }
+  if (session.cancelReader) {
+    session.cancelReader();
+    session.cancelReader = undefined;
+  }
+
+  connection.activeStreams.delete(streamId);
 }
 
 /**
@@ -2372,8 +2401,7 @@ function handleStreamError(message: StreamError, connection: ConnectionState): v
 
   const session = connection.activeStreams.get(message.streamId);
   if (session) {
-    session.state = "closed";
-    connection.activeStreams.delete(message.streamId);
+    closeActiveDownloadSession(connection, message.streamId);
   }
 
   // Also handle callback stream receivers
@@ -2585,6 +2613,7 @@ async function sendStreamedResponse(
   requestId: number,
   response: Response
 ): Promise<void> {
+  const SEND_LOOP_YIELD_BYTES = 64 * 1024;
   const streamId = connection.nextStreamId++;
 
   // Collect headers
@@ -2629,16 +2658,23 @@ async function sendStreamedResponse(
   connection.activeStreams.set(streamId, session);
 
   const reader = response.body.getReader();
+  session.cancelReader = () => {
+    reader.cancel("Stream cancelled by client").catch(() => {});
+  };
+  let cancelledByClient = false;
+  let bytesSinceYield = 0;
+  let chunksSinceYield = 0;
 
   try {
-    while (true) {
+    streamLoop: while (true) {
       // Check credit (backpressure)
       while (session.credit < STREAM_CHUNK_SIZE && session.state === "active") {
         await waitForCredit(session);
       }
 
       if (session.state !== "active") {
-        throw new Error("Stream cancelled");
+        cancelledByClient = true;
+        break;
       }
 
       const { done, value } = await reader.read();
@@ -2665,11 +2701,34 @@ async function sendStreamedResponse(
         };
         sendMessage(connection.socket, chunkMsg);
 
-        session.credit -= chunk.length;
+        const creditCost = Math.max(chunk.length, STREAM_CHUNK_SIZE);
+        session.credit -= creditCost;
         session.bytesTransferred += chunk.length;
+        bytesSinceYield += chunk.length;
+        chunksSinceYield += 1;
+
+        // Yield periodically so incoming cancel/credit frames can be processed.
+        // Tiny chunks can otherwise monopolize the loop for a long time.
+        if (
+          chunk.length < 1024
+          || bytesSinceYield >= SEND_LOOP_YIELD_BYTES
+          || chunksSinceYield >= 256
+        ) {
+          bytesSinceYield = 0;
+          chunksSinceYield = 0;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          if (session.state !== "active") {
+            cancelledByClient = true;
+            break streamLoop;
+          }
+        }
       }
     }
   } catch (err) {
+    if (cancelledByClient || session.state !== "active") {
+      return;
+    }
+
     const errorMsg: StreamError = {
       type: MessageType.STREAM_ERROR,
       streamId,
@@ -2677,8 +2736,15 @@ async function sendStreamedResponse(
     };
     sendMessage(connection.socket, errorMsg);
   } finally {
+    if (cancelledByClient) {
+      await Promise.race([
+        reader.cancel("Stream cancelled by client").catch(() => {}),
+        new Promise<void>((resolve) => setTimeout(resolve, 50)),
+      ]);
+    }
+    session.cancelReader = undefined;
     reader.releaseLock();
-    connection.activeStreams.delete(streamId);
+    closeActiveDownloadSession(connection, streamId);
   }
 }
 
