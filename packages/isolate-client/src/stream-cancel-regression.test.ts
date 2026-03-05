@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs/promises";
-import { connect, type DaemonConnection } from "./connection.ts";
+import { connect, type DaemonConnection } from "./index.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 
 async function withTimeout<T>(
@@ -70,7 +70,7 @@ describe("stream cancel regression", () => {
 
       const iterations = 40;
       for (let iteration = 1; iteration <= iterations; iteration++) {
-        const response = await withTimeout(
+        const response: Response = await withTimeout<Response>(
           runtime.fetch.dispatchRequest(new Request("http://localhost/stream")),
           8000,
           `dispatch ${iteration}`
@@ -93,12 +93,12 @@ describe("stream cancel regression", () => {
         );
 
         if (iteration % 10 === 0) {
-          const pingResponse = await withTimeout(
+          const pingResponse: Response = await withTimeout<Response>(
             runtime.fetch.dispatchRequest(new Request("http://localhost/ping")),
             5000,
             `ping dispatch ${iteration}`
           );
-          const pingText = await withTimeout(
+          const pingText: string = await withTimeout<string>(
             pingResponse.text(),
             1000,
             `ping text ${iteration}`
@@ -107,12 +107,12 @@ describe("stream cancel regression", () => {
         }
       }
 
-      const finalPingResponse = await withTimeout(
+      const finalPingResponse: Response = await withTimeout<Response>(
         runtime.fetch.dispatchRequest(new Request("http://localhost/ping")),
         3000,
         "final ping dispatch"
       );
-      const finalPingText = await withTimeout(
+      const finalPingText: string = await withTimeout<string>(
         finalPingResponse.text(),
         1000,
         "final ping text"
