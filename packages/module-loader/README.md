@@ -110,7 +110,9 @@ Bare specifiers are bundled with Rollup using:
 - `@rollup/plugin-json` for JSON imports
 - `@rollup/plugin-replace` for `process.env.NODE_ENV`
 
-Dependencies of the target package are left as external imports (resolved by subsequent loader calls). Bundle results are cached permanently since npm packages are static.
+Dependencies of the target package are left as external imports (resolved by subsequent loader calls). Bare specifiers are resolved using Node's importer-based algorithm, and importer symlinks are followed by default (Node-style realpath behavior), which keeps transitive resolution working in symlinked layouts such as Bun workspaces.
+
+Bundle results are cached by specifier + resolution context.
 
 ### Static vs Dynamic Modules
 

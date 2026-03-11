@@ -333,6 +333,105 @@ describe("defaultModuleLoader", () => {
     );
   });
 
+  test("resolves transitive bare imports from symlinked package realpath", async () => {
+    clearBundleCache();
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "module-loader-bun-symlink-test-"),
+    );
+    const symlinkType = process.platform === "win32" ? "junction" : "dir";
+
+    try {
+      const registryDir = path.join(tmpDir, "registry");
+      const backendNodeModules = path.join(registryDir, "backend", "node_modules");
+      const bunStoreDir = path.join(registryDir, "node_modules", ".bun");
+      const s3Pkg = path.join(
+        bunStoreDir,
+        "@aws-sdk+client-s3@1.0.0",
+        "node_modules",
+        "@aws-sdk",
+        "client-s3",
+      );
+      const smithyPkg = path.join(
+        bunStoreDir,
+        "@smithy+util-waiter@1.0.0",
+        "node_modules",
+        "@smithy",
+        "util-waiter",
+      );
+
+      fs.mkdirSync(path.join(backendNodeModules, "@aws-sdk"), { recursive: true });
+      fs.mkdirSync(path.join(s3Pkg, "node_modules", "@smithy"), { recursive: true });
+      fs.mkdirSync(smithyPkg, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(smithyPkg, "package.json"),
+        JSON.stringify({
+          name: "@smithy/util-waiter",
+          version: "1.0.0",
+          main: "index.js",
+          module: "index.js",
+          exports: {
+            ".": "./index.js",
+          },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(smithyPkg, "index.js"),
+        `export const waiter = "waiter-ok";`,
+      );
+
+      fs.writeFileSync(
+        path.join(s3Pkg, "package.json"),
+        JSON.stringify({
+          name: "@aws-sdk/client-s3",
+          version: "1.0.0",
+          main: "index.js",
+          module: "index.js",
+          exports: {
+            ".": "./index.js",
+          },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(s3Pkg, "index.js"),
+        `
+import { waiter } from "@smithy/util-waiter";
+export const value = waiter;
+        `.trim(),
+      );
+
+      fs.symlinkSync(
+        smithyPkg,
+        path.join(s3Pkg, "node_modules", "@smithy", "util-waiter"),
+        symlinkType,
+      );
+      fs.symlinkSync(
+        s3Pkg,
+        path.join(backendNodeModules, "@aws-sdk", "client-s3"),
+        symlinkType,
+      );
+
+      const loader = defaultModuleLoader(
+        { from: backendNodeModules, to: "/node_modules" },
+      );
+
+      const s3Bundle = await loader("@aws-sdk/client-s3", {
+        path: "/app/entry.ts",
+        resolveDir: "/app",
+      });
+      assert.ok(s3Bundle.code.includes("@smithy/util-waiter"));
+
+      const smithyBundle = await loader("@smithy/util-waiter", {
+        path: path.posix.join(s3Bundle.resolveDir, s3Bundle.filename),
+        resolveDir: s3Bundle.resolveDir,
+      });
+
+      assert.ok(smithyBundle.code.includes("waiter-ok"));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test("loads TypeScript files with Bun fallback when stripTypeScriptTypes is unavailable", async () => {
     const tmpDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "module-loader-bun-fallback-test-"),

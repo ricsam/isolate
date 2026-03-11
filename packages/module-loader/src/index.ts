@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import type {
   ModuleLoaderCallback,
   ModuleLoaderResult,
@@ -53,6 +54,7 @@ export function defaultModuleLoader(
 ): ModuleLoaderCallback {
   const mappings = parseMappings(paths);
   const nodeModulesMapping = findNodeModulesMapping(mappings);
+  const importerHostPathByVirtualPath = new Map<string, string>();
 
   const loader: ModuleLoaderCallback = async (
     moduleName: string,
@@ -62,13 +64,24 @@ export function defaultModuleLoader(
     if (isBareSpecifier(moduleName)) {
       const alias = findModuleAlias(moduleName, mappings);
       if (alias) {
-        return handleModuleAlias(alias);
+        return handleModuleAlias(alias, importerHostPathByVirtualPath);
       }
-      return handleBareSpecifier(moduleName, nodeModulesMapping, mappings);
+      return handleBareSpecifier(
+        moduleName,
+        importer,
+        nodeModulesMapping,
+        mappings,
+        importerHostPathByVirtualPath,
+      );
     }
 
     // B. Relative/absolute paths: user files or intra-package files
-    return handlePathSpecifier(moduleName, importer, mappings);
+    return handlePathSpecifier(
+      moduleName,
+      importer,
+      mappings,
+      importerHostPathByVirtualPath,
+    );
   };
 
   return loader;
@@ -79,8 +92,10 @@ export function defaultModuleLoader(
  */
 async function handleBareSpecifier(
   specifier: string,
+  importer: { path: string; resolveDir: string },
   nodeModulesMapping: PathMapping | undefined,
   mappings: PathMapping[],
+  importerHostPathByVirtualPath: Map<string, string>,
 ): Promise<ModuleLoaderResult> {
   if (!nodeModulesMapping) {
     throw new Error(
@@ -89,7 +104,30 @@ async function handleBareSpecifier(
     );
   }
 
-  const rootDir = path.dirname(nodeModulesMapping.hostBase);
+  const importerHostPath = resolveImporterHostPath(
+    importer,
+    mappings,
+    importerHostPathByVirtualPath,
+  );
+  const fallbackImporterHostPath = path.join(
+    path.dirname(nodeModulesMapping.hostBase),
+    "__isolate_module_loader__.js",
+  );
+  const effectiveImporterHostPath = importerHostPath ?? fallbackImporterHostPath;
+  const importerResolutionPath = toRealPath(effectiveImporterHostPath);
+  const resolvedHostPath = resolveBareSpecifierWithNode(
+    specifier,
+    importerResolutionPath,
+  );
+
+  if (!resolvedHostPath) {
+    throw new Error(
+      `Cannot resolve bare specifier "${specifier}" from importer "${importer.path}" ` +
+      `(host importer: ${effectiveImporterHostPath}).`
+    );
+  }
+
+  const rootDir = path.dirname(importerResolutionPath);
 
   const { code } = await bundleSpecifier(specifier, rootDir);
 
@@ -102,12 +140,18 @@ async function handleBareSpecifier(
         .split("/")
         .pop()!;
 
-  return {
+  const result: ModuleLoaderResult = {
     code,
     filename,
     resolveDir: nodeModulesMapping.virtualMount,
     static: true,
   };
+
+  // Keep host importer context so transitive bare imports resolve like Node:
+  // from the importing package location (realpath by default).
+  registerImporterHostPath(result, toRealPath(resolvedHostPath), importerHostPathByVirtualPath);
+
+  return result;
 }
 
 /**
@@ -115,6 +159,7 @@ async function handleBareSpecifier(
  */
 async function handleModuleAlias(
   alias: PathMapping,
+  importerHostPathByVirtualPath: Map<string, string>,
 ): Promise<ModuleLoaderResult> {
   const { code } = await bundleHostFile(alias.hostBase);
 
@@ -124,11 +169,15 @@ async function handleModuleAlias(
     .replace(/[^a-zA-Z0-9_.-]/g, "-") // replace non-safe chars
     + ".bundled.js";
 
-  return {
+  const result: ModuleLoaderResult = {
     code,
     filename,
     resolveDir: "/",
   };
+
+  registerImporterHostPath(result, toRealPath(alias.hostBase), importerHostPathByVirtualPath);
+
+  return result;
 }
 
 /**
@@ -138,6 +187,7 @@ async function handlePathSpecifier(
   specifier: string,
   importer: { path: string; resolveDir: string },
   mappings: PathMapping[],
+  importerHostPathByVirtualPath: Map<string, string>,
 ): Promise<ModuleLoaderResult> {
   // Resolve virtual path relative to importer's resolveDir
   let virtualPath: string;
@@ -204,10 +254,82 @@ async function handlePathSpecifier(
     virtualDir = path.posix.dirname(virtualPath);
   }
 
-  return {
+  const result: ModuleLoaderResult = {
     code,
     filename: resolvedFilename,
     resolveDir: virtualDir,
     // User files are NOT static — they can change between evaluations
   };
+
+  registerImporterHostPath(result, toRealPath(resolvedHostPath), importerHostPathByVirtualPath);
+
+  return result;
+}
+
+function resolveImporterHostPath(
+  importer: { path: string; resolveDir: string },
+  mappings: PathMapping[],
+  importerHostPathByVirtualPath: Map<string, string>,
+): string | null {
+  const cached = importerHostPathByVirtualPath.get(importer.path);
+  if (cached) {
+    return cached;
+  }
+
+  const mappedHostPath = virtualToHost(importer.path, mappings);
+  if (!mappedHostPath) {
+    return null;
+  }
+
+  const resolvedMappedPath = resolveFilePath(mappedHostPath);
+  if (resolvedMappedPath) {
+    return resolvedMappedPath;
+  }
+
+  if (exists(mappedHostPath)) {
+    return mappedHostPath;
+  }
+
+  return null;
+}
+
+function resolveBareSpecifierWithNode(
+  specifier: string,
+  importerHostPath: string,
+): string | null {
+  try {
+    const req = createRequire(importerHostPath);
+    return req.resolve(specifier);
+  } catch {
+    return null;
+  }
+}
+
+function registerImporterHostPath(
+  moduleResult: ModuleLoaderResult,
+  hostPath: string,
+  importerHostPathByVirtualPath: Map<string, string>,
+): void {
+  const virtualModulePath = path.posix.join(
+    moduleResult.resolveDir,
+    moduleResult.filename,
+  );
+  importerHostPathByVirtualPath.set(virtualModulePath, hostPath);
+}
+
+function toRealPath(inputPath: string): string {
+  try {
+    return fs.realpathSync(inputPath);
+  } catch {
+    return inputPath;
+  }
+}
+
+function exists(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -65,7 +65,7 @@ function shimNodeBuiltinsPlugin(): Plugin {
 }
 
 /**
- * Cache for bundled npm packages. Key is the bare specifier (e.g. "lodash/chunk").
+ * Cache for bundled npm packages. Key includes specifier + resolution root.
  */
 const bundleCache = new Map<string, { code: string }>();
 
@@ -121,23 +121,25 @@ export async function bundleSpecifier(
   specifier: string,
   rootDir: string
 ): Promise<{ code: string }> {
+  const cacheKey = `${specifier}\0${rootDir}`;
+
   // Check cache
-  const cached = bundleCache.get(specifier);
+  const cached = bundleCache.get(cacheKey);
   if (cached) return cached;
 
   // Check in-flight
-  const inFlight = bundlesInFlight.get(specifier);
+  const inFlight = bundlesInFlight.get(cacheKey);
   if (inFlight) return inFlight;
 
   const promise = doBundleSpecifier(specifier, rootDir);
-  bundlesInFlight.set(specifier, promise);
+  bundlesInFlight.set(cacheKey, promise);
 
   try {
     const result = await promise;
-    bundleCache.set(specifier, result);
+    bundleCache.set(cacheKey, result);
     return result;
   } finally {
-    bundlesInFlight.delete(specifier);
+    bundlesInFlight.delete(cacheKey);
   }
 }
 

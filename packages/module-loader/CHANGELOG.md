@@ -1,5 +1,11 @@
 # @ricsam/isolate-module-loader
 
+## 0.1.3
+
+### Patch Changes
+
+- importer symlinks are followed by default (Node-style realpath behavior)
+
 ## 0.1.2
 
 ### Patch Changes
