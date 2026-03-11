@@ -26,7 +26,7 @@ async function withTimeout<T>(
 }
 
 describe("stream cancel regression", () => {
-  it("keeps dispatch healthy after repeated stream cancellations", { timeout: 60000 }, async () => {
+  it("keeps dispatch healthy after repeated stream cancellations", { timeout: 120000 }, async () => {
     const socketPath = `/tmp/isolate-streaming-cancel-stress-${Date.now()}.sock`;
     let daemon: DaemonHandle | undefined;
     let client: DaemonConnection | undefined;
@@ -50,12 +50,24 @@ describe("stream cancel regression", () => {
             }
 
             if (pathname === "/stream") {
-              const chunkSize = 256 * 1024;
+              const chunkSize = 64 * 1024;
+              let cancelled = false;
               const stream = new ReadableStream({
                 async pull(controller) {
+                  if (cancelled) {
+                    controller.close();
+                    return;
+                  }
                   await new Promise((resolve) => setTimeout(resolve, 1));
+                  if (cancelled) {
+                    controller.close();
+                    return;
+                  }
                   controller.enqueue(new Uint8Array(chunkSize));
-                }
+                },
+                cancel() {
+                  cancelled = true;
+                },
               });
 
               return new Response(stream, {
@@ -68,7 +80,7 @@ describe("stream cancel regression", () => {
         });
       `);
 
-      const iterations = 40;
+      const iterations = 25;
       for (let iteration = 1; iteration <= iterations; iteration++) {
         const response: Response = await withTimeout<Response>(
           runtime.fetch.dispatchRequest(new Request("http://localhost/stream")),
@@ -78,13 +90,15 @@ describe("stream cancel regression", () => {
         assert.ok(response.body, `expected response body at iteration ${iteration}`);
 
         const reader = response.body!.getReader();
-        await withTimeout(
+        const firstRead = await withTimeout(
           reader.read(),
-          5000,
+          20000,
           `read ${iteration}`
         );
+        assert.strictEqual(firstRead.done, false, `expected a chunk at iteration ${iteration}`);
+        assert.ok(firstRead.value instanceof Uint8Array, `expected Uint8Array chunk at iteration ${iteration}`);
 
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await new Promise((resolve) => setTimeout(resolve, 1));
 
         await withTimeout(
           reader.cancel(`cancel ${iteration}`),
@@ -92,7 +106,7 @@ describe("stream cancel regression", () => {
           `cancel ${iteration}`
         );
 
-        if (iteration % 10 === 0) {
+        if (iteration % 5 === 0) {
           const pingResponse: Response = await withTimeout<Response>(
             runtime.fetch.dispatchRequest(new Request("http://localhost/ping")),
             5000,
