@@ -5,6 +5,7 @@
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
+import { setTimeout as delay } from "node:timers/promises";
 import { connect } from "./connection.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 import type { DaemonConnection } from "./types.ts";
@@ -21,8 +22,9 @@ describe("isolate-client streaming", () => {
   });
 
   after(async () => {
-    await client.close();
     await daemon.close();
+    await client.close();
+    await delay(0);
   });
 
   // ============================================================================
