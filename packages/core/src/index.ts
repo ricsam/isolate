@@ -1,9 +1,12 @@
 import ivm from "isolated-vm";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { createRequire } from "node:module";
 
 // Types for isolated-vm context
 export type { Isolate, Context, Reference } from "isolated-vm";
+
+const runtimeRequire = createRequire(path.join(process.cwd(), "package.json"));
 
 // ============================================================================
 // Error Encoding Helpers (for cross-boundary error transfer)
@@ -998,7 +1001,8 @@ function getLinkedomWorkerInjectionCode(): string {
     return linkedomWorkerInjectionCode;
   }
 
-  const workerPath = fileURLToPath(import.meta.resolve("linkedom/worker"));
+  const linkedomPackageJsonPath = runtimeRequire.resolve("linkedom/package.json");
+  const workerPath = path.join(path.dirname(linkedomPackageJsonPath), "worker.js");
   const workerSource = readFileSync(workerPath, "utf8");
   const exportBlockPattern = /export\s*\{[\s\S]*?\};?\s*$/;
 
