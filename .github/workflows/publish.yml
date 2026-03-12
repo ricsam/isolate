@@ -4,33 +4,62 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip tests and publish directly'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
     steps:
+      - name: Ensure main branch for manual runs
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "This workflow can only be manually run from main."
+            exit 1
+          fi
+      - name: Skip tests for manual publish
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_tests == 'true' }}
+        run: echo "Skipping tests because skip_tests=true."
       - uses: actions/checkout@v4
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
       - uses: oven-sh/setup-bun@v2
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
       - uses: actions/setup-node@v4
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
         with:
           node-version: '24'
       - name: Update npm
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
         run: npm install -g npm@latest
       - run: npm ci
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
       - name: Install Playwright browsers
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
         run: npx playwright install --with-deps chromium
       - name: Build library types
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
         run: bun run build:library-types
         working-directory: demo
       - name: Build demo front-end
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
         run: bun run build
         working-directory: demo
       - run: npm run build
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
       - run: npm run typecheck
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
       - name: Install Playwright browsers
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
         run: npx playwright install --with-deps chromium
       - run: npm test
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
 
   publish:
     name: Publish
