@@ -225,6 +225,57 @@ describe("isolate-client integration", () => {
     }
   });
 
+  it("should not hang on fetch callback response with status 204 and a body", { timeout: 10000 }, async () => {
+    const bodyBytes = new TextEncoder().encode("invalid-204-body");
+
+    const runtime = await client.createRuntime({
+      fetch: async () => {
+        const headers = new Headers({
+          "content-type": "text/plain",
+        });
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(bodyBytes);
+            controller.close();
+          },
+        });
+
+        // Simulate a non-compliant runtime response shape:
+        // 204 with a non-null body stream.
+        return {
+          status: 204,
+          statusText: "No Content",
+          headers,
+          body: stream,
+          url: "https://example.com/non-compliant-204",
+          arrayBuffer: async () =>
+            bodyBytes.buffer.slice(
+              bodyBytes.byteOffset,
+              bodyBytes.byteOffset + bodyBytes.byteLength
+            ),
+        } as unknown as Response;
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        serve({
+          fetch: async () => {
+            return fetch("https://example.com/non-compliant-204");
+          }
+        });
+      `);
+
+      const response = await runtime.fetch.dispatchRequest(
+        new Request("http://localhost/trigger")
+      );
+      assert.strictEqual(response.status, 204);
+      assert.strictEqual(await response.text(), "");
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it("should preserve URL encoding in fetch callback (raw URL)", async () => {
     let receivedUrl = "";
 

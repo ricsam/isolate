@@ -1,5 +1,11 @@
 # @ricsam/isolate-protocol
 
+## 0.1.19
+
+### Patch Changes
+
+- fix null body hang issue
+
 ## 0.1.18
 
 ### Patch Changes

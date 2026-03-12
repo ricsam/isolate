@@ -1542,6 +1542,7 @@ function registerConsoleCallbacks(
 
 /** Threshold for streaming callback responses (64KB) */
 const CALLBACK_STREAM_THRESHOLD = 64 * 1024;
+const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 
 /**
  * Register fetch callback.
@@ -1581,8 +1582,13 @@ function registerFetchCallback(
     // Locally constructed Responses (no URL or non-http URL) are buffered
     const isNetworkResponse = response.url && (response.url.startsWith('http://') || response.url.startsWith('https://'));
 
-    // Stream if: network response AND has body AND (no content-length OR size > threshold)
-    const shouldStream = isNetworkResponse && response.body && (knownSize === null || knownSize > CALLBACK_STREAM_THRESHOLD);
+    // Stream if: network response AND status allows body AND has body AND
+    // (no content-length OR size > threshold)
+    const shouldStream =
+      isNetworkResponse &&
+      !NULL_BODY_STATUSES.has(response.status) &&
+      !!response.body &&
+      (knownSize === null || knownSize > CALLBACK_STREAM_THRESHOLD);
 
     if (shouldStream && response.body) {
       // Streaming path: send metadata immediately, then stream body

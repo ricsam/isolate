@@ -1,5 +1,14 @@
 # @ricsam/isolate-client
 
+## 0.1.22
+
+### Patch Changes
+
+- fix null body hang issue
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.19
+  - @ricsam/isolate-playwright@0.1.19
+
 ## 0.1.21
 
 ### Patch Changes

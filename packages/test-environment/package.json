@@ -20,7 +20,7 @@
     "@ricsam/isolate-core": "0.1.16"
   },
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "0.1.18",
+    "@ricsam/isolate-test-utils": "0.1.19",
     "@types/node": "^24",
     "typescript": "^5",
     "isolated-vm": "^6"

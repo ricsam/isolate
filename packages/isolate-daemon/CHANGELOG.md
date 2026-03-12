@@ -1,5 +1,15 @@
 # @ricsam/isolate-daemon
 
+## 0.1.21
+
+### Patch Changes
+
+- fix null body hang issue
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.19
+  - @ricsam/isolate-playwright@0.1.19
+  - @ricsam/isolate-runtime@0.1.21
+
 ## 0.1.20
 
 ### Patch Changes

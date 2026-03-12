@@ -92,6 +92,7 @@ import type {
 } from "./types.ts";
 
 const LINKER_CONFLICT_ERROR = "Module is currently being linked by another linker";
+const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 
 function getErrorText(error: unknown): string {
   if (error instanceof Error) {
@@ -2512,21 +2513,45 @@ function handleCallbackStreamStart(
     },
   });
 
+  const cancelStream = (): void => {
+    connection.callbackStreamReceivers.delete(message.streamId);
+    sendMessage(connection.socket, {
+      type: MessageType.CALLBACK_STREAM_CANCEL,
+      streamId: message.streamId,
+    });
+  };
+
   connection.callbackStreamReceivers.set(message.streamId, receiver);
 
-  // Create Response and resolve the pending callback
+  // Create Response and resolve/reject the pending callback
   const pending = connection.pendingCallbacks.get(message.requestId);
-  if (pending) {
-    connection.pendingCallbacks.delete(message.requestId);
+  if (!pending) {
+    cancelStream();
+    return;
+  }
 
-    const response = new Response(readableStream, {
+  try {
+    const body = NULL_BODY_STATUSES.has(message.metadata.status)
+      ? null
+      : readableStream;
+    const response = new Response(body, {
       status: message.metadata.status,
       statusText: message.metadata.statusText,
       headers: message.metadata.headers,
     });
 
-    // Resolve with the streaming Response
+    connection.pendingCallbacks.delete(message.requestId);
     pending.resolve({ __streamingResponse: true, response });
+
+    // Null-body statuses cannot stream a body; cancel any in-flight client stream.
+    if (body === null) {
+      cancelStream();
+    }
+  } catch (err) {
+    connection.pendingCallbacks.delete(message.requestId);
+    cancelStream();
+    const error = err instanceof Error ? err : new Error(String(err));
+    pending.reject(error);
   }
 }
 

@@ -2940,7 +2940,13 @@ export async function setupFetch(
             const responseHeaders = new Headers(responseState.headers);
             const status =
               responseState.status === 101 ? 200 : responseState.status;
-            const response = new Response(passthruBody, {
+            const hasNullBodyStatus =
+              responseState.status === 101 ||
+              responseState.status === 103 ||
+              responseState.status === 204 ||
+              responseState.status === 205 ||
+              responseState.status === 304;
+            const response = new Response(hasNullBodyStatus ? null : passthruBody, {
               status,
               statusText: responseState.statusText,
               headers: responseHeaders,
@@ -3006,7 +3012,19 @@ export async function setupFetch(
           const responseHeaders = new Headers(responseState.headers);
           const status =
             responseState.status === 101 ? 200 : responseState.status;
-          const response = new Response(pumpedStream, {
+          const hasNullBodyStatus =
+            responseState.status === 101 ||
+            responseState.status === 103 ||
+            responseState.status === 204 ||
+            responseState.status === 205 ||
+            responseState.status === 304;
+
+          if (hasNullBodyStatus) {
+            streamRegistry.cancel(responseStreamId);
+            streamRegistry.delete(responseStreamId);
+          }
+
+          const response = new Response(hasNullBodyStatus ? null : pumpedStream, {
             status,
             statusText: responseState.statusText,
             headers: responseHeaders,
@@ -3020,7 +3038,13 @@ export async function setupFetch(
 
         // Convert to native Response (non-streaming)
         const responseHeaders = new Headers(responseState.headers);
-        const responseBody = responseState.body;
+        const hasNullBodyStatus =
+          responseState.status === 101 ||
+          responseState.status === 103 ||
+          responseState.status === 204 ||
+          responseState.status === 205 ||
+          responseState.status === 304;
+        const responseBody = hasNullBodyStatus ? null : responseState.body;
 
         // Note: Status 101 (Switching Protocols) is not valid for Response constructor
         // We use 200 as the status but preserve the actual status in a custom header

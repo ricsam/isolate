@@ -1,5 +1,11 @@
 # @ricsam/isolate-fetch
 
+## 0.1.20
+
+### Patch Changes
+
+- fix null body hang issue
+
 ## 0.1.19
 
 ### Patch Changes

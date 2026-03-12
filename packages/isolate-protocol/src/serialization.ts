@@ -7,6 +7,10 @@
 
 import type { SerializedRequest, SerializedResponse } from "./types.ts";
 
+function isNullBodyStatus(status: number): boolean {
+  return status === 101 || status === 103 || status === 204 || status === 205 || status === 304;
+}
+
 /**
  * Serialize a Request to a plain object for transmission over IPC.
  */
@@ -40,7 +44,7 @@ export async function serializeResponse(response: Response): Promise<SerializedR
   });
 
   let body: Uint8Array | null = null;
-  if (response.body) {
+  if (response.body && !isNullBodyStatus(response.status)) {
     body = new Uint8Array(await response.arrayBuffer());
   }
 
@@ -77,7 +81,8 @@ export function deserializeRequest(data: SerializedRequest): Request {
  * Deserialize a plain object back into a Response.
  */
 export function deserializeResponse(data: SerializedResponse): Response {
-  return new Response(data.body as unknown as BodyInit | null, {
+  const body = isNullBodyStatus(data.status) ? null : data.body;
+  return new Response(body as unknown as BodyInit | null, {
     status: data.status,
     statusText: data.statusText,
     headers: data.headers,
