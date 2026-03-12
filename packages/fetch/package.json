@@ -16,12 +16,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-core": "*"
+    "@ricsam/isolate-core": "0.1.15"
   },
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "*",
-    "@ricsam/isolate-timers": "*",
-    "@ricsam/isolate-console": "*",
+    "@ricsam/isolate-test-utils": "0.1.16",
+    "@ricsam/isolate-timers": "0.1.15",
+    "@ricsam/isolate-console": "0.1.16",
     "@types/node": "^24",
     "@types/express": "^5",
     "@whatwg-node/server": "^0.10.18",

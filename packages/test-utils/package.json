@@ -25,19 +25,19 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@ricsam/isolate-fs": "*",
-    "@ricsam/isolate-runtime": "*",
+    "@ricsam/isolate-fs": "0.1.15",
+    "@ricsam/isolate-runtime": "0.1.18",
     "@types/node": "^24",
     "typescript": "^5",
     "isolated-vm": "^6"
   },
   "peerDependencies": {
     "isolated-vm": "^6",
-    "@ricsam/isolate-console": "*",
-    "@ricsam/isolate-core": "*",
-    "@ricsam/isolate-fetch": "*",
-    "@ricsam/isolate-fs": "*",
-    "@ricsam/isolate-runtime": "*"
+    "@ricsam/isolate-console": "0.1.16",
+    "@ricsam/isolate-core": "0.1.15",
+    "@ricsam/isolate-fetch": "0.1.18",
+    "@ricsam/isolate-fs": "0.1.15",
+    "@ricsam/isolate-runtime": "0.1.18"
   },
   "peerDependenciesMeta": {
     "@ricsam/isolate-console": {

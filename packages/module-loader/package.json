@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-protocol": "*",
+    "@ricsam/isolate-protocol": "0.1.16",
     "rollup": "^4",
     "@rollup/plugin-node-resolve": "^16",
     "@rollup/plugin-commonjs": "^28",
@@ -24,8 +24,8 @@
     "@rollup/plugin-replace": "^6"
   },
   "devDependencies": {
-    "@ricsam/isolate-runtime": "*",
-    "@ricsam/isolate-test-utils": "*",
+    "@ricsam/isolate-runtime": "0.1.18",
+    "@ricsam/isolate-test-utils": "0.1.16",
     "@types/node": "^24",
     "typescript": "^5"
   }

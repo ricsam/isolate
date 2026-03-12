@@ -16,11 +16,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-core": "*",
+    "@ricsam/isolate-core": "0.1.15",
     "mime-types": "^3.0.2"
   },
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "*",
+    "@ricsam/isolate-test-utils": "0.1.16",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^24",
     "memfs": "^4.51.1",

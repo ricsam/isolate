@@ -23,12 +23,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-protocol": "*",
-    "@ricsam/isolate-runtime": "*",
-    "@ricsam/isolate-transform": "*",
-    "@ricsam/isolate-fs": "*",
-    "@ricsam/isolate-test-environment": "*",
-    "@ricsam/isolate-playwright": "*",
+    "@ricsam/isolate-protocol": "0.1.16",
+    "@ricsam/isolate-runtime": "0.1.18",
+    "@ricsam/isolate-transform": "0.1.4",
+    "@ricsam/isolate-fs": "0.1.15",
+    "@ricsam/isolate-test-environment": "0.1.15",
+    "@ricsam/isolate-playwright": "0.1.16",
     "playwright": "^1"
   },
   "devDependencies": {

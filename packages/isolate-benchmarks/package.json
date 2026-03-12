@@ -18,9 +18,9 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@ricsam/isolate-runtime": "*",
-    "@ricsam/isolate-client": "*",
-    "@ricsam/isolate-daemon": "*",
+    "@ricsam/isolate-runtime": "0.1.18",
+    "@ricsam/isolate-client": "0.1.19",
+    "@ricsam/isolate-daemon": "0.1.18",
     "@whatwg-node/server": "^0.9",
     "ws": "^8"
   },

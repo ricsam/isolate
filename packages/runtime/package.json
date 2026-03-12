@@ -16,21 +16,21 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-core": "*",
-    "@ricsam/isolate-console": "*",
-    "@ricsam/isolate-crypto": "*",
-    "@ricsam/isolate-encoding": "*",
-    "@ricsam/isolate-fetch": "*",
-    "@ricsam/isolate-fs": "*",
-    "@ricsam/isolate-path": "*",
-    "@ricsam/isolate-playwright": "*",
-    "@ricsam/isolate-protocol": "*",
-    "@ricsam/isolate-test-environment": "*",
-    "@ricsam/isolate-timers": "*",
-    "@ricsam/isolate-transform": "*"
+    "@ricsam/isolate-core": "0.1.15",
+    "@ricsam/isolate-console": "0.1.16",
+    "@ricsam/isolate-crypto": "0.1.15",
+    "@ricsam/isolate-encoding": "0.1.15",
+    "@ricsam/isolate-fetch": "0.1.18",
+    "@ricsam/isolate-fs": "0.1.15",
+    "@ricsam/isolate-path": "0.1.15",
+    "@ricsam/isolate-playwright": "0.1.16",
+    "@ricsam/isolate-protocol": "0.1.16",
+    "@ricsam/isolate-test-environment": "0.1.15",
+    "@ricsam/isolate-timers": "0.1.15",
+    "@ricsam/isolate-transform": "0.1.4"
   },
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "*",
+    "@ricsam/isolate-test-utils": "0.1.16",
     "@types/node": "^24",
     "typescript": "^5",
     "isolated-vm": "^6"
