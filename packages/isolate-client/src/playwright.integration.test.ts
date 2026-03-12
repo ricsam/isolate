@@ -58,6 +58,62 @@ describe("isolate-client playwright integration", () => {
     }
   });
 
+  it(
+    "should respect playwright timeout from createRuntime options",
+    { timeout: 10000 },
+    async () => {
+      const browser = await chromium.launch({ headless: true });
+      const browserContext = await browser.newContext();
+      const page = await browserContext.newPage();
+      const timeoutMs = 300;
+
+      const runtime = await client.createRuntime({
+        testEnvironment: true,
+        playwright: {
+          handler: defaultPlaywrightHandler(page),
+          timeout: timeoutMs,
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          test('playwright default timeout propagation', async () => {
+            await page.goto('data:text/html,<div id="ready">ready</div>');
+            await page.waitForSelector('#missing-selector');
+          });
+        `);
+
+        const startedAt = Date.now();
+        const results = await runtime.testEnvironment.runTests();
+        const elapsedMs = Date.now() - startedAt;
+
+        assert.strictEqual(results.total, 1);
+        assert.strictEqual(results.passed, 0);
+        assert.strictEqual(
+          results.failed,
+          1,
+          `Expected timeout failure, got: ${JSON.stringify(results.tests)}`
+        );
+
+        const failedTest = results.tests.find((test) => test.status === "fail");
+        assert.ok(failedTest?.error?.message, "Expected failed test error message");
+        assert.match(failedTest.error.message, /timeout/i);
+        assert.match(
+          failedTest.error.message,
+          new RegExp(`${timeoutMs}\\s*ms`),
+          `Expected timeout message to mention ${timeoutMs}ms: ${failedTest.error.message}`
+        );
+        assert.ok(
+          elapsedMs < 5000,
+          `Expected failure near configured timeout, took ${elapsedMs}ms`
+        );
+      } finally {
+        await runtime.dispose();
+        await browser.close();
+      }
+    }
+  );
+
   it("should collect console logs and network data", async () => {
     const browser = await chromium.launch({ headless: true });
     const browserContext = await browser.newContext();

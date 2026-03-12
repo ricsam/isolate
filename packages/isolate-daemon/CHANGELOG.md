@@ -1,5 +1,15 @@
 # @ricsam/isolate-daemon
 
+## 0.1.20
+
+### Patch Changes
+
+- enforce playwright timeout
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.18
+  - @ricsam/isolate-playwright@0.1.18
+  - @ricsam/isolate-runtime@0.1.20
+
 ## 0.1.19
 
 ### Patch Changes

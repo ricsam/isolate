@@ -282,6 +282,11 @@ export interface TestEnvironmentOptionsProtocol {
   testTimeout?: number;
 }
 
+export interface PlaywrightOptionsProtocol {
+  /** Default timeout for Playwright operations in ms */
+  timeout?: number;
+}
+
 export interface CreateRuntimeRequest extends BaseMessage {
   type: typeof MessageType.CREATE_RUNTIME;
   options: {
@@ -291,6 +296,8 @@ export interface CreateRuntimeRequest extends BaseMessage {
     cwd?: string;
     /** Enable test environment (describe, it, expect, etc.) */
     testEnvironment?: boolean | TestEnvironmentOptionsProtocol;
+    /** Playwright runtime options */
+    playwright?: PlaywrightOptionsProtocol;
     /** Namespace ID for runtime pooling/reuse. If provided, runtime will be cached on dispose. */
     namespaceId?: string;
   };

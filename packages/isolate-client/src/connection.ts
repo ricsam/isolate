@@ -75,6 +75,7 @@ import {
   type MarshalContext,
 } from "@ricsam/isolate-protocol";
 import {
+  defaultPlaywrightHandler,
   getDefaultPlaywrightHandlerMetadata,
   type PlaywrightCallback,
 } from "@ricsam/isolate-playwright/client";
@@ -347,6 +348,11 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
           }
         }
 
+        const playwrightOption =
+          runtimeOptions.playwright?.timeout !== undefined
+            ? { timeout: runtimeOptions.playwright.timeout }
+            : undefined;
+
         const requestId = st.nextRequestId++;
         const request: CreateRuntimeRequest = {
           type: MessageType.CREATE_RUNTIME,
@@ -356,6 +362,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
             cwd: runtimeOptions.cwd,
             callbacks,
             testEnvironment: testEnvironmentOption,
+            playwright: playwrightOption,
             namespaceId,
           },
         };
@@ -799,6 +806,32 @@ export function isBenignDisposeError(error: unknown): boolean {
   );
 }
 
+function normalizePlaywrightOptions(
+  playwrightOptions: RuntimeOptions["playwright"] | undefined
+): RuntimeOptions["playwright"] | undefined {
+  if (!playwrightOptions || playwrightOptions.timeout === undefined) {
+    return playwrightOptions;
+  }
+
+  const metadata = getDefaultPlaywrightHandlerMetadata(playwrightOptions.handler);
+  if (!metadata?.page) {
+    return playwrightOptions;
+  }
+
+  const currentTimeout = metadata.options?.timeout ?? 30000;
+  if (currentTimeout === playwrightOptions.timeout) {
+    return playwrightOptions;
+  }
+
+  return {
+    ...playwrightOptions,
+    handler: defaultPlaywrightHandler(metadata.page, {
+      ...metadata.options,
+      timeout: playwrightOptions.timeout,
+    }),
+  };
+}
+
 /**
  * Create a runtime in the daemon.
  */
@@ -807,6 +840,17 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   options: RuntimeOptions<T> = {},
   namespaceId?: string
 ): Promise<RemoteRuntime> {
+  const normalizedPlaywrightOptions = normalizePlaywrightOptions(
+    options.playwright
+  );
+  const runtimeOptionsForReconnect =
+    normalizedPlaywrightOptions === options.playwright
+      ? options
+      : {
+          ...options,
+          playwright: normalizedPlaywrightOptions,
+        };
+
   // Register callbacks
   const callbacks: RuntimeCallbackRegistrations = {};
 
@@ -841,8 +885,8 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   const networkResponses: { url: string; status: number; headers: Record<string, string>; timestamp: number }[] = [];
   const pageListenerCleanups: (() => void)[] = [];
 
-  if (options.playwright) {
-    playwrightHandler = options.playwright.handler;
+  if (normalizedPlaywrightOptions) {
+    playwrightHandler = normalizedPlaywrightOptions.handler;
     if (!playwrightHandler) {
       throw new Error("playwright.handler is required when using playwright options");
     }
@@ -866,19 +910,19 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         };
         browserConsoleLogs.push(entry);
 
-        if (options.playwright!.onEvent) {
-          options.playwright!.onEvent({
+        if (normalizedPlaywrightOptions.onEvent) {
+          normalizedPlaywrightOptions.onEvent({
             type: "browserConsoleLog",
             ...entry,
           });
         }
 
-        if (options.playwright!.console && options.console?.onEntry) {
+        if (normalizedPlaywrightOptions.console && options.console?.onEntry) {
           options.console.onEntry({
             type: "browserOutput",
             ...entry,
           });
-        } else if (options.playwright!.console) {
+        } else if (normalizedPlaywrightOptions.console) {
           const prefix = entry.level === "error" ? "[browser:error]" : "[browser]";
           console.log(prefix, entry.stdout);
         }
@@ -893,8 +937,8 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         };
         networkRequests.push(info);
 
-        if (options.playwright!.onEvent) {
-          options.playwright!.onEvent({
+        if (normalizedPlaywrightOptions.onEvent) {
+          normalizedPlaywrightOptions.onEvent({
             type: "networkRequest",
             ...info,
           });
@@ -910,8 +954,8 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         };
         networkResponses.push(info);
 
-        if (options.playwright!.onEvent) {
-          options.playwright!.onEvent({
+        if (normalizedPlaywrightOptions.onEvent) {
+          normalizedPlaywrightOptions.onEvent({
             type: "networkResponse",
             ...info,
           });
@@ -931,7 +975,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
 
     callbacks.playwright = {
       handlerCallbackId,
-      console: options.playwright.console && !options.console?.onEntry,
+      console: normalizedPlaywrightOptions.console && !options.console?.onEntry,
     };
   }
 
@@ -964,6 +1008,11 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
     }
   }
 
+  const playwrightOption =
+    normalizedPlaywrightOptions?.timeout !== undefined
+      ? { timeout: normalizedPlaywrightOptions.timeout }
+      : undefined;
+
   const requestId = state.nextRequestId++;
   const request: CreateRuntimeRequest = {
     type: MessageType.CREATE_RUNTIME,
@@ -973,6 +1022,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       cwd: options.cwd,
       callbacks,
       testEnvironment: testEnvironmentOption,
+      playwright: playwrightOption,
       namespaceId,
     },
   };
@@ -985,7 +1035,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   if (namespaceId != null) {
     state.namespacedRuntimes.set(namespaceId, {
       isolateId,
-      runtimeOptions: options as RuntimeOptions,
+      runtimeOptions: runtimeOptionsForReconnect as RuntimeOptions,
     });
   }
 
@@ -1247,7 +1297,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
 
   // Track whether testEnvironment and playwright were enabled
   const testEnvironmentEnabled = !!options.testEnvironment;
-  const playwrightEnabled = !!options.playwright;
+  const playwrightEnabled = !!normalizedPlaywrightOptions;
 
   // Create test environment handle
   const testEnvironmentHandle: RemoteTestEnvironmentHandle = {

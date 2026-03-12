@@ -1,5 +1,12 @@
 # @ricsam/isolate-module-loader
 
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.18
+
 ## 0.1.4
 
 ### Patch Changes

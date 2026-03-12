@@ -1,5 +1,13 @@
 # @ricsam/isolate-runtime
 
+## 0.1.20
+
+### Patch Changes
+
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.18
+  - @ricsam/isolate-playwright@0.1.18
+
 ## 0.1.19
 
 ### Patch Changes

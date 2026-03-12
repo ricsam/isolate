@@ -1,5 +1,11 @@
 # @ricsam/isolate-protocol
 
+## 0.1.18
+
+### Patch Changes
+
+- enforce playwright timeout
+
 ## 0.1.17
 
 ### Patch Changes

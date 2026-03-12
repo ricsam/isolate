@@ -20,7 +20,7 @@
     "mime-types": "^3.0.2"
   },
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "0.1.17",
+    "@ricsam/isolate-test-utils": "0.1.18",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^24",
     "memfs": "^4.51.1",

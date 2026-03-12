@@ -17,7 +17,7 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "0.1.17",
+    "@ricsam/isolate-test-utils": "0.1.18",
     "@ricsam/isolate-timers": "0.1.16",
     "@types/node": "^24",
     "typescript": "^5",

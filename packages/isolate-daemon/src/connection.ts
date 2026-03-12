@@ -1199,7 +1199,12 @@ async function handleCreateRuntime(
     }
 
     // Build playwright options
-    let playwrightOptions: { handler: (op: PlaywrightOperation) => Promise<PlaywrightResult>; console?: boolean; onEvent?: (event: { type: string; level?: string; stdout?: string; timestamp?: number; [key: string]: unknown }) => void } | undefined;
+    let playwrightOptions: {
+      handler: (op: PlaywrightOperation) => Promise<PlaywrightResult>;
+      timeout?: number;
+      console?: boolean;
+      onEvent?: (event: { type: string; level?: string; stdout?: string; timestamp?: number; [key: string]: unknown }) => void;
+    } | undefined;
     const playwrightCallbacks = message.options.callbacks?.playwright;
     if (playwrightCallbacks) {
       playwrightOptions = {
@@ -1218,6 +1223,7 @@ async function handleCreateRuntime(
             return { ok: false, error: { name: error.name, message: error.message } };
           }
         },
+        timeout: message.options.playwright?.timeout,
         console: playwrightCallbacks.console,
         onEvent: (event: { type: string; level?: string; stdout?: string; timestamp?: number; [key: string]: unknown }) => {
           const conn = callbackContext.connection;

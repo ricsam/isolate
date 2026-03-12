@@ -1,5 +1,14 @@
 # @ricsam/isolate-client
 
+## 0.1.21
+
+### Patch Changes
+
+- enforce playwright timeout
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.18
+  - @ricsam/isolate-playwright@0.1.18
+
 ## 0.1.20
 
 ### Patch Changes
