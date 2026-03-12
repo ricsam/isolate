@@ -1,5 +1,11 @@
 # @ricsam/isolate-core
 
+## 0.1.18
+
+### Patch Changes
+
+- add DOM Parsing and Constructors
+
 ## 0.1.17
 
 ### Patch Changes

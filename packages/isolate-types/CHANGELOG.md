@@ -1,5 +1,11 @@
 # @ricsam/isolate-types
 
+## 0.1.16
+
+### Patch Changes
+
+- add DOM Parsing and Constructors
+
 ## 0.1.15
 
 ### Patch Changes

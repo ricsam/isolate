@@ -1,6 +1,6 @@
 {
   "name": "@ricsam/isolate-runtime",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -16,21 +16,21 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-core": "0.1.17",
-    "@ricsam/isolate-console": "0.1.18",
-    "@ricsam/isolate-crypto": "0.1.17",
-    "@ricsam/isolate-encoding": "0.1.17",
-    "@ricsam/isolate-fetch": "0.1.21",
-    "@ricsam/isolate-fs": "0.1.17",
-    "@ricsam/isolate-path": "0.1.17",
+    "@ricsam/isolate-core": "0.1.18",
+    "@ricsam/isolate-console": "0.1.19",
+    "@ricsam/isolate-crypto": "0.1.18",
+    "@ricsam/isolate-encoding": "0.1.18",
+    "@ricsam/isolate-fetch": "0.1.22",
+    "@ricsam/isolate-fs": "0.1.18",
+    "@ricsam/isolate-path": "0.1.18",
     "@ricsam/isolate-playwright": "0.1.20",
     "@ricsam/isolate-protocol": "0.1.20",
-    "@ricsam/isolate-test-environment": "0.1.17",
-    "@ricsam/isolate-timers": "0.1.17",
+    "@ricsam/isolate-test-environment": "0.1.18",
+    "@ricsam/isolate-timers": "0.1.18",
     "@ricsam/isolate-transform": "0.1.5"
   },
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "0.1.20",
+    "@ricsam/isolate-test-utils": "0.1.21",
     "@types/node": "^24",
     "typescript": "^5",
     "isolated-vm": "^6"

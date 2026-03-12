@@ -14,7 +14,7 @@
 /**
  * Type definitions for @ricsam/isolate-core globals.
  *
- * Includes: ReadableStream, WritableStream, TransformStream, Blob, File, URL, URLSearchParams, DOMException
+ * Includes: ReadableStream, WritableStream, TransformStream, Blob, File, URL, URLSearchParams, DOMException, DOMParser, DOM constructors
  */
 export const CORE_TYPES = `/**
  * Global Type Definitions for @ricsam/isolate-core
@@ -101,6 +101,71 @@ declare global {
    * @see https://developer.mozilla.org/en-US/docs/Web/API/URLSearchParams
    */
   const URLSearchParams: typeof globalThis.URLSearchParams;
+
+  // ============================================
+  // DOM Parsing and Constructors
+  // ============================================
+
+  /**
+   * Parses HTML/XML strings into Document objects.
+   * @see https://developer.mozilla.org/en-US/docs/Web/API/DOMParser
+   */
+  const DOMParser: typeof globalThis.DOMParser;
+
+  /**
+   * Base DOM node constructor.
+   */
+  const Node: typeof globalThis.Node;
+
+  /**
+   * DOM document constructor.
+   */
+  const Document: typeof globalThis.Document;
+
+  /**
+   * DOM document fragment constructor.
+   */
+  const DocumentFragment: typeof globalThis.DocumentFragment;
+
+  /**
+   * DOM document type constructor.
+   */
+  const DocumentType: typeof globalThis.DocumentType;
+
+  /**
+   * DOM element constructor.
+   */
+  const Element: typeof globalThis.Element;
+
+  /**
+   * DOM attribute constructor.
+   */
+  const Attr: typeof globalThis.Attr;
+
+  /**
+   * DOM text node constructor.
+   */
+  const Text: typeof globalThis.Text;
+
+  /**
+   * DOM comment node constructor.
+   */
+  const Comment: typeof globalThis.Comment;
+
+  /**
+   * DOM event constructor.
+   */
+  const Event: typeof globalThis.Event;
+
+  /**
+   * Base event target constructor.
+   */
+  const EventTarget: typeof globalThis.EventTarget;
+
+  /**
+   * Custom event constructor.
+   */
+  const CustomEvent: typeof globalThis.CustomEvent;
 
   // ============================================
   // Error Handling

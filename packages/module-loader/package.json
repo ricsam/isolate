@@ -24,8 +24,8 @@
     "@rollup/plugin-replace": "^6"
   },
   "devDependencies": {
-    "@ricsam/isolate-runtime": "0.1.22",
-    "@ricsam/isolate-test-utils": "0.1.20",
+    "@ricsam/isolate-runtime": "0.1.23",
+    "@ricsam/isolate-test-utils": "0.1.21",
     "@types/node": "^24",
     "typescript": "^5"
   }

@@ -1,4 +1,6 @@
 import ivm from "isolated-vm";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 // Types for isolated-vm context
 export type { Isolate, Context, Reference } from "isolated-vm";
@@ -64,6 +66,13 @@ function __decodeError(err) {
   return err;
 }
 `.trim();
+
+// ============================================================================
+// DOMParser Injection State
+// ============================================================================
+
+const domParserInjectedContexts = new WeakSet<ivm.Context>();
+let linkedomWorkerInjectionCode: string | null = null;
 
 // ============================================================================
 // Instance State Management
@@ -896,6 +905,8 @@ export interface SetupCoreOptions {
   blob?: boolean;
   /** Whether to inject Streams */
   streams?: boolean;
+  /** Whether to inject DOMParser and DOM constructors */
+  domParser?: boolean;
 }
 
 export interface CoreHandle {
@@ -911,6 +922,9 @@ export interface CoreHandle {
  * - Blob
  * - File
  * - DOMException
+ * - DOMParser
+ * - Node, Document, DocumentFragment, DocumentType, Element, Attr, Text, Comment
+ * - Event, EventTarget, CustomEvent
  * - URL, URLSearchParams
  * - TextEncoder, TextDecoder
  */
@@ -923,6 +937,7 @@ export async function setupCore(
     url: true,
     blob: true,
     streams: true,
+    domParser: true,
     ...options,
   };
 
@@ -962,11 +977,125 @@ export async function setupCore(
     await injectTextEncodingStreams(context);
   }
 
+  // Inject DOMParser and DOM constructors
+  if (opts.domParser) {
+    await injectDOMParser(context);
+  }
+
   return {
     dispose() {
       cleanupUnmarshaledHandles(context);
     },
   };
+}
+
+// ============================================================================
+// DOMParser / DOM Constructors Implementation
+// ============================================================================
+
+function getLinkedomWorkerInjectionCode(): string {
+  if (linkedomWorkerInjectionCode) {
+    return linkedomWorkerInjectionCode;
+  }
+
+  const workerPath = fileURLToPath(import.meta.resolve("linkedom/worker"));
+  const workerSource = readFileSync(workerPath, "utf8");
+  const exportBlockPattern = /export\s*\{[\s\S]*?\};?\s*$/;
+
+  if (!exportBlockPattern.test(workerSource)) {
+    throw new Error("Failed to locate linkedom worker exports");
+  }
+
+  const workerWithoutExports = workerSource.replace(exportBlockPattern, "");
+  linkedomWorkerInjectionCode = `
+(function() {
+${workerWithoutExports}
+globalThis.__linkedomExports = {
+  DOMParser,
+  Node,
+  Document,
+  DocumentFragment,
+  DocumentType,
+  Element,
+  Attr,
+  Text,
+  Comment,
+  Event: GlobalEvent,
+  EventTarget: DOMEventTarget,
+  CustomEvent,
+};
+})();
+`.trim();
+
+  return linkedomWorkerInjectionCode;
+}
+
+async function injectDOMParser(context: ivm.Context): Promise<void> {
+  if (domParserInjectedContexts.has(context)) {
+    return;
+  }
+
+  context.evalSync(getLinkedomWorkerInjectionCode());
+
+  const code = `
+(function() {
+  const linkedom = globalThis.__linkedomExports;
+  if (!linkedom) {
+    throw new Error("DOMParser initialization failed: missing linkedom exports");
+  }
+
+  const supportedMimeTypes = new Set([
+    "text/html",
+    "text/xml",
+    "application/xml",
+    "application/xhtml+xml",
+    "image/svg+xml",
+  ]);
+
+  const OriginalDOMParser = linkedom.DOMParser;
+
+  class DOMParser extends OriginalDOMParser {
+    parseFromString(input, mimeType) {
+      const normalizedMimeType = String(mimeType);
+      if (!supportedMimeTypes.has(normalizedMimeType)) {
+        throw new TypeError(
+          "Failed to execute 'parseFromString' on 'DOMParser': The provided value '" +
+            normalizedMimeType +
+            "' is not a valid enumeration value of type SupportedType."
+        );
+      }
+      return super.parseFromString(input, normalizedMimeType);
+    }
+  }
+
+  globalThis.DOMParser = DOMParser;
+  globalThis.Node = linkedom.Node;
+  globalThis.Document = linkedom.Document;
+  globalThis.DocumentFragment = linkedom.DocumentFragment;
+  globalThis.DocumentType = linkedom.DocumentType;
+  globalThis.Element = linkedom.Element;
+  globalThis.Attr = linkedom.Attr;
+  globalThis.Text = linkedom.Text;
+  globalThis.Comment = linkedom.Comment;
+  globalThis.Event = linkedom.Event;
+  globalThis.EventTarget = linkedom.EventTarget;
+  globalThis.CustomEvent = linkedom.CustomEvent;
+
+  delete globalThis.__linkedomExports;
+})();
+`;
+
+  try {
+    context.evalSync(code);
+    domParserInjectedContexts.add(context);
+  } catch (err) {
+    try {
+      context.evalSync("delete globalThis.__linkedomExports;");
+    } catch {
+      // Ignore cleanup errors if context is already torn down.
+    }
+    throw err;
+  }
 }
 
 // ============================================================================

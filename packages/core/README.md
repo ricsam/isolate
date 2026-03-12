@@ -23,6 +23,9 @@ const handle = await setupCore(context);
 - `Blob`, `File`
 - `URL`, `URLSearchParams`
 - `DOMException`
+- `DOMParser`
+- `Node`, `Document`, `DocumentFragment`, `DocumentType`, `Element`, `Attr`, `Text`, `Comment`
+- `Event`, `EventTarget`, `CustomEvent`
 - `AbortController`, `AbortSignal`
 - `TextEncoder`, `TextDecoder`
 
