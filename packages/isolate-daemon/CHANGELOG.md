@@ -1,5 +1,13 @@
 # @ricsam/isolate-daemon
 
+## 0.1.24
+
+### Patch Changes
+
+- @ricsam/isolate-fs@0.1.19
+- @ricsam/isolate-runtime@0.1.24
+- @ricsam/isolate-test-environment@0.1.19
+
 ## 0.1.23
 
 ### Patch Changes

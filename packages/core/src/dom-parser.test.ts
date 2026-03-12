@@ -86,6 +86,26 @@ describe("DOMParser", () => {
     assert.strictEqual(parsed.value, "1");
   });
 
+  test("coalesces XML text nodes from entity-heavy content", async () => {
+    await setupCore(context);
+
+    const result = await context.eval(`
+      (() => {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString('<ETag>&quot;abc123&quot;</ETag>', 'application/xml');
+        const etag = doc.documentElement;
+        return JSON.stringify({
+          childCount: etag.childNodes.length,
+          textContent: etag.textContent
+        });
+      })()
+    `);
+    const parsed = JSON.parse(result as string);
+
+    assert.strictEqual(parsed.childCount, 1);
+    assert.strictEqual(parsed.textContent, '"abc123"');
+  });
+
   test("throws TypeError for invalid MIME type", async () => {
     await setupCore(context);
 

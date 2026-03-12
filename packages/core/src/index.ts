@@ -1068,7 +1068,16 @@ async function injectDOMParser(context: ivm.Context): Promise<void> {
             "' is not a valid enumeration value of type SupportedType."
         );
       }
-      return super.parseFromString(input, normalizedMimeType);
+      const document = super.parseFromString(input, normalizedMimeType);
+      // Normalize adjacent text nodes to match browser parser behavior expected by some SDKs.
+      if (
+        normalizedMimeType !== "text/html" &&
+        document &&
+        typeof document.normalize === "function"
+      ) {
+        document.normalize();
+      }
+      return document;
     }
   }
 

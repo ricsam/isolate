@@ -1,5 +1,11 @@
 # @ricsam/isolate-core
 
+## 0.1.19
+
+### Patch Changes
+
+- fix some dom parser issue discovered when using the aws sdk
+
 ## 0.1.18
 
 ### Patch Changes

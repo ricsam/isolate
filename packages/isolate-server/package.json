@@ -19,7 +19,7 @@
     "@ricsam/isolate-client": "0.1.23"
   },
   "devDependencies": {
-    "@ricsam/isolate-daemon": "0.1.23",
+    "@ricsam/isolate-daemon": "0.1.24",
     "@types/node": "^24",
     "typescript": "^5"
   }
