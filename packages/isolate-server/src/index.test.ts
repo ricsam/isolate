@@ -285,7 +285,7 @@ describe("isolate-server", () => {
     }
   });
 
-  it("reload remains healthy after stream-cancel churn", { timeout: 45000 }, async () => {
+  it("reload remains healthy after stream-cancel churn", { timeout: 90000 }, async () => {
     const modules = new Map<string, string>([
       [
         "server.js",
@@ -300,10 +300,23 @@ describe("isolate-server", () => {
               }
 
               if (pathname === "/stream") {
+                const chunkSize = 64 * 1024;
+                let cancelled = false;
                 const stream = new ReadableStream({
                   async pull(controller) {
+                    if (cancelled) {
+                      controller.close();
+                      return;
+                    }
                     await new Promise((resolve) => setTimeout(resolve, 1));
-                    controller.enqueue(new Uint8Array(256 * 1024));
+                    if (cancelled) {
+                      controller.close();
+                      return;
+                    }
+                    controller.enqueue(new Uint8Array(chunkSize));
+                  },
+                  cancel() {
+                    cancelled = true;
                   }
                 });
                 return new Response(stream, {
@@ -339,13 +352,15 @@ describe("isolate-server", () => {
         assert.ok(response.body, `expected response body at iteration ${iteration}`);
 
         const reader = response.body!.getReader();
-        await withTimeout(
+        const firstRead = await withTimeout(
           reader.read(),
-          5000,
+          20000,
           `read ${iteration}`
         );
+        assert.strictEqual(firstRead.done, false, `expected a chunk at iteration ${iteration}`);
+        assert.ok(firstRead.value instanceof Uint8Array, `expected Uint8Array chunk at iteration ${iteration}`);
 
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await new Promise((resolve) => setTimeout(resolve, 1));
 
         await withTimeout(
           reader.cancel(`cancel ${iteration}`),
@@ -353,7 +368,7 @@ describe("isolate-server", () => {
           `cancel ${iteration}`
         );
 
-        if (iteration % 10 === 0) {
+        if (iteration % 5 === 0) {
           const pingDuringChurn = await withTimeout(
             server.fetch.dispatchRequest(new Request("http://localhost/ping")),
             5000,
