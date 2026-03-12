@@ -1,5 +1,13 @@
 # @ricsam/isolate-console
 
+## 0.1.17
+
+### Patch Changes
+
+- update version handling
+- Updated dependencies
+  - @ricsam/isolate-core@0.1.16
+
 ## 0.1.16
 
 ### Patch Changes

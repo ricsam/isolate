@@ -1,5 +1,24 @@
 # @ricsam/isolate-runtime
 
+## 0.1.19
+
+### Patch Changes
+
+- update version handling
+- Updated dependencies
+  - @ricsam/isolate-timers@0.1.16
+  - @ricsam/isolate-fetch@0.1.19
+  - @ricsam/isolate-console@0.1.17
+  - @ricsam/isolate-core@0.1.16
+  - @ricsam/isolate-crypto@0.1.16
+  - @ricsam/isolate-encoding@0.1.16
+  - @ricsam/isolate-fs@0.1.16
+  - @ricsam/isolate-protocol@0.1.17
+  - @ricsam/isolate-path@0.1.16
+  - @ricsam/isolate-playwright@0.1.17
+  - @ricsam/isolate-test-environment@0.1.16
+  - @ricsam/isolate-transform@0.1.5
+
 ## 0.1.18
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @ricsam/isolate-core
 
+## 0.1.16
+
+### Patch Changes
+
+- update version handling
+
 ## 0.1.15
 
 ### Patch Changes

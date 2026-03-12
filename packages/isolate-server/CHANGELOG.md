@@ -1,5 +1,13 @@
 # @ricsam/isolate-server
 
+## 0.2.3
+
+### Patch Changes
+
+- update version handling
+- Updated dependencies
+  - @ricsam/isolate-client@0.1.20
+
 ## 0.2.2
 
 ### Patch Changes

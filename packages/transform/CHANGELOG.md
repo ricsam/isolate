@@ -1,5 +1,11 @@
 # @ricsam/isolate-transform
 
+## 0.1.5
+
+### Patch Changes
+
+- update version handling
+
 ## 0.1.4
 
 ### Patch Changes

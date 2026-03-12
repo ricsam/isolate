@@ -13,8 +13,8 @@
     "test:e2e:logs": "bun scripts/e2e-with-logs.ts"
   },
   "dependencies": {
-    "@ricsam/isolate-runtime": "0.1.18",
-    "@ricsam/isolate-test-utils": "0.1.16",
+    "@ricsam/isolate-runtime": "0.1.19",
+    "@ricsam/isolate-test-utils": "0.1.17",
     "isolated-vm": "^6",
     "esbuild": "^0.24.0",
     "@whatwg-node/server": "^0.10.18",
