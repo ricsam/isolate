@@ -105,6 +105,7 @@ export interface FetchHandle {
 const instanceStateMap = new WeakMap<ivm.Context, Map<number, unknown>>();
 /** Map of streamId -> passthruBody for lazy callback streaming */
 const passthruBodies = new WeakMap<ivm.Context, Map<number, ReadableStream<Uint8Array>>>();
+const trackedGlobalHandles = new WeakMap<ivm.Context, Set<ivm.Callback | ivm.Reference>>();
 let nextInstanceId = 1;
 
 function getInstanceStateMapForContext(
@@ -127,6 +128,44 @@ function getPassthruBodiesForContext(
     passthruBodies.set(context, map);
   }
   return map;
+}
+
+function getTrackedGlobalHandlesForContext(
+  context: ivm.Context
+): Set<ivm.Callback | ivm.Reference> {
+  let handles = trackedGlobalHandles.get(context);
+  if (!handles) {
+    handles = new Set();
+    trackedGlobalHandles.set(context, handles);
+  }
+  return handles;
+}
+
+function setTrackedGlobal(context: ivm.Context, name: string, value: unknown): void {
+  if (value instanceof ivm.Callback || value instanceof ivm.Reference) {
+    getTrackedGlobalHandlesForContext(context).add(value);
+  }
+  context.global.setSync(name, value as any);
+}
+
+function releaseIfSupported(handle: unknown): void {
+  const maybeHandle = handle as { release?: () => void };
+  if (typeof maybeHandle.release === "function") {
+    maybeHandle.release();
+  }
+}
+
+function releaseTrackedGlobalHandles(context: ivm.Context): void {
+  const handles = trackedGlobalHandles.get(context);
+  if (!handles) return;
+  for (const handle of handles) {
+    try {
+      releaseIfSupported(handle);
+    } catch {
+      // Ignore repeated dispose races
+    }
+  }
+  handles.clear();
 }
 
 // ============================================================================
@@ -519,10 +558,9 @@ function setupStreamCallbacks(
   context: ivm.Context,
   streamRegistry: StreamStateRegistry
 ): void {
-  const global = context.global;
 
   // Create stream (returns ID)
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Stream_create",
     new ivm.Callback(() => {
       return streamRegistry.create();
@@ -530,7 +568,7 @@ function setupStreamCallbacks(
   );
 
   // Push chunk (sync) - receives number[] from isolate
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Stream_push",
     new ivm.Callback((streamId: number, chunkArray: number[]) => {
       const chunk = new Uint8Array(chunkArray);
@@ -539,7 +577,7 @@ function setupStreamCallbacks(
   );
 
   // Close stream (sync)
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Stream_close",
     new ivm.Callback((streamId: number) => {
       streamRegistry.close(streamId);
@@ -547,7 +585,7 @@ function setupStreamCallbacks(
   );
 
   // Error stream (sync)
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Stream_error",
     new ivm.Callback((streamId: number, message: string) => {
       streamRegistry.error(streamId, new Error(message));
@@ -555,7 +593,7 @@ function setupStreamCallbacks(
   );
 
   // Check backpressure (sync)
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Stream_isQueueFull",
     new ivm.Callback((streamId: number) => {
       return streamRegistry.isQueueFull(streamId);
@@ -563,7 +601,7 @@ function setupStreamCallbacks(
   );
 
   // Cancel stream (sync)
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Stream_cancel",
     new ivm.Callback((streamId: number) => {
       streamRegistry.cancel(streamId);
@@ -578,7 +616,7 @@ function setupStreamCallbacks(
     }
     return JSON.stringify({ done: false, value: Array.from(result.value) });
   });
-  global.setSync("__Stream_pull_ref", pullRef);
+  setTrackedGlobal(context, "__Stream_pull_ref", pullRef);
 }
 
 // ============================================================================
@@ -675,10 +713,9 @@ function setupResponse(
   stateMap: Map<number, unknown>,
   streamRegistry: StreamStateRegistry
 ): void {
-  const global = context.global;
 
   // Register host callbacks
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_construct",
     new ivm.Callback(
       (
@@ -707,7 +744,7 @@ function setupResponse(
   );
 
   // Streaming Response constructor - creates Response with stream ID but no buffered body
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_constructStreaming",
     new ivm.Callback(
       (
@@ -734,7 +771,7 @@ function setupResponse(
     )
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_constructFromFetch",
     new ivm.Callback(
       (
@@ -764,7 +801,7 @@ function setupResponse(
     )
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_get_status",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -772,7 +809,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_get_statusText",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -780,7 +817,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_get_headers",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -788,7 +825,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_get_bodyUsed",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -796,7 +833,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_get_url",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -804,7 +841,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_get_redirected",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -812,7 +849,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_get_type",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -820,7 +857,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_get_nullBody",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -828,7 +865,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_setType",
     new ivm.Callback((instanceId: number, type: string) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -838,7 +875,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_markBodyUsed",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -851,7 +888,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_text",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -860,7 +897,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_arrayBuffer",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -874,7 +911,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_clone",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -934,7 +971,7 @@ function setupResponse(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Response_getStreamId",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as ResponseState | undefined;
@@ -1333,10 +1370,9 @@ function setupRequest(
   context: ivm.Context,
   stateMap: Map<number, unknown>
 ): ivm.Reference<(instanceId: number) => void> {
-  const global = context.global;
 
   // Register host callbacks
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_construct",
     new ivm.Callback(
       (
@@ -1374,7 +1410,7 @@ function setupRequest(
     )
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_method",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1382,7 +1418,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_url",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1390,7 +1426,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_headers",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1398,7 +1434,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_bodyUsed",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1406,7 +1442,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_mode",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1414,7 +1450,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_credentials",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1422,7 +1458,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_cache",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1430,7 +1466,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_redirect",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1438,7 +1474,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_referrer",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1446,7 +1482,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_integrity",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1454,7 +1490,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_markBodyUsed",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1467,7 +1503,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_text",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1476,7 +1512,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_arrayBuffer",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1490,7 +1526,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_getBodyBytes",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1499,7 +1535,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_clone",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1517,7 +1553,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_getStreamId",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1525,7 +1561,7 @@ function setupRequest(
     })
   );
 
-  global.setSync(
+  setTrackedGlobal(context, 
     "__Request_get_signalAborted",
     new ivm.Callback((instanceId: number) => {
       const state = stateMap.get(instanceId) as RequestState | undefined;
@@ -1892,7 +1928,6 @@ function setupFetchFunction(
   streamRegistry: StreamStateRegistry,
   options?: FetchOptions
 ): void {
-  const global = context.global;
 
   // Map of fetchId -> AbortController for in-flight fetches
   const fetchAbortControllers = new Map<number, AbortController>();
@@ -1900,7 +1935,7 @@ function setupFetchFunction(
   // Host callback for aborting a fetch by ID
   // Note: ivm.Callback runs on the isolate thread, but we need the abort to
   // happen on the main thread where the native fetch is running
-  global.setSync(
+  setTrackedGlobal(context, 
     "__fetch_abort",
     new ivm.Callback((fetchId: number) => {
       const controller = fetchAbortControllers.get(fetchId);
@@ -2036,7 +2071,7 @@ function setupFetchFunction(
     }
   );
 
-  global.setSync("__fetch_ref", fetchRef);
+  setTrackedGlobal(context, "__fetch_ref", fetchRef);
 
   // Inject fetch function
   const fetchCode = `
@@ -2132,7 +2167,6 @@ function setupServer(
   context: ivm.Context,
   serveState: ServeState
 ): void {
-  const global = context.global;
 
   // Setup upgrade registry in isolate (data stays in isolate, never marshalled to host)
   context.evalSync(`
@@ -2141,7 +2175,7 @@ function setupServer(
   `);
 
   // Host callback to notify about pending upgrade
-  global.setSync(
+  setTrackedGlobal(context, 
     "__setPendingUpgrade__",
     new ivm.Callback((connectionId: string) => {
       serveState.pendingUpgrade = { requested: true, connectionId };
@@ -2173,10 +2207,9 @@ function setupServerWebSocket(
   context: ivm.Context,
   wsCommandCallbacks: Set<(cmd: WebSocketCommand) => void>
 ): void {
-  const global = context.global;
 
   // Host callback for ws.send()
-  global.setSync(
+  setTrackedGlobal(context, 
     "__ServerWebSocket_send",
     new ivm.Callback((connectionId: string, data: string) => {
       const cmd: WebSocketCommand = { type: "message", connectionId, data };
@@ -2185,7 +2218,7 @@ function setupServerWebSocket(
   );
 
   // Host callback for ws.close()
-  global.setSync(
+  setTrackedGlobal(context, 
     "__ServerWebSocket_close",
     new ivm.Callback((connectionId: string, code?: number, reason?: string) => {
       const cmd: WebSocketCommand = { type: "close", connectionId, code, reason };
@@ -2250,10 +2283,9 @@ function setupClientWebSocket(
   context: ivm.Context,
   clientWsCommandCallbacks: Set<(cmd: ClientWebSocketCommand) => void>
 ): void {
-  const global = context.global;
 
   // Host callback for ws.connect (called from constructor)
-  global.setSync(
+  setTrackedGlobal(context, 
     "__WebSocket_connect",
     new ivm.Callback((socketId: string, url: string, protocols: string[]) => {
       const cmd: ClientWebSocketCommand = {
@@ -2267,7 +2299,7 @@ function setupClientWebSocket(
   );
 
   // Host callback for ws.send
-  global.setSync(
+  setTrackedGlobal(context, 
     "__WebSocket_send",
     new ivm.Callback((socketId: string, data: string) => {
       const cmd: ClientWebSocketCommand = { type: "send", socketId, data };
@@ -2276,7 +2308,7 @@ function setupClientWebSocket(
   );
 
   // Host callback for ws.close
-  global.setSync(
+  setTrackedGlobal(context, 
     "__WebSocket_close",
     new ivm.Callback((socketId: string, code?: number, reason?: string) => {
       const cmd: ClientWebSocketCommand = { type: "close", socketId, code, reason };
@@ -2733,7 +2765,7 @@ export async function setupFetch(
   const eventCallbacks = new Set<(event: string, payload: unknown) => void>();
 
   // __emit: called from isolate code to emit events to host
-  context.global.setSync(
+  setTrackedGlobal(context, 
     "__emit",
     new ivm.Callback((eventName: string, payloadJson: string) => {
       const payload = JSON.parse(payloadJson);
@@ -2781,6 +2813,7 @@ export async function setupFetch(
       // Clear serve state
       serveState.activeConnections.clear();
       serveState.pendingUpgrade = null;
+      releaseTrackedGlobalHandles(context);
       try {
         requestAbortSignalRef.release();
       } catch {

@@ -12,6 +12,19 @@ import type { DaemonConnection } from "./types.ts";
 
 const TEST_SOCKET = "/tmp/isolate-streaming-test.sock";
 
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string
+): Promise<T> {
+  return Promise.race([
+    promise,
+    delay(ms).then(() => {
+      throw new Error(message);
+    }),
+  ]);
+}
+
 describe("isolate-client streaming", () => {
   let daemon: DaemonHandle;
   let client: DaemonConnection;
@@ -753,13 +766,22 @@ describe("isolate-client streaming", () => {
             fetch: (request) => {
               const encoder = new TextEncoder();
               let count = 0;
+              let cancelled = false;
 
               const stream = new ReadableStream({
                 async pull(controller) {
+                  if (cancelled) return;
                   count++;
                   await new Promise(resolve => setTimeout(resolve, 0));
+                  if (cancelled) return;
                   controller.enqueue(encoder.encode("chunk" + count));
-                  // Never close - infinite stream
+                  // Keep it effectively unbounded for the test, but guarantee eventual completion.
+                  if (count >= 100) {
+                    controller.close();
+                  }
+                },
+                cancel() {
+                  cancelled = true;
                 }
               });
 
@@ -780,11 +802,15 @@ describe("isolate-client streaming", () => {
 
         // Read 3 chunks then cancel
         for (let i = 0; i < 3; i++) {
-          const { done, value } = await reader.read();
+          const { done, value } = await withTimeout(
+            reader.read(),
+            2_000,
+            "reader.read timed out"
+          );
           if (done) break;
           chunks.push(decoder.decode(value));
         }
-        await reader.cancel("done early");
+        await withTimeout(reader.cancel("done early"), 2_000, "reader.cancel timed out");
 
         assert.strictEqual(chunks.length, 3);
         assert.deepStrictEqual(chunks, ["chunk1", "chunk2", "chunk3"]);
@@ -889,14 +915,30 @@ describe("isolate-client streaming", () => {
           serve({
             fetch: (request) => {
               const encoder = new TextEncoder();
-              let count = 0;
+              let count = 1;
+              let cancelled = false;
+              let timerId = null;
 
               const stream = new ReadableStream({
-                async pull(controller) {
-                  count++;
-                  await new Promise(resolve => setTimeout(resolve, 0));
-                  controller.enqueue(encoder.encode("data" + count));
-                  // Never close - infinite stream
+                start(controller) {
+                  const emitNext = () => {
+                    if (cancelled) return;
+                    count++;
+                    controller.enqueue(encoder.encode("data" + count));
+                    if (count >= 100) {
+                      controller.close();
+                      return;
+                    }
+                    timerId = setTimeout(emitNext, 0);
+                  };
+
+                  // Guarantee the first read is available immediately.
+                  controller.enqueue(encoder.encode("data1"));
+                  timerId = setTimeout(emitNext, 0);
+                },
+                cancel() {
+                  cancelled = true;
+                  if (timerId !== null) clearTimeout(timerId);
                 }
               });
 
@@ -915,11 +957,15 @@ describe("isolate-client streaming", () => {
         const decoder = new TextDecoder();
 
         // Read one chunk
-        const { value } = await reader.read();
+        const { value } = await withTimeout(
+          reader.read(),
+          2_000,
+          "reader.read timed out"
+        );
         const firstChunk = decoder.decode(value);
 
         // Cancel the reader
-        await reader.cancel("user abort");
+        await withTimeout(reader.cancel("user abort"), 2_000, "reader.cancel timed out");
 
         assert.strictEqual(firstChunk, "data1");
       } finally {
@@ -1209,13 +1255,12 @@ describe("isolate-client streaming", () => {
               const total = 100;
 
               const stream = new ReadableStream({
-                pull(controller) {
-                  if (count >= total) {
-                    controller.close();
-                    return;
+                start(controller) {
+                  while (count < total) {
+                    controller.enqueue(encoder.encode("x"));
+                    count++;
                   }
-                  controller.enqueue(encoder.encode("x"));
-                  count++;
+                  controller.close();
                 }
               });
 

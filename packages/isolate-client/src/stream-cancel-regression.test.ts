@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { connect, type DaemonConnection } from "./index.ts";
 import { startDaemon, type DaemonHandle } from "@ricsam/isolate-daemon";
 
@@ -51,22 +52,10 @@ describe("stream cancel regression", () => {
 
             if (pathname === "/stream") {
               const chunkSize = 64 * 1024;
-              let cancelled = false;
               const stream = new ReadableStream({
-                async pull(controller) {
-                  if (cancelled) {
-                    controller.close();
-                    return;
-                  }
-                  await new Promise((resolve) => setTimeout(resolve, 1));
-                  if (cancelled) {
-                    controller.close();
-                    return;
-                  }
+                start(controller) {
+                  // Produce one chunk and keep the stream open until the reader cancels.
                   controller.enqueue(new Uint8Array(chunkSize));
-                },
-                cancel() {
-                  cancelled = true;
                 },
               });
 
@@ -142,6 +131,7 @@ describe("stream cancel regression", () => {
       if (daemon) {
         await daemon.close();
       }
+      await delay(0);
       await fs.rm(socketPath, { force: true });
     }
   });

@@ -7,6 +7,13 @@ export interface TimersHandle {
   dispose(): void;
 }
 
+function releaseIfSupported(handle: unknown): void {
+  const maybeHandle = handle as { release?: () => void };
+  if (typeof maybeHandle.release === "function") {
+    maybeHandle.release();
+  }
+}
+
 /**
  * Setup timer APIs in an isolated-vm context
  *
@@ -31,59 +38,62 @@ export async function setupTimers(
   const global = context.global;
 
   // Register timeout on host, return ID
+  const registerTimeoutCallback = new ivm.Callback((delay: number) => {
+    const id = nextTimerId++;
+    const normalizedDelay = Math.max(0, delay || 0);
+
+    const handle = setTimeout(() => {
+      if (disposed || !pendingTimers.has(id)) return;
+      pendingTimers.delete(id);
+      try {
+        context.evalSync(`__timers_execute(${id})`);
+        context.evalSync(`__timers_removeCallback(${id})`);
+      } catch {
+        // Context may have been disposed
+      }
+    }, normalizedDelay);
+
+    pendingTimers.set(id, handle);
+    return id;
+  });
   global.setSync(
     "__timers_registerTimeout",
-    new ivm.Callback((delay: number) => {
-      const id = nextTimerId++;
-      const normalizedDelay = Math.max(0, delay || 0);
-
-      const handle = setTimeout(() => {
-        if (disposed || !pendingTimers.has(id)) return;
-        pendingTimers.delete(id);
-        try {
-          context.evalSync(`__timers_execute(${id})`);
-          context.evalSync(`__timers_removeCallback(${id})`);
-        } catch {
-          // Context may have been disposed
-        }
-      }, normalizedDelay);
-
-      pendingTimers.set(id, handle);
-      return id;
-    })
+    registerTimeoutCallback
   );
 
   // Register interval on host, return ID
+  const registerIntervalCallback = new ivm.Callback((delay: number) => {
+    const id = nextTimerId++;
+    const normalizedDelay = Math.max(0, delay || 0);
+
+    const handle = setInterval(() => {
+      if (disposed || !pendingTimers.has(id)) return;
+      try {
+        context.evalSync(`__timers_execute(${id})`);
+      } catch {
+        // Context may have been disposed
+      }
+    }, normalizedDelay);
+
+    pendingTimers.set(id, handle);
+    return id;
+  });
   global.setSync(
     "__timers_registerInterval",
-    new ivm.Callback((delay: number) => {
-      const id = nextTimerId++;
-      const normalizedDelay = Math.max(0, delay || 0);
-
-      const handle = setInterval(() => {
-        if (disposed || !pendingTimers.has(id)) return;
-        try {
-          context.evalSync(`__timers_execute(${id})`);
-        } catch {
-          // Context may have been disposed
-        }
-      }, normalizedDelay);
-
-      pendingTimers.set(id, handle);
-      return id;
-    })
+    registerIntervalCallback
   );
 
   // Clear timer by ID
+  const clearTimerCallback = new ivm.Callback((id: number) => {
+    const handle = pendingTimers.get(id);
+    if (handle) {
+      clearTimeout(handle); // works for both timeout and interval
+      pendingTimers.delete(id);
+    }
+  });
   global.setSync(
     "__timers_clear",
-    new ivm.Callback((id: number) => {
-      const handle = pendingTimers.get(id);
-      if (handle) {
-        clearTimeout(handle); // works for both timeout and interval
-        pendingTimers.delete(id);
-      }
-    })
+    clearTimerCallback
   );
 
   // Inject JavaScript timer APIs
@@ -161,6 +171,21 @@ export async function setupTimers(
         context.evalSync("__timers_clearCallbacks()");
       } catch {
         // Context may have been disposed
+      }
+      try {
+        releaseIfSupported(registerTimeoutCallback);
+      } catch {
+        // Ignore repeated dispose races
+      }
+      try {
+        releaseIfSupported(registerIntervalCallback);
+      } catch {
+        // Ignore repeated dispose races
+      }
+      try {
+        releaseIfSupported(clearTimerCallback);
+      } catch {
+        // Ignore repeated dispose races
       }
     },
   };
