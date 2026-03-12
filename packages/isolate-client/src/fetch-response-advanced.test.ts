@@ -461,6 +461,58 @@ describe("Fetch response advanced (daemon/client)", () => {
     }
   });
 
+  it("Abort hanging callback fetch - in-isolate", { timeout: 10000 }, async () => {
+    let abortCount = 0;
+    const runtime = await connection.createRuntime({
+      fetch: async (url, init) => {
+        if (url.includes("/hang")) {
+          return new Promise<Response>((_, reject) => {
+            init.signal.addEventListener("abort", () => {
+              abortCount++;
+              const error = new Error("The operation was aborted.");
+              error.name = "AbortError";
+              reject(error);
+            }, { once: true });
+          });
+        }
+        return fetch(url, init);
+      },
+      testEnvironment: true,
+    });
+    try {
+      await runtime.eval(`
+        describe("abort callback bridge", () => {
+          it("aborts hanging callback fetch and keeps callback pipeline healthy", async () => {
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(), 100);
+
+            try {
+              await fetch("https://example.com/hang", { signal: controller.signal });
+              throw new Error("should not reach here");
+            } catch (err) {
+              expect(err.name).toBe("AbortError");
+            }
+
+            const response = await fetch("http://localhost:${port}/json-for-clone");
+            expect(response.status).toBe(200);
+            const payload = await response.json();
+            expect(payload.msg).toBe("clone-me");
+          });
+        });
+      `);
+
+      const results = await runtime.testEnvironment.runTests();
+      assert.strictEqual(
+        results.failed,
+        0,
+        `Expected no failures but got ${results.failed}`
+      );
+      assert.strictEqual(abortCount, 1);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   // --- Category 7: Error / cancellation ---
 
   it("Error midstream - passthrough", { timeout: 10000 }, async () => {

@@ -131,6 +131,10 @@ export interface CallbackContext {
 export interface PendingRequest {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
+  /** Optional cleanup hook (e.g. remove listeners, clear timeout) */
+  cleanup?: () => void;
+  /** Optional metadata for callback requests */
+  callbackId?: number;
 }
 
 /**

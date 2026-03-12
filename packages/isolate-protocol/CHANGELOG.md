@@ -1,5 +1,11 @@
 # @ricsam/isolate-protocol
 
+## 0.1.20
+
+### Patch Changes
+
+- respect fetch abort
+
 ## 0.1.19
 
 ### Patch Changes

@@ -34,6 +34,23 @@ function encodeErrorForTransfer(err: Error): Error {
 }
 
 /**
+ * Normalize unknown thrown values to Error instances for stable transfer.
+ */
+function toError(err: unknown): Error {
+  if (err instanceof Error) {
+    return err;
+  }
+  if (typeof err === "string") {
+    return new Error(err);
+  }
+  try {
+    return new Error(JSON.stringify(err));
+  } catch {
+    return new Error(String(err ?? "Unknown error"));
+  }
+}
+
+/**
  * JavaScript code for the __decodeError helper (used in isolate).
  */
 const DECODE_ERROR_JS = `
@@ -458,11 +475,8 @@ export function defineFunction(
         const result = fn(...args);
         return result;
       } catch (err) {
-        if (err instanceof Error) {
-          // Throw a transferable error object
-          throw new Error(err.message);
-        }
-        throw err;
+        // Throw a transferable error object
+        throw new Error(toError(err).message);
       }
     },
     { sync: true }
@@ -500,10 +514,7 @@ export function defineAsyncFunction(
       const result = await fn(...args);
       return result;
     } catch (err) {
-      if (err instanceof Error) {
-        throw encodeErrorForTransfer(err);
-      }
-      throw err;
+      throw encodeErrorForTransfer(toError(err));
     }
   });
 
@@ -597,10 +608,7 @@ export function defineClass<TState extends object = object>(
           try {
             return await methodDef.fn(state, ...args);
           } catch (err) {
-            if (err instanceof Error) {
-              throw encodeErrorForTransfer(err);
-            }
-            throw err;
+            throw encodeErrorForTransfer(toError(err));
           }
         }
       );
@@ -615,10 +623,7 @@ export function defineClass<TState extends object = object>(
           try {
             return methodDef.fn(state, ...args);
           } catch (err) {
-            if (err instanceof Error) {
-              throw encodeErrorForTransfer(err);
-            }
-            throw err;
+            throw encodeErrorForTransfer(toError(err));
           }
         }
       );
@@ -639,10 +644,7 @@ export function defineClass<TState extends object = object>(
           try {
             return getter(state);
           } catch (err) {
-            if (err instanceof Error) {
-              throw encodeErrorForTransfer(err);
-            }
-            throw err;
+            throw encodeErrorForTransfer(toError(err));
           }
         }
       );
@@ -658,10 +660,7 @@ export function defineClass<TState extends object = object>(
           try {
             setter(state, value);
           } catch (err) {
-            if (err instanceof Error) {
-              throw encodeErrorForTransfer(err);
-            }
-            throw err;
+            throw encodeErrorForTransfer(toError(err));
           }
         }
       );
@@ -681,10 +680,7 @@ export function defineClass<TState extends object = object>(
           try {
             return await methodDef.fn(...args);
           } catch (err) {
-            if (err instanceof Error) {
-              throw encodeErrorForTransfer(err);
-            }
-            throw err;
+            throw encodeErrorForTransfer(toError(err));
           }
         }
       );
@@ -695,10 +691,7 @@ export function defineClass<TState extends object = object>(
           try {
             return methodDef.fn(...args);
           } catch (err) {
-            if (err instanceof Error) {
-              throw encodeErrorForTransfer(err);
-            }
-            throw err;
+            throw encodeErrorForTransfer(toError(err));
           }
         }
       );
@@ -713,10 +706,7 @@ export function defineClass<TState extends object = object>(
         const state = construct(args);
         stateMap.set(instanceId, state);
       } catch (err) {
-        if (err instanceof Error) {
-          throw encodeErrorForTransfer(err);
-        }
-        throw err;
+        throw encodeErrorForTransfer(toError(err));
       }
     } else {
       stateMap.set(instanceId, {} as TState);

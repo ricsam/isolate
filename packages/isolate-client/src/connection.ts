@@ -66,6 +66,7 @@ import {
   type CallbackStreamStart,
   type CallbackStreamChunk,
   type CallbackStreamEnd,
+  type CallbackAbort,
   marshalValue,
   isPromiseRef,
   isAsyncIteratorRef,
@@ -174,6 +175,10 @@ interface ConnectionState {
   moduleSourceCache: Map<string, string>;
   /** Track active callback stream readers (for cancellation from daemon) */
   callbackStreamReaders: Map<number, ReadableStreamDefaultReader<Uint8Array>>;
+  /** Track active callback invocations (for abort + stale-response suppression) */
+  activeCallbackInvocations: Map<number, { aborted: boolean }>;
+  /** Abort controllers for callback invocations that support cancellation */
+  callbackAbortControllers: Map<number, AbortController>;
   /** True when close() was called explicitly (prevents auto-reconnect) */
   closing: boolean;
   /** Tracked namespaced runtimes for auto-reconnection */
@@ -201,6 +206,8 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
     uploadStreams: new Map(),
     moduleSourceCache: new Map(),
     callbackStreamReaders: new Map(),
+    activeCallbackInvocations: new Map(),
+    callbackAbortControllers: new Map(),
     closing: false,
     namespacedRuntimes: new Map(),
   };
@@ -246,6 +253,12 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
         }
       }
       state.uploadStreams.clear();
+
+      for (const [, controller] of state.callbackAbortControllers) {
+        controller.abort();
+      }
+      state.callbackAbortControllers.clear();
+      state.activeCallbackInvocations.clear();
 
       // Auto-reconnect if not intentional close and we have namespaced runtimes
       if (!state.closing && state.namespacedRuntimes.size > 0) {
@@ -490,6 +503,19 @@ function handleMessage(message: Message, state: ConnectionState): void {
       break;
     }
 
+    case MessageType.CALLBACK_ABORT: {
+      const msg = message as CallbackAbort;
+      const invocation = state.activeCallbackInvocations.get(msg.targetRequestId);
+      if (invocation) {
+        invocation.aborted = true;
+      }
+      const controller = state.callbackAbortControllers.get(msg.targetRequestId);
+      if (controller && !controller.signal.aborted) {
+        controller.abort();
+      }
+      break;
+    }
+
     // Generic isolate events (WebSocket commands and user-defined events)
     case MessageType.ISOLATE_EVENT: {
       const msg = message as IsolateEventMessage;
@@ -726,6 +752,8 @@ async function handleCallbackInvoke(
   state: ConnectionState
 ): Promise<void> {
   const callback = state.callbacks.get(invoke.callbackId);
+  const invocationState = { aborted: false };
+  state.activeCallbackInvocations.set(invoke.requestId, invocationState);
 
   const response: CallbackResponseMsg = {
     type: MessageType.CALLBACK_RESPONSE,
@@ -737,7 +765,10 @@ async function handleCallbackInvoke(
       name: "Error",
       message: `Unknown callback: ${invoke.callbackId}`,
     };
-    sendMessage(state.socket, response);
+    if (!invocationState.aborted) {
+      sendMessage(state.socket, response);
+    }
+    state.activeCallbackInvocations.delete(invoke.requestId);
   } else {
     try {
       // Only pass requestId to callbacks that need it (e.g., fetch callbacks for streaming)
@@ -753,9 +784,16 @@ async function handleCallbackInvoke(
         return;
       }
 
+      if (invocationState.aborted) {
+        return;
+      }
+
       response.result = result;
       sendMessage(state.socket, response);
     } catch (err) {
+      if (invocationState.aborted) {
+        return;
+      }
       const error = err as Error;
       response.error = {
         name: error.name,
@@ -763,6 +801,8 @@ async function handleCallbackInvoke(
         stack: error.stack,
       };
       sendMessage(state.socket, response);
+    } finally {
+      state.activeCallbackInvocations.delete(invoke.requestId);
     }
   }
 }
@@ -1562,66 +1602,76 @@ function registerFetchCallback(
     const data = serialized as SerializedRequest;
     // Create a FetchRequestInit from the serialized data
     const signalController = new AbortController();
+    const callbackRequestId = typeof requestId === "number" ? requestId : undefined;
+    if (callbackRequestId !== undefined) {
+      state.callbackAbortControllers.set(callbackRequestId, signalController);
+    }
     if (data.signalAborted) {
       signalController.abort();
     }
-    const init = {
-      method: data.method,
-      headers: data.headers,
-      rawBody: data.body ?? null,
-      body: (data.body ?? null) as BodyInit | null,
-      signal: signalController.signal,
-    };
-    const response = await callback(data.url, init);
+    try {
+      const init = {
+        method: data.method,
+        headers: data.headers,
+        rawBody: data.body ?? null,
+        body: (data.body ?? null) as BodyInit | null,
+        signal: signalController.signal,
+      };
+      const response = await callback(data.url, init);
 
-    // Determine if we should stream the response
-    const contentLength = response.headers.get("content-length");
-    const knownSize = contentLength ? parseInt(contentLength, 10) : null;
+      // Determine if we should stream the response
+      const contentLength = response.headers.get("content-length");
+      const knownSize = contentLength ? parseInt(contentLength, 10) : null;
 
-    // Only stream network responses (responses with http/https URLs)
-    // Locally constructed Responses (no URL or non-http URL) are buffered
-    const isNetworkResponse = response.url && (response.url.startsWith('http://') || response.url.startsWith('https://'));
+      // Only stream network responses (responses with http/https URLs)
+      // Locally constructed Responses (no URL or non-http URL) are buffered
+      const isNetworkResponse = response.url && (response.url.startsWith('http://') || response.url.startsWith('https://'));
 
-    // Stream if: network response AND status allows body AND has body AND
-    // (no content-length OR size > threshold)
-    const shouldStream =
-      isNetworkResponse &&
-      !NULL_BODY_STATUSES.has(response.status) &&
-      !!response.body &&
-      (knownSize === null || knownSize > CALLBACK_STREAM_THRESHOLD);
+      // Stream if: network response AND status allows body AND has body AND
+      // (no content-length OR size > threshold)
+      const shouldStream =
+        isNetworkResponse &&
+        !NULL_BODY_STATUSES.has(response.status) &&
+        !!response.body &&
+        (knownSize === null || knownSize > CALLBACK_STREAM_THRESHOLD);
 
-    if (shouldStream && response.body) {
-      // Streaming path: send metadata immediately, then stream body
-      const streamId = state.nextStreamId++;
+      if (shouldStream && response.body) {
+        // Streaming path: send metadata immediately, then stream body
+        const streamId = state.nextStreamId++;
 
-      // Collect headers
-      const headers: [string, string][] = [];
-      response.headers.forEach((value, key) => {
-        headers.push([key, value]);
-      });
+        // Collect headers
+        const headers: [string, string][] = [];
+        response.headers.forEach((value, key) => {
+          headers.push([key, value]);
+        });
 
-      // Send CALLBACK_STREAM_START with metadata
-      sendMessage(state.socket, {
-        type: MessageType.CALLBACK_STREAM_START,
-        requestId: requestId as number,
-        streamId,
-        metadata: {
-          status: response.status,
-          statusText: response.statusText,
-          headers,
-          url: response.url || undefined,
-        },
-      } as CallbackStreamStart);
+        // Send CALLBACK_STREAM_START with metadata
+        sendMessage(state.socket, {
+          type: MessageType.CALLBACK_STREAM_START,
+          requestId: requestId as number,
+          streamId,
+          metadata: {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+            url: response.url || undefined,
+          },
+        } as CallbackStreamStart);
 
-      // Stream the body in the background
-      streamCallbackResponseBody(state, streamId, requestId as number, response.body);
+        // Stream the body in the background
+        streamCallbackResponseBody(state, streamId, requestId as number, response.body);
 
-      // Return special marker indicating streaming is in progress
-      return { __callbackStreaming: true, streamId };
+        // Return special marker indicating streaming is in progress
+        return { __callbackStreaming: true, streamId };
+      }
+
+      // Buffered path for small responses
+      return serializeResponse(response);
+    } finally {
+      if (callbackRequestId !== undefined) {
+        state.callbackAbortControllers.delete(callbackRequestId);
+      }
     }
-
-    // Buffered path for small responses
-    return serializeResponse(response);
   });
 
   return { callbackId, name: "fetch", type: 'async' };

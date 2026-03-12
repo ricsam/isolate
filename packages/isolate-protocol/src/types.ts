@@ -60,6 +60,7 @@ export const MessageType = {
   CALLBACK_STREAM_CHUNK: 0x93,
   CALLBACK_STREAM_END: 0x94,
   CALLBACK_STREAM_CANCEL: 0x95,
+  CALLBACK_ABORT: 0x96,
 
   // Bidirectional: Stream data
   STREAM_PUSH: 0xa0,
@@ -565,6 +566,18 @@ export interface CallbackStreamCancel {
   streamId: number;
 }
 
+/**
+ * Abort an in-flight callback invocation (daemon → client).
+ * Tells the client to cancel the callback identified by targetRequestId.
+ */
+export interface CallbackAbort extends BaseMessage {
+  type: typeof MessageType.CALLBACK_ABORT;
+  /** requestId of the corresponding CALLBACK_INVOKE */
+  targetRequestId: number;
+  /** Optional reason for observability/debugging */
+  reason?: string;
+}
+
 // ============================================================================
 // Bidirectional: Stream Data
 // ============================================================================
@@ -764,6 +777,7 @@ export type DaemonMessage =
   | ResponseStreamChunk
   | ResponseStreamEnd
   | CallbackInvoke
+  | CallbackAbort
   | StreamPush
   | StreamPull
   | StreamClose

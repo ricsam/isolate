@@ -29,6 +29,7 @@ import {
   type DispatchRequestAbort,
   type CallbackResponseMsg,
   type CallbackInvoke,
+  type CallbackAbort,
   type RunTestsRequest,
   type HasTestsRequest,
   type GetTestCountRequest,
@@ -93,6 +94,37 @@ import type {
 
 const LINKER_CONFLICT_ERROR = "Module is currently being linked by another linker";
 const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+const DEFAULT_CALLBACK_TIMEOUT_MS = 120_000;
+const FETCH_CALLBACK_TIMEOUT_MS = 35_000;
+
+interface InvokeClientCallbackOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  timeoutLabel?: string;
+}
+
+function createAbortError(reason = "The operation was aborted"): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException(reason, "AbortError");
+  }
+  const error = new Error(reason);
+  error.name = "AbortError";
+  return error;
+}
+
+function sendCallbackAbortMessage(
+  connection: ConnectionState,
+  targetRequestId: number,
+  reason: string
+): void {
+  const abortMessage: CallbackAbort = {
+    type: MessageType.CALLBACK_ABORT,
+    requestId: connection.nextRequestId++,
+    targetRequestId,
+    reason,
+  };
+  sendMessage(connection.socket, abortMessage);
+}
 
 function getErrorText(error: unknown): string {
   if (error instanceof Error) {
@@ -196,6 +228,7 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
 
     // Reject pending callbacks
     for (const [, pending] of connection.pendingCallbacks) {
+      pending.cleanup?.();
       pending.reject(new Error("Connection closed"));
     }
     connection.pendingCallbacks.clear();
@@ -765,7 +798,13 @@ async function invokeCallbackWithReconnect(
   getCallbackId: () => number | undefined,
   args: unknown[],
   label: string,
-  invokeClientCallback: (conn: ConnectionState, callbackId: number, args: unknown[]) => Promise<unknown>,
+  invokeClientCallback: (
+    conn: ConnectionState,
+    callbackId: number,
+    args: unknown[],
+    options?: InvokeClientCallbackOptions
+  ) => Promise<unknown>,
+  options?: InvokeClientCallbackOptions,
 ): Promise<unknown> {
   const conn = await waitForConnection(callbackContext);
   const cbId = getCallbackId();
@@ -773,7 +812,7 @@ async function invokeCallbackWithReconnect(
     throw new Error(`${label} callback not available`);
   }
   try {
-    return await invokeClientCallback(conn, cbId, args);
+    return await invokeClientCallback(conn, cbId, args, options);
   } catch (err) {
     // If the call failed and a reconnection promise now exists, retry once
     if (callbackContext.reconnectionPromise && !callbackContext.connection) {
@@ -782,7 +821,7 @@ async function invokeCallbackWithReconnect(
       if (newCbId === undefined) {
         throw new Error(`${label} callback not available after reconnection`);
       }
-      return invokeClientCallback(newConn, newCbId, args);
+      return invokeClientCallback(newConn, newCbId, args, options);
     }
     throw err;
   }
@@ -1283,6 +1322,10 @@ async function handleCreateRuntime(
       },
       // Fetch handler that bridges to client via IPC (with reconnection support)
       fetch: async (url: string, init: FetchRequestInit) => {
+        if (init.signal.aborted) {
+          throw createAbortError();
+        }
+
         const serialized: SerializedRequest = {
           url,
           method: init.method,
@@ -1290,13 +1333,24 @@ async function handleCreateRuntime(
           body: init.rawBody,
           signalAborted: init.signal.aborted,
         };
+
+        const callbackAbortController = new AbortController();
+        const onInitAbort = () => callbackAbortController.abort();
+        init.signal.addEventListener("abort", onInitAbort, { once: true });
         const result = await invokeCallbackWithReconnect(
           callbackContext,
           () => callbackContext.fetch,
           [serialized],
           "Fetch",
           invokeClientCallback,
-        );
+          {
+            signal: callbackAbortController.signal,
+            timeoutMs: FETCH_CALLBACK_TIMEOUT_MS,
+            timeoutLabel: "fetch callback",
+          },
+        ).finally(() => {
+          init.signal.removeEventListener("abort", onInitAbort);
+        });
         if (result && typeof result === 'object' && (result as { __streamingResponse?: boolean }).__streamingResponse) {
           const response = (result as { response: Response }).response;
           (response as Response & { __isCallbackStream?: boolean }).__isCallbackStream = true;
@@ -2285,6 +2339,7 @@ function handleCallbackResponse(
   }
 
   connection.pendingCallbacks.delete(message.requestId);
+  pending.cleanup?.();
 
   if (message.error) {
     const error = new Error(message.error.message);
@@ -2305,13 +2360,76 @@ async function invokeClientCallback(
   connection: ConnectionState,
   callbackId: number,
   args: unknown[],
+  options?: InvokeClientCallbackOptions,
 ): Promise<unknown> {
   const requestId = connection.nextCallbackId++;
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_CALLBACK_TIMEOUT_MS;
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    let callbackInvokeSent = false;
+
+    const settle = (handler: (value: unknown) => void, value: unknown) => {
+      if (settled) return;
+      settled = true;
+      connection.pendingCallbacks.delete(requestId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = undefined;
+      }
+      if (options?.signal && onAbort) {
+        options.signal.removeEventListener("abort", onAbort);
+      }
+      handler(value);
+    };
+
+    onAbort = () => {
+      if (settled) return;
+      if (callbackInvokeSent) {
+        sendCallbackAbortMessage(
+          connection,
+          requestId,
+          options?.timeoutLabel ? `${options.timeoutLabel} aborted` : "Callback aborted"
+        );
+      }
+      settle(reject, createAbortError());
+    };
+
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        onAbort();
+        return;
+      }
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    if (timeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        if (settled) return;
+        const label = options?.timeoutLabel ?? "callback";
+        const timeoutError = new Error(`${label} timed out after ${timeoutMs}ms`);
+        if (callbackInvokeSent) {
+          sendCallbackAbortMessage(connection, requestId, timeoutError.message);
+        }
+        settle(reject, timeoutError);
+      }, timeoutMs);
+    }
+
     const pending: PendingRequest = {
-      resolve,
-      reject,
+      callbackId,
+      cleanup: () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = undefined;
+        }
+        if (options?.signal && onAbort) {
+          options.signal.removeEventListener("abort", onAbort);
+        }
+      },
+      resolve: (result) => settle(resolve, result),
+      reject: (error) => settle(reject, error),
     };
 
     connection.pendingCallbacks.set(requestId, pending);
@@ -2324,6 +2442,7 @@ async function invokeClientCallback(
     };
 
     sendMessage(connection.socket, invoke);
+    callbackInvokeSent = true;
   });
 }
 

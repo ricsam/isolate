@@ -1,5 +1,17 @@
 # @ricsam/isolate-daemon
 
+## 0.1.22
+
+### Patch Changes
+
+- respect fetch abort
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.20
+  - @ricsam/isolate-playwright@0.1.20
+  - @ricsam/isolate-runtime@0.1.22
+  - @ricsam/isolate-fs@0.1.17
+  - @ricsam/isolate-test-environment@0.1.17
+
 ## 0.1.21
 
 ### Patch Changes

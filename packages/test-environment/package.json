@@ -1,6 +1,6 @@
 {
   "name": "@ricsam/isolate-test-environment",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Test environment for isolated-vm with Jest/Vitest-compatible primitives",
   "type": "module",
   "main": "./src/index.ts",
@@ -17,10 +17,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-core": "0.1.16"
+    "@ricsam/isolate-core": "0.1.17"
   },
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "0.1.19",
+    "@ricsam/isolate-test-utils": "0.1.20",
     "@types/node": "^24",
     "typescript": "^5",
     "isolated-vm": "^6"

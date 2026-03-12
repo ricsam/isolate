@@ -1,5 +1,11 @@
 # @ricsam/isolate-core
 
+## 0.1.17
+
+### Patch Changes
+
+- respect fetch abort
+
 ## 0.1.16
 
 ### Patch Changes
