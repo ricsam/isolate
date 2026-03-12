@@ -1,6 +1,6 @@
 {
   "name": "@ricsam/isolate-fs",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -17,7 +17,6 @@
   },
   "dependencies": {
     "@ricsam/isolate-core": "*",
-    "isolated-vm": "^6",
     "mime-types": "^3.0.2"
   },
   "devDependencies": {
@@ -25,7 +24,8 @@
     "@types/mime-types": "^3.0.1",
     "@types/node": "^24",
     "memfs": "^4.51.1",
-    "typescript": "^5"
+    "typescript": "^5",
+    "isolated-vm": "^6"
   },
   "peerDependencies": {
     "isolated-vm": "^6"

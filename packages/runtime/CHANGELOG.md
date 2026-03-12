@@ -1,5 +1,21 @@
 # @ricsam/isolate-runtime
 
+## 0.1.18
+
+### Patch Changes
+
+- move isolated-vm to a peer dependency
+- Updated dependencies
+  - @ricsam/isolate-playwright@0.1.16
+  - @ricsam/isolate-encoding@0.1.15
+  - @ricsam/isolate-console@0.1.16
+  - @ricsam/isolate-crypto@0.1.15
+  - @ricsam/isolate-timers@0.1.15
+  - @ricsam/isolate-fetch@0.1.18
+  - @ricsam/isolate-core@0.1.15
+  - @ricsam/isolate-path@0.1.15
+  - @ricsam/isolate-fs@0.1.15
+
 ## 0.1.17
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @ricsam/isolate-path
 
+## 0.1.15
+
+### Patch Changes
+
+- move isolated-vm to a peer dependency
+- Updated dependencies
+  - @ricsam/isolate-core@0.1.15
+
 ## 0.1.14
 
 ### Patch Changes

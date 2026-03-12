@@ -1,6 +1,6 @@
 {
   "name": "@ricsam/isolate-encoding",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -16,11 +16,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-core": "*",
-    "isolated-vm": "^6"
+    "@ricsam/isolate-core": "*"
   },
   "devDependencies": {
     "@types/node": "^24",
+    "isolated-vm": "^6",
     "typescript": "^5"
   },
   "peerDependencies": {

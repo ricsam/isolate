@@ -1,5 +1,11 @@
 # @ricsam/isolate-playwright
 
+## 0.1.16
+
+### Patch Changes
+
+- move isolated-vm to a peer dependency
+
 ## 0.1.15
 
 ### Patch Changes
