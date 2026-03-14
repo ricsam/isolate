@@ -18,6 +18,7 @@ import {
   clearBundleCache,
   bundleHostFile,
 } from "./index.ts";
+import { getNodeBuiltinShimCode } from "./bundle.ts";
 
 describe("mappings", () => {
   test("parseMappings parses glob pattern", () => {
@@ -271,6 +272,16 @@ export const value = "pure-js-value";
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
+  });
+});
+
+describe("builtin shims", () => {
+  test("shims ws to the global WebSocket export", () => {
+    const code = getNodeBuiltinShimCode("ws");
+
+    assert.ok(code.includes("globalThis.WebSocket"));
+    assert.ok(code.includes("WebSocketShim as WebSocket"));
+    assert.ok(code.includes("export default WebSocketShim"));
   });
 });
 

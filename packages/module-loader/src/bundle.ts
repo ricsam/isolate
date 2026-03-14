@@ -41,6 +41,23 @@ function isNodeBuiltin(source: string): boolean {
 
 const NODE_BUILTIN_SHIM_PREFIX = "\0node-builtin-shim:";
 
+export function getNodeBuiltinShimCode(source: string): string {
+  if (source === "ws" || source === "node:ws") {
+    return `
+const WebSocketShim = globalThis.WebSocket;
+
+if (!WebSocketShim) {
+  throw new Error("The isolate runtime does not provide a global WebSocket implementation.");
+}
+
+export { WebSocketShim as WebSocket };
+export default WebSocketShim;
+`;
+  }
+
+  return "export default {};\n";
+}
+
 /**
  * Rollup plugin that provides empty shims for Node.js built-in modules.
  * Place after nodeResolve — acts as a catch-all for builtins that the
@@ -57,7 +74,7 @@ function shimNodeBuiltinsPlugin(): Plugin {
     },
     load(id) {
       if (id.startsWith(NODE_BUILTIN_SHIM_PREFIX)) {
-        return "export default {};\n";
+        return getNodeBuiltinShimCode(id.slice(NODE_BUILTIN_SHIM_PREFIX.length));
       }
       return null;
     },

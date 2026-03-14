@@ -1,5 +1,11 @@
 # @ricsam/isolate-module-loader
 
+## 0.1.8
+
+### Patch Changes
+
+- shim ws import
+
 ## 0.1.7
 
 ### Patch Changes
