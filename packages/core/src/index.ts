@@ -483,13 +483,7 @@ export function defineFunction(
 ): ivm.Reference {
   const callback = new ivm.Callback(
     (...args: unknown[]) => {
-      try {
-        const result = fn(...args);
-        return result;
-      } catch (err) {
-        // Throw a transferable error object
-        throw new Error(toError(err).message);
-      }
+      return fn(...args);
     },
     { sync: true }
   );
@@ -522,12 +516,7 @@ export function defineAsyncFunction(
   // Create a Reference to the async function (not a Callback)
   // applySyncPromise can only be called on References to host functions
   const asyncRef = new ivm.Reference(async (...args: unknown[]) => {
-    try {
-      const result = await fn(...args);
-      return result;
-    } catch (err) {
-      throw encodeErrorForTransfer(toError(err));
-    }
+    return await fn(...args);
   });
 
   // Set the reference on global

@@ -103,5 +103,21 @@ describe("function-builder", () => {
       assert.strictEqual(result, "done");
       assert.deepStrictEqual(receivedArgs, ["async", 99, false]);
     });
+
+    test("preserves non-Error thrown values", async () => {
+      defineAsyncFunction(context, "throwStringAsync", async () => {
+        throw "string error";
+      });
+
+      const result = await context.eval(`
+        try {
+          throwStringAsync();
+          "no error";
+        } catch (e) {
+          typeof e === "string" ? e : "not a string";
+        }
+      `);
+      assert.strictEqual(result, "string error");
+    });
   });
 });
