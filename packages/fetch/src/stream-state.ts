@@ -219,6 +219,11 @@ export function createStreamStateRegistry(): StreamStateRegistry {
 
     clear(): void {
       for (const [streamId] of streams) {
+        const cleanup = cleanups.get(streamId);
+        if (cleanup) {
+          cleanup().catch(() => {});
+          cleanups.delete(streamId);
+        }
         this.delete(streamId);
       }
     },

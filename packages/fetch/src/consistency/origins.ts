@@ -225,6 +225,22 @@ export async function createConsistencyTestContext(): Promise<ConsistencyTestCon
     },
   });
 
+  await runtime.eval(`
+    globalThis.__consistencyPendingTasks = new Set();
+    globalThis.__consistencyCleanupFns = [];
+    globalThis.__consistencyTrackTask = function(task) {
+      globalThis.__consistencyPendingTasks.add(task);
+      task.finally(() => {
+        globalThis.__consistencyPendingTasks.delete(task);
+      });
+      return task;
+    };
+    globalThis.__consistencyRegisterCleanup = function(cleanup) {
+      globalThis.__consistencyCleanupFns.push(cleanup);
+      return cleanup;
+    };
+  `);
+
   return {
     runtime,
     eval: runtime.eval.bind(runtime),
@@ -239,6 +255,29 @@ export async function createConsistencyTestContext(): Promise<ConsistencyTestCon
       storedResult = undefined;
     },
     async dispose() {
+      try {
+        await runtime.eval(`
+          const cleanupFns = globalThis.__consistencyCleanupFns ?? [];
+          while (cleanupFns.length > 0) {
+            const cleanup = cleanupFns.pop();
+            if (!cleanup) continue;
+            try {
+              await cleanup();
+            } catch {
+              // Ignore cleanup races during test teardown.
+            }
+          }
+
+          const pendingTasks = globalThis.__consistencyPendingTasks
+            ? Array.from(globalThis.__consistencyPendingTasks)
+            : [];
+          if (pendingTasks.length > 0) {
+            await Promise.allSettled(pendingTasks);
+          }
+        `);
+      } catch {
+        // The runtime may already be tearing down; ignore cleanup races.
+      }
       await runtime.dispose();
     },
   };
@@ -606,15 +645,32 @@ export async function getReadableStreamFromOrigin(
       await ctx.eval(`
         const transform = new TransformStream();
         globalThis.__testReadableStream = transform.readable;
-        // Write chunks to writable side and close it
         const writer = transform.writable.getWriter();
+        __consistencyRegisterCleanup(async () => {
+          try {
+            await writer.abort();
+          } catch {
+            // Ignore duplicate cleanup races.
+          }
+          try {
+            writer.releaseLock();
+          } catch {
+            // Ignore release races during teardown.
+          }
+        });
         const chunks = ${chunksJson};
-        (async () => {
+        __consistencyTrackTask((async () => {
           for (const chunk of chunks) {
             await writer.write(new TextEncoder().encode(chunk));
           }
           await writer.close();
-        })();
+        })().finally(() => {
+          try {
+            writer.releaseLock();
+          } catch {
+            // Ignore release races after the task settles.
+          }
+        }));
       `);
       break;
   }
@@ -655,14 +711,31 @@ export async function getWritableStreamFromOrigin(
           }
         });
         globalThis.__testWritableStream = transform.writable;
-        // Start reading to allow writes to complete
         const reader = transform.readable.getReader();
-        (async () => {
+        __consistencyRegisterCleanup(async () => {
+          try {
+            await reader.cancel();
+          } catch {
+            // Ignore duplicate cleanup races.
+          }
+          try {
+            reader.releaseLock();
+          } catch {
+            // Ignore release races during teardown.
+          }
+        });
+        __consistencyTrackTask((async () => {
           while (true) {
             const { done } = await reader.read();
             if (done) break;
           }
-        })();
+        })().finally(() => {
+          try {
+            reader.releaseLock();
+          } catch {
+            // Ignore release races after the task settles.
+          }
+        }));
       `);
       break;
   }

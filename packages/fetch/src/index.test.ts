@@ -272,5 +272,48 @@ describe("@ricsam/isolate-fetch Integration", () => {
       const data = JSON.parse(result as string);
       assert.deepStrictEqual(data, { message: "hello", count: 42 });
     });
+
+    test("dispose cancels unread callback-stream responses", async () => {
+      let resolveCancelled: (() => void) | undefined;
+      const cancelled = new Promise<void>((resolve) => {
+        resolveCancelled = resolve;
+      });
+
+      const fetchHandle = await setupFetch(context, {
+        onFetch: async () => {
+          const stream = new ReadableStream<Uint8Array>({
+            async pull() {
+              await new Promise(() => {});
+            },
+            cancel() {
+              resolveCancelled?.();
+            },
+          });
+
+          const response = new Response(stream);
+          (response as Response & { __isCallbackStream?: boolean }).__isCallbackStream = true;
+          return response;
+        },
+      });
+
+      await context.eval(
+        `
+        (async () => {
+          globalThis.__unreadResponse = await fetch('https://example.com/stream');
+          return globalThis.__unreadResponse instanceof Response;
+        })();
+      `,
+        { promise: true }
+      );
+
+      fetchHandle.dispose();
+
+      await Promise.race([
+        cancelled,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Timed out waiting for stream cancellation")), 1000)
+        ),
+      ]);
+    });
   });
 });

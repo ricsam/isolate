@@ -3,6 +3,7 @@ import { setupCore, clearAllInstanceState } from "@ricsam/isolate-core";
 import {
   getStreamRegistryForContext,
   startNativeStreamReader,
+  clearStreamRegistryForContext,
 } from "./stream-state.ts";
 import type { StreamStateRegistry } from "./stream-state.ts";
 
@@ -166,6 +167,13 @@ function releaseTrackedGlobalHandles(context: ivm.Context): void {
     }
   }
   handles.clear();
+}
+
+function clearPassthruBodiesForContext(context: ivm.Context): void {
+  const map = passthruBodies.get(context);
+  if (!map) return;
+  map.clear();
+  passthruBodies.delete(context);
 }
 
 // ============================================================================
@@ -2808,6 +2816,8 @@ export async function setupFetch(
     dispose() {
       // Clear state for this context
       stateMap.clear();
+      clearPassthruBodiesForContext(context);
+      clearStreamRegistryForContext(context);
       // Clear upgrade registry
       context.evalSync(`globalThis.__upgradeRegistry__.clear()`);
       // Clear serve state
