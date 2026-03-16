@@ -372,6 +372,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
           requestId,
           options: {
             memoryLimitMB: runtimeOptions.memoryLimitMB,
+            executionTimeout: runtimeOptions.executionTimeout,
             cwd: runtimeOptions.cwd,
             callbacks,
             testEnvironment: testEnvironmentOption,
@@ -1059,6 +1060,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
     requestId,
     options: {
       memoryLimitMB: options.memoryLimitMB,
+      executionTimeout: options.executionTimeout,
       cwd: options.cwd,
       callbacks,
       testEnvironment: testEnvironmentOption,
@@ -1464,6 +1466,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         isolateId,
         code,
         filename: options?.filename,
+        executionTimeout: options?.executionTimeout,
       };
       await sendRequest<{ value: unknown }>(state, req);
       // Module evaluation returns void - don't return the value

@@ -307,6 +307,138 @@ interface RuntimeState {
   pendingCallbacks: Promise<unknown>[];
   /** Per-runtime eval queue to prevent overlapping module linking/evaluation */
   evalChain: Promise<void>;
+  /** Optional timeout for full eval/test executions */
+  executionTimeout?: number;
+  /** True after dispose() starts */
+  isDisposed: boolean;
+  /** Cached dispose promise to make disposal idempotent */
+  disposePromise?: Promise<void>;
+  /** Timeout budget that permanently poisoned this runtime */
+  timedOutExecutionMs?: number;
+}
+
+function getConfiguredExecutionTimeout(timeoutMs?: number): number | undefined {
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return undefined;
+  }
+  return timeoutMs;
+}
+
+function createTimeoutError(label: string, timeoutMs: number): Error {
+  const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+  error.name = "TimeoutError";
+  return error;
+}
+
+function createDisposedRuntimeError(): Error {
+  return new Error("Runtime has been disposed");
+}
+
+function createTimedOutRuntimeError(timeoutMs: number): Error {
+  const error = new Error(
+    `Runtime execution timed out after ${timeoutMs}ms; create a new runtime.`
+  );
+  error.name = "TimeoutError";
+  return error;
+}
+
+function assertRuntimeUsable(state: RuntimeState): void {
+  if (state.timedOutExecutionMs !== undefined) {
+    throw createTimedOutRuntimeError(state.timedOutExecutionMs);
+  }
+  if (state.isDisposed) {
+    throw createDisposedRuntimeError();
+  }
+}
+
+async function disposeRuntimeState(state: RuntimeState): Promise<void> {
+  if (state.disposePromise) {
+    return state.disposePromise;
+  }
+
+  state.isDisposed = true;
+  state.disposePromise = (async () => {
+    if (state.customFnInvokeRef) {
+      try {
+        state.customFnInvokeRef.release();
+      } catch {
+        // Ignore cleanup errors during disposal.
+      } finally {
+        state.customFnInvokeRef = undefined;
+      }
+    }
+
+    const disposeHandle = (dispose: (() => void) | undefined): void => {
+      if (!dispose) return;
+      try {
+        dispose();
+      } catch {
+        // Ignore cleanup errors during disposal.
+      }
+    };
+
+    disposeHandle(state.handles.playwright?.dispose.bind(state.handles.playwright));
+    disposeHandle(state.handles.testEnvironment?.dispose.bind(state.handles.testEnvironment));
+    disposeHandle(state.handles.fs?.dispose.bind(state.handles.fs));
+    disposeHandle(state.handles.fetch?.dispose.bind(state.handles.fetch));
+    disposeHandle(state.handles.crypto?.dispose.bind(state.handles.crypto));
+    disposeHandle(state.handles.path?.dispose.bind(state.handles.path));
+    disposeHandle(state.handles.timers?.dispose.bind(state.handles.timers));
+    disposeHandle(state.handles.encoding?.dispose.bind(state.handles.encoding));
+    disposeHandle(state.handles.console?.dispose.bind(state.handles.console));
+    disposeHandle(state.handles.core?.dispose.bind(state.handles.core));
+
+    state.pendingCallbacks.length = 0;
+    state.moduleCache.clear();
+    state.moduleLoadsInFlight.clear();
+    state.moduleToFilename.clear();
+    state.moduleImportChain.clear();
+    state.specifierToImporter.clear();
+    state.sourceMaps.clear();
+
+    try {
+      state.context.release();
+    } catch {
+      // Ignore cleanup errors during disposal.
+    }
+
+    try {
+      state.isolate.dispose();
+    } catch {
+      // Ignore cleanup errors during disposal.
+    }
+  })();
+
+  return state.disposePromise;
+}
+
+async function runWithExecutionTimeout<T>(
+  state: RuntimeState,
+  timeoutMs: number | undefined,
+  label: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const effectiveTimeoutMs = getConfiguredExecutionTimeout(timeoutMs);
+  if (effectiveTimeoutMs === undefined) {
+    return operation();
+  }
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      state.timedOutExecutionMs ??= effectiveTimeoutMs;
+      void disposeRuntimeState(state);
+      reject(createTimeoutError(label, effectiveTimeoutMs));
+    }, effectiveTimeoutMs);
+  });
+
+  try {
+    return await Promise.race([operation(), timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 // Iterator session tracking for async iterator custom functions
@@ -1203,6 +1335,8 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     specifierToImporter: new Map(),
     pendingCallbacks: [],
     evalChain: Promise.resolve(),
+    executionTimeout: getConfiguredExecutionTimeout(opts.executionTimeout),
+    isDisposed: false,
     moduleLoader: opts.moduleLoader,
     customFunctions: opts.customFunctions as CustomFunctions<Record<string, unknown[]>>,
   };
@@ -1305,24 +1439,31 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     state.handles.playwright = await setupPlaywright(context, playwrightSetupOptions);
   }
 
+  const ensureRuntimeUsable = (): void => {
+    assertRuntimeUsable(state);
+  };
+
   // Create fetch handle wrapper
   const fetchHandle: RuntimeFetchHandle = {
     async dispatchRequest(
       request: Request,
       options?: DispatchRequestOptions
     ): Promise<Response> {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       return state.handles.fetch.dispatchRequest(request, options);
     },
     getUpgradeRequest() {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       return state.handles.fetch.getUpgradeRequest();
     },
     dispatchWebSocketOpen(connectionId: string) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
@@ -1332,78 +1473,91 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       connectionId: string,
       message: string | ArrayBuffer
     ) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       state.handles.fetch.dispatchWebSocketMessage(connectionId, message);
     },
     dispatchWebSocketClose(connectionId: string, code: number, reason: string) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       state.handles.fetch.dispatchWebSocketClose(connectionId, code, reason);
     },
     dispatchWebSocketError(connectionId: string, error: Error) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       state.handles.fetch.dispatchWebSocketError(connectionId, error);
     },
     onWebSocketCommand(callback: (cmd: WebSocketCommand) => void) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       return state.handles.fetch.onWebSocketCommand(callback);
     },
     hasServeHandler() {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       return state.handles.fetch.hasServeHandler();
     },
     hasActiveConnections() {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       return state.handles.fetch.hasActiveConnections();
     },
     dispatchClientWebSocketOpen(socketId: string, protocol: string, extensions: string) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       state.handles.fetch.dispatchClientWebSocketOpen(socketId, protocol, extensions);
     },
     dispatchClientWebSocketMessage(socketId: string, data: string | ArrayBuffer) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       state.handles.fetch.dispatchClientWebSocketMessage(socketId, data);
     },
     dispatchClientWebSocketClose(socketId: string, code: number, reason: string, wasClean: boolean) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       state.handles.fetch.dispatchClientWebSocketClose(socketId, code, reason, wasClean);
     },
     dispatchClientWebSocketError(socketId: string) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       state.handles.fetch.dispatchClientWebSocketError(socketId);
     },
     onClientWebSocketCommand(callback: (cmd: ClientWebSocketCommand) => void) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       return state.handles.fetch.onClientWebSocketCommand(callback);
     },
     onEvent(callback: (event: string, payload: unknown) => void) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
       return state.handles.fetch.onEvent(callback);
     },
     dispatchEvent(event: string, payload: unknown) {
+      ensureRuntimeUsable();
       if (!state.handles.fetch) {
         throw new Error("Fetch handle not available");
       }
@@ -1414,6 +1568,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
   // Create timers handle wrapper
   const timersHandle: RuntimeTimersHandle = {
     clearAll() {
+      ensureRuntimeUsable();
       state.handles.timers?.clearAll();
     },
   };
@@ -1421,15 +1576,19 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
   // Create console handle wrapper
   const consoleHandle: RuntimeConsoleHandle = {
     reset() {
+      ensureRuntimeUsable();
       state.handles.console?.reset();
     },
     getTimers() {
+      ensureRuntimeUsable();
       return state.handles.console?.getTimers() ?? new Map();
     },
     getCounters() {
+      ensureRuntimeUsable();
       return state.handles.console?.getCounters() ?? new Map();
     },
     getGroupDepth() {
+      ensureRuntimeUsable();
       return state.handles.console?.getGroupDepth() ?? 0;
     },
   };
@@ -1437,33 +1596,25 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
   // Create test environment handle wrapper
   const testEnvironmentHandle: RuntimeTestEnvironmentHandle = {
     async runTests(timeout?: number): Promise<RunResults> {
+      ensureRuntimeUsable();
       if (!state.handles.testEnvironment) {
         throw new Error(
           "Test environment not enabled. Set testEnvironment: true in createRuntime options."
         );
       }
 
-      if (timeout === undefined) {
-        return runTestsInContext(state.context);
-      }
-
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error("Test timeout")), timeout);
-      });
-
-      try {
-        return await Promise.race([
-          runTestsInContext(state.context),
-          timeoutPromise,
-        ]);
-      } finally {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
-      }
+      const executionTimeout = timeout ?? state.executionTimeout;
+      return runWithExecutionTimeout(
+        state,
+        executionTimeout,
+        "Test",
+        async () => {
+          return runTestsInContext(state.context);
+        },
+      );
     },
     hasTests(): boolean {
+      ensureRuntimeUsable();
       if (!state.handles.testEnvironment) {
         throw new Error(
           "Test environment not enabled. Set testEnvironment: true in createRuntime options."
@@ -1472,6 +1623,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       return hasTestsInContext(state.context);
     },
     getTestCount(): number {
+      ensureRuntimeUsable();
       if (!state.handles.testEnvironment) {
         throw new Error(
           "Test environment not enabled. Set testEnvironment: true in createRuntime options."
@@ -1480,6 +1632,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       return getTestCountInContext(state.context);
     },
     reset() {
+      ensureRuntimeUsable();
       state.handles.testEnvironment?.dispose();
     },
   };
@@ -1487,6 +1640,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
   // Create playwright handle wrapper
   const playwrightHandle: RuntimePlaywrightHandle = {
     getCollectedData(): CollectedData {
+      ensureRuntimeUsable();
       if (!state.handles.playwright) {
         throw new Error(
           "Playwright not configured. Provide playwright.handler in createRuntime options."
@@ -1499,6 +1653,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       };
     },
     clearCollectedData() {
+      ensureRuntimeUsable();
       state.handles.playwright?.clearCollected();
     },
   };
@@ -1518,104 +1673,110 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       code: string,
       filenameOrOptions?: string | EvalOptions
     ): Promise<void> {
+      const options =
+        typeof filenameOrOptions === "string"
+          ? { filename: filenameOrOptions }
+          : filenameOrOptions;
+      const executionTimeout = options?.executionTimeout ?? state.executionTimeout;
+
       const runEval = async (): Promise<void> => {
-        // Parse options
-        const options =
-          typeof filenameOrOptions === "string"
-            ? { filename: filenameOrOptions }
-            : filenameOrOptions;
+        assertRuntimeUsable(state);
 
         // Normalize filename to absolute path for module resolution
         const filename = normalizeEntryFilename(options?.filename);
 
         try {
-          // Transform entry code: strip types, validate, wrap in async function
-          const transformed = await transformEntryCode(code, filename);
-          if (transformed.sourceMap) {
-            state.sourceMaps.set(filename, transformed.sourceMap);
-          }
-
-          // Compile as ES module
-          const mod = await state.isolate.compileModule(transformed.code, {
-            filename,
-          });
-
-          // Track entry module filename and import chain
-          state.moduleToFilename.set(mod, filename);
-          state.moduleImportChain.set(filename, []);
-
-          // Instantiate with module resolver
-          const resolver = createModuleResolver(state);
-          try {
-            await mod.instantiate(state.context, resolver);
-          } catch (err) {
-            const error = err instanceof Error ? err : new Error(String(err));
-
-            // Extract failing module specifier and export name from V8 error
-            // e.g. "The requested module './foo' does not provide an export named 'Bar'"
-            const specifierMatch = error.message.match(/The requested module '([^']+)'/);
-            const exportMatch = error.message.match(/export named '([^']+)'/);
-            const failingSpecifier = specifierMatch?.[1];
-            const failingExport = exportMatch?.[1];
-
-            // Find which file imports the failing specifier
-            const importerFile = failingSpecifier
-              ? state.specifierToImporter.get(failingSpecifier)
-              : undefined;
-
-            // Build the full import chain from entry → importer → failing module
-            const details: string[] = [];
-
-            if (importerFile) {
-              const chain = state.moduleImportChain.get(importerFile) ?? [];
-              const fullChain = [...chain, importerFile];
-              if (failingSpecifier) fullChain.push(failingSpecifier);
-              const trimmed = fullChain.length > 12 ? fullChain.slice(-12) : fullChain;
-              const prefix = fullChain.length > 12 ? '  ...\n' : '';
-              details.push('Import chain:\n' + prefix + trimmed.map(p => `  ${p}`).join('\n    -> '));
-            } else if (failingSpecifier) {
-              // Fallback: search moduleImportChain for any path containing the specifier
-              for (const [modPath, chain] of state.moduleImportChain) {
-                if (modPath.includes(failingSpecifier) || modPath.endsWith(failingSpecifier)) {
-                  const fullChain = [...chain, modPath];
-                  const trimmed = fullChain.length > 12 ? fullChain.slice(-12) : fullChain;
-                  details.push('Import chain:\n' + trimmed.map(p => `  ${p}`).join('\n    -> '));
-                  break;
-                }
+          await runWithExecutionTimeout(
+            state,
+            executionTimeout,
+            "Execution",
+            async () => {
+              // Transform entry code: strip types, validate, wrap in async function
+              const transformed = await transformEntryCode(code, filename);
+              if (transformed.sourceMap) {
+                state.sourceMaps.set(filename, transformed.sourceMap);
               }
-            }
 
-            if (failingExport && failingSpecifier) {
-              details.push(
-                `Hint: If '${failingExport}' is a TypeScript type/interface, use \`import type\` to prevent it from being resolved at runtime:\n` +
-                `  import type { ${failingExport} } from '${failingSpecifier}';`
-              );
-            }
+              // Compile as ES module
+              const mod = await state.isolate.compileModule(transformed.code, {
+                filename,
+              });
 
-            const suffix = details.length > 0 ? '\n\n' + details.join('\n\n') : '';
-            error.message = `Module instantiation failed: ${error.message}${suffix}`;
-            throw error;
-          }
+              // Track entry module filename and import chain
+              state.moduleToFilename.set(mod, filename);
+              state.moduleImportChain.set(filename, []);
 
-          // Evaluate - only resolves imports and defines the default function (no timeout needed)
-          await mod.evaluate();
+              // Instantiate with module resolver
+              const resolver = createModuleResolver(state);
+              try {
+                await mod.instantiate(state.context, resolver);
+              } catch (err) {
+                const error = err instanceof Error ? err : new Error(String(err));
 
-          // Get the default export and run it with timeout
-          const ns = mod.namespace;
-          const runRef = await ns.get("default", { reference: true });
-          try {
-            await runRef.apply(undefined, [], {
-              result: { promise: true },
-            });
-          } finally {
-            runRef.release();
-          }
+                // Extract failing module specifier and export name from V8 error
+                // e.g. "The requested module './foo' does not provide an export named 'Bar'"
+                const specifierMatch = error.message.match(/The requested module '([^']+)'/);
+                const exportMatch = error.message.match(/export named '([^']+)'/);
+                const failingSpecifier = specifierMatch?.[1];
+                const failingExport = exportMatch?.[1];
 
-          // Await pending callbacks (no-op for local use, enables daemon IPC flush)
-          if (state.pendingCallbacks.length > 0) {
-            await Promise.all(state.pendingCallbacks);
-            state.pendingCallbacks.length = 0;
-          }
+                // Find which file imports the failing specifier
+                const importerFile = failingSpecifier
+                  ? state.specifierToImporter.get(failingSpecifier)
+                  : undefined;
+
+                // Build the full import chain from entry → importer → failing module
+                const details: string[] = [];
+
+                if (importerFile) {
+                  const chain = state.moduleImportChain.get(importerFile) ?? [];
+                  const fullChain = [...chain, importerFile];
+                  if (failingSpecifier) fullChain.push(failingSpecifier);
+                  const trimmed = fullChain.length > 12 ? fullChain.slice(-12) : fullChain;
+                  const prefix = fullChain.length > 12 ? "  ...\n" : "";
+                  details.push(`Import chain:\n${prefix}${trimmed.map((p) => `  ${p}`).join("\n    -> ")}`);
+                } else if (failingSpecifier) {
+                  // Fallback: search moduleImportChain for any path containing the specifier
+                  for (const [modPath, chain] of state.moduleImportChain) {
+                    if (modPath.includes(failingSpecifier) || modPath.endsWith(failingSpecifier)) {
+                      const fullChain = [...chain, modPath];
+                      const trimmed = fullChain.length > 12 ? fullChain.slice(-12) : fullChain;
+                      details.push(`Import chain:\n${trimmed.map((p) => `  ${p}`).join("\n    -> ")}`);
+                      break;
+                    }
+                  }
+                }
+
+                if (failingExport && failingSpecifier) {
+                  details.push(
+                    `Hint: If '${failingExport}' is a TypeScript type/interface, use \`import type\` to prevent it from being resolved at runtime:\n` +
+                    `  import type { ${failingExport} } from '${failingSpecifier}';`
+                  );
+                }
+
+                const suffix = details.length > 0 ? "\n\n" + details.join("\n\n") : "";
+                error.message = `Module instantiation failed: ${error.message}${suffix}`;
+                throw error;
+              }
+
+              await mod.evaluate();
+
+              const ns = mod.namespace;
+              const runRef = await ns.get("default", { reference: true });
+              try {
+                await runRef.apply(undefined, [], {
+                  result: { promise: true },
+                });
+              } finally {
+                runRef.release();
+              }
+
+              if (state.pendingCallbacks.length > 0) {
+                await Promise.all(state.pendingCallbacks);
+                state.pendingCallbacks.length = 0;
+              }
+            },
+          );
         } catch (err) {
           const error = err as Error;
           if (error.stack && state.sourceMaps.size > 0) {
@@ -1634,6 +1795,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     },
 
     clearModuleCache() {
+      ensureRuntimeUsable();
       state.moduleCache.clear();
       state.moduleLoadsInFlight.clear();
       state.moduleToFilename.clear();
@@ -1644,30 +1806,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     },
 
     async dispose(): Promise<void> {
-      // Dispose custom function reference
-      if (state.customFnInvokeRef) {
-        state.customFnInvokeRef.release();
-      }
-
-      // Dispose all handles (in reverse order of setup)
-      state.handles.playwright?.dispose();
-      state.handles.testEnvironment?.dispose();
-      state.handles.fs?.dispose();
-      state.handles.fetch?.dispose();
-      state.handles.crypto?.dispose();
-      state.handles.path?.dispose();
-      state.handles.timers?.dispose();
-      state.handles.encoding?.dispose();
-      state.handles.console?.dispose();
-      state.handles.core?.dispose();
-
-      // Clear module cache
-      state.moduleCache.clear();
-      state.moduleLoadsInFlight.clear();
-
-      // Release context and dispose isolate
-      state.context.release();
-      state.isolate.dispose();
+      await disposeRuntimeState(state);
     },
   };
 }

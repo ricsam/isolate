@@ -1,5 +1,14 @@
 # @ricsam/isolate-client
 
+## 0.1.24
+
+### Patch Changes
+
+- improve timeouts
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.21
+  - @ricsam/isolate-playwright@0.1.21
+
 ## 0.1.23
 
 ### Patch Changes

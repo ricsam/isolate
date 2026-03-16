@@ -156,6 +156,13 @@ function isLinkerConflictError(error: unknown): boolean {
   return text.includes(LINKER_CONFLICT_ERROR.toLowerCase());
 }
 
+function isRuntimeTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof Error
+    && /^(Execution|Test) timed out after \d+ms$/i.test(error.message)
+  );
+}
+
 /**
  * Handle a new client connection.
  */
@@ -1309,6 +1316,7 @@ async function handleCreateRuntime(
     // Create the runtime using the unified createRuntime()
     const runtime = await createRuntime({
       memoryLimitMB: message.options.memoryLimitMB ?? state.options.defaultMemoryLimitMB,
+      executionTimeout: message.options.executionTimeout,
       cwd: message.options.cwd,
       // Console handler that bridges to client via IPC
       console: {
@@ -1651,13 +1659,16 @@ async function handleEval(
     // - Pending callback flushing
     await instance.runtime.eval(message.code, {
       filename: message.filename,
+      executionTimeout: message.executionTimeout,
     });
 
     // Return undefined for module evaluation
     sendOk(connection.socket, message.requestId, { value: undefined });
   } catch (err) {
     const error = err as Error;
-    if (instance.namespaceId != null && isLinkerConflictError(error)) {
+    if (isRuntimeTimeoutError(error)) {
+      instance.isPoisoned = true;
+    } else if (instance.namespaceId != null && isLinkerConflictError(error)) {
       instance.isPoisoned = true;
     }
     sendError(
@@ -2950,8 +2961,7 @@ async function handleRunTests(
   }
 
   try {
-    const timeout = message.timeout ?? 30000;
-    const runPromise = instance.runtime.testEnvironment.runTests(timeout);
+    const runPromise = instance.runtime.testEnvironment.runTests(message.timeout);
     instance.pendingTestRun = { promise: runPromise };
 
     const results = await runPromise;
@@ -2963,6 +2973,9 @@ async function handleRunTests(
   } catch (err) {
     instance.pendingTestRun = undefined;
     const error = err as Error;
+    if (isRuntimeTimeoutError(error)) {
+      instance.isPoisoned = true;
+    }
     // Send error using CURRENT connection
     const currentConn = instance.callbackContext?.connection ?? connection;
     sendError(

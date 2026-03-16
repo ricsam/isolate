@@ -1,5 +1,11 @@
 # @ricsam/isolate-protocol
 
+## 0.1.21
+
+### Patch Changes
+
+- improve timeouts
+
 ## 0.1.20
 
 ### Patch Changes

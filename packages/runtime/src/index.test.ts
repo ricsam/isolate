@@ -107,6 +107,87 @@ describe("@ricsam/isolate-runtime", () => {
     });
   });
 
+  describe("executionTimeout", () => {
+    test("bounds eval and poisons the runtime", async () => {
+      const timeoutMs = 100;
+      const runtime = await createRuntime({
+        executionTimeout: timeoutMs,
+        customFunctions: {
+          never: {
+            fn: async () => await new Promise<never>(() => {}),
+            type: "async",
+          },
+        },
+      });
+
+      try {
+        const startedAt = Date.now();
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`await never();`);
+          },
+          new RegExp(`Execution timed out after ${timeoutMs}ms`, "i"),
+        );
+        const elapsedMs = Date.now() - startedAt;
+        assert.ok(
+          elapsedMs < timeoutMs + 1000,
+          `Expected execution timeout near ${timeoutMs}ms, took ${elapsedMs}ms`,
+        );
+
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`console.log("still alive")`);
+          },
+          new RegExp(`Runtime execution timed out after ${timeoutMs}ms`, "i"),
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
+    test("runTests() uses the runtime execution timeout when no explicit timeout is passed", async () => {
+      const timeoutMs = 100;
+      const runtime = await createRuntime({
+        executionTimeout: timeoutMs,
+        testEnvironment: true,
+        customFunctions: {
+          never: {
+            fn: async () => await new Promise<never>(() => {}),
+            type: "async",
+          },
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          test("hangs forever", async () => {
+            await never();
+          });
+        `);
+
+        const startedAt = Date.now();
+        await assert.rejects(
+          async () => {
+            await runtime.testEnvironment.runTests();
+          },
+          new RegExp(`Test timed out after ${timeoutMs}ms`, "i"),
+        );
+        const elapsedMs = Date.now() - startedAt;
+        assert.ok(
+          elapsedMs < timeoutMs + 1000,
+          `Expected test timeout near ${timeoutMs}ms, took ${elapsedMs}ms`,
+        );
+
+        assert.throws(
+          () => runtime.testEnvironment.hasTests(),
+          new RegExp(`Runtime execution timed out after ${timeoutMs}ms`, "i"),
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    });
+  });
+
   describe("moduleLoader", () => {
     test("module imports work with moduleLoader", async () => {
       let logValue: string | null = null;

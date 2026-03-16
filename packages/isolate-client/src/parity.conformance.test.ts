@@ -166,7 +166,7 @@ describe("parity conformance", () => {
           async () => {
             await runtime.testEnvironment.runTests(10);
           },
-          /timeout/i,
+          /timed out|timeout/i,
           `${adapter.name} should reject on timeout`
         );
       } finally {
@@ -267,4 +267,3 @@ describe("parity conformance", () => {
     }
   });
 });
-

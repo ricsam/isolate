@@ -1,6 +1,6 @@
 {
   "name": "@ricsam/isolate-daemon",
-  "version": "0.1.24",
+  "version": "0.1.25",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -23,12 +23,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ricsam/isolate-protocol": "0.1.20",
-    "@ricsam/isolate-runtime": "0.1.24",
+    "@ricsam/isolate-protocol": "0.1.21",
+    "@ricsam/isolate-runtime": "0.1.25",
     "@ricsam/isolate-transform": "0.1.5",
     "@ricsam/isolate-fs": "0.1.19",
     "@ricsam/isolate-test-environment": "0.1.19",
-    "@ricsam/isolate-playwright": "0.1.20",
+    "@ricsam/isolate-playwright": "0.1.21",
     "playwright": "^1"
   },
   "devDependencies": {

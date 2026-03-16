@@ -114,6 +114,39 @@ describe("isolate-client playwright integration", () => {
     }
   );
 
+  it(
+    "should use the runtime execution timeout for stuck playwright handlers",
+    { timeout: 5000 },
+    async () => {
+      const timeoutMs = 200;
+
+      const runtime = await client.createRuntime({
+        executionTimeout: timeoutMs,
+        playwright: {
+          handler: async () => await new Promise<never>(() => {}),
+        },
+      });
+
+      try {
+        const startedAt = Date.now();
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`await page.title();`);
+          },
+          new RegExp(`Execution timed out after ${timeoutMs}ms`, "i"),
+        );
+        const elapsedMs = Date.now() - startedAt;
+
+        assert.ok(
+          elapsedMs < timeoutMs + 1000,
+          `Expected execution timeout near ${timeoutMs}ms, took ${elapsedMs}ms`,
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    },
+  );
+
   it("should collect console logs and network data", async () => {
     const browser = await chromium.launch({ headless: true });
     const browserContext = await browser.newContext();

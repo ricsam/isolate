@@ -292,6 +292,7 @@ export interface CreateRuntimeRequest extends BaseMessage {
   type: typeof MessageType.CREATE_RUNTIME;
   options: {
     memoryLimitMB?: number;
+    executionTimeout?: number;
     callbacks?: RuntimeCallbackRegistrations;
     /** Current working directory for path.resolve(). Defaults to "/" */
     cwd?: string;
@@ -314,6 +315,7 @@ export interface EvalRequest extends BaseMessage {
   isolateId: string;
   code: string;
   filename?: string;
+  executionTimeout?: number;
 }
 
 export interface SerializedRequest {
@@ -978,6 +980,8 @@ export interface DispatchOptions {
 export interface EvalOptions {
   /** Filename for stack traces */
   filename?: string;
+  /** Timeout for the full eval execution in milliseconds */
+  executionTimeout?: number;
 }
 
 /**
@@ -1026,6 +1030,8 @@ export interface PlaywrightOptions {
 export interface BaseRuntimeOptions<T extends Record<string, any[]> = Record<string, unknown[]>> {
   /** Memory limit in megabytes (optional) */
   memoryLimitMB?: number;
+  /** Timeout for the full eval/test execution in milliseconds */
+  executionTimeout?: number;
   /** Console callback handlers */
   console?: ConsoleCallbacks;
   /** Fetch callback handler */
