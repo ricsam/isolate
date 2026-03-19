@@ -1,5 +1,11 @@
 # @ricsam/isolate-module-loader
 
+## 0.1.12
+
+### Patch Changes
+
+- add packageEntryWrapperPlugin
+
 ## 0.1.11
 
 ### Patch Changes

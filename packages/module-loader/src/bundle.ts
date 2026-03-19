@@ -1,11 +1,12 @@
+import fs from "node:fs";
 import path from "node:path";
-import { builtinModules } from "node:module";
+import { builtinModules, createRequire } from "node:module";
 import { rollup, type Plugin } from "rollup";
 import * as nodeResolveModule from "@rollup/plugin-node-resolve";
 import * as commonjsModule from "@rollup/plugin-commonjs";
 import * as jsonModule from "@rollup/plugin-json";
 import * as replaceModule from "@rollup/plugin-replace";
-import { parseSpecifier } from "./resolve.ts";
+import { detectFormat, parseSpecifier } from "./resolve.ts";
 import { processTypeScript, isTypeScriptFile } from "./strip-types.ts";
 import type { RollupCommonJSOptions } from "@rollup/plugin-commonjs";
 import type { RollupJsonOptions } from "@rollup/plugin-json";
@@ -30,6 +31,15 @@ const commonjsInteropOptions = {
   esmExternals: true,
   requireReturnsDefault: "auto",
 } satisfies RollupCommonJSOptions;
+
+const PACKAGE_ENTRY_WRAPPER_PREFIX = "\0package-entry-wrapper:";
+const INVALID_FUNCTION_EXPORT_NAMES = new Set([
+  "arguments",
+  "caller",
+  "length",
+  "name",
+  "prototype",
+]);
 
 /**
  * Set of Node.js built-in module names (e.g. "fs", "path", "crypto").
@@ -84,6 +94,227 @@ function shimNodeBuiltinsPlugin(): Plugin {
         return getNodeBuiltinShimCode(id.slice(NODE_BUILTIN_SHIM_PREFIX.length));
       }
       return null;
+    },
+  };
+}
+
+function isValidEsmIdentifier(name: string): boolean {
+  return /^[$A-Z_a-z][$\w]*$/.test(name);
+}
+
+function resolvePackageImportPath(specifier: string, rootDir: string): string | null {
+  const resolver = createRequire(path.join(rootDir, "__isolate_module_loader__.js"));
+
+  let resolvedRequirePath: string;
+  try {
+    resolvedRequirePath = resolver.resolve(specifier);
+  } catch {
+    return null;
+  }
+
+  const { packageName, subpath } = parseSpecifier(specifier);
+  const packageJsonPath = findPackageJsonPath(resolvedRequirePath, packageName);
+  if (!packageJsonPath) {
+    return resolvedRequirePath;
+  }
+
+  let packageJson: Record<string, unknown>;
+  try {
+    packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return resolvedRequirePath;
+  }
+
+  const packageRoot = path.dirname(packageJsonPath);
+  const exportPath = resolveImportEntryFromPackageJson(packageJson, subpath);
+
+  if (exportPath) {
+    return path.resolve(packageRoot, exportPath);
+  }
+
+  if (!subpath) {
+    const moduleEntry = packageJson.module;
+    if (typeof moduleEntry === "string") {
+      return path.resolve(packageRoot, moduleEntry);
+    }
+
+    const browserEntry = packageJson.browser;
+    if (typeof browserEntry === "string") {
+      return path.resolve(packageRoot, browserEntry);
+    }
+  }
+
+  return resolvedRequirePath;
+}
+
+function findPackageJsonPath(resolvedPath: string, packageName: string): string | null {
+  let currentDir = path.dirname(resolvedPath);
+
+  while (true) {
+    const packageJsonPath = path.join(currentDir, "package.json");
+
+    if (fs.existsSync(packageJsonPath)) {
+      try {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as { name?: string };
+        if (packageJson.name === packageName) {
+          return packageJsonPath;
+        }
+      } catch {
+        // Keep walking upward if a parent package.json is malformed.
+      }
+    }
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      return null;
+    }
+    currentDir = parentDir;
+  }
+}
+
+function resolveImportEntryFromPackageJson(
+  packageJson: Record<string, unknown>,
+  subpath: string
+): string | null {
+  const exportsField = packageJson.exports;
+  if (exportsField === undefined) {
+    return null;
+  }
+
+  const exportKey = subpath ? `.${subpath}` : ".";
+
+  if (isConditionalExportsObject(exportsField)) {
+    if (exportKey !== ".") {
+      return null;
+    }
+    return pickImportTarget(exportsField);
+  }
+
+  if (typeof exportsField === "object" && exportsField !== null && !Array.isArray(exportsField)) {
+    const target = (exportsField as Record<string, unknown>)[exportKey];
+    return target === undefined ? null : pickImportTarget(target);
+  }
+
+  return exportKey === "." ? pickImportTarget(exportsField) : null;
+}
+
+function isConditionalExportsObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object"
+    && value !== null
+    && !Array.isArray(value)
+    && Object.keys(value).every((key) => !key.startsWith("."));
+}
+
+function pickImportTarget(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const target = pickImportTarget(item);
+      if (target) {
+        return target;
+      }
+    }
+    return null;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  for (const key of ["browser", "import", "module", "default"]) {
+    if (key in record) {
+      const target = pickImportTarget(record[key]);
+      if (target) {
+        return target;
+      }
+    }
+  }
+
+  for (const nestedValue of Object.values(record)) {
+    const target = pickImportTarget(nestedValue);
+    if (target) {
+      return target;
+    }
+  }
+
+  return null;
+}
+
+function getCommonJsNamedExports(specifier: string, rootDir: string): string[] {
+  const resolvedHostPath = resolvePackageImportPath(specifier, rootDir);
+  if (!resolvedHostPath) {
+    return [];
+  }
+
+  let code: string;
+  try {
+    code = fs.readFileSync(resolvedHostPath, "utf-8");
+  } catch {
+    return [];
+  }
+
+  if (detectFormat(resolvedHostPath, code) !== "cjs") {
+    return [];
+  }
+
+  let moduleExports: unknown;
+  try {
+    moduleExports = createRequire(resolvedHostPath)(resolvedHostPath);
+  } catch {
+    return [];
+  }
+
+  if (moduleExports == null || (typeof moduleExports !== "object" && typeof moduleExports !== "function")) {
+    return [];
+  }
+
+  const names = new Set([
+    ...Object.keys(moduleExports),
+    ...Object.getOwnPropertyNames(moduleExports),
+  ]);
+
+  names.delete("default");
+  names.delete("__esModule");
+
+  if (typeof moduleExports === "function") {
+    for (const name of INVALID_FUNCTION_EXPORT_NAMES) {
+      names.delete(name);
+    }
+  }
+
+  return [...names].filter(isValidEsmIdentifier).sort();
+}
+
+function packageEntryWrapperPlugin(specifier: string, namedExports: string[]): Plugin {
+  const wrapperId = `${PACKAGE_ENTRY_WRAPPER_PREFIX}${specifier}`;
+
+  return {
+    name: "package-entry-wrapper",
+    resolveId(source) {
+      if (source === wrapperId) {
+        return wrapperId;
+      }
+      return null;
+    },
+    load(id) {
+      if (id !== wrapperId) {
+        return null;
+      }
+
+      const namedExportLines = namedExports.map(
+        (name) => `export const ${name} = __packageDefault.${name};`
+      );
+
+      return [
+        `import __packageDefault from ${JSON.stringify(specifier)};`,
+        "export default __packageDefault;",
+        ...namedExportLines,
+      ].join("\n");
     },
   };
 }
@@ -172,15 +403,20 @@ async function doBundleSpecifier(
   rootDir: string
 ): Promise<{ code: string }> {
   const { packageName } = parseSpecifier(specifier);
+  const namedExports = getCommonJsNamedExports(specifier, rootDir);
+  const input = namedExports.length > 0
+    ? `${PACKAGE_ENTRY_WRAPPER_PREFIX}${specifier}`
+    : specifier;
 
   const bundle = await rollup({
-    input: specifier,
+    input,
     // Disable tree-shaking: we're creating a virtual module that must faithfully
     // expose all package exports. We can't predict which ones user code will import.
     // Without this, exports like AWS SDK's ConverseStreamOutput (a namespace with
     // a visit() helper that nothing inside the bundle references) get dropped.
     treeshake: false,
     plugins: [
+      packageEntryWrapperPlugin(specifier, namedExports),
       externalizeDepsPlugin(packageName),
       nodeResolve({ browser: true, rootDir }),
       shimNodeBuiltinsPlugin(),

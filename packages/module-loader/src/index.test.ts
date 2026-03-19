@@ -304,7 +304,10 @@ describe("bundleSpecifier", () => {
         path.join(outerDir, "index.js"),
         [
           'const inner = require("inner");',
-          'exports.result = `${inner.value}:${inner.extra}`;',
+          'Object.defineProperty(exports, "result", {',
+          "  enumerable: true,",
+          '  get() { return `${inner.value}:${inner.extra}`; },',
+          "});",
         ].join("\n"),
       );
 
@@ -331,6 +334,7 @@ describe("bundleSpecifier", () => {
 
       assert.match(result.code, /import \* as \w+ from ['"]inner['"]/);
       assert.doesNotMatch(result.code, /import \w+ from ['"]inner['"]/);
+      assert.match(result.code, /export (?:\{[^}]*\bresult\b[^}]*\}|const result =)/);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -705,7 +709,10 @@ describe("integration with createRuntime", () => {
         path.join(outerDir, "index.js"),
         [
           'const inner = require("inner");',
-          'exports.result = `${inner.value}:${inner.extra}`;',
+          'Object.defineProperty(exports, "result", {',
+          "  enumerable: true,",
+          '  get() { return `${inner.value}:${inner.extra}`; },',
+          "});",
         ].join("\n"),
       );
 
@@ -746,8 +753,8 @@ describe("integration with createRuntime", () => {
 
       await runtime.eval(
         `
-        import outer from "outer";
-        console.log(outer.result);
+        import { result } from "outer";
+        console.log(result);
         `,
         "/app/entry.ts",
       );
