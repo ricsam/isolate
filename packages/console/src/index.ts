@@ -362,6 +362,36 @@ export async function setupConsole(
           return 'Headers { ' + entries.join(', ') + ' }';
         }
 
+        // Handle URLSearchParams objects
+        if (typeof URLSearchParams !== 'undefined' && value instanceof URLSearchParams) {
+          const entries = [];
+          for (const [k, v] of value) {
+            entries.push(__formatForConsole(k, nextOptions) + ' => ' + __formatForConsole(v, nextOptions));
+          }
+          return entries.length === 0
+            ? 'URLSearchParams {}'
+            : 'URLSearchParams { ' + entries.join(', ') + ' }';
+        }
+
+        // Handle URL objects
+        if (typeof URL !== 'undefined' && value instanceof URL) {
+          const entries = [
+            'href: ' + __formatForConsole(value.href, nextOptions),
+            'origin: ' + __formatForConsole(value.origin, nextOptions),
+            'protocol: ' + __formatForConsole(value.protocol, nextOptions),
+            'username: ' + __formatForConsole(value.username, nextOptions),
+            'password: ' + __formatForConsole(value.password, nextOptions),
+            'host: ' + __formatForConsole(value.host, nextOptions),
+            'hostname: ' + __formatForConsole(value.hostname, nextOptions),
+            'port: ' + __formatForConsole(value.port, nextOptions),
+            'pathname: ' + __formatForConsole(value.pathname, nextOptions),
+            'search: ' + __formatForConsole(value.search, nextOptions),
+            'searchParams: ' + __formatForConsole(value.searchParams, nextOptions),
+            'hash: ' + __formatForConsole(value.hash, nextOptions),
+          ];
+          return 'URL { ' + entries.join(', ') + ' }';
+        }
+
         // Handle Date objects
         if (value instanceof Date) {
           return value.toISOString();

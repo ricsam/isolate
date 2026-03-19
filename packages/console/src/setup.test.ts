@@ -4,6 +4,40 @@ import ivm from "isolated-vm";
 import { setupConsole, type ConsoleEntry } from "./index.ts";
 import { simpleConsoleHandler } from "./utils.ts";
 
+function injectURLGlobals(context: ivm.Context): void {
+  context.evalSync(`
+    class URLSearchParams {
+      constructor(entries = []) {
+        this._entries = entries.map(([key, value]) => [String(key), String(value)]);
+      }
+
+      [Symbol.iterator]() {
+        return this._entries[Symbol.iterator]();
+      }
+    }
+
+    class URL {
+      constructor(href, init = {}) {
+        this.href = href;
+        this.origin = init.origin ?? "";
+        this.protocol = init.protocol ?? "";
+        this.username = init.username ?? "";
+        this.password = init.password ?? "";
+        this.host = init.host ?? "";
+        this.hostname = init.hostname ?? "";
+        this.port = init.port ?? "";
+        this.pathname = init.pathname ?? "";
+        this.search = init.search ?? "";
+        this.searchParams = init.searchParams ?? new URLSearchParams();
+        this.hash = init.hash ?? "";
+      }
+    }
+
+    globalThis.URLSearchParams = URLSearchParams;
+    globalThis.URL = URL;
+  `);
+}
+
 describe("@ricsam/isolate-console", () => {
   let isolate: ivm.Isolate;
   let context: ivm.Context;
@@ -357,6 +391,56 @@ describe("@ricsam/isolate-console", () => {
       assert.strictEqual(entries.length, 1);
       if (entries[0]!.type === "output") {
         assert.strictEqual(entries[0]!.stdout, "ArrayBuffer { byteLength: 16 }");
+      }
+    });
+
+    test("console.log with URL", async () => {
+      injectURLGlobals(context);
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`
+        console.log(
+          new URL("https://user:pass@example.com:8080/path?query=1#hash", {
+            origin: "https://example.com:8080",
+            protocol: "https:",
+            username: "user",
+            password: "pass",
+            host: "example.com:8080",
+            hostname: "example.com",
+            port: "8080",
+            pathname: "/path",
+            search: "?query=1",
+            searchParams: new URLSearchParams([["query", "1"]]),
+            hash: "#hash"
+          })
+        );
+      `);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(
+          entries[0]!.stdout,
+          "URL { href: 'https://user:pass@example.com:8080/path?query=1#hash', origin: 'https://example.com:8080', protocol: 'https:', username: 'user', password: 'pass', host: 'example.com:8080', hostname: 'example.com', port: '8080', pathname: '/path', search: '?query=1', searchParams: URLSearchParams { 'query' => '1' }, hash: '#hash' }"
+        );
+      }
+    });
+
+    test("console.log with URLSearchParams", async () => {
+      injectURLGlobals(context);
+      const entries: ConsoleEntry[] = [];
+      await setupConsole(context, {
+        onEntry: (entry) => entries.push(entry),
+      });
+      context.evalSync(`
+        console.log(new URLSearchParams([["a", "1"], ["b", "2"], ["a", "3"]]));
+      `);
+      assert.strictEqual(entries.length, 1);
+      if (entries[0]!.type === "output") {
+        assert.strictEqual(
+          entries[0]!.stdout,
+          "URLSearchParams { 'a' => '1', 'b' => '2', 'a' => '3' }"
+        );
       }
     });
   });

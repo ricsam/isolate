@@ -1,5 +1,11 @@
 # @ricsam/isolate-console
 
+## 0.1.21
+
+### Patch Changes
+
+- fix pkg resolution algo issue with invalid implementation
+
 ## 0.1.20
 
 ### Patch Changes

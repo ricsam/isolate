@@ -339,6 +339,69 @@ describe("bundleSpecifier", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  test("prefers the package root over nested dist package.json files", async () => {
+    clearBundleCache();
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "bundle-specifier-package-root-test-"),
+    );
+
+    try {
+      const nodeModulesDir = path.join(tmpDir, "node_modules");
+      const packageDir = path.join(nodeModulesDir, "dual-entry");
+
+      fs.mkdirSync(path.join(packageDir, "dist", "cjs"), { recursive: true });
+      fs.mkdirSync(path.join(packageDir, "dist", "mjs"), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(packageDir, "package.json"),
+        JSON.stringify({
+          name: "dual-entry",
+          version: "1.0.0",
+          main: "./dist/cjs/index.cjs",
+          module: "./dist/mjs/index.mjs",
+          exports: {
+            ".": {
+              require: "./dist/cjs/index.cjs",
+              import: "./dist/mjs/index.mjs",
+            },
+          },
+        }),
+      );
+
+      fs.writeFileSync(
+        path.join(packageDir, "dist", "cjs", "package.json"),
+        JSON.stringify({
+          name: "dual-entry",
+          version: "1.0.0",
+          type: "commonjs",
+        }),
+      );
+
+      fs.writeFileSync(
+        path.join(packageDir, "dist", "cjs", "index.cjs"),
+        [
+          'exports.source = "require-entry";',
+          "exports.value = 1;",
+        ].join("\n"),
+      );
+
+      fs.writeFileSync(
+        path.join(packageDir, "dist", "mjs", "index.mjs"),
+        [
+          'export const source = "import-entry";',
+          "export const value = 2;",
+        ].join("\n"),
+      );
+
+      const result = await bundleSpecifier("dual-entry", tmpDir);
+
+      assert.ok(result.code.includes("import-entry"));
+      assert.ok(!result.code.includes("require-entry"));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("builtin shims", () => {

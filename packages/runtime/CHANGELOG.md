@@ -1,5 +1,12 @@
 # @ricsam/isolate-runtime
 
+## 0.1.27
+
+### Patch Changes
+
+- Updated dependencies
+  - @ricsam/isolate-console@0.1.21
+
 ## 0.1.26
 
 ### Patch Changes

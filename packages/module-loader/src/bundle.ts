@@ -149,6 +149,7 @@ function resolvePackageImportPath(specifier: string, rootDir: string): string | 
 
 function findPackageJsonPath(resolvedPath: string, packageName: string): string | null {
   let currentDir = path.dirname(resolvedPath);
+  let matchedPackageJsonPath: string | null = null;
 
   while (true) {
     const packageJsonPath = path.join(currentDir, "package.json");
@@ -157,7 +158,10 @@ function findPackageJsonPath(resolvedPath: string, packageName: string): string 
       try {
         const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as { name?: string };
         if (packageJson.name === packageName) {
-          return packageJsonPath;
+          // Keep walking upward: published packages often include nested
+          // dist/cjs or dist/mjs package.json files with the same name, but the
+          // real package root higher up contains the export map we need.
+          matchedPackageJsonPath = packageJsonPath;
         }
       } catch {
         // Keep walking upward if a parent package.json is malformed.
@@ -166,7 +170,7 @@ function findPackageJsonPath(resolvedPath: string, packageName: string): string 
 
     const parentDir = path.dirname(currentDir);
     if (parentDir === currentDir) {
-      return null;
+      return matchedPackageJsonPath;
     }
     currentDir = parentDir;
   }

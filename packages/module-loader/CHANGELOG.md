@@ -1,5 +1,11 @@
 # @ricsam/isolate-module-loader
 
+## 0.1.13
+
+### Patch Changes
+
+- fix pkg resolution algo issue with invalid implementation
+
 ## 0.1.12
 
 ### Patch Changes
