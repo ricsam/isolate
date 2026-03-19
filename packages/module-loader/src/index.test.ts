@@ -17,6 +17,7 @@ import {
   isBareSpecifier,
   clearBundleCache,
   bundleHostFile,
+  bundleSpecifier,
 } from "./index.ts";
 import { getNodeBuiltinShimCode } from "./bundle.ts";
 
@@ -271,6 +272,67 @@ export const value = "pure-js-value";
       assert.ok(!result.code.includes('from "fs/promises"'), "fs/promises should be shimmed, not external");
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+});
+
+describe("bundleSpecifier", () => {
+  test("uses ESM-aware interop for external packages required from CommonJS", async () => {
+    clearBundleCache();
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "bundle-specifier-esm-interop-test-"),
+    );
+
+    try {
+      const nodeModulesDir = path.join(tmpDir, "node_modules");
+      const outerDir = path.join(nodeModulesDir, "outer");
+      const innerDir = path.join(nodeModulesDir, "inner");
+
+      fs.mkdirSync(outerDir, { recursive: true });
+      fs.mkdirSync(innerDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(outerDir, "package.json"),
+        JSON.stringify({
+          name: "outer",
+          version: "1.0.0",
+          type: "commonjs",
+          main: "./index.js",
+        }),
+      );
+      fs.writeFileSync(
+        path.join(outerDir, "index.js"),
+        [
+          'const inner = require("inner");',
+          'exports.result = `${inner.value}:${inner.extra}`;',
+        ].join("\n"),
+      );
+
+      fs.writeFileSync(
+        path.join(innerDir, "package.json"),
+        JSON.stringify({
+          name: "inner",
+          version: "1.0.0",
+          type: "module",
+          exports: {
+            ".": "./index.js",
+          },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(innerDir, "index.js"),
+        [
+          'export const value = "ok";',
+          'export const extra = "esm";',
+        ].join("\n"),
+      );
+
+      const result = await bundleSpecifier("outer", tmpDir);
+
+      assert.match(result.code, /import \* as \w+ from ['"]inner['"]/);
+      assert.doesNotMatch(result.code, /import \w+ from ['"]inner['"]/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });
@@ -612,6 +674,88 @@ describe("integration with createRuntime", () => {
       assert.strictEqual(logValue, "172800000");
     } finally {
       await runtime.dispose();
+    }
+  });
+
+  test("imports CommonJS packages that require named-only ESM externals", async () => {
+    clearBundleCache();
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "integration-cjs-esm-external-test-"),
+    );
+
+    let runtime: RuntimeHandle | undefined;
+    try {
+      const nodeModulesDir = path.join(tmpDir, "node_modules");
+      const outerDir = path.join(nodeModulesDir, "outer");
+      const innerDir = path.join(nodeModulesDir, "inner");
+
+      fs.mkdirSync(outerDir, { recursive: true });
+      fs.mkdirSync(innerDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(outerDir, "package.json"),
+        JSON.stringify({
+          name: "outer",
+          version: "1.0.0",
+          type: "commonjs",
+          main: "./index.js",
+        }),
+      );
+      fs.writeFileSync(
+        path.join(outerDir, "index.js"),
+        [
+          'const inner = require("inner");',
+          'exports.result = `${inner.value}:${inner.extra}`;',
+        ].join("\n"),
+      );
+
+      fs.writeFileSync(
+        path.join(innerDir, "package.json"),
+        JSON.stringify({
+          name: "inner",
+          version: "1.0.0",
+          type: "module",
+          exports: {
+            ".": "./index.js",
+          },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(innerDir, "index.js"),
+        [
+          'export const value = "ok";',
+          'export const extra = "esm";',
+        ].join("\n"),
+      );
+
+      const loader = defaultModuleLoader(
+        { from: nodeModulesDir, to: "/node_modules" },
+      );
+
+      let logValue: string | null = null;
+      runtime = await createRuntime({
+        moduleLoader: loader,
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.stdout;
+            }
+          },
+        },
+      });
+
+      await runtime.eval(
+        `
+        import outer from "outer";
+        console.log(outer.result);
+        `,
+        "/app/entry.ts",
+      );
+
+      assert.strictEqual(logValue, "ok:esm");
+    } finally {
+      await runtime?.dispose();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 

@@ -24,6 +24,13 @@ const replace = ((replaceModule as any).default || replaceModule) as (
   options?: RollupReplaceOptions
 ) => Plugin;
 
+const commonjsInteropOptions = {
+  // External package imports are resolved by later loader calls as ESM bundles,
+  // so CommonJS requires need ESM-aware interop instead of default-import assumptions.
+  esmExternals: true,
+  requireReturnsDefault: "auto",
+} satisfies RollupCommonJSOptions;
+
 /**
  * Set of Node.js built-in module names (e.g. "fs", "path", "crypto").
  */
@@ -177,7 +184,7 @@ async function doBundleSpecifier(
       externalizeDepsPlugin(packageName),
       nodeResolve({ browser: true, rootDir }),
       shimNodeBuiltinsPlugin(),
-      commonjs(),
+      commonjs(commonjsInteropOptions),
       json(),
       replace({
         preventAssignment: true,
@@ -289,7 +296,7 @@ async function doBundleHostFile(
         extensions: [".mjs", ".js", ".json", ".node", ...TS_EXTENSIONS],
       }),
       shimNodeBuiltinsPlugin(),
-      commonjs(),
+      commonjs(commonjsInteropOptions),
       json(),
       replace({
         preventAssignment: true,

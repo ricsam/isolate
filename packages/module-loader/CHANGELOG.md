@@ -1,5 +1,11 @@
 # @ricsam/isolate-module-loader
 
+## 0.1.11
+
+### Patch Changes
+
+- add commonjsInteropOptions
+
 ## 0.1.10
 
 ### Patch Changes
