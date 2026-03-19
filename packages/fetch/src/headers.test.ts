@@ -69,16 +69,37 @@ describe("Headers", () => {
       const headers = new Headers();
       headers.append("Set-Cookie", "a=1");
       headers.append("Set-Cookie", "b=2");
+      const forEachValues = [];
+      headers.forEach((value, key) => {
+        if (key === "set-cookie") {
+          forEachValues.push(value);
+        }
+      });
       JSON.stringify({
         cookies: headers.getSetCookie(),
         regular: headers.get("Set-Cookie"),
+        entries: Array.from(headers.entries()),
+        values: Array.from(headers.values()),
+        forEachValues,
       })
     `
     );
-    const result = JSON.parse(data) as { cookies: string[]; regular: string };
+    const result = JSON.parse(data) as {
+      cookies: string[];
+      regular: string;
+      entries: Array<[string, string]>;
+      values: string[];
+      forEachValues: string[];
+    };
 
     assert.deepStrictEqual(result.cookies, ["a=1", "b=2"]);
     assert.strictEqual(result.regular, "a=1, b=2");
+    assert.deepStrictEqual(result.entries, [
+      ["set-cookie", "a=1"],
+      ["set-cookie", "b=2"],
+    ]);
+    assert.deepStrictEqual(result.values, ["a=1", "b=2"]);
+    assert.deepStrictEqual(result.forEachValues, ["a=1", "b=2"]);
   });
 
   test("constructor with array of pairs", () => {
@@ -437,8 +458,17 @@ describe("Native Headers -> Isolate", () => {
       ctx.context,
       `
       const headers = testingInput.headers;
+      const forEachValues = [];
+      headers.forEach((value, key) => {
+        if (key === "set-cookie") {
+          forEachValues.push(value);
+        }
+      });
       log("cookies", headers.getSetCookie());
       log("regular", headers.get("Set-Cookie"));
+      log("entries", Array.from(headers.entries()));
+      log("values", Array.from(headers.values()));
+      log("forEachValues", forEachValues);
     `
     ).input({
       headers: nativeHeaders,
@@ -446,6 +476,12 @@ describe("Native Headers -> Isolate", () => {
 
     assert.deepStrictEqual(runtime.logs.cookies, ["a=1", "b=2"]);
     assert.strictEqual(runtime.logs.regular, "a=1, b=2");
+    assert.deepStrictEqual(runtime.logs.entries, [
+      ["set-cookie", "a=1"],
+      ["set-cookie", "b=2"],
+    ]);
+    assert.deepStrictEqual(runtime.logs.values, ["a=1", "b=2"]);
+    assert.deepStrictEqual(runtime.logs.forEachValues, ["a=1", "b=2"]);
   });
 
   test("for...of iteration on Headers", () => {

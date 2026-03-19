@@ -275,6 +275,12 @@ const headersCode = `
       const sortedKeys = [...this.#headers.keys()].sort();
       for (const key of sortedKeys) {
         const [, values] = this.#headers.get(key);
+        if (key === 'set-cookie') {
+          for (const value of values) {
+            callback.call(thisArg, value, key, this);
+          }
+          continue;
+        }
         callback.call(thisArg, values.join(', '), key, this);
       }
     }
@@ -283,6 +289,12 @@ const headersCode = `
       const sortedKeys = [...this.#headers.keys()].sort();
       for (const key of sortedKeys) {
         const [, values] = this.#headers.get(key);
+        if (key === 'set-cookie') {
+          for (const value of values) {
+            yield [key, value];
+          }
+          continue;
+        }
         yield [key, values.join(', ')];
       }
     }
@@ -298,6 +310,12 @@ const headersCode = `
       const sortedKeys = [...this.#headers.keys()].sort();
       for (const key of sortedKeys) {
         const [, values] = this.#headers.get(key);
+        if (key === 'set-cookie') {
+          for (const value of values) {
+            yield value;
+          }
+          continue;
+        }
         yield values.join(', ');
       }
     }

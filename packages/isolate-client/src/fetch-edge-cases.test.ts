@@ -498,6 +498,37 @@ describe("Fetch edge cases (daemon/client)", () => {
     }
   });
 
+  it("Multiple Set-Cookie - from isolate response", { timeout: 5000 }, async () => {
+    const runtime = await connection.createRuntime({
+      fetch: async (url, init) => fetch(url, init),
+    });
+    try {
+      await runtime.eval(`
+        serve({
+          async fetch() {
+            const headers = new Headers();
+            headers.append("Set-Cookie", "a=1; Path=/");
+            headers.append("Set-Cookie", "b=2; Path=/");
+            headers.append("Set-Cookie", "c=3; Path=/");
+            return new Response("ok", { headers });
+          }
+        });
+      `);
+
+      const response = await runtime.fetch.dispatchRequest(new Request("http://test/"));
+      const cookies = response.headers.getSetCookie();
+      assert.ok(Array.isArray(cookies), "cookies should be an array");
+      assert.strictEqual(cookies.length, 3);
+      assert.deepStrictEqual(cookies, [
+        "a=1; Path=/",
+        "b=2; Path=/",
+        "c=3; Path=/",
+      ]);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it("Large header - passthrough", { timeout: 5000 }, async () => {
     const runtime = await connection.createRuntime({
       fetch: async (url, init) => fetch(url, init),

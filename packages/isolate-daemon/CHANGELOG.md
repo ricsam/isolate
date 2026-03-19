@@ -1,5 +1,11 @@
 # @ricsam/isolate-daemon
 
+## 0.1.28
+
+### Patch Changes
+
+- @ricsam/isolate-runtime@0.1.28
+
 ## 0.1.27
 
 ### Patch Changes

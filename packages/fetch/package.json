@@ -1,6 +1,6 @@
 {
   "name": "@ricsam/isolate-fetch",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -19,7 +19,7 @@
     "@ricsam/isolate-core": "0.1.19"
   },
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "0.1.25",
+    "@ricsam/isolate-test-utils": "0.1.26",
     "@ricsam/isolate-timers": "0.1.19",
     "@ricsam/isolate-console": "0.1.21",
     "@types/node": "^24",

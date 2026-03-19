@@ -1,5 +1,11 @@
 # @ricsam/isolate-fetch
 
+## 0.1.24
+
+### Patch Changes
+
+- set-cookie is a special header, so it needs special handling
+
 ## 0.1.23
 
 ### Patch Changes
