@@ -274,6 +274,51 @@ describe("@ricsam/isolate-runtime", () => {
       }
     });
 
+    test("named imports of exported $ symbols work across modules", async () => {
+      let logValue: string | null = null;
+      const runtime = await createRuntime({
+        console: {
+          onEntry: (entry) => {
+            if (entry.type === "output" && entry.level === "log") {
+              logValue = entry.stdout;
+            }
+          },
+        },
+        moduleLoader: async (moduleName, importer) => {
+          if (moduleName === "@/tools") {
+            return {
+              code: `
+              import { $ as shell } from "@/source";
+              export function direct() {
+                return shell;
+              }
+            `,
+              filename: "tools.js",
+              resolveDir: importer.resolveDir,
+            };
+          }
+          if (moduleName === "@/source") {
+            return {
+              code: `export const $ = "ok-from-dollar-export";`,
+              filename: "source.js",
+              resolveDir: importer.resolveDir,
+            };
+          }
+          throw new Error(`Unknown module: ${moduleName}`);
+        },
+      });
+
+      try {
+        await runtime.eval(`
+          import { direct } from "@/tools";
+          console.log(direct());
+        `);
+        assert.strictEqual(logValue, "ok-from-dollar-export");
+      } finally {
+        await runtime.dispose();
+      }
+    });
+
     test("module cache prevents duplicate loads", async () => {
       let loadCount = 0;
       const runtime = await createRuntime({

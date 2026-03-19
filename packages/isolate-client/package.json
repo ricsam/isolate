@@ -20,7 +20,7 @@
     "@ricsam/isolate-protocol": "0.1.21"
   },
   "devDependencies": {
-    "@ricsam/isolate-daemon": "0.1.25",
+    "@ricsam/isolate-daemon": "0.1.26",
     "@types/node": "^24",
     "@types/ws": "^8",
     "playwright": "^1",

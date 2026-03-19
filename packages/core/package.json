@@ -19,7 +19,7 @@
     "linkedom": "^0.18.12"
   },
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "0.1.23",
+    "@ricsam/isolate-test-utils": "0.1.24",
     "@ricsam/isolate-timers": "0.1.19",
     "@types/node": "^24",
     "isolated-vm": "^6",

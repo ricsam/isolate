@@ -1,5 +1,11 @@
 # @ricsam/isolate-module-loader
 
+## 0.1.10
+
+### Patch Changes
+
+- fix module loader issue with importing e.g. `import { $ } from ...`
+
 ## 0.1.9
 
 ### Patch Changes

@@ -131,6 +131,17 @@ export function processTypeScript(code: string, filename: string): string {
 const NAMED_IMPORT_RE =
   /import\s+([\w$]+\s*,\s*)?\{([\s\S]*?)\}\s*from\s*['"]([^'"]+)['"];?/g;
 
+function getImportedLocalName(specifier: string): string {
+  const trimmed = specifier.trim();
+  const asMatch = trimmed.match(/^(.+?)\s+as\s+([A-Za-z_$][\w$]*)$/);
+  return asMatch ? asMatch[2]! : trimmed;
+}
+
+function createImportedNameReferenceRegex(localName: string): RegExp {
+  const escaped = escapeRegExp(localName);
+  return new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`);
+}
+
 /**
  * After type stripping, imported names that were only used in type positions
  * are unreferenced in the code body. Remove them from import statements
@@ -180,11 +191,10 @@ function elideUnusedImports(code: string): string {
 
     for (const spec of entry.specifiers) {
       // "A as B" → local name is B; "A" → local name is A
-      const asMatch = spec.match(/(\w+)\s+as\s+(\w+)/);
-      const localName = asMatch ? asMatch[2]! : spec;
+      const localName = getImportedLocalName(spec);
 
       // Keep if referenced anywhere in the body as a whole word
-      if (new RegExp("\\b" + escapeRegExp(localName) + "\\b").test(body)) {
+      if (createImportedNameReferenceRegex(localName).test(body)) {
         kept.push(spec);
       }
     }

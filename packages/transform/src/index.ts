@@ -22,6 +22,17 @@ export interface TransformResult {
 const NAMED_IMPORT_RE =
   /import\s+([\w$]+\s*,\s*)?\{([\s\S]*?)\}\s*from\s*['"]([^'"]+)['"];?/g;
 
+function getImportedLocalName(specifier: string): string {
+  const trimmed = specifier.trim();
+  const asMatch = trimmed.match(/^(.+?)\s+as\s+([A-Za-z_$][\w$]*)$/);
+  return asMatch ? asMatch[2]! : trimmed;
+}
+
+function createImportedNameReferenceRegex(localName: string): RegExp {
+  const escaped = localName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`);
+}
+
 /**
  * Find the 0-based line index of the last import declaration's closing line.
  * Returns -1 if no imports found.
@@ -123,10 +134,8 @@ function elideUnusedImports(code: string): string {
     const kept: string[] = [];
 
     for (const spec of entry.specifiers) {
-      const asMatch = spec.match(/(\w+)\s+as\s+(\w+)/);
-      const localName = asMatch ? asMatch[2]! : spec;
-      const escaped = localName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const nameRe = new RegExp("\\b" + escaped + "\\b");
+      const localName = getImportedLocalName(spec);
+      const nameRe = createImportedNameReferenceRegex(localName);
 
       if (nameRe.test(body)) {
         kept.push(spec);

@@ -488,6 +488,41 @@ export const value = waiter;
       fs.rmSync(tmpDir, { recursive: true });
     }
   });
+
+  test("preserves named imports of exported $ symbols in TypeScript files", async () => {
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "module-loader-dollar-import-test-"),
+    );
+
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "source.ts"),
+        'export const $: string = "ok-from-dollar-export";',
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "tools.ts"),
+        [
+          'import { $ as shell } from "./source";',
+          "export const value: string = shell;",
+        ].join("\n"),
+      );
+
+      const loader = defaultModuleLoader(
+        { from: tmpDir + "/**/*", to: "/app" },
+      );
+
+      const result = await loader("./tools", {
+        path: "/app/entry.ts",
+        resolveDir: "/app",
+      });
+
+      assert.ok(result.code.includes('import { $ as shell } from "./source";'));
+      assert.ok(result.code.includes("export const value = shell;"));
+      assert.strictEqual(result.filename, "tools.js");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("integration with createRuntime", () => {

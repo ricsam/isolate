@@ -1,5 +1,13 @@
 # @ricsam/isolate-runtime
 
+## 0.1.26
+
+### Patch Changes
+
+- fix module loader issue with importing e.g. `import { $ } from ...`
+- Updated dependencies
+  - @ricsam/isolate-transform@0.1.6
+
 ## 0.1.25
 
 ### Patch Changes

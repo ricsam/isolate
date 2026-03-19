@@ -1,5 +1,13 @@
 # @ricsam/isolate-daemon
 
+## 0.1.26
+
+### Patch Changes
+
+- Updated dependencies
+  - @ricsam/isolate-transform@0.1.6
+  - @ricsam/isolate-runtime@0.1.26
+
 ## 0.1.25
 
 ### Patch Changes
