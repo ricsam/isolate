@@ -8,7 +8,7 @@
     "build": "echo 'No build'"
   },
   "dependencies": {
-    "@ricsam/isolate-client": "0.1.25",
+    "@ricsam/isolate-client": "0.1.26",
     "playwright": "^1"
   },
   "devDependencies": {

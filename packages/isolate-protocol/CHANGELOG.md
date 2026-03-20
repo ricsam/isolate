@@ -1,5 +1,11 @@
 # @ricsam/isolate-protocol
 
+## 0.1.22
+
+### Patch Changes
+
+- add more logging when an isolate becomes disposed, and make reload hard reload the isolate instance
+
 ## 0.1.21
 
 ### Patch Changes

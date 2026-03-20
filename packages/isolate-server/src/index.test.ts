@@ -152,6 +152,7 @@ describe("isolate-server", () => {
         entry: "server.js",
         runtimeOptions: createRuntimeOptions(modules),
       });
+      const beforeRuntimeId = server.getRuntime()?.id;
 
       const before = await server.fetch.dispatchRequest(new Request("http://localhost/version"));
       assert.strictEqual(await before.text(), "v1");
@@ -159,9 +160,13 @@ describe("isolate-server", () => {
       modules.set("/version.js", `export function getVersion() { return "v2"; }`);
 
       await server.reload();
+      const afterRuntimeId = server.getRuntime()?.id;
 
       const after = await server.fetch.dispatchRequest(new Request("http://localhost/version"));
       assert.strictEqual(await after.text(), "v2");
+      assert.ok(beforeRuntimeId, "Expected runtime before reload");
+      assert.ok(afterRuntimeId, "Expected runtime after reload");
+      assert.notStrictEqual(afterRuntimeId, beforeRuntimeId);
     } finally {
       await server.close();
     }
@@ -182,11 +187,14 @@ describe("isolate-server", () => {
         entry: "server.js",
         runtimeOptions: createRuntimeOptions(modules),
       });
+      const originalRuntimeId = server.getRuntime()?.id;
       await server.close();
 
       const response = await server.fetch.dispatchRequest(new Request("http://localhost/restart"));
       assert.strictEqual(await response.text(), "auto-restarted");
       assert.ok(server.getRuntime(), "Runtime should be recreated on dispatch");
+      assert.ok(originalRuntimeId, "Expected initial runtime id");
+      assert.strictEqual(server.getRuntime()?.id, originalRuntimeId);
     } finally {
       await server.close();
     }

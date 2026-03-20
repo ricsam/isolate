@@ -308,6 +308,10 @@ export interface CreateRuntimeRequest extends BaseMessage {
 export interface DisposeRuntimeRequest extends BaseMessage {
   type: typeof MessageType.DISPOSE_RUNTIME;
   isolateId: string;
+  /** When true, permanently delete the runtime instead of soft-deleting namespaced runtimes. */
+  hard?: boolean;
+  /** Optional caller-supplied reason for disposal, used for diagnostics/logging. */
+  reason?: string;
 }
 
 export interface EvalRequest extends BaseMessage {

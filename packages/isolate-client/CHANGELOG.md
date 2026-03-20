@@ -1,5 +1,14 @@
 # @ricsam/isolate-client
 
+## 0.1.26
+
+### Patch Changes
+
+- add more logging when an isolate becomes disposed, and make reload hard reload the isolate instance
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.22
+  - @ricsam/isolate-playwright@0.1.22
+
 ## 0.1.25
 
 ### Patch Changes

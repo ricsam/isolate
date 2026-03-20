@@ -145,6 +145,47 @@ describe("@ricsam/isolate-runtime", () => {
       }
     });
 
+    test("logs the reason when a runtime disposes itself after timing out", async () => {
+      const timeoutMs = 50;
+      const originalConsoleError = console.error;
+      const errorLogs: unknown[][] = [];
+      console.error = (...args: unknown[]) => {
+        errorLogs.push(args);
+      };
+
+      const runtime = await createRuntime({
+        executionTimeout: timeoutMs,
+        customFunctions: {
+          never: {
+            fn: async () => await new Promise<never>(() => {}),
+            type: "async",
+          },
+        },
+      });
+
+      try {
+        await assert.rejects(
+          async () => {
+            await runtime.eval(`await never();`);
+          },
+          new RegExp(`Execution timed out after ${timeoutMs}ms`, "i"),
+        );
+
+        assert.ok(
+          errorLogs.some(([message, error]) =>
+            typeof message === "string" &&
+            message.includes("[isolate-runtime] Disposing runtime") &&
+            message.includes(`timed out after ${timeoutMs}ms`) &&
+            error instanceof Error
+          ),
+          "Expected a disposal log with the timeout reason",
+        );
+      } finally {
+        console.error = originalConsoleError;
+        await runtime.dispose();
+      }
+    });
+
     test("runTests() uses the runtime execution timeout when no explicit timeout is passed", async () => {
       const timeoutMs = 100;
       const runtime = await createRuntime({

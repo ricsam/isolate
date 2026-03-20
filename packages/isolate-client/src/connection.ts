@@ -101,6 +101,7 @@ import type {
   WebSocketCommand,
   TestEnvironmentOptions,
   Namespace,
+  DisposeRuntimeOptions,
 } from "./types.ts";
 
 // Track WebSocket command callbacks per isolate for handling WS_COMMAND messages
@@ -1504,7 +1505,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       } as ClientEventMessage);
     },
 
-    dispose: async () => {
+    dispose: async (options?: DisposeRuntimeOptions) => {
       // Clean up page listeners
       for (const cleanup of pageListenerCleanups) {
         cleanup();
@@ -1535,6 +1536,8 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         type: MessageType.DISPOSE_RUNTIME,
         requestId: reqId,
         isolateId,
+        hard: options?.hard === true ? true : undefined,
+        reason: typeof options?.reason === "string" && options.reason.length > 0 ? options.reason : undefined,
       };
       try {
         await sendRequest(state, req);

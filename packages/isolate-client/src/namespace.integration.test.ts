@@ -71,6 +71,22 @@ describe("Namespace Runtime Caching Integration Tests", () => {
       assert.strictEqual(id1, id2);
     });
 
+    it("should hard delete namespaced runtime when requested", async () => {
+      const namespace = client.createNamespace("basic-test-4");
+
+      const runtime1 = await namespace.createRuntime();
+      const id1 = runtime1.id;
+      await runtime1.dispose({ hard: true });
+
+      const runtime2 = await namespace.createRuntime();
+      try {
+        assert.strictEqual(runtime2.reused, false);
+        assert.notStrictEqual(runtime2.id, id1);
+      } finally {
+        await runtime2.dispose();
+      }
+    });
+
     it("should hard delete non-namespaced runtime", async () => {
       // Create non-namespaced runtime
       const runtime1 = await client.createRuntime();

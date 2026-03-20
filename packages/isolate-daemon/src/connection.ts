@@ -217,16 +217,16 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
         if (instance.namespaceId != null && !instance.isDisposed) {
           if (instance.isPoisoned) {
             // Poisoned namespaced runtime: hard delete and remove from namespace index
-            hardDeleteRuntime(instance, state).catch(() => {
+            hardDeleteRuntime(instance, state, "owner connection closed after runtime was poisoned").catch(() => {
               // Ignore disposal errors on socket close cleanup
             });
           } else {
             // Namespaced runtime: soft-delete (keep cached for reuse)
-            softDeleteRuntime(instance, state);
+            softDeleteRuntime(instance, state, "owner connection closed; preserving namespaced runtime for reuse");
           }
         } else if (!instance.isDisposed) {
           // Non-namespaced runtime: hard delete
-          hardDeleteRuntime(instance, state).catch(() => {
+          hardDeleteRuntime(instance, state, "owner connection closed for non-namespaced runtime").catch(() => {
             // Ignore disposal errors
           });
         }
@@ -537,7 +537,32 @@ async function handleMessage(
 /**
  * Hard-delete a runtime and remove it from daemon indexes.
  */
-async function hardDeleteRuntime(instance: IsolateInstance, state: DaemonState): Promise<void> {
+function formatRuntimeLogLabel(instance: IsolateInstance): string {
+  return instance.namespaceId != null
+    ? `${instance.isolateId} (namespace=${JSON.stringify(instance.namespaceId)})`
+    : instance.isolateId;
+}
+
+function logRuntimeDisposition(
+  instance: IsolateInstance,
+  mode: "soft-disposing" | "hard-disposing",
+  reason: string,
+): void {
+  const poisonedSuffix = instance.isPoisoned ? " poisoned=true" : "";
+  console.warn(
+    `[isolate-daemon] ${mode} runtime ${formatRuntimeLogLabel(instance)}${poisonedSuffix}: ${reason}`
+  );
+}
+
+async function hardDeleteRuntime(
+  instance: IsolateInstance,
+  state: DaemonState,
+  reason?: string,
+): Promise<void> {
+  if (!instance.isDisposed && reason) {
+    logRuntimeDisposition(instance, "hard-disposing", reason);
+  }
+
   try {
     await instance.runtime.dispose();
   } finally {
@@ -576,7 +601,15 @@ const RECONNECTION_TIMEOUT_MS = 30_000;
  * Clears owner connection and callbacks but preserves isolate/context.
  * Creates a reconnection promise so in-flight callbacks can wait for a new connection.
  */
-function softDeleteRuntime(instance: IsolateInstance, state: DaemonState): void {
+function softDeleteRuntime(
+  instance: IsolateInstance,
+  state: DaemonState,
+  reason?: string,
+): void {
+  if (!instance.isDisposed && reason) {
+    logRuntimeDisposition(instance, "soft-disposing", reason);
+  }
+
   instance.isDisposed = true;
   instance.disposedAt = Date.now();
   instance.ownerConnection = null;
@@ -1600,18 +1633,24 @@ async function handleDisposeRuntime(
   try {
     // Remove from connection's tracking
     connection.isolates.delete(message.isolateId);
+    const requestReason =
+      typeof message.reason === "string" && message.reason.length > 0
+        ? message.reason
+        : message.hard
+          ? "client requested hard dispose"
+          : undefined;
 
     if (instance.namespaceId != null) {
-      if (instance.isPoisoned) {
+      if (message.hard || instance.isPoisoned) {
         // Poisoned namespaced runtime: hard delete and remove from namespace index
-        await hardDeleteRuntime(instance, state);
+        await hardDeleteRuntime(instance, state, requestReason);
       } else {
         // Namespaced runtime: soft-delete (keep cached for reuse)
-        softDeleteRuntime(instance, state);
+        softDeleteRuntime(instance, state, requestReason);
       }
     } else {
       // Non-namespaced runtime: hard delete
-      await hardDeleteRuntime(instance, state);
+      await hardDeleteRuntime(instance, state, requestReason);
     }
 
     sendOk(connection.socket, message.requestId);

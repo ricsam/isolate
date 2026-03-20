@@ -107,7 +107,10 @@ export class IsolateServer {
       if (this.runtime) {
         const runtime = this.runtime;
         this.runtime = null;
-        await this.disposeRuntime(runtime);
+        await this.disposeRuntime(runtime, {
+          hard: true,
+          reason: "IsolateServer.reload()",
+        });
       }
 
       this.runtime = await this.createAndInitializeRuntime(startOptions);
@@ -191,9 +194,12 @@ export class IsolateServer {
     }
   }
 
-  private async disposeRuntime(runtime: RemoteRuntime): Promise<void> {
+  private async disposeRuntime(
+    runtime: RemoteRuntime,
+    options?: { hard?: boolean; reason?: string }
+  ): Promise<void> {
     try {
-      await runtime.dispose();
+      await runtime.dispose(options);
     } catch (error) {
       if (!isBenignDisposeError(error)) {
         throw error;

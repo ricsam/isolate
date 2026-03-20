@@ -19,7 +19,7 @@
     "@ricsam/isolate-core": "0.1.19"
   },
   "devDependencies": {
-    "@ricsam/isolate-test-utils": "0.1.26",
+    "@ricsam/isolate-test-utils": "0.1.27",
     "@ricsam/isolate-timers": "0.1.19",
     "@ricsam/isolate-console": "0.1.21",
     "@types/node": "^24",

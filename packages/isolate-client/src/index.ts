@@ -17,6 +17,7 @@ export type {
   RemoteConsoleHandle,
   RemoteTestEnvironmentHandle,
   RemotePlaywrightHandle,
+  DisposeRuntimeOptions,
   DispatchOptions,
   ConsoleCallbacks,
   FetchCallback,

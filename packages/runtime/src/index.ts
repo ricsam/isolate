@@ -274,6 +274,7 @@ export interface RuntimeHandle {
 
 // Internal state for runtime
 interface RuntimeState {
+  id: string;
   isolate: ivm.Isolate;
   context: ivm.Context;
   handles: {
@@ -313,6 +314,8 @@ interface RuntimeState {
   isDisposed: boolean;
   /** Cached dispose promise to make disposal idempotent */
   disposePromise?: Promise<void>;
+  /** Human-readable reason recorded when disposal first started */
+  disposeReason?: string;
   /** Timeout budget that permanently poisoned this runtime */
   timedOutExecutionMs?: number;
 }
@@ -351,12 +354,34 @@ function assertRuntimeUsable(state: RuntimeState): void {
   }
 }
 
-async function disposeRuntimeState(state: RuntimeState): Promise<void> {
+interface DisposeRuntimeStateOptions {
+  reason: string;
+  log?: boolean;
+  error?: unknown;
+}
+
+function logRuntimeDisposal(state: RuntimeState, options: DisposeRuntimeStateOptions): void {
+  const message = `[isolate-runtime] Disposing runtime ${state.id}: ${options.reason}`;
+  if (options.error) {
+    console.error(message, options.error);
+    return;
+  }
+  console.warn(message);
+}
+
+async function disposeRuntimeState(
+  state: RuntimeState,
+  options: DisposeRuntimeStateOptions = { reason: "RuntimeHandle.dispose() called", log: false },
+): Promise<void> {
   if (state.disposePromise) {
     return state.disposePromise;
   }
 
+  state.disposeReason = options.reason;
   state.isDisposed = true;
+  if (options.log !== false) {
+    logRuntimeDisposal(state, options);
+  }
   state.disposePromise = (async () => {
     if (state.customFnInvokeRef) {
       try {
@@ -426,9 +451,13 @@ async function runWithExecutionTimeout<T>(
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
+      const timeoutError = createTimeoutError(label, effectiveTimeoutMs);
       state.timedOutExecutionMs ??= effectiveTimeoutMs;
-      void disposeRuntimeState(state);
-      reject(createTimeoutError(label, effectiveTimeoutMs));
+      void disposeRuntimeState(state, {
+        reason: timeoutError.message,
+        error: timeoutError,
+      });
+      reject(timeoutError);
     }, effectiveTimeoutMs);
   });
 
@@ -1322,6 +1351,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
 
   // Initialize state
   const state: RuntimeState = {
+    id,
     isolate,
     context,
     handles: {},

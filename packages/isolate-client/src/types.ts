@@ -182,6 +182,13 @@ export interface RemoteConsoleHandle {
   getGroupDepth(): Promise<number>;
 }
 
+export interface DisposeRuntimeOptions {
+  /** Permanently delete the runtime instead of allowing namespaced reuse. */
+  hard?: boolean;
+  /** Optional caller-supplied reason for disposal, used for diagnostics/logging. */
+  reason?: string;
+}
+
 /**
  * Remote runtime handle.
  */
@@ -227,7 +234,7 @@ export interface RemoteRuntime {
   emit(event: string, payload: unknown): void;
 
   /** Dispose the runtime */
-  dispose(): Promise<void>;
+  dispose(options?: DisposeRuntimeOptions): Promise<void>;
 }
 
 /**

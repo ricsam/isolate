@@ -49,7 +49,7 @@ await server.close();
 ## API
 
 - `start(options)` configures and starts the runtime (idempotent when already running).
-- `reload()` disposes current runtime and starts again with the last start options.
+- `reload()` hard-disposes the current runtime and starts a fresh runtime with the last start options.
 - `close()` disposes current runtime (idempotent).
 - `getRuntime()` returns the active runtime or `null`.
 - `fetch.*` proxies to runtime fetch methods and auto-starts after an initial `start()`.
