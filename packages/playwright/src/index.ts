@@ -22,6 +22,8 @@ export type {
   NetworkRequestInfo,
   NetworkResponseInfo,
   BrowserConsoleLogEntry,
+  PageErrorInfo,
+  RequestFailureInfo,
   PlaywrightCallback,
   PlaywrightSetupOptions,
   PlaywrightHandle,
@@ -39,6 +41,8 @@ import type {
   NetworkRequestInfo,
   NetworkResponseInfo,
   BrowserConsoleLogEntry,
+  PageErrorInfo,
+  RequestFailureInfo,
 } from "./types.ts";
 
 // ============================================================================
@@ -226,8 +230,10 @@ export async function setupPlaywright(
 
   // State for collected data (only used when page is provided directly)
   const browserConsoleLogs: BrowserConsoleLogEntry[] = [];
+  const pageErrors: PageErrorInfo[] = [];
   const networkRequests: NetworkRequestInfo[] = [];
   const networkResponses: NetworkResponseInfo[] = [];
+  const requestFailures: RequestFailureInfo[] = [];
 
   const global = context.global;
 
@@ -237,14 +243,40 @@ export async function setupPlaywright(
 
   let requestHandler: ((request: import("playwright").Request) => void) | undefined;
   let responseHandler: ((response: import("playwright").Response) => void) | undefined;
+  let requestFailedHandler: ((request: import("playwright").Request) => void) | undefined;
   let consoleHandler: ((msg: import("playwright").ConsoleMessage) => void) | undefined;
+  let pageErrorHandler: ((error: Error) => void) | undefined;
 
   if (page) {
     // Get onEvent callback if provided
     const onEvent = "onEvent" in options ? options.onEvent : undefined;
+    const requestIds = new WeakMap<import("playwright").Request, string>();
+    let nextRequestId = 1;
+    const getRequestId = (request: import("playwright").Request): string => {
+      let requestId = requestIds.get(request);
+      if (!requestId) {
+        requestId = `req_${nextRequestId++}`;
+        requestIds.set(request, requestId);
+      }
+      return requestId;
+    };
+    const toLocation = (
+      location: { url?: string; lineNumber?: number; columnNumber?: number } | undefined,
+    ): BrowserConsoleLogEntry["location"] => {
+      if (!location || (!location.url && location.lineNumber == null && location.columnNumber == null)) {
+        return undefined;
+      }
+
+      return {
+        url: location.url || undefined,
+        lineNumber: location.lineNumber != null ? location.lineNumber + 1 : undefined,
+        columnNumber: location.columnNumber != null ? location.columnNumber + 1 : undefined,
+      };
+    };
 
     requestHandler = (request: import("playwright").Request) => {
       const info: NetworkRequestInfo = {
+        requestId: getRequestId(request),
         url: request.url(),
         method: request.method(),
         headers: request.headers(),
@@ -257,6 +289,7 @@ export async function setupPlaywright(
       if (onEvent) {
         onEvent({
           type: "networkRequest",
+          requestId: info.requestId,
           url: info.url,
           method: info.method,
           headers: info.headers,
@@ -268,11 +301,14 @@ export async function setupPlaywright(
     };
 
     responseHandler = (response: import("playwright").Response) => {
+      const request = response.request();
       const info: NetworkResponseInfo = {
+        requestId: getRequestId(request),
         url: response.url(),
         status: response.status(),
         statusText: response.statusText(),
         headers: response.headers(),
+        resourceType: request.resourceType(),
         timestamp: Date.now(),
       };
       networkResponses.push(info);
@@ -280,10 +316,36 @@ export async function setupPlaywright(
       if (onEvent) {
         onEvent({
           type: "networkResponse",
+          requestId: info.requestId,
           url: info.url,
           status: info.status,
           statusText: info.statusText,
           headers: info.headers,
+          resourceType: info.resourceType,
+          timestamp: info.timestamp,
+        });
+      }
+    };
+
+    requestFailedHandler = (request: import("playwright").Request) => {
+      const info: RequestFailureInfo = {
+        requestId: getRequestId(request),
+        url: request.url(),
+        method: request.method(),
+        failureText: request.failure()?.errorText || "request failed",
+        resourceType: request.resourceType(),
+        timestamp: Date.now(),
+      };
+      requestFailures.push(info);
+
+      if (onEvent) {
+        onEvent({
+          type: "requestFailure",
+          requestId: info.requestId,
+          url: info.url,
+          method: info.method,
+          failureText: info.failureText,
+          resourceType: info.resourceType,
           timestamp: info.timestamp,
         });
       }
@@ -294,6 +356,7 @@ export async function setupPlaywright(
       const entry: BrowserConsoleLogEntry = {
         level: msg.type(),
         stdout: args.join(" "),
+        location: toLocation(msg.location()),
         timestamp: Date.now(),
       };
       browserConsoleLogs.push(entry);
@@ -303,6 +366,7 @@ export async function setupPlaywright(
           type: "browserConsoleLog",
           level: entry.level,
           stdout: entry.stdout,
+          location: entry.location,
           timestamp: entry.timestamp,
         });
       }
@@ -314,9 +378,31 @@ export async function setupPlaywright(
       }
     };
 
+    pageErrorHandler = (error: Error) => {
+      const entry: PageErrorInfo = {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+        timestamp: Date.now(),
+      };
+      pageErrors.push(entry);
+
+      if (onEvent) {
+        onEvent({
+          type: "pageError",
+          name: entry.name,
+          message: entry.message,
+          stack: entry.stack,
+          timestamp: entry.timestamp,
+        });
+      }
+    };
+
     page.on("request", requestHandler);
     page.on("response", responseHandler);
+    page.on("requestfailed", requestFailedHandler);
     page.on("console", consoleHandler);
+    page.on("pageerror", pageErrorHandler);
   }
 
   // ========================================================================
@@ -1266,17 +1352,24 @@ export async function setupPlaywright(
   return {
     dispose() {
       // Only remove listeners if page was provided directly
-      if (page && requestHandler && responseHandler && consoleHandler) {
+      if (page && requestHandler && responseHandler && requestFailedHandler && consoleHandler && pageErrorHandler) {
         page.off("request", requestHandler);
         page.off("response", responseHandler);
+        page.off("requestfailed", requestFailedHandler);
         page.off("console", consoleHandler);
+        page.off("pageerror", pageErrorHandler);
       }
       browserConsoleLogs.length = 0;
+      pageErrors.length = 0;
       networkRequests.length = 0;
       networkResponses.length = 0;
+      requestFailures.length = 0;
     },
     getBrowserConsoleLogs() {
       return [...browserConsoleLogs];
+    },
+    getPageErrors() {
+      return [...pageErrors];
     },
     getNetworkRequests() {
       return [...networkRequests];
@@ -1284,10 +1377,15 @@ export async function setupPlaywright(
     getNetworkResponses() {
       return [...networkResponses];
     },
+    getRequestFailures() {
+      return [...requestFailures];
+    },
     clearCollected() {
       browserConsoleLogs.length = 0;
+      pageErrors.length = 0;
       networkRequests.length = 0;
       networkResponses.length = 0;
+      requestFailures.length = 0;
     },
   };
 }

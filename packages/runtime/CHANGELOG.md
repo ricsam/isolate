@@ -1,5 +1,15 @@
 # @ricsam/isolate-runtime
 
+## 0.1.30
+
+### Patch Changes
+
+- improve logging
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.23
+  - @ricsam/isolate-playwright@0.1.23
+  - @ricsam/isolate-console@0.1.22
+
 ## 0.1.29
 
 ### Patch Changes

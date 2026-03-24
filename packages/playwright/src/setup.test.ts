@@ -62,6 +62,7 @@ describe("playwright bridge", () => {
       onEvent: (event) => {
         if (event.type === "networkRequest") {
           capturedRequests.push({
+            requestId: event.requestId,
             url: event.url,
             method: event.method,
             headers: event.headers,
@@ -87,6 +88,7 @@ describe("playwright bridge", () => {
     assert.ok(capturedRequests.length > 0, "Should capture network requests");
     const mainRequest = capturedRequests.find((r) => r.url === "https://example.com/");
     assert.ok(mainRequest, "Should capture main request");
+    assert.ok(mainRequest?.requestId, "Should capture request ids");
     assert.strictEqual(mainRequest?.method, "GET");
 
     // Verify handle also has the requests
@@ -104,10 +106,12 @@ describe("playwright bridge", () => {
       onEvent: (event) => {
         if (event.type === "networkResponse") {
           capturedResponses.push({
+            requestId: event.requestId,
             url: event.url,
             status: event.status,
             statusText: event.statusText ?? "",
             headers: event.headers,
+            resourceType: event.resourceType,
             timestamp: event.timestamp,
           });
         }
@@ -128,10 +132,16 @@ describe("playwright bridge", () => {
     assert.ok(capturedResponses.length > 0, "Should capture network responses");
     const mainResponse = capturedResponses.find((r) => r.url === "https://example.com/");
     assert.ok(mainResponse, "Should capture main response");
+    assert.ok(mainResponse?.requestId, "Should capture response request ids");
     assert.strictEqual(mainResponse?.status, 200);
 
     // Verify handle also has the responses
+    const handleRequests = handle.getNetworkRequests();
     const handleResponses = handle.getNetworkResponses();
+    const correlatedRequest = handleRequests.find((r) => r.url === "https://example.com/");
+    const correlatedResponse = handleResponses.find((r) => r.url === "https://example.com/");
+    assert.ok(correlatedRequest?.requestId, "Expected main request to have an id");
+    assert.strictEqual(correlatedResponse?.requestId, correlatedRequest?.requestId);
     assert.ok(handleResponses.length > 0, "Handle should have network responses");
 
     handle.dispose();
@@ -368,6 +378,7 @@ describe("playwright bridge", () => {
           capturedLogs.push({
             level: event.level,
             stdout: event.stdout,
+            location: event.location,
             timestamp: event.timestamp,
           });
         }
@@ -394,6 +405,53 @@ describe("playwright bridge", () => {
     const handleLogs = handle.getBrowserConsoleLogs();
     // The logs might be captured - verify the handle method works at minimum
     assert.ok(Array.isArray(handleLogs), "getBrowserConsoleLogs should return an array");
+
+    handle.dispose();
+  });
+
+  test("captures page errors and request failures", async () => {
+    const capturedPageErrors: Array<{ name: string; message: string }> = [];
+    const capturedRequestFailures: Array<{ requestId: string; url: string; failureText: string }> = [];
+
+    await page.route("**/__abort__", async (route) => {
+      await route.abort("failed");
+    });
+
+    await setupTestEnvironment(context);
+    const handle = await setupPlaywright(context, {
+      page,
+      onEvent: (event) => {
+        if (event.type === "pageError") {
+          capturedPageErrors.push({ name: event.name, message: event.message });
+        }
+        if (event.type === "requestFailure") {
+          capturedRequestFailures.push({
+            requestId: event.requestId,
+            url: event.url,
+            failureText: event.failureText,
+          });
+        }
+      },
+    });
+
+    await context.eval(`
+      describe("page failures", () => {
+        it("captures uncaught page errors and failed requests", async () => {
+          await page.goto(\`data:text/html,<script>
+            fetch("https://example.com/__abort__").catch(() => {});
+            setTimeout(() => { throw new Error("page blew up"); }, 0);
+          </script>\`);
+          await page.waitForTimeout(250);
+        });
+      });
+    `);
+
+    await runTests(context);
+
+    assert.ok(capturedPageErrors.some((error) => error.message.includes("page blew up")));
+    assert.ok(capturedRequestFailures.some((failure) => failure.url.includes("/__abort__")));
+    assert.ok(handle.getPageErrors().some((error) => error.message.includes("page blew up")));
+    assert.ok(handle.getRequestFailures().some((failure) => failure.url.includes("/__abort__")));
 
     handle.dispose();
   });

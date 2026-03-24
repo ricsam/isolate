@@ -17,6 +17,11 @@ export type ConsoleEntry =
       type: "browserOutput";
       level: string;
       stdout: string;
+      location?: {
+        url?: string;
+        lineNumber?: number;
+        columnNumber?: number;
+      };
       timestamp: number;
     }
   | { type: "dir"; stdout: string; groupDepth: number }

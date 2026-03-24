@@ -1,5 +1,11 @@
 # @ricsam/isolate-protocol
 
+## 0.1.23
+
+### Patch Changes
+
+- improve logging
+
 ## 0.1.22
 
 ### Patch Changes

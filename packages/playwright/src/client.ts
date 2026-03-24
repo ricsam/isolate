@@ -8,6 +8,8 @@ export type {
   NetworkRequestInfo,
   NetworkResponseInfo,
   BrowserConsoleLogEntry,
+  PageErrorInfo,
+  RequestFailureInfo,
   DefaultPlaywrightHandler,
   DefaultPlaywrightHandlerMetadata,
   DefaultPlaywrightHandlerOptions,

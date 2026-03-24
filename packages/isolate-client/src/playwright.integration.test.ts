@@ -177,8 +177,46 @@ describe("isolate-client playwright integration", () => {
         data.browserConsoleLogs.some((log) => log.stdout.includes("test message")),
         `Expected a log containing "test message", got: ${JSON.stringify(data.browserConsoleLogs)}`
       );
+      assert.ok(Array.isArray(data.pageErrors));
       assert.ok(Array.isArray(data.networkRequests));
       assert.ok(Array.isArray(data.networkResponses));
+      assert.ok(Array.isArray(data.requestFailures));
+    } finally {
+      await runtime.dispose();
+      await browser.close();
+    }
+  });
+
+  it("should collect page errors and request failures", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+    await page.route("**/__abort__", async (route) => {
+      await route.abort("failed");
+    });
+
+    const runtime = await client.createRuntime({
+      testEnvironment: true,
+      playwright: { handler: defaultPlaywrightHandler(page) },
+    });
+
+    try {
+      await runtime.eval(`
+        test('failure capture', async () => {
+          await page.goto(\`data:text/html,<script>
+            fetch("https://example.com/__abort__").catch(() => {});
+            setTimeout(() => { throw new Error("runtime page blew up"); }, 0);
+          </script>\`);
+          await page.waitForTimeout(250);
+        });
+      `);
+
+      await runtime.testEnvironment.runTests();
+
+      const data = runtime.playwright.getCollectedData();
+      assert.ok(data.pageErrors.some((error) => error.message.includes("runtime page blew up")));
+      assert.ok(data.requestFailures.some((failure) => failure.url.includes("/__abort__")));
+      assert.ok(data.requestFailures.every((failure) => typeof failure.requestId === "string" && failure.requestId.length > 0));
     } finally {
       await runtime.dispose();
       await browser.close();

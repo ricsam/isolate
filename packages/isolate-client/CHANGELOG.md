@@ -1,5 +1,14 @@
 # @ricsam/isolate-client
 
+## 0.1.27
+
+### Patch Changes
+
+- improve logging
+- Updated dependencies
+  - @ricsam/isolate-protocol@0.1.23
+  - @ricsam/isolate-playwright@0.1.23
+
 ## 0.1.26
 
 ### Patch Changes

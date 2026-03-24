@@ -1221,8 +1221,10 @@ describe("playwright feature", () => {
 
           const data = runtime.playwright.getCollectedData();
           assert.ok(Array.isArray(data.browserConsoleLogs));
+          assert.ok(Array.isArray(data.pageErrors));
           assert.ok(Array.isArray(data.networkRequests));
           assert.ok(Array.isArray(data.networkResponses));
+          assert.ok(Array.isArray(data.requestFailures));
         } finally {
           await runtime.dispose();
         }
@@ -1252,6 +1254,10 @@ describe("playwright feature", () => {
           runtime.playwright.clearCollectedData();
           const data = runtime.playwright.getCollectedData();
           assert.strictEqual(data.browserConsoleLogs.length, 0);
+          assert.strictEqual(data.pageErrors.length, 0);
+          assert.strictEqual(data.networkRequests.length, 0);
+          assert.strictEqual(data.networkResponses.length, 0);
+          assert.strictEqual(data.requestFailures.length, 0);
         } finally {
           await runtime.dispose();
         }

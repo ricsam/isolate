@@ -63,6 +63,8 @@ import type {
   NetworkRequestInfo,
   NetworkResponseInfo,
   BrowserConsoleLogEntry,
+  PageErrorInfo,
+  RequestFailureInfo,
   PlaywrightEvent,
 } from "@ricsam/isolate-playwright";
 import type {
@@ -236,8 +238,10 @@ export interface RuntimePlaywrightHandle {
 export interface CollectedData {
   /** Browser console logs (from the page, not sandbox) */
   browserConsoleLogs: BrowserConsoleLogEntry[];
+  pageErrors: PageErrorInfo[];
   networkRequests: NetworkRequestInfo[];
   networkResponses: NetworkResponseInfo[];
+  requestFailures: RequestFailureInfo[];
 }
 
 /**
@@ -1452,6 +1456,7 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
             type: "browserOutput",
             level: event.level,
             stdout: event.stdout,
+            location: event.location,
             timestamp: event.timestamp,
           });
         }
@@ -1678,8 +1683,10 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       }
       return {
         browserConsoleLogs: state.handles.playwright.getBrowserConsoleLogs(),
+        pageErrors: state.handles.playwright.getPageErrors(),
         networkRequests: state.handles.playwright.getNetworkRequests(),
         networkResponses: state.handles.playwright.getNetworkResponses(),
+        requestFailures: state.handles.playwright.getRequestFailures(),
       };
     },
     clearCollectedData() {
@@ -1917,4 +1924,6 @@ export type {
   NetworkRequestInfo,
   NetworkResponseInfo,
   BrowserConsoleLogEntry,
+  PageErrorInfo,
+  RequestFailureInfo,
 } from "@ricsam/isolate-playwright";

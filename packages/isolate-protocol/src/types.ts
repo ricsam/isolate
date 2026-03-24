@@ -704,10 +704,23 @@ export type PlaywrightEvent =
       type: "browserConsoleLog";
       level: string;
       stdout: string;
+      location?: {
+        url?: string;
+        lineNumber?: number;
+        columnNumber?: number;
+      };
+      timestamp: number;
+    }
+  | {
+      type: "pageError";
+      name: string;
+      message: string;
+      stack?: string;
       timestamp: number;
     }
   | {
       type: "networkRequest";
+      requestId: string;
       url: string;
       method: string;
       headers: Record<string, string>;
@@ -717,10 +730,21 @@ export type PlaywrightEvent =
     }
   | {
       type: "networkResponse";
+      requestId: string;
       url: string;
       status: number;
       statusText?: string;
       headers: Record<string, string>;
+      resourceType?: string;
+      timestamp: number;
+    }
+  | {
+      type: "requestFailure";
+      requestId: string;
+      url: string;
+      method: string;
+      failureText: string;
+      resourceType?: string;
       timestamp: number;
     };
 
@@ -893,6 +917,11 @@ export type ConsoleEntry =
       type: "browserOutput";
       level: string;
       stdout: string;
+      location?: {
+        url?: string;
+        lineNumber?: number;
+        columnNumber?: number;
+      };
       timestamp: number;
     }
   | { type: "dir"; stdout: string; groupDepth: number }
@@ -1155,18 +1184,43 @@ export interface CollectedData {
   browserConsoleLogs: {
     level: string;
     stdout: string;
+    location?: {
+      url?: string;
+      lineNumber?: number;
+      columnNumber?: number;
+    };
+    timestamp: number;
+  }[];
+  pageErrors: {
+    name: string;
+    message: string;
+    stack?: string;
     timestamp: number;
   }[];
   networkRequests: {
+    requestId: string;
     url: string;
     method: string;
     headers: Record<string, string>;
+    postData?: string;
+    resourceType?: string;
     timestamp: number;
   }[];
   networkResponses: {
+    requestId: string;
     url: string;
     status: number;
     headers: Record<string, string>;
+    statusText?: string;
+    resourceType?: string;
+    timestamp: number;
+  }[];
+  requestFailures: {
+    requestId: string;
+    url: string;
+    method: string;
+    failureText: string;
+    resourceType?: string;
     timestamp: number;
   }[];
 }

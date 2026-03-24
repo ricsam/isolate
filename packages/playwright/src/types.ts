@@ -16,6 +16,7 @@ export type {
 // ============================================================================
 
 export interface NetworkRequestInfo {
+  requestId: string;
   url: string;
   method: string;
   headers: Record<string, string>;
@@ -25,10 +26,12 @@ export interface NetworkRequestInfo {
 }
 
 export interface NetworkResponseInfo {
+  requestId: string;
   url: string;
   status: number;
   statusText: string;
   headers: Record<string, string>;
+  resourceType?: string;
   timestamp: number;
 }
 
@@ -38,6 +41,27 @@ export interface NetworkResponseInfo {
 export interface BrowserConsoleLogEntry {
   level: string;
   stdout: string;
+  location?: {
+    url?: string;
+    lineNumber?: number;
+    columnNumber?: number;
+  };
+  timestamp: number;
+}
+
+export interface PageErrorInfo {
+  name: string;
+  message: string;
+  stack?: string;
+  timestamp: number;
+}
+
+export interface RequestFailureInfo {
+  requestId: string;
+  url: string;
+  method: string;
+  failureText: string;
+  resourceType?: string;
   timestamp: number;
 }
 
@@ -138,7 +162,11 @@ export interface PlaywrightHandle {
   dispose(): void;
   /** Get browser console logs (from the page, not sandbox) */
   getBrowserConsoleLogs(): BrowserConsoleLogEntry[];
+  /** Get uncaught page errors */
+  getPageErrors(): PageErrorInfo[];
   getNetworkRequests(): NetworkRequestInfo[];
   getNetworkResponses(): NetworkResponseInfo[];
+  /** Get network request failures (DNS, abort, connection reset, etc.) */
+  getRequestFailures(): RequestFailureInfo[];
   clearCollected(): void;
 }

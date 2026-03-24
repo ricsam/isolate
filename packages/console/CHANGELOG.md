@@ -1,5 +1,11 @@
 # @ricsam/isolate-console
 
+## 0.1.22
+
+### Patch Changes
+
+- improve logging
+
 ## 0.1.21
 
 ### Patch Changes
