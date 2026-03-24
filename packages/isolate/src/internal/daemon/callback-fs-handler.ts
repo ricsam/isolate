@@ -26,7 +26,12 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 interface InvokeClientCallback {
-  (connection: ConnectionState, callbackId: number, args: unknown[]): Promise<unknown>;
+  (
+    connection: ConnectionState,
+    callbackId: number,
+    args: unknown[],
+    options?: { signal?: AbortSignal },
+  ): Promise<unknown>;
 }
 
 interface CallbackFsHandlerOptions {
@@ -34,6 +39,7 @@ interface CallbackFsHandlerOptions {
   callbackContext: CallbackContext;
   invokeClientCallback: InvokeClientCallback;
   basePath?: string;
+  getSignal?: () => AbortSignal | undefined;
 }
 
 /**
@@ -45,7 +51,13 @@ interface CallbackFsHandlerOptions {
 export function createCallbackFileSystemHandler(
   options: CallbackFsHandlerOptions
 ): FileSystemHandler {
-  const { connection, callbackContext, invokeClientCallback, basePath = "" } = options;
+  const {
+    connection,
+    callbackContext,
+    invokeClientCallback,
+    basePath = "",
+    getSignal,
+  } = options;
 
   const resolvePath = (path: string): string => {
     // Remove leading slash from the path
@@ -76,6 +88,16 @@ export function createCallbackFileSystemHandler(
     return connection;
   };
 
+  const invokeFsCallback = async (
+    conn: ConnectionState,
+    callbackId: number,
+    args: unknown[],
+  ): Promise<unknown> => {
+    return invokeClientCallback(conn, callbackId, args, {
+      signal: getSignal?.(),
+    });
+  };
+
   return {
     async getFileHandle(path: string, opts?: { create?: boolean }): Promise<void> {
       const fullPath = resolvePath(path);
@@ -90,7 +112,7 @@ export function createCallbackFileSystemHandler(
             const statId = getCallbackId("stat");
             if (statId !== undefined) {
               try {
-                await invokeClientCallback(conn, statId, [fullPath]);
+                await invokeFsCallback(conn, statId, [fullPath]);
                 // File exists, nothing to do
                 return;
               } catch {
@@ -98,7 +120,7 @@ export function createCallbackFileSystemHandler(
               }
             }
             // Create empty file
-            await invokeClientCallback(conn, writeFileId, [
+            await invokeFsCallback(conn, writeFileId, [
               fullPath,
               new Uint8Array(0),
             ]);
@@ -114,7 +136,7 @@ export function createCallbackFileSystemHandler(
       const statId = getCallbackId("stat");
       if (statId !== undefined) {
         try {
-          const result = (await invokeClientCallback(conn, statId, [
+          const result = (await invokeFsCallback(conn, statId, [
             fullPath,
           ])) as { isFile: boolean };
           if (!result.isFile) {
@@ -136,7 +158,7 @@ export function createCallbackFileSystemHandler(
         const mkdirId = getCallbackId("mkdir");
         if (mkdirId !== undefined) {
           try {
-            await invokeClientCallback(conn, mkdirId, [
+            await invokeFsCallback(conn, mkdirId, [
               fullPath,
               { recursive: true },
             ]);
@@ -151,7 +173,7 @@ export function createCallbackFileSystemHandler(
       const statId = getCallbackId("stat");
       if (statId !== undefined) {
         try {
-          const result = (await invokeClientCallback(conn, statId, [
+          const result = (await invokeFsCallback(conn, statId, [
             fullPath,
           ])) as { isDirectory: boolean };
           if (!result.isDirectory) {
@@ -174,7 +196,7 @@ export function createCallbackFileSystemHandler(
       const statId = getCallbackId("stat");
       if (statId !== undefined) {
         try {
-          const result = (await invokeClientCallback(conn, statId, [
+          const result = (await invokeFsCallback(conn, statId, [
             fullPath,
           ])) as { isFile: boolean; isDirectory: boolean };
           isFile = result.isFile;
@@ -188,14 +210,14 @@ export function createCallbackFileSystemHandler(
         if (unlinkId === undefined) {
           throw new Error(`[NotAllowedError]File deletion not supported`);
         }
-        await invokeClientCallback(conn, unlinkId, [fullPath]);
+        await invokeFsCallback(conn, unlinkId, [fullPath]);
       } else {
         const rmdirId = getCallbackId("rmdir");
         if (rmdirId === undefined) {
           throw new Error(`[NotAllowedError]Directory deletion not supported`);
         }
         // Note: recursive option may need special handling
-        await invokeClientCallback(conn, rmdirId, [fullPath]);
+        await invokeFsCallback(conn, rmdirId, [fullPath]);
       }
     },
 
@@ -210,7 +232,7 @@ export function createCallbackFileSystemHandler(
         throw new Error(`[NotAllowedError]Directory reading not supported`);
       }
 
-      const entries = (await invokeClientCallback(conn, readdirId, [
+      const entries = (await invokeFsCallback(conn, readdirId, [
         fullPath,
       ])) as string[];
 
@@ -224,7 +246,7 @@ export function createCallbackFileSystemHandler(
 
         if (statId !== undefined) {
           try {
-            const stat = (await invokeClientCallback(conn, statId, [
+            const stat = (await invokeFsCallback(conn, statId, [
               entryPath,
             ])) as { isFile: boolean; isDirectory: boolean };
             kind = stat.isDirectory ? "directory" : "file";
@@ -250,7 +272,7 @@ export function createCallbackFileSystemHandler(
         throw new Error(`[NotAllowedError]File reading not supported`);
       }
 
-      const data = (await invokeClientCallback(conn, readFileId, [
+      const data = (await invokeFsCallback(conn, readFileId, [
         fullPath,
       ])) as Uint8Array | ArrayBuffer | number[];
 
@@ -273,7 +295,7 @@ export function createCallbackFileSystemHandler(
       const statId = getCallbackId("stat");
       if (statId !== undefined) {
         try {
-          const stat = (await invokeClientCallback(conn, statId, [
+          const stat = (await invokeFsCallback(conn, statId, [
             fullPath,
           ])) as { size: number; lastModified?: number };
           size = stat.size;
@@ -308,7 +330,7 @@ export function createCallbackFileSystemHandler(
         const readFileId = getCallbackId("readFile");
         if (readFileId !== undefined) {
           try {
-            const existing = (await invokeClientCallback(
+            const existing = (await invokeFsCallback(
               conn,
               readFileId,
               [fullPath]
@@ -331,7 +353,7 @@ export function createCallbackFileSystemHandler(
             merged.set(existingBytes);
             merged.set(data, position);
 
-            await invokeClientCallback(conn, writeFileId, [
+            await invokeFsCallback(conn, writeFileId, [
               fullPath,
               merged,
             ]);
@@ -340,7 +362,7 @@ export function createCallbackFileSystemHandler(
             // File doesn't exist, create new one at position
             const newData = new Uint8Array(position + data.length);
             newData.set(data, position);
-            await invokeClientCallback(conn, writeFileId, [
+            await invokeFsCallback(conn, writeFileId, [
               fullPath,
               newData,
             ]);
@@ -349,7 +371,7 @@ export function createCallbackFileSystemHandler(
         }
       }
 
-      await invokeClientCallback(conn, writeFileId, [fullPath, data]);
+      await invokeFsCallback(conn, writeFileId, [fullPath, data]);
     },
 
     async truncateFile(path: string, size: number): Promise<void> {
@@ -363,7 +385,7 @@ export function createCallbackFileSystemHandler(
       }
 
       // Read existing content
-      const existing = (await invokeClientCallback(conn, readFileId, [
+      const existing = (await invokeFsCallback(conn, readFileId, [
         fullPath,
       ])) as Uint8Array | ArrayBuffer | number[];
 
@@ -382,7 +404,7 @@ export function createCallbackFileSystemHandler(
       const truncated = new Uint8Array(size);
       truncated.set(existingBytes.slice(0, size));
 
-      await invokeClientCallback(conn, writeFileId, [fullPath, truncated]);
+      await invokeFsCallback(conn, writeFileId, [fullPath, truncated]);
     },
 
     async getFileMetadata(
@@ -396,7 +418,7 @@ export function createCallbackFileSystemHandler(
         throw new Error(`[NotAllowedError]File stat not supported`);
       }
 
-      const stat = (await invokeClientCallback(conn, statId, [
+      const stat = (await invokeFsCallback(conn, statId, [
         fullPath,
       ])) as { size: number; lastModified?: number; isFile: boolean };
 

@@ -219,6 +219,9 @@ export interface PromiseRef {
 export interface AsyncIteratorRef {
   __type: "AsyncIteratorRef";
   iteratorId: number;
+  __nextCallbackId?: number;
+  __returnCallbackId?: number;
+  __throwCallbackId?: number;
 }
 
 export type ExtensionType =
@@ -701,14 +704,18 @@ function createExtensionCodec(): ExtensionCodec {
         (value as AsyncIteratorRef).__type === "AsyncIteratorRef"
       ) {
         const ref = value as AsyncIteratorRef;
+        const refRecord = ref as unknown as Record<string, unknown>;
         // Encode all fields, not just iteratorId
         const encoded: Record<string, unknown> = { iteratorId: ref.iteratorId };
         // Preserve callback ID fields if present
         if ("__nextCallbackId" in ref) {
-          encoded.__nextCallbackId = (ref as Record<string, unknown>).__nextCallbackId;
+          encoded.__nextCallbackId = refRecord.__nextCallbackId;
         }
         if ("__returnCallbackId" in ref) {
-          encoded.__returnCallbackId = (ref as Record<string, unknown>).__returnCallbackId;
+          encoded.__returnCallbackId = refRecord.__returnCallbackId;
+        }
+        if ("__throwCallbackId" in ref) {
+          encoded.__throwCallbackId = refRecord.__throwCallbackId;
         }
         return encode(encoded);
       }
@@ -723,6 +730,9 @@ function createExtensionCodec(): ExtensionCodec {
       }
       if ("__returnCallbackId" in decoded) {
         (result as unknown as Record<string, unknown>).__returnCallbackId = decoded.__returnCallbackId;
+      }
+      if ("__throwCallbackId" in decoded) {
+        (result as unknown as Record<string, unknown>).__throwCallbackId = decoded.__throwCallbackId;
       }
       return result;
     },

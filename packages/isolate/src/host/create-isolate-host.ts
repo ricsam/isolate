@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { connect, type DaemonConnection, type RemoteRuntime, type RuntimeOptions } from "../internal/client/index.ts";
 import { createRuntimeDiagnostics } from "../bridge/diagnostics.ts";
-import { createLegacyRuntimeOptions } from "../bridge/legacy-adapters.ts";
+import { createRuntimeBindingsAdapter } from "../bridge/runtime-bindings.ts";
 import { createBrowserRuntimeAdapter } from "../browser/browser-runtime.ts";
 import { createScriptRuntimeAdapter } from "../runtime/script-runtime.ts";
 import { createAppServerAdapter } from "../server/app-server.ts";
@@ -51,9 +51,14 @@ class HostImpl implements IsolateHost {
   async createRuntime(options: CreateRuntimeOptions) {
     const diagnostics = createRuntimeDiagnostics();
     let runtimeId = options.key ?? "runtime";
+    const bindingsAdapter = createRuntimeBindingsAdapter(
+      options.bindings,
+      () => runtimeId,
+      diagnostics,
+    );
     const runtime = await this.createRemoteRuntime(
       {
-        ...createLegacyRuntimeOptions(options.bindings, () => runtimeId, diagnostics),
+        ...bindingsAdapter.runtimeOptions,
         cwd: options.cwd,
         memoryLimitMB: options.memoryLimitMB,
         executionTimeout: options.executionTimeout,
@@ -62,7 +67,9 @@ class HostImpl implements IsolateHost {
       options.key,
     );
     runtimeId = runtime.id;
-    const adapter = createScriptRuntimeAdapter(runtime, diagnostics);
+    const adapter = createScriptRuntimeAdapter(runtime, diagnostics, {
+      onBeforeDispose: (reason) => bindingsAdapter.abort(reason),
+    });
     this.runtimes.add(adapter);
     return adapter;
   }

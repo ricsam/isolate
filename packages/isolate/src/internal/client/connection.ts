@@ -4,7 +4,7 @@
 
 import { connect as netConnect, type Socket } from "node:net";
 import path from "node:path";
-import { withRequestContext } from "../../bridge/request-context.ts";
+import { getRequestContext, withRequestContext } from "../../bridge/request-context.ts";
 import {
   createFrameParser,
   buildFrame,
@@ -757,6 +757,8 @@ async function handleCallbackInvoke(
   const callback = state.callbacks.get(invoke.callbackId);
   const invocationState = { aborted: false };
   state.activeCallbackInvocations.set(invoke.requestId, invocationState);
+  const abortController = new AbortController();
+  state.callbackAbortControllers.set(invoke.requestId, abortController);
 
   const response: CallbackResponseMsg = {
     type: MessageType.CALLBACK_RESPONSE,
@@ -772,6 +774,7 @@ async function handleCallbackInvoke(
       sendMessage(state.socket, response);
     }
     state.activeCallbackInvocations.delete(invoke.requestId);
+    state.callbackAbortControllers.delete(invoke.requestId);
   } else {
     try {
       const invokeRegisteredCallback = async () => {
@@ -787,10 +790,16 @@ async function handleCallbackInvoke(
             {
               requestId: invoke.context.requestId,
               metadata: invoke.context.metadata,
+              signal: abortController.signal,
             },
             invokeRegisteredCallback,
           )
-        : await invokeRegisteredCallback();
+        : await withRequestContext(
+            {
+              signal: abortController.signal,
+            },
+            invokeRegisteredCallback,
+          );
 
       // Check if this is a streaming response (don't send CALLBACK_RESPONSE, streaming handles it)
       if (result && typeof result === 'object' && (result as { __callbackStreaming?: boolean }).__callbackStreaming) {
@@ -818,6 +827,7 @@ async function handleCallbackInvoke(
       sendMessage(state.socket, response);
     } finally {
       state.activeCallbackInvocations.delete(invoke.requestId);
+      state.callbackAbortControllers.delete(invoke.requestId);
     }
   }
 }
@@ -1729,12 +1739,30 @@ function registerFetchCallback(
   // Register a callback that returns a special marker for streaming responses
   state.callbacks.set(callbackId, async (serialized: unknown, requestId: unknown) => {
     const data = serialized as SerializedRequest;
+    const requestContext = getRequestContext();
+
     // Create a FetchRequestInit from the serialized data
     const signalController = new AbortController();
-    const callbackRequestId = typeof requestId === "number" ? requestId : undefined;
-    if (callbackRequestId !== undefined) {
-      state.callbackAbortControllers.set(callbackRequestId, signalController);
+    const onContextAbort = () => {
+      if (!signalController.signal.aborted) {
+        signalController.abort(
+          requestContext.signal?.reason ??
+            Object.assign(new Error("The operation was aborted."), {
+              name: "AbortError",
+            }),
+        );
+      }
+    };
+
+    if (requestContext.signal) {
+      requestContext.signal.addEventListener("abort", onContextAbort, {
+        once: true,
+      });
+      if (requestContext.signal.aborted) {
+        onContextAbort();
+      }
     }
+
     if (data.signalAborted) {
       signalController.abort();
     }
@@ -1797,8 +1825,8 @@ function registerFetchCallback(
       // Buffered path for small responses
       return serializeResponse(response);
     } finally {
-      if (callbackRequestId !== undefined) {
-        state.callbackAbortControllers.delete(callbackRequestId);
+      if (requestContext.signal) {
+        requestContext.signal.removeEventListener("abort", onContextAbort);
       }
     }
   });
@@ -2169,10 +2197,48 @@ function registerCustomFunctions(
               };
             });
 
+            // Create throw callback
+            const throwCallbackId = state.nextCallbackId++;
+            state.callbacks.set(throwCallbackId, async (...args: unknown[]) => {
+              const iteratorId = args[0] as number;
+              const errorValue = args[1] as { message?: string; name?: string; stack?: string } | undefined;
+              const iterator = returnedIteratorRegistry.get(iteratorId);
+              if (!iterator) {
+                throw new Error(`Iterator ${iteratorId} not found`);
+              }
+
+              try {
+                if (!iterator.throw) {
+                  throw Object.assign(
+                    new Error(errorValue?.message ?? "Iterator does not support throw()"),
+                    { name: errorValue?.name ?? "Error", stack: errorValue?.stack },
+                  );
+                }
+
+                const thrownError = Object.assign(
+                  new Error(errorValue?.message ?? "Iterator throw()"),
+                  { name: errorValue?.name ?? "Error", stack: errorValue?.stack },
+                );
+                const iterResult = await iterator.throw(thrownError);
+                if (iterResult.done) {
+                  returnedIteratorRegistry.delete(iteratorId);
+                }
+                const marshalledValue = await marshalValue(iterResult.value, marshalCtx);
+                return {
+                  done: iterResult.done,
+                  value: addCallbackIdsToRefs(marshalledValue),
+                };
+              } catch (error) {
+                returnedIteratorRegistry.delete(iteratorId);
+                throw error;
+              }
+            });
+
             return {
               ...value,
               __nextCallbackId: nextCallbackId,
               __returnCallbackId: returnCallbackId,
+              __throwCallbackId: throwCallbackId,
             };
           }
 
@@ -2210,7 +2276,7 @@ function registerCustomFunctions(
           },
           registerIterator: (iterator: AsyncIterator<unknown>): number => {
             const iteratorId = state.nextCallbackId++;
-            // Store the iterator - callbacks for next/return will be created in addCallbackIdsToRefs
+            // Store the iterator - callbacks for next/return/throw will be created in addCallbackIdsToRefs
             returnedIteratorRegistry.set(iteratorId, iterator);
             return iteratorId;
           },

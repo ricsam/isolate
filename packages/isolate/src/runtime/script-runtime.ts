@@ -1,16 +1,17 @@
+import type { MutableRuntimeDiagnostics } from "../bridge/diagnostics.ts";
 import { isBenignDisposeError, type RemoteRuntime } from "../internal/client/index.ts";
 import type { ScriptRuntime } from "../types.ts";
-import type { MutableRuntimeDiagnostics } from "../bridge/diagnostics.ts";
 
 export function createScriptRuntimeAdapter(
   runtime: RemoteRuntime,
   diagnostics: MutableRuntimeDiagnostics,
+  options?: { onBeforeDispose?: (reason?: string) => void },
 ): ScriptRuntime {
   return {
-    async eval(code, options) {
-      const normalizedOptions = typeof options === "string"
-        ? { filename: options }
-        : options;
+    async eval(code, evalOptions) {
+      const normalizedOptions = typeof evalOptions === "string"
+        ? { filename: evalOptions }
+        : evalOptions;
       diagnostics.lifecycleState = "active";
       try {
         await runtime.eval(code, {
@@ -24,10 +25,11 @@ export function createScriptRuntimeAdapter(
         diagnostics.lifecycleState = "idle";
       }
     },
-    async dispose(options) {
+    async dispose(disposeOptions) {
       diagnostics.lifecycleState = "disposing";
       try {
-        await runtime.dispose(options);
+        options?.onBeforeDispose?.(disposeOptions?.reason);
+        await runtime.dispose(disposeOptions);
       } catch (error) {
         if (!isBenignDisposeError(error)) {
           diagnostics.lastError = error instanceof Error ? error.message : String(error);
@@ -48,7 +50,7 @@ export function createScriptRuntimeAdapter(
       },
     },
     tests: {
-      run: async (options) => await runtime.testEnvironment.runTests(options?.timeoutMs),
+      run: async (testOptions) => await runtime.testEnvironment.runTests(testOptions?.timeoutMs),
       hasTests: async () => await runtime.testEnvironment.hasTests(),
       reset: async () => {
         await runtime.testEnvironment.reset();

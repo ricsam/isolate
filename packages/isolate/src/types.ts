@@ -90,7 +90,9 @@ export interface HostBindings {
 export interface RuntimeDiagnostics {
   activeRequests: number;
   activeResources: number;
+  pendingFiles: number;
   pendingFetches: number;
+  pendingModules: number;
   pendingTools: number;
   streamCount: number;
   lastError?: string;

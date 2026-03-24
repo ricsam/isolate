@@ -22,12 +22,6 @@ Current consequences:
 - External fetch callback responses can still buffer instead of streaming incrementally
 - `runtime.eval()` is constrained by `isolated-vm` `Module.evaluate()` not properly awaiting async `Reference.apply(...)`
 
-Relevant background:
-
-- [`packages/isolate-client/fetch-response-issues.md`](../packages/isolate-client/fetch-response-issues.md)
-- [`issues/streaming-fetch-callback-buffering.md`](../issues/streaming-fetch-callback-buffering.md)
-- [`issues/http-dispatch-hang-after-stream-cancel.md`](../issues/http-dispatch-hang-after-stream-cancel.md)
-
 ## Target Runtime Model
 
 We should treat host-backed operations the same way Node treats I/O:

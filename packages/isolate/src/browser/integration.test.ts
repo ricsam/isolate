@@ -6,6 +6,7 @@ import { createTestHost, createTestId } from "../testing/integration-helpers.ts"
 import type {
   BrowserRuntime,
   ConsoleEntry,
+  HostCallContext,
   IsolateHost,
   PlaywrightEvent,
 } from "../types.ts";
@@ -14,7 +15,15 @@ async function createBrowserServer(): Promise<{
   url: string;
   close: () => Promise<void>;
 }> {
-  const server = http.createServer((_request, response) => {
+  const server = http.createServer((request, response) => {
+    if (request.url === "/slow") {
+      setTimeout(() => {
+        response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+        response.end("slow");
+      }, 100);
+      return;
+    }
+
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(`
       <!doctype html>
@@ -218,6 +227,66 @@ describe("BrowserRuntime integration", () => {
       await runtime?.dispose({ hard: true, reason: "test cleanup" });
       await browserHarness.context.close();
       await browserHarness.browser.close();
+    }
+  });
+
+  test("starts Playwright waiters without blocking later isolate work", async (testContext) => {
+    const browserHarness = await launchChromiumOrSkip(testContext);
+    const browserServer = await createBrowserServer();
+    const marks: string[] = [];
+    let runtime: BrowserRuntime | undefined;
+
+    try {
+      runtime = await host.createBrowserRuntime({
+        key: createTestId("browser-async-waiters"),
+        bindings: {
+          tools: {
+            mark: async (...args: [...unknown[], HostCallContext]) => {
+              const value = args[0] as string;
+              marks.push(value);
+              return value;
+            },
+          },
+        },
+        features: {
+          tests: true,
+        },
+        browser: {
+          page: browserHarness.page,
+        },
+      });
+
+      const result = await runtime.run(
+        `
+          test("waitForResponse yields before the response arrives", async () => {
+            await page.goto(${JSON.stringify(browserServer.url)});
+
+            const pendingResponse = page.waitForResponse(/\\/slow$/);
+            const marker = await mark("started");
+            expect(marker).toBe("started");
+
+            await page.evaluate(() => fetch("/slow"));
+
+            const response = await pendingResponse;
+            expect(await response.text()).toBe("slow");
+            expect(await page.url()).toContain(${JSON.stringify(browserServer.url)});
+          });
+        `,
+        {
+          filename: "/browser-async-waiters.test.ts",
+          asTestSuite: true,
+          timeoutMs: 10_000,
+        },
+      );
+
+      assert.equal(result.tests?.passed, 1);
+      assert.equal(result.tests?.failed, 0);
+      assert.deepEqual(marks, ["started"]);
+    } finally {
+      await runtime?.dispose({ hard: true, reason: "test cleanup" });
+      await browserHarness.context.close();
+      await browserHarness.browser.close();
+      await browserServer.close();
     }
   });
 });

@@ -2417,8 +2417,8 @@ declare class IsolatePage {
   goto(url: string, options?: { waitUntil?: "load" | "domcontentloaded" | "networkidle" }): Promise<void>;
   /** Reload the page */
   reload(): Promise<void>;
-  /** Get the current URL (synchronous) */
-  url(): string;
+  /** Get the current URL */
+  url(): Promise<string>;
   /** Get the page title */
   title(): Promise<string>;
   /** Get the page HTML content */

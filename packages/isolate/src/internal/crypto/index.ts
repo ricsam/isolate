@@ -412,13 +412,13 @@ export async function setupCrypto(
             throw new DOMException('Unsupported key format: ' + format, 'NotSupportedError');
           }
 
-          const keyId = __crypto_subtle_importKey_ref.applySyncPromise(undefined, [
+          const keyId = await __crypto_subtle_importKey_ref.apply(undefined, [
             format,
             keyDataJson,
             JSON.stringify(normalizedAlgo),
             extractable,
             JSON.stringify(keyUsages)
-          ]);
+          ], { result: { promise: true, copy: true } });
 
           return new CryptoKey(keyId, normalizedAlgo, extractable, keyUsages);
         } catch (err) {
@@ -432,11 +432,11 @@ export async function setupCrypto(
             throw new TypeError('Key must be a CryptoKey');
           }
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const signatureBytesJson = __crypto_subtle_sign_ref.applySyncPromise(undefined, [
+          const signatureBytesJson = await __crypto_subtle_sign_ref.apply(undefined, [
             JSON.stringify(normalizedAlgo),
             key._getKeyId(),
             JSON.stringify(toByteArray(data))
-          ]);
+          ], { result: { promise: true, copy: true } });
           const signatureBytes = JSON.parse(signatureBytesJson);
           return new Uint8Array(signatureBytes).buffer;
         } catch (err) {
@@ -450,12 +450,12 @@ export async function setupCrypto(
             throw new TypeError('Key must be a CryptoKey');
           }
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          return __crypto_subtle_verify_ref.applySyncPromise(undefined, [
+          return await __crypto_subtle_verify_ref.apply(undefined, [
             JSON.stringify(normalizedAlgo),
             key._getKeyId(),
             JSON.stringify(toByteArray(signature)),
             JSON.stringify(toByteArray(data))
-          ]);
+          ], { result: { promise: true, copy: true } });
         } catch (err) {
           throw __decodeError(err);
         }
@@ -464,10 +464,10 @@ export async function setupCrypto(
       async digest(algorithm, data) {
         try {
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const hashBytesJson = __crypto_subtle_digest_ref.applySyncPromise(undefined, [
+          const hashBytesJson = await __crypto_subtle_digest_ref.apply(undefined, [
             JSON.stringify(normalizedAlgo),
             JSON.stringify(toByteArray(data))
-          ]);
+          ], { result: { promise: true, copy: true } });
           const hashBytes = JSON.parse(hashBytesJson);
           return new Uint8Array(hashBytes).buffer;
         } catch (err) {
@@ -481,11 +481,11 @@ export async function setupCrypto(
             throw new TypeError('Key must be a CryptoKey');
           }
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const bitsBytesJson = __crypto_subtle_deriveBits_ref.applySyncPromise(undefined, [
+          const bitsBytesJson = await __crypto_subtle_deriveBits_ref.apply(undefined, [
             JSON.stringify(normalizedAlgo),
             baseKey._getKeyId(),
             length
-          ]);
+          ], { result: { promise: true, copy: true } });
           const bitsBytes = JSON.parse(bitsBytesJson);
           return new Uint8Array(bitsBytes).buffer;
         } catch (err) {
@@ -500,13 +500,13 @@ export async function setupCrypto(
           }
           const normalizedAlgo = normalizeAlgorithm(algorithm);
           const normalizedDerivedAlgo = normalizeAlgorithm(derivedKeyAlgorithm);
-          const keyId = __crypto_subtle_deriveKey_ref.applySyncPromise(undefined, [
+          const keyId = await __crypto_subtle_deriveKey_ref.apply(undefined, [
             JSON.stringify(normalizedAlgo),
             baseKey._getKeyId(),
             JSON.stringify(normalizedDerivedAlgo),
             extractable,
             JSON.stringify(keyUsages)
-          ]);
+          ], { result: { promise: true, copy: true } });
           return new CryptoKey(keyId, normalizedDerivedAlgo, extractable, keyUsages);
         } catch (err) {
           throw __decodeError(err);

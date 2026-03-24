@@ -105,6 +105,7 @@ const FETCH_CALLBACK_TIMEOUT_MS = 35_000;
 const requestContextStorage = new AsyncLocalStorage<{
   requestId?: string;
   metadata?: Record<string, string>;
+  signal?: AbortSignal;
 } | undefined>();
 
 interface InvokeClientCallbackOptions {
@@ -570,6 +571,11 @@ async function hardDeleteRuntime(
   const wasPooled = instance.isDisposed;
 
   try {
+    if (instance.runtimeAbortController && !instance.runtimeAbortController.signal.aborted) {
+      instance.runtimeAbortController.abort(
+        new Error(reason ?? "Runtime was permanently disposed"),
+      );
+    }
     await instance.runtime.dispose();
   } finally {
     state.isolates.delete(instance.isolateId);
@@ -619,6 +625,11 @@ function softDeleteRuntime(
   state: DaemonState,
   reason?: string,
 ): void {
+  if (instance.runtimeAbortController && !instance.runtimeAbortController.signal.aborted) {
+    instance.runtimeAbortController.abort(
+      new Error(reason ?? "Runtime was soft-disposed"),
+    );
+  }
   instance.isDisposed = true;
   instance.disposedAt = Date.now();
   instance.ownerConnection = null;
@@ -686,6 +697,7 @@ function reuseNamespacedRuntime(
   instance.isPoisoned = false;
   instance.disposedAt = undefined;
   instance.lastActivity = Date.now();
+  instance.runtimeAbortController = new AbortController();
 
   // Track in connection
   connection.isolates.add(instance.isolateId);
@@ -839,6 +851,10 @@ async function waitForConnection(callbackContext: CallbackContext): Promise<Conn
     return callbackContext.reconnectionPromise.promise;
   }
   throw new Error("No connection available and no reconnection pending");
+}
+
+function getCurrentHostSignal(instance?: IsolateInstance): AbortSignal | undefined {
+  return requestContextStorage.getStore()?.signal ?? instance?.runtimeAbortController?.signal;
 }
 
 /**
@@ -1051,6 +1067,7 @@ async function handleCreateRuntime(
       callbacks: new Map(),
       createdAt: Date.now(),
       lastActivity: Date.now(),
+      runtimeAbortController: new AbortController(),
       // Initialize registries for returned callbacks/promises/iterators
       returnedCallbacks: new Map(),
       returnedPromises: new Map(),
@@ -1130,7 +1147,47 @@ async function handleCreateRuntime(
             const marshalledValue = await marshalValue(result.value, ctx);
             return { done: true, value: addCallbackIdsToRefs(marshalledValue) };
           });
-          return { ...value, __nextCallbackId: nextCallbackId, __returnCallbackId: returnCallbackId };
+          const throwCallbackId = instance.nextLocalCallbackId!++;
+          instance.returnedCallbacks!.set(
+            throwCallbackId,
+            async (
+              iteratorId: number,
+              errorValue?: { message?: string; name?: string; stack?: string },
+            ) => {
+              const iterator = instance.returnedIterators!.get(iteratorId);
+              if (!iterator) {
+                throw new Error(`Iterator ${iteratorId} not found`);
+              }
+              try {
+                if (!iterator.throw) {
+                  throw Object.assign(
+                    new Error(errorValue?.message ?? "Iterator does not support throw()"),
+                    { name: errorValue?.name ?? "Error", stack: errorValue?.stack },
+                  );
+                }
+                const thrownError = Object.assign(
+                  new Error(errorValue?.message ?? "Iterator throw()"),
+                  { name: errorValue?.name ?? "Error", stack: errorValue?.stack },
+                );
+                const result = await iterator.throw(thrownError);
+                if (result.done) {
+                  instance.returnedIterators!.delete(iteratorId);
+                }
+                const ctx = createMarshalContext();
+                const marshalledValue = await marshalValue(result.value, ctx);
+                return { done: result.done, value: addCallbackIdsToRefs(marshalledValue) };
+              } catch (error) {
+                instance.returnedIterators!.delete(iteratorId);
+                throw error;
+              }
+            },
+          );
+          return {
+            ...value,
+            __nextCallbackId: nextCallbackId,
+            __returnCallbackId: returnCallbackId,
+            __throwCallbackId: throwCallbackId,
+          };
         }
 
         if (Array.isArray(value)) return value.map(item => addCallbackIdsToRefs(item));
@@ -1156,11 +1213,15 @@ async function handleCreateRuntime(
           // Client-side callback — forward via IPC (with reconnection support)
           const conn = await waitForConnection(callbackContext);
           try {
-            return await invokeClientCallback(conn, callbackId, args);
+            return await invokeClientCallback(conn, callbackId, args, {
+              signal: getCurrentHostSignal(instance),
+            });
           } catch (err) {
             if (callbackContext.reconnectionPromise && !callbackContext.connection) {
               const newConn = await callbackContext.reconnectionPromise.promise;
-              return invokeClientCallback(newConn, callbackId, args);
+              return invokeClientCallback(newConn, callbackId, args, {
+                signal: getCurrentHostSignal(instance),
+              });
             }
             throw err;
           }
@@ -1200,6 +1261,7 @@ async function handleCreateRuntime(
                   args,
                   `AsyncIterator '${name}' start`,
                   invokeClientCallback,
+                  { signal: getCurrentHostSignal(instance) },
                 ) as { iteratorId: number };
                 const iteratorId = startResult.iteratorId;
 
@@ -1211,6 +1273,7 @@ async function handleCreateRuntime(
                       [iteratorId],
                       `AsyncIterator '${name}' next`,
                       invokeClientCallback,
+                      { signal: getCurrentHostSignal(instance) },
                     ) as { done: boolean; value: unknown };
                     if (nextResult.done) return nextResult.value;
                     yield nextResult.value;
@@ -1220,7 +1283,9 @@ async function handleCreateRuntime(
                   const retConn = callbackContext_.connection;
                   const retCbId = callbackContext_.custom.get(`${name}:return`);
                   if (retConn && retCbId !== undefined) {
-                    await invokeClientCallback(retConn, retCbId, [iteratorId]).catch(() => {});
+                    await invokeClientCallback(retConn, retCbId, [iteratorId], {
+                      signal: getCurrentHostSignal(instance),
+                    }).catch(() => {});
                   }
                 }
               }
@@ -1241,6 +1306,7 @@ async function handleCreateRuntime(
                 args,
                 `Custom function '${name}'`,
                 invokeClientCallback,
+                { signal: getCurrentHostSignal(instance) },
               );
             },
           };
@@ -1258,6 +1324,7 @@ async function handleCreateRuntime(
           [specifier, importer],
           "Module loader",
           invokeClientCallback,
+          { signal: getCurrentHostSignal(instance) },
         ) as Promise<{ code: string; filename: string; resolveDir: string; static?: boolean }>;
       };
     }
@@ -1278,7 +1345,8 @@ async function handleCreateRuntime(
               const promise = invokeClientCallback(
                 conn,
                 callbackId,
-                [JSON.stringify(event)]
+                [JSON.stringify(event)],
+                { signal: getCurrentHostSignal(instance) },
               ).catch(() => {});
               // Push to runtime's pendingCallbacks (will be set after createRuntime)
               instance.runtime?.pendingCallbacks?.push(promise);
@@ -1314,6 +1382,7 @@ async function handleCreateRuntime(
               [JSON.stringify(op)],
               "Playwright handler",
               invokeClientCallback,
+              { signal: getCurrentHostSignal(instance) },
             );
             return JSON.parse(resultJson as string) as PlaywrightResult;
           } catch (err) {
@@ -1336,7 +1405,8 @@ async function handleCreateRuntime(
             const promise = invokeClientCallback(
               conn,
               callbackContext.playwright.onBrowserConsoleLogCallbackId,
-              [{ level: event.level, stdout: event.stdout, timestamp: event.timestamp }]
+              [{ level: event.level, stdout: event.stdout, timestamp: event.timestamp }],
+              { signal: getCurrentHostSignal(instance) },
             ).catch(() => {});
             instance.runtime?.pendingCallbacks?.push(promise);
           } else if (
@@ -1346,7 +1416,8 @@ async function handleCreateRuntime(
             const promise = invokeClientCallback(
               conn,
               callbackContext.playwright.onNetworkRequestCallbackId,
-              [event]
+              [event],
+              { signal: getCurrentHostSignal(instance) },
             ).catch(() => {});
             instance.runtime?.pendingCallbacks?.push(promise);
           } else if (
@@ -1356,7 +1427,8 @@ async function handleCreateRuntime(
             const promise = invokeClientCallback(
               conn,
               callbackContext.playwright.onNetworkResponseCallbackId,
-              [event]
+              [event],
+              { signal: getCurrentHostSignal(instance) },
             ).catch(() => {});
             instance.runtime?.pendingCallbacks?.push(promise);
           }
@@ -1395,7 +1467,10 @@ async function handleCreateRuntime(
 
         const callbackAbortController = new AbortController();
         const onInitAbort = () => callbackAbortController.abort();
+        const currentSignal = getCurrentHostSignal(instance);
+        const onCurrentAbort = () => callbackAbortController.abort();
         init.signal.addEventListener("abort", onInitAbort, { once: true });
+        currentSignal?.addEventListener("abort", onCurrentAbort, { once: true });
         const result = await invokeCallbackWithReconnect(
           callbackContext,
           () => callbackContext.fetch,
@@ -1409,6 +1484,7 @@ async function handleCreateRuntime(
           },
         ).finally(() => {
           init.signal.removeEventListener("abort", onInitAbort);
+          currentSignal?.removeEventListener("abort", onCurrentAbort);
         });
         if (result && typeof result === 'object' && (result as { __streamingResponse?: boolean }).__streamingResponse) {
           const response = (result as { response: Response }).response;
@@ -1426,6 +1502,7 @@ async function handleCreateRuntime(
             callbackContext,
             invokeClientCallback,
             basePath: dirPath,
+            getSignal: () => getCurrentHostSignal(instance),
           });
         },
       },
@@ -1768,7 +1845,10 @@ async function handleDispatchRequest(
     connection.earlyAbortedDispatches.delete(message.requestId);
   }
 
-  await requestContextStorage.run(message.context, async () => {
+  await requestContextStorage.run({
+    ...(message.context ?? {}),
+    signal: dispatchAbortController.signal,
+  }, async () => {
     try {
       // Handle request body (inline or streamed)
       let requestBody: BodyInit | null = null;
@@ -2505,12 +2585,18 @@ async function invokeClientCallback(
 
     connection.pendingCallbacks.set(requestId, pending);
 
+    const requestContext = requestContextStorage.getStore();
     const invoke: CallbackInvoke = {
       type: MessageType.CALLBACK_INVOKE,
       requestId,
       callbackId,
       args,
-      context: requestContextStorage.getStore(),
+      context: requestContext
+        ? {
+            requestId: requestContext.requestId,
+            metadata: requestContext.metadata,
+          }
+        : undefined,
     };
 
     sendMessage(connection.socket, invoke);

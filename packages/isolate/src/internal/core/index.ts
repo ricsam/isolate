@@ -497,11 +497,8 @@ export function defineFunction(
 
 /**
  * Define an async function that can be called from the isolate.
- * Uses ivm.Reference with applySyncPromise to properly bridge async operations.
- *
- * The function is exposed in the isolate as a regular function that internally
- * calls applySyncPromise on the host Reference, blocking until the async
- * operation completes.
+ * Uses ivm.Reference.apply with promise transfer so isolate code can truly await
+ * host work without blocking the isolate thread.
  */
 export function defineAsyncFunction(
   context: ivm.Context,
@@ -514,7 +511,6 @@ export function defineAsyncFunction(
   const refName = `__async_ref_${name}`;
 
   // Create a Reference to the async function (not a Callback)
-  // applySyncPromise can only be called on References to host functions
   const asyncRef = new ivm.Reference(async (...args: unknown[]) => {
     return await fn(...args);
   });
@@ -522,16 +518,14 @@ export function defineAsyncFunction(
   // Set the reference on global
   global.setSync(refName, asyncRef);
 
-  // Inject wrapper function that calls applySyncPromise
-  // This creates a synchronous-looking function in the isolate that
-  // internally blocks until the async operation completes
+  // Inject an async wrapper that forwards through ivm.Reference.apply.
   const wrapperCode = `
 (function() {
   ${DECODE_ERROR_JS}
 
-  globalThis.${name} = function(...args) {
+  globalThis.${name} = async function(...args) {
     try {
-      return ${refName}.applySyncPromise(undefined, args);
+      return await ${refName}.apply(undefined, args, { result: { promise: true, copy: true } });
     } catch (err) {
       throw __decodeError(err);
     }
@@ -592,14 +586,14 @@ export function defineClass<TState extends object = object>(
   } = definition;
   const stateMap = getInstanceStateMapForContext(context);
 
-  // Build method callback/reference registrations
-  // Sync methods use Callback, async methods use Reference (for applySyncPromise)
+  // Build method callback/reference registrations.
+  // Sync methods use Callback, async methods use Reference.
   const methodCallbacks: Record<string, ivm.Callback> = {};
   const methodReferences: Record<string, ivm.Reference<(instanceId: number, ...args: unknown[]) => Promise<unknown>>> = {};
 
   for (const [methodName, methodDef] of Object.entries(methods)) {
     if (methodDef.async) {
-      // Async methods use Reference + applySyncPromise pattern
+      // Async methods use Reference.apply with promise transfer.
       methodReferences[`__${name}_${methodName}_ref`] = new ivm.Reference(
         async (instanceId: number, ...args: unknown[]) => {
           const state = stateMap.get(instanceId) as TState | undefined;
@@ -668,14 +662,14 @@ export function defineClass<TState extends object = object>(
     }
   }
 
-  // Build static method callbacks/references
-  // Sync methods use Callback, async methods use Reference (for applySyncPromise)
+  // Build static method callbacks/references.
+  // Sync methods use Callback, async methods use Reference.
   const staticMethodCallbacks: Record<string, ivm.Callback> = {};
   const staticMethodReferences: Record<string, ivm.Reference<(...args: unknown[]) => Promise<unknown>>> = {};
 
   for (const [methodName, methodDef] of Object.entries(staticMethods)) {
     if (methodDef.async) {
-      // Async static methods use Reference + applySyncPromise pattern
+      // Async static methods use Reference.apply with promise transfer.
       staticMethodReferences[`__${name}_static_${methodName}_ref`] = new ivm.Reference(
         async (...args: unknown[]) => {
           try {
@@ -782,13 +776,14 @@ export function defineClass<TState extends object = object>(
   // Add methods
   for (const [methodName, methodDef] of Object.entries(methods)) {
     if (methodDef.async) {
-      // Async methods use applySyncPromise on the Reference
-      // Note: The method is NOT marked async because applySyncPromise blocks
-      // and returns the resolved value directly
       classCode += `
-    ${methodName}(...args) {
+    async ${methodName}(...args) {
       try {
-        return __${name}_${methodName}_ref.applySyncPromise(undefined, [this._getInstanceId(), ...args]);
+        return await __${name}_${methodName}_ref.apply(
+          undefined,
+          [this._getInstanceId(), ...args],
+          { result: { promise: true, copy: true } }
+        );
       } catch (err) {
         throw __decodeError(err);
       }
@@ -842,11 +837,14 @@ export function defineClass<TState extends object = object>(
   // Add static methods
   for (const [methodName, methodDef] of Object.entries(staticMethods)) {
     if (methodDef.async) {
-      // Async static methods use applySyncPromise on the Reference
       classCode += `
-  ${name}.${methodName} = function(...args) {
+  ${name}.${methodName} = async function(...args) {
     try {
-      return __${name}_static_${methodName}_ref.applySyncPromise(undefined, args);
+      return await __${name}_static_${methodName}_ref.apply(
+        undefined,
+        args,
+        { result: { promise: true, copy: true } }
+      );
     } catch (err) {
       throw __decodeError(err);
     }

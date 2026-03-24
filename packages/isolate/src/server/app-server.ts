@@ -1,7 +1,7 @@
 import { IsolateServer } from "../internal/server/index.ts";
 import type { DaemonConnection } from "../internal/client/index.ts";
 import { createRuntimeDiagnostics } from "../bridge/diagnostics.ts";
-import { createLegacyRuntimeOptions } from "../bridge/legacy-adapters.ts";
+import { createRuntimeBindingsAdapter } from "../bridge/runtime-bindings.ts";
 import { withRequestContext } from "../bridge/request-context.ts";
 import type { AppServer, CreateAppServerOptions, RequestResult } from "../types.ts";
 
@@ -16,11 +16,16 @@ export async function createAppServerAdapter(
   });
 
   let runtimeId = options.key;
+  const bindingsAdapter = createRuntimeBindingsAdapter(
+    options.bindings,
+    () => runtimeId,
+    diagnostics,
+  );
   await server.start({
     entry: options.entry,
     entryFilename: options.entryFilename,
     runtimeOptions: {
-      ...createLegacyRuntimeOptions(options.bindings, () => runtimeId, diagnostics),
+      ...bindingsAdapter.runtimeOptions,
       cwd: options.cwd,
       memoryLimitMB: options.memoryLimitMB,
       executionTimeout: options.executionTimeout,
@@ -40,6 +45,7 @@ export async function createAppServerAdapter(
         {
           requestId: handleOptions?.requestId,
           metadata: handleOptions?.metadata,
+          signal: handleOptions?.signal ?? request.signal,
         },
         async () => {
           const response = await server.fetch.dispatchRequest(request, {
@@ -92,6 +98,7 @@ export async function createAppServerAdapter(
     reload: async () => {
       diagnostics.lifecycleState = "reloading";
       try {
+        bindingsAdapter.reset("AppServer.reload()");
         await server.reload();
         runtimeId = server.getRuntime()?.id ?? options.key;
       } finally {
@@ -102,10 +109,13 @@ export async function createAppServerAdapter(
       diagnostics.lifecycleState = "disposing";
       try {
         if (disposeOptions?.hard) {
+          bindingsAdapter.reset(disposeOptions?.reason ?? "AppServer.dispose(hard)");
           await server.reload();
+          bindingsAdapter.abort(disposeOptions?.reason ?? "AppServer.dispose(hard)");
           await server.close();
           return;
         }
+        bindingsAdapter.abort(disposeOptions?.reason ?? "AppServer.dispose()");
         await server.close();
       } finally {
         diagnostics.lifecycleState = "idle";

@@ -412,20 +412,20 @@ export async function setupPlaywright(
   // Helper function to invoke handler and handle errors
   context.evalSync(`
 (function() {
-  globalThis.__pw_invoke_sync = function(type, args, options) {
+  globalThis.__pw_invoke = async function(type, args, options) {
     const op = JSON.stringify({ type, args, pageId: options?.pageId, contextId: options?.contextId });
-    const resultJson = __Playwright_handler_ref.applySyncPromise(undefined, [op]);
+    const resultJson = await __Playwright_handler_ref.apply(
+      undefined,
+      [op],
+      { result: { promise: true, copy: true } }
+    );
     const result = JSON.parse(resultJson);
     if (result.ok) {
       return result.value;
-    } else {
-      const error = new Error(result.error.message);
-      error.name = result.error.name;
-      throw error;
     }
-  };
-  globalThis.__pw_invoke = async function(type, args, options) {
-    return globalThis.__pw_invoke_sync(type, args, options);
+    const error = new Error(result.error.message);
+    error.name = result.error.name;
+    throw error;
   };
 })();
 `);
@@ -529,7 +529,7 @@ export async function setupPlaywright(
     async reload() {
       await __pw_invoke("reload", [], { pageId: this.#pageId });
     }
-    url() { return __pw_invoke_sync("url", [], { pageId: this.#pageId }); }
+    async url() { return __pw_invoke("url", [], { pageId: this.#pageId }); }
     async title() { return __pw_invoke("title", [], { pageId: this.#pageId }); }
     async content() { return __pw_invoke("content", [], { pageId: this.#pageId }); }
     async waitForSelector(selector, options) {
@@ -603,7 +603,7 @@ export async function setupPlaywright(
       }
       return __pw_invoke("waitForURL", [serializedUrl, options?.timeout || null, options?.waitUntil || null], { pageId: this.#pageId });
     }
-    waitForRequest(urlOrPredicate, options) {
+    async waitForRequest(urlOrPredicate, options) {
       if (typeof urlOrPredicate === 'function') {
         const userPredicate = urlOrPredicate;
         const wrappedPredicate = (data) => {
@@ -620,16 +620,14 @@ export async function setupPlaywright(
         const pageId = this.#pageId;
         // Start listening immediately (before the user triggers the request)
         const broadMatcher = { type: 'regex', value: { $regex: '.*', $flags: '' } };
-        const startResult = __pw_invoke_sync("waitForRequestStart", [broadMatcher, options?.timeout || null], { pageId });
+        const startResult = await __pw_invoke("waitForRequestStart", [broadMatcher, options?.timeout || null], { pageId });
         const listenerId = startResult.listenerId;
-        return {
-          then(resolve, reject) {
-            try {
-              const r = __pw_invoke_sync("waitForRequestPredicateFinish", [listenerId, predicateId, options?.timeout || null], { pageId });
-              resolve({ url: () => r.url, method: () => r.method, headers: () => r.headers, postData: () => r.postData });
-            } catch(e) { reject(e); } finally { __pw_unregister_predicate(predicateId); }
-          }
-        };
+        try {
+          const r = await __pw_invoke("waitForRequestPredicateFinish", [listenerId, predicateId, options?.timeout || null], { pageId });
+          return { url: () => r.url, method: () => r.method, headers: () => r.headers, postData: () => r.postData };
+        } finally {
+          __pw_unregister_predicate(predicateId);
+        }
       }
       let serializedMatcher;
       if (typeof urlOrPredicate === 'string') {
@@ -641,19 +639,13 @@ export async function setupPlaywright(
       } else {
         throw new Error('waitForRequest requires a URL string, RegExp, or predicate function');
       }
-      const startResult = __pw_invoke_sync("waitForRequestStart", [serializedMatcher, options?.timeout || null], { pageId: this.#pageId });
+      const startResult = await __pw_invoke("waitForRequestStart", [serializedMatcher, options?.timeout || null], { pageId: this.#pageId });
       const listenerId = startResult.listenerId;
       const pageId = this.#pageId;
-      return {
-        then(resolve, reject) {
-          try {
-            const r = __pw_invoke_sync("waitForRequestFinish", [listenerId], { pageId });
-            resolve({ url: () => r.url, method: () => r.method, headers: () => r.headers, postData: () => r.postData });
-          } catch(e) { reject(e); }
-        }
-      };
+      const r = await __pw_invoke("waitForRequestFinish", [listenerId], { pageId });
+      return { url: () => r.url, method: () => r.method, headers: () => r.headers, postData: () => r.postData };
     }
-    waitForResponse(urlOrPredicate, options) {
+    async waitForResponse(urlOrPredicate, options) {
       if (typeof urlOrPredicate === 'function') {
         const userPredicate = urlOrPredicate;
         const wrappedPredicate = (data) => {
@@ -671,20 +663,18 @@ export async function setupPlaywright(
         const pageId = this.#pageId;
         // Start listening immediately (before the user triggers the response)
         const broadMatcher = { type: 'regex', value: { $regex: '.*', $flags: '' } };
-        const startResult = __pw_invoke_sync("waitForResponseStart", [broadMatcher, options?.timeout || null], { pageId });
+        const startResult = await __pw_invoke("waitForResponseStart", [broadMatcher, options?.timeout || null], { pageId });
         const listenerId = startResult.listenerId;
-        return {
-          then(resolve, reject) {
-            try {
-              const r = __pw_invoke_sync("waitForResponsePredicateFinish", [listenerId, predicateId, options?.timeout || null], { pageId });
-              resolve({
-                url: () => r.url, status: () => r.status, statusText: () => r.statusText,
-                headers: () => r.headers, headersArray: () => r.headersArray,
-                ok: () => r.ok, json: async () => r.json, text: async () => r.text, body: async () => r.body,
-              });
-            } catch(e) { reject(e); } finally { __pw_unregister_predicate(predicateId); }
-          }
-        };
+        try {
+          const r = await __pw_invoke("waitForResponsePredicateFinish", [listenerId, predicateId, options?.timeout || null], { pageId });
+          return {
+            url: () => r.url, status: () => r.status, statusText: () => r.statusText,
+            headers: () => r.headers, headersArray: () => r.headersArray,
+            ok: () => r.ok, json: async () => r.json, text: async () => r.text, body: async () => r.body,
+          };
+        } finally {
+          __pw_unregister_predicate(predicateId);
+        }
       }
       let serializedMatcher;
       if (typeof urlOrPredicate === 'string') {
@@ -696,20 +686,14 @@ export async function setupPlaywright(
       } else {
         throw new Error('waitForResponse requires a URL string, RegExp, or predicate function');
       }
-      const startResult = __pw_invoke_sync("waitForResponseStart", [serializedMatcher, options?.timeout || null], { pageId: this.#pageId });
+      const startResult = await __pw_invoke("waitForResponseStart", [serializedMatcher, options?.timeout || null], { pageId: this.#pageId });
       const listenerId = startResult.listenerId;
       const pageId = this.#pageId;
+      const r = await __pw_invoke("waitForResponseFinish", [listenerId], { pageId });
       return {
-        then(resolve, reject) {
-          try {
-            const r = __pw_invoke_sync("waitForResponseFinish", [listenerId], { pageId });
-            resolve({
-              url: () => r.url, status: () => r.status, statusText: () => r.statusText,
-              headers: () => r.headers, headersArray: () => r.headersArray,
-              ok: () => r.ok, json: async () => r.json, text: async () => r.text, body: async () => r.body,
-            });
-          } catch(e) { reject(e); }
-        }
+        url: () => r.url, status: () => r.status, statusText: () => r.statusText,
+        headers: () => r.headers, headersArray: () => r.headersArray,
+        ok: () => r.ok, json: async () => r.json, text: async () => r.text, body: async () => r.body,
       };
     }
     context() {

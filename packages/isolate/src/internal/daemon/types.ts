@@ -59,6 +59,7 @@ export interface IsolateInstance {
   callbacks: Map<number, CallbackRegistration>;
   createdAt: number;
   lastActivity: number;
+  runtimeAbortController?: AbortController;
 
   // Registries for returned callbacks/promises/iterators from custom function calls
   /** Functions returned by custom function calls (callable from isolate) */

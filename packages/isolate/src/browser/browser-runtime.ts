@@ -2,7 +2,7 @@ import path from "node:path";
 import { defaultPlaywrightHandler } from "../internal/playwright/client.ts";
 import type { RemoteRuntime, RuntimeOptions } from "../internal/client/index.ts";
 import { createRuntimeDiagnostics } from "../bridge/diagnostics.ts";
-import { createLegacyRuntimeOptions } from "../bridge/legacy-adapters.ts";
+import { createRuntimeBindingsAdapter } from "../bridge/runtime-bindings.ts";
 import { createScriptRuntimeAdapter } from "../runtime/script-runtime.ts";
 import type { BrowserRuntime, BrowserRuntimeDiagnostics, CreateBrowserRuntimeOptions } from "../types.ts";
 
@@ -31,7 +31,11 @@ export async function createBrowserRuntimeAdapter(
 ): Promise<BrowserRuntime> {
   const diagnostics = createRuntimeDiagnostics();
   let runtimeId = options.key ?? "browser-runtime";
-  const runtimeOptions = createLegacyRuntimeOptions(options.bindings, () => runtimeId, diagnostics);
+  const bindingsAdapter = createRuntimeBindingsAdapter(
+    options.bindings,
+    () => runtimeId,
+    diagnostics,
+  );
   const readFile = options.browser.readFile
     ? async (filePath: string) => {
         const buffer = await options.browser.readFile!(filePath);
@@ -49,7 +53,7 @@ export async function createBrowserRuntimeAdapter(
     createContext: options.browser.createContext as never,
   });
   const runtime = await createRuntime({
-    ...runtimeOptions,
+    ...bindingsAdapter.runtimeOptions,
     cwd: options.cwd,
     memoryLimitMB: options.memoryLimitMB,
     executionTimeout: options.executionTimeout,
@@ -61,7 +65,9 @@ export async function createBrowserRuntimeAdapter(
     },
   });
   runtimeId = runtime.id;
-  const scriptRuntime = createScriptRuntimeAdapter(runtime, diagnostics);
+  const scriptRuntime = createScriptRuntimeAdapter(runtime, diagnostics, {
+    onBeforeDispose: (reason) => bindingsAdapter.abort(reason),
+  });
 
   return {
     async run(code, runOptions) {

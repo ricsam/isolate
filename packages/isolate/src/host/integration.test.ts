@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { createModuleResolver } from "../index.ts";
-import { createTestHost, createTestId } from "../testing/integration-helpers.ts";
+import { createTestHost, createTestId, withTimeout } from "../testing/integration-helpers.ts";
 import type { ConsoleEntry, HostCallContext, IsolateHost, ToolBindings } from "../types.ts";
 
 function collectOutput(entries: ConsoleEntry[]): string[] {
   return entries.flatMap((entry) => (
     entry.type === "output" ? [entry.stdout] : []
   ));
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("createIsolateHost runtime integration", () => {
@@ -154,6 +164,138 @@ describe("createIsolateHost runtime integration", () => {
 
     assert.equal(cleaned, true);
     assert.deepEqual(collectOutput(logs), ["[1]"]);
+  });
+
+  test("treats returned callback refs as promise-returning functions", async () => {
+    const logs: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            logs.push(entry);
+          },
+        },
+        tools: {
+          createMultiplier: () => (
+            async (value: number) => value * 2
+          ),
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        const multiply = await createMultiplier();
+        const pending = multiply(21);
+        console.log(JSON.stringify({
+          isPromise: pending instanceof Promise,
+          value: await pending,
+        }));
+      `);
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.deepEqual(collectOutput(logs), ['{"isPromise":true,"value":42}']);
+  });
+
+  test("settles returned promise refs asynchronously", async () => {
+    const logs: ConsoleEntry[] = [];
+    const firstLog = createDeferred<void>();
+    const release = createDeferred<string>();
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            logs.push(entry);
+            if (entry.type === "output" && entry.stdout.includes('"isPromise":true')) {
+              firstLog.resolve();
+            }
+          },
+        },
+        tools: {
+          createPromiseHolder: () => ({
+            pending: release.promise,
+          }),
+        },
+      },
+    });
+
+    try {
+      const evalPromise = runtime.eval(`
+        const holder = await createPromiseHolder();
+        const pending = holder.pending;
+        console.log(JSON.stringify({
+          isPromise: pending instanceof Promise,
+        }));
+        console.log(await pending);
+      `);
+
+      await withTimeout(firstLog.promise, 5_000, "returned promise ref");
+      release.resolve("settled");
+      await withTimeout(evalPromise, 10_000, "returned promise ref eval");
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.deepEqual(collectOutput(logs), [
+      '{"isPromise":true}',
+      "settled",
+    ]);
+  });
+
+  test("supports throw() on returned async iterator refs", async () => {
+    const logs: ConsoleEntry[] = [];
+    let cleaned = false;
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            logs.push(entry);
+          },
+        },
+        tools: {
+          createIterator: () => (async function* () {
+            try {
+              yield 1;
+              yield 2;
+            } finally {
+              cleaned = true;
+            }
+          })(),
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        const iterator = await createIterator();
+        const first = await iterator.next();
+        let thrownMessage = null;
+        try {
+          const pendingThrow = iterator.throw(new Error("stop"));
+          console.log(JSON.stringify({
+            throwReturnsPromise: pendingThrow instanceof Promise,
+          }));
+          await pendingThrow;
+        } catch (error) {
+          thrownMessage = error.message;
+        }
+        console.log(JSON.stringify({
+          firstValue: first.value,
+          firstDone: first.done,
+          thrownMessage,
+        }));
+      `);
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.equal(cleaned, true);
+    assert.deepEqual(collectOutput(logs), [
+      '{"throwReturnsPromise":true}',
+      '{"firstValue":1,"firstDone":false,"thrownMessage":"stop"}',
+    ]);
   });
 
   test("runs tests inside a script runtime", async () => {

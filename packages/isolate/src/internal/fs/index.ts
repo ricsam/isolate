@@ -360,11 +360,12 @@ function setupFileSystemDirectoryHandle(
       return __FileSystemDirectoryHandle_get_name(this._getInstanceId());
     }
 
-    getFileHandle(name, options = {}) {
+    async getFileHandle(name, options = {}) {
       try {
-        const resultJson = __FileSystemDirectoryHandle_getFileHandle_ref.applySyncPromise(
+        const resultJson = await __FileSystemDirectoryHandle_getFileHandle_ref.apply(
           undefined,
-          [this._getInstanceId(), name, JSON.stringify(options)]
+          [this._getInstanceId(), name, JSON.stringify(options)],
+          { result: { promise: true, copy: true } }
         );
         const result = JSON.parse(resultJson);
         return FileSystemFileHandle._fromInstanceId(result.instanceId);
@@ -373,11 +374,12 @@ function setupFileSystemDirectoryHandle(
       }
     }
 
-    getDirectoryHandle(name, options = {}) {
+    async getDirectoryHandle(name, options = {}) {
       try {
-        const resultJson = __FileSystemDirectoryHandle_getDirectoryHandle_ref.applySyncPromise(
+        const resultJson = await __FileSystemDirectoryHandle_getDirectoryHandle_ref.apply(
           undefined,
-          [this._getInstanceId(), name, JSON.stringify(options)]
+          [this._getInstanceId(), name, JSON.stringify(options)],
+          { result: { promise: true, copy: true } }
         );
         const result = JSON.parse(resultJson);
         return FileSystemDirectoryHandle._fromInstanceId(result.instanceId);
@@ -386,11 +388,12 @@ function setupFileSystemDirectoryHandle(
       }
     }
 
-    removeEntry(name, options = {}) {
+    async removeEntry(name, options = {}) {
       try {
-        __FileSystemDirectoryHandle_removeEntry_ref.applySyncPromise(
+        await __FileSystemDirectoryHandle_removeEntry_ref.apply(
           undefined,
-          [this._getInstanceId(), name, JSON.stringify(options)]
+          [this._getInstanceId(), name, JSON.stringify(options)],
+          { result: { promise: true, copy: true } }
         );
       } catch (err) {
         throw __decodeError(err);
@@ -400,9 +403,10 @@ function setupFileSystemDirectoryHandle(
     async *entries() {
       let entriesJson;
       try {
-        entriesJson = __FileSystemDirectoryHandle_readDirectory_ref.applySyncPromise(
+        entriesJson = await __FileSystemDirectoryHandle_readDirectory_ref.apply(
           undefined,
-          [this._getInstanceId()]
+          [this._getInstanceId()],
+          { result: { promise: true, copy: true } }
         );
       } catch (err) {
         throw __decodeError(err);
@@ -433,7 +437,7 @@ function setupFileSystemDirectoryHandle(
       return this.entries();
     }
 
-    isSameEntry(other) {
+    async isSameEntry(other) {
       if (!(other instanceof FileSystemDirectoryHandle)) {
         return false;
       }
@@ -443,11 +447,12 @@ function setupFileSystemDirectoryHandle(
       );
     }
 
-    resolve(possibleDescendant) {
+    async resolve(possibleDescendant) {
       try {
-        const resultJson = __FileSystemDirectoryHandle_resolve_ref.applySyncPromise(
+        const resultJson = await __FileSystemDirectoryHandle_resolve_ref.apply(
           undefined,
-          [this._getInstanceId(), possibleDescendant._getInstanceId()]
+          [this._getInstanceId(), possibleDescendant._getInstanceId()],
+          { result: { promise: true, copy: true } }
         );
         return resultJson === 'null' ? null : JSON.parse(resultJson);
       } catch (err) {
@@ -596,11 +601,12 @@ function setupFileSystemFileHandle(
       return __FileSystemFileHandle_get_name(this._getInstanceId());
     }
 
-    getFile() {
+    async getFile() {
       try {
-        const metadataJson = __FileSystemFileHandle_getFile_ref.applySyncPromise(
+        const metadataJson = await __FileSystemFileHandle_getFile_ref.apply(
           undefined,
-          [this._getInstanceId()]
+          [this._getInstanceId()],
+          { result: { promise: true, copy: true } }
         );
         const metadata = JSON.parse(metadataJson);
         // Create File object from metadata and content
@@ -614,11 +620,12 @@ function setupFileSystemFileHandle(
       }
     }
 
-    createWritable(options = {}) {
+    async createWritable(options = {}) {
       try {
-        const streamId = __FileSystemFileHandle_createWritable_ref.applySyncPromise(
+        const streamId = await __FileSystemFileHandle_createWritable_ref.apply(
           undefined,
-          [this._getInstanceId(), JSON.stringify(options)]
+          [this._getInstanceId(), JSON.stringify(options)],
+          { result: { promise: true, copy: true } }
         );
         return FileSystemWritableFileStream._fromInstanceId(streamId);
       } catch (err) {
@@ -626,7 +633,7 @@ function setupFileSystemFileHandle(
       }
     }
 
-    isSameEntry(other) {
+    async isSameEntry(other) {
       if (!(other instanceof FileSystemFileHandle)) {
         return false;
       }
@@ -793,7 +800,7 @@ function setupFileSystemWritableFileStream(
       return _writableStreamInstanceIds.get(this);
     }
 
-    write(data) {
+    async write(data) {
       try {
         // Handle different data types
         let writeData;
@@ -822,9 +829,8 @@ function setupFileSystemWritableFileStream(
         if (typeof writeData === 'string') {
           bytes = Array.from(new TextEncoder().encode(writeData));
         } else if (writeData instanceof Blob) {
-          // Synchronously get blob bytes - use the internal callback
-          const blobText = writeData.text ? writeData.text() : '';
-          bytes = Array.from(new TextEncoder().encode(blobText));
+          const buffer = await writeData.arrayBuffer();
+          bytes = Array.from(new Uint8Array(buffer));
         } else if (writeData instanceof ArrayBuffer) {
           bytes = Array.from(new Uint8Array(writeData));
         } else if (ArrayBuffer.isView(writeData)) {
@@ -835,9 +841,10 @@ function setupFileSystemWritableFileStream(
           throw new TypeError('Invalid data type for write');
         }
 
-        __FileSystemWritableFileStream_write_ref.applySyncPromise(
+        await __FileSystemWritableFileStream_write_ref.apply(
           undefined,
-          [this._getInstanceId(), JSON.stringify(bytes), position]
+          [this._getInstanceId(), JSON.stringify(bytes), position],
+          { result: { promise: true, copy: true } }
         );
       } catch (err) {
         throw __decodeError(err);
@@ -852,33 +859,36 @@ function setupFileSystemWritableFileStream(
       }
     }
 
-    truncate(size) {
+    async truncate(size) {
       try {
-        __FileSystemWritableFileStream_truncate_ref.applySyncPromise(
+        await __FileSystemWritableFileStream_truncate_ref.apply(
           undefined,
-          [this._getInstanceId(), size]
+          [this._getInstanceId(), size],
+          { result: { promise: true, copy: true } }
         );
       } catch (err) {
         throw __decodeError(err);
       }
     }
 
-    close() {
+    async close() {
       try {
-        __FileSystemWritableFileStream_close_ref.applySyncPromise(
+        await __FileSystemWritableFileStream_close_ref.apply(
           undefined,
-          [this._getInstanceId()]
+          [this._getInstanceId()],
+          { result: { promise: true, copy: true } }
         );
       } catch (err) {
         throw __decodeError(err);
       }
     }
 
-    abort(reason) {
+    async abort(reason) {
       try {
-        __FileSystemWritableFileStream_abort_ref.applySyncPromise(
+        await __FileSystemWritableFileStream_abort_ref.apply(
           undefined,
-          [this._getInstanceId(), reason ? String(reason) : null]
+          [this._getInstanceId(), reason ? String(reason) : null],
+          { result: { promise: true, copy: true } }
         );
       } catch (err) {
         throw __decodeError(err);
@@ -909,23 +919,23 @@ function setupFileSystemWritableFileStream(
         get ready() {
           return Promise.resolve();
         },
-        write(chunk) {
+        async write(chunk) {
           if (released) {
             return Promise.reject(new TypeError('Writer has been released'));
           }
           try {
-            stream.write(chunk);
+            await stream.write(chunk);
             return Promise.resolve();
           } catch (err) {
             return Promise.reject(err);
           }
         },
-        close() {
+        async close() {
           if (released) {
             return Promise.reject(new TypeError('Writer has been released'));
           }
           try {
-            stream.close();
+            await stream.close();
             closedResolve();
             return Promise.resolve();
           } catch (err) {
@@ -933,12 +943,12 @@ function setupFileSystemWritableFileStream(
             return Promise.reject(err);
           }
         },
-        abort(reason) {
+        async abort(reason) {
           if (released) {
             return Promise.reject(new TypeError('Writer has been released'));
           }
           try {
-            stream.abort(reason);
+            await stream.abort(reason);
             closedReject(reason || new Error('Stream aborted'));
             return Promise.resolve();
           } catch (err) {
@@ -992,7 +1002,11 @@ function setupGetDirectoryGlobal(
   const getDirectoryCode = `
 (function() {
   globalThis.getDirectory = async function(path) {
-    const instanceId = await __getDirectory_ref.applySyncPromise(undefined, [path]);
+    const instanceId = await __getDirectory_ref.apply(
+      undefined,
+      [path],
+      { result: { promise: true, copy: true } }
+    );
     return FileSystemDirectoryHandle._fromInstanceId(instanceId);
   };
 })();
