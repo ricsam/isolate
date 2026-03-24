@@ -1,49 +1,15 @@
 import path from "node:path";
 import { $, Glob } from "bun";
-import { TYPE_DEFINITIONS } from "../packages/isolate-types/src/isolate-types.ts";
 
 if (!process.env.CI) {
   throw new Error("This script is only meant to be run in CI");
 }
 
-// Packages to build (in dependency order: core first, then new packages, then fetch/fs, then runtime, then test-environment, then standalone packages, then daemon/client)
 const PACKAGES = [
-  "core",
-  "isolate-types",
-  "console",
-  "crypto",
-  "encoding",
-  "path",
-  "timers",
-  "fetch",
-  "fs",
-  "runtime",
-  "transform",
-  "test-environment",
-  "playwright",
-  "isolate-protocol",
-  "isolate-daemon",
-  "isolate-client",
-  "isolate-server",
-  "module-loader",
-  "test-utils",
+  "isolate",
 ];
 
-// Mapping from package names to TYPE_DEFINITIONS keys for isolate.d.ts generation
-const ISOLATE_TYPE_MAPPING: Record<
-  string,
-  keyof typeof TYPE_DEFINITIONS | undefined
-> = {
-  core: "core",
-  console: "console",
-  crypto: "crypto",
-  encoding: "encoding",
-  fetch: "fetch",
-  fs: "fs",
-  path: "path",
-  "test-environment": "testEnvironment",
-  timers: "timers",
-};
+const ISOLATE_TYPE_MAPPING: Record<string, undefined> = {};
 
 interface RootMetadata {
   author: string;
@@ -57,6 +23,10 @@ interface RootMetadata {
 
 // Helper to get the full npm package name from directory name
 const getNpmPackageName = (packageName: string): string => {
+  if (packageName === "isolate") {
+    return "@ricsam/isolate";
+  }
+
   // If package already starts with 'isolate-', use it as-is
   if (packageName.startsWith("isolate-")) {
     return `@ricsam/${packageName}`;
@@ -239,17 +209,6 @@ const buildPackage = async (
     throw new Error(`Failed to build ${npmPackageName}`);
   }
 
-  // Generate isolate.d.ts if this package has type definitions
-  const typeDefKey = ISOLATE_TYPE_MAPPING[packageName];
-  if (typeDefKey) {
-    const typeContent = TYPE_DEFINITIONS[typeDefKey];
-    await Bun.write(
-      path.join(packageDir, "dist", "types", "isolate.d.ts"),
-      typeContent
-    );
-    console.log(`  ✅ isolate.d.ts generated from TYPE_DEFINITIONS`);
-  }
-
   console.log(`  ✅ CJS bundle created`);
   console.log(`  ✅ MJS bundle created`);
 
@@ -291,6 +250,8 @@ const buildPackage = async (
   // Add package-specific description if not present
   if (!publishPackageJson.description) {
     const descriptions: Record<string, string> = {
+      isolate:
+        "Unified runtime host for app servers, script runtimes, browser runtimes, module resolution, file bindings, and typechecking",
       core: "Core utilities and class builder for isolated-vm V8 sandbox bindings",
       "isolate-types":
         "Type definition strings and type-checking utilities for isolated-vm V8 sandbox APIs",
@@ -329,7 +290,9 @@ const buildPackage = async (
     for (const [dep, ver] of Object.entries(publishPackageJson.dependencies)) {
       if (typeof ver === "string" && ver.startsWith("workspace:")) {
         // Get the actual version from the dependency's package.json
-        const depPackageName = dep.replace("@ricsam/isolate-", "");
+        const depPackageName = dep === "@ricsam/isolate"
+          ? "isolate"
+          : dep.replace("@ricsam/isolate-", "");
         if (PACKAGES.includes(depPackageName)) {
           const depPackageJson = await Bun.file(
             path.join(
@@ -353,7 +316,9 @@ const buildPackage = async (
     )) {
       if (typeof ver === "string" && ver.startsWith("workspace:")) {
         // Get the actual version from the dependency's package.json
-        const depPackageName = dep.replace("@ricsam/isolate-", "");
+        const depPackageName = dep === "@ricsam/isolate"
+          ? "isolate"
+          : dep.replace("@ricsam/isolate-", "");
         if (PACKAGES.includes(depPackageName)) {
           const depPackageJson = await Bun.file(
             path.join(
