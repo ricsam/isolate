@@ -56,6 +56,7 @@ const buildPackage = async (
           allowSyntheticDefaultImports: true,
           allowImportingTsExtensions: true,
           target: "ESNext",
+          module: "ESNext",
           declaration: true,
           esModuleInterop: true,
           inlineSourceMap: false,
