@@ -40,24 +40,8 @@ jobs:
         run: npm install -g npm@latest
       - run: npm ci
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
-      - name: Install Playwright browsers
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
-        run: npx playwright install --with-deps chromium
-      - name: Build library types
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
-        run: bun run build:library-types
-        working-directory: demo
-      - name: Build demo front-end
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
-        run: bun run build
-        working-directory: demo
-      - run: npm run build
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
       - run: npm run typecheck
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
-      - name: Install Playwright browsers
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
-        run: npx playwright install --with-deps chromium
       - run: npm test
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
 
