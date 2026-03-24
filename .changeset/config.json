@@ -7,9 +7,5 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": [
-    "@ricsam/isolate-demo",
-    "@ricsam/isolate-benchmarks",
-    "@ricsam/isolate-bun-demo"
-  ]
+  "ignore": []
 }
