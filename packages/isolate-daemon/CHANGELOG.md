@@ -1,5 +1,11 @@
 # @ricsam/isolate-daemon
 
+## 0.1.30
+
+### Patch Changes
+
+- better logs
+
 ## 0.1.29
 
 ### Patch Changes

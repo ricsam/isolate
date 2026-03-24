@@ -38,7 +38,12 @@ export interface DaemonHandle {
  * Daemon statistics.
  */
 export interface DaemonStats {
+  /** Currently owned runtimes that are not soft-disposed */
   activeIsolates: number;
+  /** Soft-disposed namespaced runtimes kept in the reuse pool */
+  pooledIsolates: number;
+  /** Total runtimes tracked by the daemon (counts toward maxIsolates) */
+  trackedIsolates: number;
   activeConnections: number;
   totalIsolatesCreated: number;
   totalRequestsProcessed: number;

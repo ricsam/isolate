@@ -36,6 +36,8 @@ console.log(`Daemon listening on ${daemon.address}`);
 // Get stats
 const stats = daemon.getStats();
 console.log(`Active isolates: ${stats.activeIsolates}`);
+console.log(`Pooled isolates: ${stats.pooledIsolates}`);
+console.log(`Tracked isolates: ${stats.trackedIsolates}`);
 
 // Graceful shutdown
 await daemon.close();
@@ -71,6 +73,8 @@ interface DaemonOptions {
 ```typescript
 interface DaemonStats {
   activeIsolates: number;
+  pooledIsolates: number;
+  trackedIsolates: number;
   activeConnections: number;
   totalIsolatesCreated: number;
   totalRequestsProcessed: number;
@@ -102,7 +106,7 @@ The daemon supports **namespace-based runtime pooling** for improved performance
 - **Connection close** soft-deletes namespaced runtimes (keeps them in pool)
 - Concurrent createRuntime calls for the same namespace are rejected with `Namespace "<id>" creation already in progress`
 
-The `maxIsolates` limit includes both active and pooled (disposed) runtimes. This ensures predictable memory usage while allowing runtime reuse.
+The `maxIsolates` limit includes both active and pooled (disposed) runtimes. This ensures predictable memory usage while allowing runtime reuse. The daemon lifecycle logs include both counts so you can see whether the pool is growing because of live runtimes or cached namespace entries.
 
 ## License
 

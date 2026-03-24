@@ -83,6 +83,11 @@ import {
   type RuntimeHandle,
   type CustomFunctionsMarshalOptions,
 } from "@ricsam/isolate-runtime";
+import {
+  collectRuntimePoolSnapshot,
+  formatRuntimeLabel,
+  formatRuntimePoolSnapshot,
+} from "./runtime-pool.ts";
 import type {
   DaemonState,
   ConnectionState,
@@ -537,20 +542,18 @@ async function handleMessage(
 /**
  * Hard-delete a runtime and remove it from daemon indexes.
  */
-function formatRuntimeLogLabel(instance: IsolateInstance): string {
-  return instance.namespaceId != null
-    ? `${instance.isolateId} (namespace=${JSON.stringify(instance.namespaceId)})`
-    : instance.isolateId;
-}
-
-function logRuntimeDisposition(
+function logRuntimeLifecycle(
+  state: DaemonState,
+  event: string,
   instance: IsolateInstance,
-  mode: "soft-disposing" | "hard-disposing",
-  reason: string,
+  reason?: string,
+  level: "log" | "warn" = "log",
 ): void {
+  const logger = level === "warn" ? console.warn : console.log;
   const poisonedSuffix = instance.isPoisoned ? " poisoned=true" : "";
-  console.warn(
-    `[isolate-daemon] ${mode} runtime ${formatRuntimeLogLabel(instance)}${poisonedSuffix}: ${reason}`
+  const reasonSuffix = reason ? `: ${reason}` : "";
+  logger(
+    `[isolate-daemon] ${event} runtime ${formatRuntimeLabel(instance)}${poisonedSuffix}${reasonSuffix}; ${formatRuntimePoolSnapshot(collectRuntimePoolSnapshot(state))}`
   );
 }
 
@@ -559,9 +562,7 @@ async function hardDeleteRuntime(
   state: DaemonState,
   reason?: string,
 ): Promise<void> {
-  if (!instance.isDisposed && reason) {
-    logRuntimeDisposition(instance, "hard-disposing", reason);
-  }
+  const wasPooled = instance.isDisposed;
 
   try {
     await instance.runtime.dispose();
@@ -590,6 +591,13 @@ async function hardDeleteRuntime(
       }
       instance.callbackContext.connection = null;
     }
+
+    logRuntimeLifecycle(
+      state,
+      wasPooled ? "evicted pooled" : "hard-disposed",
+      instance,
+      reason,
+    );
   }
 }
 
@@ -606,10 +614,6 @@ function softDeleteRuntime(
   state: DaemonState,
   reason?: string,
 ): void {
-  if (!instance.isDisposed && reason) {
-    logRuntimeDisposition(instance, "soft-disposing", reason);
-  }
-
   instance.isDisposed = true;
   instance.disposedAt = Date.now();
   instance.ownerConnection = null;
@@ -657,6 +661,8 @@ function softDeleteRuntime(
 
   // Clear module cache (staticModuleCache and transformCache preserved by clearModuleCache)
   instance.runtime.clearModuleCache();
+
+  logRuntimeLifecycle(state, "soft-disposed", instance, reason);
 }
 
 /**
@@ -812,6 +818,8 @@ function reuseNamespacedRuntime(
   instance.returnedPromises = new Map();
   instance.returnedIterators = new Map();
   instance.nextLocalCallbackId = 1_000_000;
+
+  logRuntimeLifecycle(state, "reused pooled", instance);
 }
 
 /**
@@ -887,7 +895,7 @@ async function evictOldestDisposedRuntime(state: DaemonState): Promise<boolean> 
   if (oldest) {
     // Hard delete the oldest disposed runtime
     try {
-      await hardDeleteRuntime(oldest, state);
+      await hardDeleteRuntime(oldest, state, "LRU eviction to make room for a new runtime");
     } catch {
       // Ignore disposal errors
     }
@@ -968,6 +976,11 @@ async function handleCreateRuntime(
     if (state.isolates.size >= state.options.maxIsolates) {
       // Try to evict an old disposed runtime
       if (!(await evictOldestDisposedRuntime(state))) {
+        const targetLabel =
+          namespaceId != null ? `namespace=${JSON.stringify(namespaceId)}` : "non-namespaced";
+        console.warn(
+          `[isolate-daemon] denied runtime create for ${targetLabel}: ${formatRuntimePoolSnapshot(collectRuntimePoolSnapshot(state))}`
+        );
         sendError(
           connection.socket,
           message.requestId,
@@ -1584,6 +1597,7 @@ async function handleCreateRuntime(
     });
 
     sendOk(connection.socket, message.requestId, { isolateId, reused: false });
+    logRuntimeLifecycle(state, "created", instance);
   } catch (err) {
     const error = err as Error;
     sendError(

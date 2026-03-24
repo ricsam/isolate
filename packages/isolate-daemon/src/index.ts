@@ -7,6 +7,7 @@
 import { createServer, type Server } from "node:net";
 import { unlink } from "node:fs/promises";
 import { handleConnection } from "./connection.ts";
+import { createDaemonStats } from "./runtime-pool.ts";
 import type {
   DaemonOptions,
   DaemonHandle,
@@ -43,6 +44,8 @@ export async function startDaemon(
     connections: new Map(),
     stats: {
       activeIsolates: 0,
+      pooledIsolates: 0,
+      trackedIsolates: 0,
       activeConnections: 0,
       totalIsolatesCreated: 0,
       totalRequestsProcessed: 0,
@@ -91,11 +94,7 @@ export async function startDaemon(
 
   return {
     address,
-    getStats: () => ({
-      ...state.stats,
-      activeIsolates: state.isolates.size,
-      activeConnections: state.connections.size,
-    }),
+    getStats: () => createDaemonStats(state),
     close: async () => {
       // Close all connections
       for (const [socket] of state.connections) {
@@ -145,6 +144,9 @@ function closeServer(server: Server): Promise<void> {
 }
 
 function updateStats(state: DaemonState): void {
-  state.stats.activeIsolates = state.isolates.size;
-  state.stats.activeConnections = state.connections.size;
+  const snapshot = createDaemonStats(state);
+  state.stats.activeIsolates = snapshot.activeIsolates;
+  state.stats.pooledIsolates = snapshot.pooledIsolates;
+  state.stats.trackedIsolates = snapshot.trackedIsolates;
+  state.stats.activeConnections = snapshot.activeConnections;
 }
