@@ -1,506 +1,163 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { $, Glob } from "bun";
 
-if (!process.env.CI) {
-  throw new Error("This script is only meant to be run in CI");
+const ROOT_DIR = path.join(import.meta.dirname, "..");
+const SRC_DIR = path.join(ROOT_DIR, "src");
+const DIST_DIR = path.join(ROOT_DIR, "dist");
+const TEMP_TSCONFIG_PATH = path.join(ROOT_DIR, ".tsconfig.build.tmp.json");
+
+interface PackageJson {
+  name: string;
+  version: string;
 }
 
-const PACKAGES = [
-  "isolate",
-];
-
-const ISOLATE_TYPE_MAPPING: Record<string, undefined> = {};
-
-interface RootMetadata {
-  author: string;
-  license: string;
-  repository: { type: string; url: string };
-  bugs?: { url: string };
-  homepage?: string;
-  keywords: string[];
-  description: string;
-}
-
-// Helper to get the full npm package name from directory name
-const getNpmPackageName = (packageName: string): string => {
-  if (packageName === "isolate") {
-    return "@ricsam/isolate";
-  }
-
-  // If package already starts with 'isolate-', use it as-is
-  if (packageName.startsWith("isolate-")) {
-    return `@ricsam/${packageName}`;
-  }
-  return `@ricsam/isolate-${packageName}`;
-};
-
-const buildPackage = async (
-  packageName: string,
-  rootMetadata: RootMetadata
-) => {
-  const packageDir = path.join(__dirname, "..", "packages", packageName);
-  const npmPackageName = getNpmPackageName(packageName);
-  console.log(`\n📦 Building ${npmPackageName}...`);
-
-  const packageJson = await Bun.file(
-    path.join(packageDir, "package.json")
-  ).json();
-
-  // Create build-specific tsconfig.json
+async function createTempTsconfig(): Promise<void> {
   await Bun.write(
-    path.join(packageDir, "tsconfig.build.json"),
+    TEMP_TSCONFIG_PATH,
     JSON.stringify(
       {
+        extends: "./tsconfig.base.json",
         compilerOptions: {
-          allowJs: true,
-          allowSyntheticDefaultImports: true,
-          allowImportingTsExtensions: true,
-          target: "ESNext",
-          module: "ESNext",
-          declaration: true,
-          esModuleInterop: true,
-          inlineSourceMap: false,
-          lib: ["ESNext", "DOM", "DOM.Iterable"],
-          listEmittedFiles: false,
-          listFiles: false,
-          moduleResolution: "bundler",
-          noFallthroughCasesInSwitch: true,
-          pretty: true,
-          resolveJsonModule: true,
           rootDir: "./src",
-          skipLibCheck: true,
-          strict: true,
-          traceResolution: false,
-        },
-        compileOnSave: false,
-        exclude: ["node_modules", "dist", "**/*.test.ts"],
-        include: ["src/**/*.ts"],
-      },
-      null,
-      2
-    )
-  );
-
-  // Create types-specific tsconfig
-  await Bun.write(
-    path.join(packageDir, "tsconfig.types.json"),
-    JSON.stringify(
-      {
-        extends: "./tsconfig.build.json",
-        compilerOptions: {
+          module: "ESNext",
+          moduleResolution: "bundler",
           declaration: true,
-          outDir: "dist/types",
           emitDeclarationOnly: true,
-          declarationDir: "dist/types",
+          noEmit: false,
+          outDir: "./dist/types",
+          declarationDir: "./dist/types",
         },
+        include: ["src/**/*.ts"],
+        exclude: ["node_modules", "dist", "src/**/*.test.ts"],
       },
       null,
-      2
-    )
+      2,
+    ),
   );
+}
 
-  // TypeScript compilation for type declarations
-  const runTsc = async (tsconfig: string) => {
-    const { stdout, stderr, exitCode } = await $`bunx --bun tsc -p ${tsconfig}`
-      .cwd(packageDir)
-      .nothrow();
+async function runTsc(): Promise<void> {
+  const { stdout, stderr, exitCode } = await $`bunx --bun tsc -p ${TEMP_TSCONFIG_PATH}`
+    .cwd(ROOT_DIR)
+    .nothrow();
 
-    if (exitCode !== 0) {
-      console.error(stderr.toString());
-      console.log(stdout.toString());
-      return false;
-    }
-    const output = stdout.toString();
-    if (output.trim() !== "") {
-      console.log(output);
-    }
-    console.log(`  ✅ Type declarations generated`);
-    return true;
-  };
-
-  // Build with Bun for both formats
-  const bunBuildFile = async (
-    src: string,
-    relativeDir: string,
-    type: "cjs" | "mjs"
-  ) => {
-    const result = await Bun.build({
-      entrypoints: [src],
-      outdir: path.join(packageDir, "dist", type, relativeDir),
-      sourcemap: "external",
-      format: type === "mjs" ? "esm" : "cjs",
-      packages: "external",
-      external: ["*"],
-      naming: `[name].${type}`,
-      target: "node",
-      plugins: [
-        {
-          name: "extension-plugin",
-          setup(build) {
-            build.onLoad(
-              { filter: /\.tsx?$/, namespace: "file" },
-              async (args) => {
-                let content = await Bun.file(args.path).text();
-                const extension = type;
-
-                // Replace relative imports with extension (handles both extensionless and .ts/.tsx imports)
-                content = content.replace(
-                  /((?:im|ex)port\s[\w{}/*\s,]+from\s['"](?:\.\.?\/)+[^'"]+?)(?:\.tsx?)?(?=['"])/gm,
-                  `$1.${extension}`
-                );
-
-                // Replace dynamic imports
-                content = content.replace(
-                  /(import\(['"](?:\.\.?\/)+[^'"]+?)(?:\.tsx?)?(?=['"])/gm,
-                  `$1.${extension}`
-                );
-
-                return {
-                  contents: content,
-                  loader: args.path.endsWith(".tsx") ? "tsx" : "ts",
-                };
-              }
-            );
-          },
-        },
-      ],
-    });
-
-    result.logs.forEach((log) => {
-      console.log(`  [${log.level}] ${log.message}`);
-    });
-
-    if (!result.success) {
-      return false;
-    }
-
-    return true;
-  };
-
-  // Clean dist directory
-  await $`rm -rf dist`.cwd(packageDir).nothrow();
-
-  // Recursive build function for all .ts files
-  const runBunBundleRec = async (type: "cjs" | "mjs") => {
-    const tsGlob = new Glob("**/*.ts");
-    for await (const file of tsGlob.scan({
-      cwd: path.join(packageDir, "src"),
-    })) {
-      // Skip test files and declaration files
-      if (file.endsWith(".test.ts") || file.endsWith(".d.ts")) {
-        continue;
-      }
-      // Get the directory part of the relative path to preserve folder structure
-      const relativeDir = path.dirname(file);
-      await bunBuildFile(path.join(packageDir, "src", file), relativeDir, type);
-    }
-    return true;
-  };
-
-  // Build all formats in parallel
-  const success = (
-    await Promise.all([
-      runBunBundleRec("mjs"),
-      runBunBundleRec("cjs"),
-      runTsc("tsconfig.types.json"),
-    ])
-  ).every((s) => s);
-
-  if (!success) {
-    throw new Error(`Failed to build ${npmPackageName}`);
+  if (exitCode !== 0) {
+    console.error(stderr.toString());
+    console.log(stdout.toString());
+    throw new Error("Failed to generate type declarations");
   }
 
-  console.log(`  ✅ CJS bundle created`);
-  console.log(`  ✅ MJS bundle created`);
+  const output = stdout.toString().trim();
+  if (output) {
+    console.log(output);
+  }
+  console.log("  Types ready");
+}
 
-  // Create package.json in dist folders
-  const version = packageJson.version;
+async function bundleFile(
+  entrypoint: string,
+  relativeDir: string,
+  format: "cjs" | "mjs",
+): Promise<void> {
+  const result = await Bun.build({
+    entrypoints: [entrypoint],
+    outdir: path.join(DIST_DIR, format, relativeDir),
+    sourcemap: "external",
+    format: format === "mjs" ? "esm" : "cjs",
+    packages: "external",
+    external: ["*"],
+    naming: `[name].${format}`,
+    target: "node",
+    plugins: [
+      {
+        name: "extension-plugin",
+        setup(build) {
+          build.onLoad({ filter: /\.tsx?$/, namespace: "file" }, async (args) => {
+            let content = await Bun.file(args.path).text();
 
+            content = content.replace(
+              /((?:im|ex)port\s[\w{}/*\s,]+from\s['"](?:\.\.?\/)+[^'"]+?)(?:\.tsx?)?(?=['"])/gm,
+              `$1.${format}`,
+            );
+            content = content.replace(
+              /(import\(['"](?:\.\.?\/)+[^'"]+?)(?:\.tsx?)?(?=['"])/gm,
+              `$1.${format}`,
+            );
+
+            return {
+              contents: content,
+              loader: args.path.endsWith(".tsx") ? "tsx" : "ts",
+            };
+          });
+        },
+      },
+    ],
+  });
+
+  for (const log of result.logs) {
+    console.log(`  [${log.level}] ${log.message}`);
+  }
+
+  if (!result.success) {
+    throw new Error(`Failed to bundle ${path.relative(ROOT_DIR, entrypoint)} as ${format}`);
+  }
+}
+
+async function bundleFormat(format: "cjs" | "mjs"): Promise<void> {
+  const tsGlob = new Glob("**/*.ts");
+
+  for await (const file of tsGlob.scan({ cwd: SRC_DIR })) {
+    if (file.endsWith(".test.ts") || file.endsWith(".d.ts")) {
+      continue;
+    }
+
+    await bundleFile(path.join(SRC_DIR, file), path.dirname(file), format);
+  }
+}
+
+async function writeFormatPackageJsons(pkg: PackageJson): Promise<void> {
   for (const [folder, type] of [
-    ["dist/cjs", "commonjs"],
-    ["dist/mjs", "module"],
+    ["cjs", "commonjs"],
+    ["mjs", "module"],
   ] as const) {
     await Bun.write(
-      path.join(packageDir, folder, "package.json"),
+      path.join(DIST_DIR, folder, "package.json"),
       JSON.stringify(
         {
-          name: packageJson.name,
-          version,
+          name: pkg.name,
+          version: pkg.version,
           type,
         },
         null,
-        2
-      )
+        2,
+      ),
     );
   }
+}
 
-  // Update main package.json for publishing
-  const publishPackageJson = { ...packageJson };
+async function main() {
+  console.log("Building @ricsam/isolate...");
 
-  // Inject metadata from root package.json
-  publishPackageJson.author = rootMetadata.author;
-  publishPackageJson.license = rootMetadata.license;
-  publishPackageJson.repository = {
-    ...rootMetadata.repository,
-    directory: `packages/${packageName}`,
-  };
-  publishPackageJson.bugs = rootMetadata.bugs;
-  publishPackageJson.homepage = rootMetadata.homepage;
-  publishPackageJson.keywords = rootMetadata.keywords;
+  const pkg = await Bun.file(path.join(ROOT_DIR, "package.json")).json() as PackageJson;
 
-  // Add package-specific description if not present
-  if (!publishPackageJson.description) {
-    const descriptions: Record<string, string> = {
-      isolate:
-        "Unified runtime host for app servers, script runtimes, browser runtimes, module resolution, file bindings, and typechecking",
-      core: "Core utilities and class builder for isolated-vm V8 sandbox bindings",
-      "isolate-types":
-        "Type definition strings and type-checking utilities for isolated-vm V8 sandbox APIs",
-      console: "Console API implementation for isolated-vm V8 sandbox",
-      crypto: "Web Crypto API implementation for isolated-vm V8 sandbox",
-      encoding: "Base64 encoding APIs (atob, btoa) for isolated-vm V8 sandbox",
-      path: "POSIX path utilities (join, resolve, dirname, basename, etc.) for isolated-vm V8 sandbox",
-      timers:
-        "Timer APIs (setTimeout, setInterval, clearTimeout, clearInterval) for isolated-vm V8 sandbox",
-      fetch: "Fetch API implementation for isolated-vm V8 sandbox",
-      fs: "File system API implementation for isolated-vm V8 sandbox",
-      runtime:
-        "Complete isolated-vm V8 sandbox runtime with fetch, fs, and core bindings",
-      "test-environment":
-        "Test environment for running tests inside isolated-vm V8 sandbox",
-      playwright:
-        "Playwright bridge for running browser tests in isolated-vm V8 sandbox",
-      "isolate-protocol":
-        "Binary protocol for communication between isolate daemon and client",
-      "isolate-daemon":
-        "Node.js daemon server for running isolated-vm runtimes via IPC",
-      "isolate-client":
-        "Client library for connecting to the isolate daemon from any JavaScript runtime",
-      "isolate-server":
-        "Reusable lifecycle manager for namespaced isolate runtimes and entry-module startup",
-    };
-    publishPackageJson.description =
-      descriptions[packageName] || rootMetadata.description;
+  await fs.rm(DIST_DIR, { recursive: true, force: true });
+  await createTempTsconfig();
+
+  try {
+    await Promise.all([
+      bundleFormat("mjs"),
+      bundleFormat("cjs"),
+      runTsc(),
+    ]);
+
+    await writeFormatPackageJsons(pkg);
+  } finally {
+    await fs.rm(TEMP_TSCONFIG_PATH, { force: true });
   }
 
-  // Remove dev-only fields
-  delete publishPackageJson.devDependencies;
-
-  // Convert workspace dependencies to versioned dependencies
-  if (publishPackageJson.dependencies) {
-    for (const [dep, ver] of Object.entries(publishPackageJson.dependencies)) {
-      if (typeof ver === "string" && ver.startsWith("workspace:")) {
-        // Get the actual version from the dependency's package.json
-        const depPackageName = dep === "@ricsam/isolate"
-          ? "isolate"
-          : dep.replace("@ricsam/isolate-", "");
-        if (PACKAGES.includes(depPackageName)) {
-          const depPackageJson = await Bun.file(
-            path.join(
-              __dirname,
-              "..",
-              "packages",
-              depPackageName,
-              "package.json"
-            )
-          ).json();
-          publishPackageJson.dependencies[dep] = `^${depPackageJson.version}`;
-        }
-      }
-    }
-  }
-
-  // Update peerDependencies to remove workspace protocol
-  if (publishPackageJson.peerDependencies) {
-    for (const [dep, ver] of Object.entries(
-      publishPackageJson.peerDependencies
-    )) {
-      if (typeof ver === "string" && ver.startsWith("workspace:")) {
-        // Get the actual version from the dependency's package.json
-        const depPackageName = dep === "@ricsam/isolate"
-          ? "isolate"
-          : dep.replace("@ricsam/isolate-", "");
-        if (PACKAGES.includes(depPackageName)) {
-          const depPackageJson = await Bun.file(
-            path.join(
-              __dirname,
-              "..",
-              "packages",
-              depPackageName,
-              "package.json"
-            )
-          ).json();
-          publishPackageJson.peerDependencies[
-            dep
-          ] = `^${depPackageJson.version}`;
-        }
-      }
-    }
-  }
-
-  // Set module type and exports
-  delete publishPackageJson.type;
-  publishPackageJson.main = "./dist/cjs/index.cjs";
-  publishPackageJson.module = "./dist/mjs/index.mjs";
-  publishPackageJson.types = "./dist/types/index.d.ts";
-
-  // Transform exports from source package.json
-  function transformExports(
-    originalExports: Record<string, unknown>
-  ): Record<string, unknown> {
-    const transformed: Record<string, unknown> = {};
-
-    for (const [key, value] of Object.entries(originalExports)) {
-      if (typeof value === "object" && value !== null) {
-        const exportEntry = value as Record<string, string>;
-        const importPath = exportEntry.import || exportEntry.default;
-
-        if (
-          importPath &&
-          importPath.startsWith("./src/") &&
-          importPath.endsWith(".ts")
-        ) {
-          // Transform ./src/foo/bar.ts -> appropriate dist paths
-          const relativePath = importPath
-            .replace("./src/", "")
-            .replace(".ts", "");
-          transformed[key] = {
-            types: `./dist/types/${relativePath}.d.ts`,
-            require: `./dist/cjs/${relativePath}.cjs`,
-            import: `./dist/mjs/${relativePath}.mjs`,
-          };
-        }
-      } else if (
-        typeof value === "string" &&
-        value.startsWith("./src/") &&
-        value.endsWith(".ts")
-      ) {
-        // Simple string export
-        const relativePath = value.replace("./src/", "").replace(".ts", "");
-        transformed[key] = {
-          types: `./dist/types/${relativePath}.d.ts`,
-          require: `./dist/cjs/${relativePath}.cjs`,
-          import: `./dist/mjs/${relativePath}.mjs`,
-        };
-      }
-    }
-
-    return transformed;
-  }
-
-  // Transform bin from source package.json
-  function transformBin(
-    originalBin: string | Record<string, string>
-  ): string | Record<string, string> {
-    if (typeof originalBin === "string") {
-      // Simple string bin path
-      if (originalBin.startsWith("./src/") && originalBin.endsWith(".ts")) {
-        const relativePath = originalBin
-          .replace("./src/", "")
-          .replace(".ts", ".cjs");
-        return `./dist/cjs/${relativePath}`;
-      }
-      return originalBin;
-    } else if (typeof originalBin === "object" && originalBin !== null) {
-      // Object with multiple bin entries
-      const transformed: Record<string, string> = {};
-      for (const [binName, binPath] of Object.entries(originalBin)) {
-        if (binPath.startsWith("./src/") && binPath.endsWith(".ts")) {
-          const relativePath = binPath
-            .replace("./src/", "")
-            .replace(".ts", ".cjs");
-          transformed[binName] = `./dist/cjs/${relativePath}`;
-        } else {
-          transformed[binName] = binPath;
-        }
-      }
-      return transformed;
-    }
-    return originalBin;
-  }
-
-  // Use transformed exports from package.json if available, otherwise default to index
-  if (packageJson.exports && Object.keys(packageJson.exports).length > 0) {
-    publishPackageJson.exports = transformExports(packageJson.exports);
-  } else {
-    publishPackageJson.exports = {
-      ".": {
-        types: "./dist/types/index.d.ts",
-        require: "./dist/cjs/index.cjs",
-        import: "./dist/mjs/index.mjs",
-      },
-    };
-  }
-
-  // Transform bin field if present
-  if (packageJson.bin) {
-    publishPackageJson.bin = transformBin(packageJson.bin);
-  }
-
-  // Add isolate types export if this package has type definitions
-  if (ISOLATE_TYPE_MAPPING[packageName]) {
-    publishPackageJson.exports["./isolate"] = {
-      types: "./dist/types/isolate.d.ts",
-    };
-  }
-
-  publishPackageJson.publishConfig = {
-    access: "public",
-  };
-  publishPackageJson.files = ["dist", "README.md"];
-
-  // Write the publish-ready package.json
-  await Bun.write(
-    path.join(packageDir, "package.json"),
-    JSON.stringify(publishPackageJson, null, 2)
-  );
-
-  console.log(`  ✅ package.json updated for publishing`);
-
-  console.log(`✨ Finished building ${npmPackageName} v${version}`);
-};
-
-// Main build process
-const main = async () => {
-  console.log("🚀 Building @ricsam/isolate packages for npm publishing...");
-  console.log("============================================================\n");
-
-  // Load root package.json for metadata
-  const rootPackageJson = await Bun.file(
-    path.join(__dirname, "..", "package.json")
-  ).json();
-  const rootMetadata = {
-    author: rootPackageJson.author,
-    license: rootPackageJson.license,
-    repository: rootPackageJson.repository,
-    bugs: rootPackageJson.bugs,
-    homepage: rootPackageJson.homepage,
-    keywords: rootPackageJson.keywords,
-    description: rootPackageJson.description,
-  };
-
-  for (const pkg of PACKAGES) {
-    try {
-      await buildPackage(pkg, rootMetadata);
-    } catch (error) {
-      console.error(`❌ Failed to build ${getNpmPackageName(pkg)}:`, error);
-      process.exit(1);
-    }
-  }
-
-  console.log("\n✨ All packages built successfully!");
-  console.log("\n📝 Next steps:");
-  console.log("  1. Review the built packages in packages/*/dist");
-  console.log("  2. Test the packages locally if needed");
-  console.log("  3. Publish with: npm publish packages/core");
-  console.log("                   npm publish packages/isolate-types");
-  console.log("                   npm publish packages/fetch");
-  console.log("                   npm publish packages/fs");
-  console.log("                   npm publish packages/runtime");
-  console.log("                   npm publish packages/test-environment");
-  console.log("                   npm publish packages/isolate-server");
-  console.log("\n   Or use: bun run publish:all\n");
-};
+  console.log("Build finished.");
+}
 
 main().catch((error) => {
   console.error("Build failed:", error);

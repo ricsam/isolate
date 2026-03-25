@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { describe, test } from "node:test";
 import { createModuleResolver } from "./index.ts";
 import type { HostCallContext } from "../types.ts";
@@ -57,5 +59,29 @@ describe("createModuleResolver", () => {
     assert.match(sourceTreeResult.code, /"utils\/math\.ts"/);
     assert.equal(fallbackResult.filename, "fallback-entry.ts");
     assert.match(fallbackResult.code, /"\.\/local\.ts"/);
+  });
+
+  test("lets virtual modules override mounted node_modules packages", async () => {
+    const nodeModulesPath = path.resolve(import.meta.dirname, "../../node_modules");
+    assert.equal(fs.existsSync(nodeModulesPath), true);
+
+    const resolver = createModuleResolver()
+      .mountNodeModules("/node_modules", nodeModulesPath)
+      .virtual("mime-types", {
+        code: "export const value = 'stubbed';",
+        filename: "mime-types-stub.ts",
+        resolveDir: "/virtual",
+        static: true,
+      });
+
+    const result = await resolver.resolve(
+      "mime-types",
+      { path: "/app/main.ts", resolveDir: "/app" },
+      TEST_CONTEXT,
+    );
+
+    assert.equal(result.filename, "mime-types-stub.ts");
+    assert.equal(result.resolveDir, "/virtual");
+    assert.match(result.code, /stubbed/);
   });
 });

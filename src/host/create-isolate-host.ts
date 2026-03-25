@@ -172,7 +172,7 @@ class HostImpl implements IsolateHost {
     const cli = entrypoint
       ? ["node", "--experimental-strip-types", entrypoint, "--socket", socketPath]
       : ["isolate-daemon", "--socket", socketPath];
-    const cwd = this.options.daemon?.cwd ?? (entrypoint ? path.resolve(import.meta.dirname, "../../..") : process.cwd());
+    const cwd = this.options.daemon?.cwd ?? (entrypoint ? path.resolve(import.meta.dirname, "../..") : process.cwd());
     this.daemonProcess = spawn(cli[0]!, cli.slice(1), {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],

@@ -2,7 +2,7 @@
 
 ## Project Status
 
-This repository is a greenfield application. Assume there are no backwards-compatibility requirements unless the user explicitly asks for them.
+This repository is a greenfield library. Assume there are no backwards-compatibility requirements unless the user explicitly asks for them.
 
 ## Change Guidelines
 
