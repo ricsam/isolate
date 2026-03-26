@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
 import { createModuleResolver } from "./index.ts";
@@ -83,5 +84,52 @@ describe("createModuleResolver", () => {
     assert.equal(result.filename, "mime-types-stub.ts");
     assert.equal(result.resolveDir, "/virtual");
     assert.match(result.code, /stubbed/);
+  });
+
+  test("preserves nested package resolution across transitive bare imports", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolate-module-resolver-"));
+    const nodeModulesPath = path.join(tempRoot, "node_modules");
+    const packageARoot = path.join(nodeModulesPath, "package-a");
+    const packageBRoot = path.join(packageARoot, "node_modules", "package-b");
+
+    fs.mkdirSync(packageBRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(packageARoot, "package.json"),
+      JSON.stringify({ name: "package-a", type: "module", exports: "./index.js" }),
+    );
+    fs.writeFileSync(
+      path.join(packageARoot, "index.js"),
+      "export { value } from 'package-b';\n",
+    );
+    fs.writeFileSync(
+      path.join(packageBRoot, "package.json"),
+      JSON.stringify({ name: "package-b", type: "module", exports: "./index.js" }),
+    );
+    fs.writeFileSync(
+      path.join(packageBRoot, "index.js"),
+      "export const value = 42;\n",
+    );
+
+    try {
+      const resolver = createModuleResolver().mountNodeModules("/node_modules", nodeModulesPath);
+
+      const packageA = await resolver.resolve(
+        "package-a",
+        { path: "/app/main.ts", resolveDir: "/app" },
+        TEST_CONTEXT,
+      );
+      assert.match(packageA.code, /package-b/);
+
+      const packageB = await resolver.resolve(
+        "package-b",
+        { path: path.posix.join(packageA.resolveDir, packageA.filename), resolveDir: packageA.resolveDir },
+        TEST_CONTEXT,
+      );
+
+      assert.equal(packageB.filename, "package-b.bundled.js");
+      assert.match(packageB.code, /42/);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });

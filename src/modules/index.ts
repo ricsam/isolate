@@ -10,9 +10,11 @@ class ModuleResolverBuilder implements ModuleResolver {
   private readonly virtualFiles = new Map<string, { filePath: string; options?: Partial<ModuleSource> }>();
   private readonly sourceTrees: Array<{ prefix: string; loader: ModuleResolverSourceLoader }> = [];
   private fallbackLoader?: ModuleResolverFallback;
+  private nodeModulesLoader?: ReturnType<typeof defaultModuleLoader>;
 
   mountNodeModules(virtualMount: string, hostPath: string): ModuleResolver {
     this.nodeModuleMappings.push({ from: hostPath, to: virtualMount });
+    this.nodeModulesLoader = undefined;
     return this;
   }
 
@@ -81,9 +83,8 @@ class ModuleResolverBuilder implements ModuleResolver {
     }
 
     if (this.nodeModuleMappings.length > 0) {
-      const mappedLoader = defaultModuleLoader(...this.nodeModuleMappings);
       try {
-        return await mappedLoader(specifier, importer);
+        return await this.getNodeModulesLoader()(specifier, importer);
       } catch (error) {
         if (!this.fallbackLoader) {
           throw error;
@@ -99,6 +100,13 @@ class ModuleResolverBuilder implements ModuleResolver {
     }
 
     throw new Error(`Unable to resolve module: ${specifier}`);
+  }
+
+  private getNodeModulesLoader(): ReturnType<typeof defaultModuleLoader> {
+    if (!this.nodeModulesLoader) {
+      this.nodeModulesLoader = defaultModuleLoader(...this.nodeModuleMappings);
+    }
+    return this.nodeModulesLoader;
   }
 }
 

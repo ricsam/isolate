@@ -1,6 +1,6 @@
 {
   "name": "@ricsam/isolate",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Unified runtime host for app servers, script runtimes, browser runtimes, module resolution, file bindings, and typechecking",
   "author": "ricsam <oss@ricsam.dev>",
