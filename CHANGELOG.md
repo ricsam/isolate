@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.4
+
+### Patch Changes
+
+- fix subpath imports
+
 ## 0.1.3
 
 ### Patch Changes
