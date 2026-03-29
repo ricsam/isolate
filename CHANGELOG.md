@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.3
+
+### Patch Changes
+
+- fix the bundler (to support the remark stack)
+
 ## 0.1.2
 
 ### Patch Changes

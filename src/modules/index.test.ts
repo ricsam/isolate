@@ -132,4 +132,92 @@ describe("createModuleResolver", () => {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  test("bundles package-private imports from a package imports map", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolate-package-imports-"));
+    const nodeModulesPath = path.join(tempRoot, "node_modules");
+    const packageRoot = path.join(nodeModulesPath, "package-a");
+
+    fs.mkdirSync(path.join(packageRoot, "lib"), { recursive: true });
+    fs.writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "package-a",
+        type: "module",
+        exports: "./index.js",
+        imports: {
+          "#internal": {
+            default: "./lib/internal.js",
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(packageRoot, "index.js"),
+      "export { value } from '#internal';\n",
+    );
+    fs.writeFileSync(
+      path.join(packageRoot, "lib/internal.js"),
+      "export const value = 42;\n",
+    );
+
+    try {
+      const resolver = createModuleResolver().mountNodeModules("/node_modules", nodeModulesPath);
+
+      const result = await resolver.resolve(
+        "package-a",
+        { path: "/app/main.ts", resolveDir: "/app" },
+        TEST_CONTEXT,
+      );
+
+      assert.equal(result.filename, "package-a.bundled.js");
+      assert.doesNotMatch(result.code, /#internal/);
+      assert.match(result.code, /42/);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("prefers worker or default exports over browser-only entrypoints", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolate-export-conditions-"));
+    const nodeModulesPath = path.join(tempRoot, "node_modules");
+    const packageRoot = path.join(nodeModulesPath, "package-a");
+
+    fs.mkdirSync(packageRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "package-a",
+        type: "module",
+        exports: {
+          browser: "./browser.js",
+          default: "./index.js",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(packageRoot, "index.js"),
+      "export const value = 42;\n",
+    );
+    fs.writeFileSync(
+      path.join(packageRoot, "browser.js"),
+      "const element = document.createElement('div'); export const value = element.tagName;\n",
+    );
+
+    try {
+      const resolver = createModuleResolver().mountNodeModules("/node_modules", nodeModulesPath);
+
+      const result = await resolver.resolve(
+        "package-a",
+        { path: "/app/main.ts", resolveDir: "/app" },
+        TEST_CONTEXT,
+      );
+
+      assert.equal(result.filename, "package-a.bundled.js");
+      assert.match(result.code, /42/);
+      assert.doesNotMatch(result.code, /document\.createElement/);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

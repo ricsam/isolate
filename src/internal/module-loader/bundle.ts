@@ -230,7 +230,7 @@ function pickImportTarget(value: unknown): string | null {
 
   const record = value as Record<string, unknown>;
 
-  for (const key of ["browser", "import", "module", "default"]) {
+  for (const key of ["workerd", "worker", "edge-light", "import", "module", "default", "browser"]) {
     if (key in record) {
       const target = pickImportTarget(record[key]);
       if (target) {
@@ -348,6 +348,10 @@ function externalizeDepsPlugin(currentPackageName: string): Plugin {
       // Don't externalize relative imports (internal to the package)
       if (source.startsWith(".") || source.startsWith("/")) return null;
 
+      // Keep package-private imports inside the current bundle so Rollup can
+      // resolve them through the importing package's `imports` map.
+      if (source.startsWith("#")) return null;
+
       // Don't externalize Node.js builtins — let nodeResolve handle them
       // via the package's browser field (e.g. "fs": false → empty module)
       if (isNodeBuiltin(source)) return null;
@@ -368,7 +372,7 @@ function externalizeDepsPlugin(currentPackageName: string): Plugin {
  * Bundle a bare specifier (npm package) using Rollup.
  *
  * Each unique bare specifier gets its own bundle with:
- * - node-resolve with browser conditions
+ * - node-resolve with worker/server-safe export conditions
  * - commonjs conversion
  * - json support
  * - process.env.NODE_ENV replacement
@@ -422,7 +426,11 @@ async function doBundleSpecifier(
     plugins: [
       packageEntryWrapperPlugin(specifier, namedExports),
       externalizeDepsPlugin(packageName),
-      nodeResolve({ browser: true, rootDir }),
+      nodeResolve({
+        rootDir,
+        browser: false,
+        exportConditions: ["workerd", "worker", "edge-light"],
+      }),
       shimNodeBuiltinsPlugin(),
       commonjs(commonjsInteropOptions),
       json(),
@@ -464,6 +472,7 @@ function externalizeAllBareSpecifiersPlugin(): Plugin {
     resolveId(source, importer) {
       if (!importer) return null;
       if (source.startsWith(".") || source.startsWith("/")) return null;
+      if (source.startsWith("#")) return null;
       // Don't externalize Node.js builtins — let nodeResolve/shim handle them
       if (isNodeBuiltin(source)) return null;
       return { id: source, external: true };
@@ -531,8 +540,9 @@ async function doBundleHostFile(
       externalizeAllBareSpecifiersPlugin(),
       stripTypeScriptPlugin(),
       nodeResolve({
-        browser: true,
         rootDir,
+        browser: false,
+        exportConditions: ["workerd", "worker", "edge-light"],
         extensions: [".mjs", ".js", ".json", ".node", ...TS_EXTENSIONS],
       }),
       shimNodeBuiltinsPlugin(),
