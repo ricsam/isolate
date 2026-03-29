@@ -220,4 +220,50 @@ describe("createModuleResolver", () => {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  test("resolves wildcard subpath exports to their import entrypoints", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolate-subpath-exports-"));
+    const nodeModulesPath = path.join(tempRoot, "node_modules");
+    const packageRoot = path.join(nodeModulesPath, "package-a");
+
+    fs.mkdirSync(path.join(packageRoot, "esm"), { recursive: true });
+    fs.mkdirSync(path.join(packageRoot, "cjs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "package-a",
+        type: "module",
+        exports: {
+          "./*": {
+            import: "./esm/*.js",
+            require: "./cjs/*.js",
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(packageRoot, "esm/webhooks.js"),
+      "export function validateEvent() { return 42; }\n",
+    );
+    fs.writeFileSync(
+      path.join(packageRoot, "cjs/webhooks.js"),
+      "exports.validateEvent = () => 42;\n",
+    );
+
+    try {
+      const resolver = createModuleResolver().mountNodeModules("/node_modules", nodeModulesPath);
+
+      const result = await resolver.resolve(
+        "package-a/webhooks",
+        { path: "/app/main.ts", resolveDir: "/app" },
+        TEST_CONTEXT,
+      );
+
+      assert.equal(result.filename, "webhooks.bundled.js");
+      assert.match(result.code, /validateEvent/);
+      assert.doesNotMatch(result.code, /__packageDefault/);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

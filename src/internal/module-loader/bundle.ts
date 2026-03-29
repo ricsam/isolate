@@ -195,8 +195,34 @@ function resolveImportEntryFromPackageJson(
   }
 
   if (typeof exportsField === "object" && exportsField !== null && !Array.isArray(exportsField)) {
-    const target = (exportsField as Record<string, unknown>)[exportKey];
-    return target === undefined ? null : pickImportTarget(target);
+    const exportsRecord = exportsField as Record<string, unknown>;
+    const directTarget = exportsRecord[exportKey];
+    if (directTarget !== undefined) {
+      return pickImportTarget(directTarget);
+    }
+
+    for (const [pattern, target] of Object.entries(exportsRecord)) {
+      if (!pattern.includes("*")) {
+        continue;
+      }
+
+      const starIndex = pattern.indexOf("*");
+      const prefix = pattern.slice(0, starIndex);
+      const suffix = pattern.slice(starIndex + 1);
+
+      if (!exportKey.startsWith(prefix) || !exportKey.endsWith(suffix)) {
+        continue;
+      }
+
+      const wildcardMatch = exportKey.slice(
+        prefix.length,
+        suffix.length > 0 ? -suffix.length : undefined,
+      );
+
+      return pickImportTarget(target, wildcardMatch);
+    }
+
+    return null;
   }
 
   return exportKey === "." ? pickImportTarget(exportsField) : null;
@@ -209,14 +235,14 @@ function isConditionalExportsObject(value: unknown): value is Record<string, unk
     && Object.keys(value).every((key) => !key.startsWith("."));
 }
 
-function pickImportTarget(value: unknown): string | null {
+function pickImportTarget(value: unknown, wildcardMatch?: string): string | null {
   if (typeof value === "string") {
-    return value;
+    return wildcardMatch === undefined ? value : value.replaceAll("*", wildcardMatch);
   }
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      const target = pickImportTarget(item);
+      const target = pickImportTarget(item, wildcardMatch);
       if (target) {
         return target;
       }
@@ -232,7 +258,7 @@ function pickImportTarget(value: unknown): string | null {
 
   for (const key of ["workerd", "worker", "edge-light", "import", "module", "default", "browser"]) {
     if (key in record) {
-      const target = pickImportTarget(record[key]);
+      const target = pickImportTarget(record[key], wildcardMatch);
       if (target) {
         return target;
       }
@@ -240,7 +266,7 @@ function pickImportTarget(value: unknown): string | null {
   }
 
   for (const nestedValue of Object.values(record)) {
-    const target = pickImportTarget(nestedValue);
+    const target = pickImportTarget(nestedValue, wildcardMatch);
     if (target) {
       return target;
     }
