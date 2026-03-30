@@ -40,19 +40,77 @@ jobs:
       - name: Update npm
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
         run: npm install -g npm@latest
-      - run: |
-          npm ci
-          npm install --no-save ./vendor/isolated-vm
+      - run: npm ci
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
       - run: npm run typecheck
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
       - run: npm test
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
 
+  isolated-vm-prebuild:
+    name: isolated-vm prebuild ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Add msbuild to PATH
+        if: matrix.os == 'windows-latest'
+        uses: microsoft/setup-msbuild@v2
+      - name: Install node-gyp
+        if: matrix.os == 'windows-latest'
+        run: npm install --global node-gyp@latest
+      - name: Install isolated-vm prebuild dependencies
+        run: npm install --ignore-scripts
+        working-directory: vendor/isolated-vm
+      - name: Build isolated-vm prebuilds
+        run: npm run prebuild
+        working-directory: vendor/isolated-vm
+      - name: Upload isolated-vm prebuilds
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-vm-prebuilds-${{ matrix.os }}
+          path: vendor/isolated-vm/prebuilds
+
+  isolated-vm-prebuild-linux:
+    name: isolated-vm prebuild ${{ matrix.distro }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+        distro: [debian, alpine]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build isolated-vm prebuilds
+        run: docker build vendor/isolated-vm -f vendor/isolated-vm/Dockerfile.${{ matrix.distro }} --output vendor/isolated-vm/prebuilds
+      - name: Upload isolated-vm prebuilds
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-vm-prebuilds-${{ matrix.distro }}-${{ matrix.arch }}
+          path: vendor/isolated-vm/prebuilds
+
   publish:
     name: Publish
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, isolated-vm-prebuild, isolated-vm-prebuild-linux]
     permissions:
       contents: write
       id-token: write
@@ -67,11 +125,17 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - name: Update npm
         run: npm install -g npm@latest
-      - run: |
-          npm ci
-          npm install --no-save ./vendor/isolated-vm
+      - run: npm ci
+      - name: Download isolated-vm prebuilds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: isolated-vm-prebuilds-*
+          merge-multiple: true
+          path: vendor/isolated-vm/prebuilds
+      - name: Verify isolated-vm prebuilds
+        run: find vendor/isolated-vm/prebuilds -type f -name '*.node' | sort
       - run: npm run build:npm
-      - run: npx changeset publish --access=public --registry=https://registry.npmjs.org/
+      - run: ./node_modules/.bin/changeset publish --access=public --registry=https://registry.npmjs.org/
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

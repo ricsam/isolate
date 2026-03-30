@@ -1,5 +1,13 @@
 # @ricsam/isolate
 
+## 0.1.5
+
+### Patch Changes
+
+- update build script
+- Updated dependencies
+  - @ricsam/isolated-vm@6.1.3
+
 ## 0.1.4
 
 ### Patch Changes

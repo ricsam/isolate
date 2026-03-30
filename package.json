@@ -1,6 +1,6 @@
 {
   "name": "@ricsam/isolate",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "Unified runtime host for app servers, script runtimes, browser runtimes, module resolution, file bindings, and typechecking",
   "author": "ricsam <oss@ricsam.dev>",
@@ -49,6 +49,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "workspaces": [
+    ".",
+    "vendor/isolated-vm"
+  ],
   "scripts": {
     "build": "bun scripts/build.ts",
     "build:npm": "bun scripts/build.ts",
@@ -71,11 +75,12 @@
   "devDependencies": {
     "@changesets/cli": "latest",
     "@types/node": "^24",
+    "changeset": "npm:@changesets/cli@latest",
     "playwright": "^1",
     "typescript": "^5"
   },
   "peerDependencies": {
-    "@ricsam/isolated-vm": "^6.1.2",
+    "@ricsam/isolated-vm": "^6.1.3",
     "playwright": "^1"
   },
   "peerDependenciesMeta": {

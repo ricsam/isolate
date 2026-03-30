@@ -1,6 +1,6 @@
 name: CI
 
-on: [pull_request]
+on: [push, pull_request]
 
 jobs:
   ci:
@@ -24,9 +24,7 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install dependencies
-        run: |
-          npm ci
-          npm install --no-save ./vendor/isolated-vm
+        run: npm ci
 
       - name: Build
         run: npm run build
@@ -51,3 +49,72 @@ jobs:
       - name: Run e2e tests
         run: npm run test:e2e
         working-directory: demo
+
+  isolated-vm-build-and-test:
+    name: isolated-vm ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [22, 24]
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Add msbuild to PATH
+        if: matrix.os == 'windows-latest'
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install node-gyp
+        if: matrix.os == 'windows-latest'
+        run: npm install --global node-gyp@latest
+
+      - name: Build isolated-vm
+        run: npm install --build-from-source
+        working-directory: vendor/isolated-vm
+
+      - name: Test isolated-vm
+        uses: nick-fields/retry@v3
+        with:
+          max_attempts: 3
+          retry_on: error
+          timeout_minutes: 6
+          command: |
+            cd vendor/isolated-vm
+            npm test
+
+  isolated-vm-build-and-test-alpine:
+    name: isolated-vm alpine / Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+      fail-fast: false
+    container: node:${{ matrix.node }}-alpine
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: apk add g++ make python3
+
+      - name: Build isolated-vm
+        run: npm install --build-from-source
+        working-directory: vendor/isolated-vm
+
+      - name: Test isolated-vm
+        run: npm test
+        working-directory: vendor/isolated-vm
+        timeout-minutes: 4
