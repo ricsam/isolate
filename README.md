@@ -55,14 +55,34 @@ What is currently supported:
 - `AsyncContext.Snapshot`
 - `node:async_hooks` `AsyncLocalStorage`
 - `node:async_hooks` `AsyncResource`
+- `node:async_hooks` `createHook()`
+- `node:async_hooks` `executionAsyncId()`
+- `node:async_hooks` `triggerAsyncId()`
+- `node:async_hooks` `executionAsyncResource()`
+- `node:async_hooks` `asyncWrapProviders`
 
-What is intentionally not implemented in `node:async_hooks` yet:
+Hook callbacks observe sandbox-managed resources such as promises, timers, host callback bridges, and user-created `AsyncResource`s. This is still not a claim of full Node internals parity outside the sandbox runtime.
 
-- `createHook()`
-- `executionAsyncId()`
-- `triggerAsyncId()`
-- `executionAsyncResource()`
-- `asyncWrapProviders`
+```ts
+import {
+  createHook,
+  executionAsyncResource,
+} from "node:async_hooks";
+
+const hook = createHook({
+  init(asyncId, type, triggerAsyncId, resource) {
+    resource.requestTag = type + ":" + asyncId;
+  },
+  before() {
+    console.log(executionAsyncResource().requestTag ?? null);
+  },
+}).enable();
+
+setTimeout(() => {
+  console.log(executionAsyncResource().requestTag);
+  hook.disable();
+}, 0);
+```
 
 ## Quick Start
 

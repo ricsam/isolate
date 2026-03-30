@@ -100,10 +100,15 @@ export async function setupTimers(
   const timersCode = `
 (function() {
   const __timers_callbacks = new Map();
-  const __wrapAsyncContextCallback = (callback) => (
-    typeof callback === 'function' && globalThis.AsyncContext?.Snapshot?.wrap
-      ? globalThis.AsyncContext.Snapshot.wrap(callback)
+  const __wrapAsyncContextCallback = (callback, type) => (
+    typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.wrapCallback
+      ? globalThis.__isolateAsyncContextInternals.wrapCallback(callback, { type })
       : callback
+  );
+  const __releaseAsyncContextCallback = (callback) => (
+    typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.releaseCallback
+      ? globalThis.__isolateAsyncContextInternals.releaseCallback(callback)
+      : false
   );
 
   globalThis.setTimeout = function(callback, delay, ...args) {
@@ -111,7 +116,11 @@ export async function setupTimers(
       throw new TypeError('Callback must be a function');
     }
     const id = __timers_registerTimeout(delay || 0);
-    __timers_callbacks.set(id, { callback: __wrapAsyncContextCallback(callback), args });
+    __timers_callbacks.set(id, {
+      args,
+      callback: __wrapAsyncContextCallback(callback, 'Timeout'),
+      repeat: false,
+    });
     return id;
   };
 
@@ -120,13 +129,21 @@ export async function setupTimers(
       throw new TypeError('Callback must be a function');
     }
     const id = __timers_registerInterval(delay || 0);
-    __timers_callbacks.set(id, { callback: __wrapAsyncContextCallback(callback), args });
+    __timers_callbacks.set(id, {
+      args,
+      callback: __wrapAsyncContextCallback(callback, 'Timeout'),
+      repeat: true,
+    });
     return id;
   };
 
   globalThis.clearTimeout = function(id) {
     __timers_clear(id);
-    __timers_callbacks.delete(id);
+    const entry = __timers_callbacks.get(id);
+    if (entry) {
+      __releaseAsyncContextCallback(entry.callback);
+      __timers_callbacks.delete(id);
+    }
   };
 
   globalThis.clearInterval = globalThis.clearTimeout;
@@ -135,18 +152,31 @@ export async function setupTimers(
   globalThis.__timers_execute = function(id) {
     const entry = __timers_callbacks.get(id);
     if (entry) {
-      entry.callback(...entry.args);
+      try {
+        entry.callback(...entry.args);
+      } finally {
+        if (!entry.repeat) {
+          __releaseAsyncContextCallback(entry.callback);
+        }
+      }
     }
   };
 
   // Called by host clearAll() to clear all callbacks
   globalThis.__timers_clearCallbacks = function() {
+    for (const entry of __timers_callbacks.values()) {
+      __releaseAsyncContextCallback(entry.callback);
+    }
     __timers_callbacks.clear();
   };
 
   // Called to remove a one-shot timeout callback after execution
   globalThis.__timers_removeCallback = function(id) {
-    __timers_callbacks.delete(id);
+    const entry = __timers_callbacks.get(id);
+    if (entry) {
+      __releaseAsyncContextCallback(entry.callback);
+      __timers_callbacks.delete(id);
+    }
   };
 })();
 `;

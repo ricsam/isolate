@@ -1,5 +1,13 @@
 # @ricsam/isolate
 
+## 0.1.6
+
+### Patch Changes
+
+- Expand node:async_hooks API
+- Updated dependencies
+  - @ricsam/isolated-vm@6.1.4
+
 ## 0.1.5
 
 ### Patch Changes

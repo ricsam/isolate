@@ -2391,10 +2391,15 @@ function setupClientWebSocket(
     }
   };
 
-  const __wrapAsyncContextCallback = (callback) => (
-    typeof callback === 'function' && globalThis.AsyncContext?.Snapshot?.wrap
-      ? globalThis.AsyncContext.Snapshot.wrap(callback)
+  const __wrapAsyncContextCallback = (callback, options = {}) => (
+    typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.wrapCallback
+      ? globalThis.__isolateAsyncContextInternals.wrapCallback(callback, options)
       : callback
+  );
+  const __releaseAsyncContextCallback = (callback) => (
+    typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.releaseCallback
+      ? globalThis.__isolateAsyncContextInternals.releaseCallback(callback)
+      : false
   );
 
   // Helper to dispatch events
@@ -2532,13 +2537,20 @@ function setupClientWebSocket(
     get CLOSED() { return WebSocket.CLOSED; }
 
     _setHandler(type, handler) {
+      const previous = this._handlers.get(type);
+      if (previous?.wrapped) {
+        __releaseAsyncContextCallback(previous.wrapped);
+      }
       if (typeof handler !== 'function') {
         this._handlers.set(type, null);
         return;
       }
       this._handlers.set(type, {
         original: handler,
-        wrapped: __wrapAsyncContextCallback(handler),
+        wrapped: __wrapAsyncContextCallback(handler, {
+          resource: this,
+          type: 'isolate.websocket',
+        }),
       });
     }
 
@@ -2618,7 +2630,10 @@ function setupClientWebSocket(
       if (!listeners.some((entry) => entry.original === listener)) {
         listeners.push({
           original: listener,
-          wrapped: __wrapAsyncContextCallback(listener),
+          wrapped: __wrapAsyncContextCallback(listener, {
+            resource: this,
+            type: 'isolate.websocket',
+          }),
         });
       }
     }
@@ -2628,6 +2643,7 @@ function setupClientWebSocket(
       if (!listeners) return;
       const index = listeners.findIndex((entry) => entry.original === listener || entry.wrapped === listener);
       if (index !== -1) {
+        __releaseAsyncContextCallback(listeners[index].wrapped);
         listeners.splice(index, 1);
       }
     }
@@ -2686,6 +2702,18 @@ function setupClientWebSocket(
       this.#readyState = WebSocket.CLOSED;
       const event = new _CloseEvent('close', { code, reason, wasClean });
       dispatchEvent(this, event);
+      for (const handler of this._handlers.values()) {
+        if (handler?.wrapped) {
+          __releaseAsyncContextCallback(handler.wrapped);
+        }
+      }
+      for (const listeners of this._listeners.values()) {
+        for (const listener of listeners) {
+          __releaseAsyncContextCallback(listener.wrapped);
+        }
+      }
+      this._handlers.clear();
+      this._listeners.clear();
       __clientWebSockets.delete(this.#socketId);
     }
   }
@@ -2727,9 +2755,9 @@ function setupServe(context: ivm.Context): void {
   context.evalSync(`
 (function() {
   globalThis.__serveOptions__ = null;
-  const __wrapAsyncContextCallback = (callback) => (
-    typeof callback === 'function' && globalThis.AsyncContext?.Snapshot?.wrap
-      ? globalThis.AsyncContext.Snapshot.wrap(callback)
+  const __wrapAsyncContextCallback = (callback, options = {}) => (
+    typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.wrapCallback
+      ? globalThis.__isolateAsyncContextInternals.wrapCallback(callback, options)
       : callback
   );
 
@@ -2740,14 +2768,19 @@ function setupServe(context: ivm.Context): void {
 
     const wrapped = { ...options };
     if (typeof options.fetch === 'function') {
-      wrapped.fetch = __wrapAsyncContextCallback(options.fetch);
+      wrapped.fetch = __wrapAsyncContextCallback(options.fetch, {
+        type: 'isolate.serve',
+      });
     }
 
     if (options.websocket && typeof options.websocket === 'object') {
       wrapped.websocket = { ...options.websocket };
       for (const name of ['open', 'message', 'close', 'error']) {
         if (typeof options.websocket[name] === 'function') {
-          wrapped.websocket[name] = __wrapAsyncContextCallback(options.websocket[name]);
+          wrapped.websocket[name] = __wrapAsyncContextCallback(
+            options.websocket[name],
+            { type: 'isolate.serve.websocket' },
+          );
         }
       }
     }
@@ -2860,9 +2893,14 @@ export async function setupFetch(
 (function() {
   const __eventListeners = new Map();
   const __wrapAsyncContextCallback = (callback) => (
-    typeof callback === 'function' && globalThis.AsyncContext?.Snapshot?.wrap
-      ? globalThis.AsyncContext.Snapshot.wrap(callback)
+    typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.wrapCallback
+      ? globalThis.__isolateAsyncContextInternals.wrapCallback(callback, { type: 'isolate.event' })
       : callback
+  );
+  const __releaseAsyncContextCallback = (callback) => (
+    typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.releaseCallback
+      ? globalThis.__isolateAsyncContextInternals.releaseCallback(callback)
+      : false
   );
 
   globalThis.__on = function(event, callback) {
@@ -2875,6 +2913,7 @@ export async function setupFetch(
     listeners.add(wrapped);
     return function() {
       listeners.delete(wrapped);
+      __releaseAsyncContextCallback(wrapped);
       if (listeners.size === 0) {
         __eventListeners.delete(event);
       }

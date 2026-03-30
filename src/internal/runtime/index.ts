@@ -492,7 +492,7 @@ const ISOLATE_MARSHAL_CODE = `
 (function() {
   const __wrapAsyncContextCallback = (callback) => (
     typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.wrapCallback
-      ? globalThis.__isolateAsyncContextInternals.wrapCallback(callback)
+      ? globalThis.__isolateAsyncContextInternals.wrapCallback(callback, { type: 'isolate.callback' })
       : callback
   );
   let __customFn_nextCallbackId = 1;

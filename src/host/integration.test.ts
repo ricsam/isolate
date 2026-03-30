@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { asyncWrapProviders as hostAsyncWrapProviders } from "node:async_hooks";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { createModuleResolver } from "../index.ts";
@@ -83,7 +84,15 @@ describe("createIsolateHost runtime integration", () => {
 
     try {
       await runtime.eval(`
-        import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
+        import asyncHooks, {
+          AsyncLocalStorage,
+          AsyncResource,
+          asyncWrapProviders,
+          createHook,
+          executionAsyncId,
+          executionAsyncResource,
+          triggerAsyncId,
+        } from "node:async_hooks";
 
         function createDeferred() {
           let resolve;
@@ -98,6 +107,67 @@ describe("createIsolateHost runtime integration", () => {
           name: "variable",
           defaultValue: "unset",
         });
+        const topLevel = {
+          executionAsyncId: executionAsyncId(),
+          sameResource: executionAsyncResource() === executionAsyncResource(),
+          triggerAsyncId: triggerAsyncId(),
+        };
+        const hookEvents = [];
+        const hook = createHook({
+          init(asyncId, type, hookTriggerAsyncId, resource) {
+            if (resource && typeof resource === "object" && !resource.__resourceTag) {
+              resource.__resourceTag = type + ":" + asyncId;
+            }
+            if (hookEvents.length < 200) {
+              hookEvents.push({
+                asyncId,
+                event: "init",
+                resourceTag: resource?.__resourceTag ?? null,
+                triggerAsyncId: hookTriggerAsyncId,
+                type,
+              });
+            }
+          },
+          before(asyncId) {
+            if (hookEvents.length < 200) {
+              hookEvents.push({
+                asyncId,
+                event: "before",
+                executionAsyncId: executionAsyncId(),
+                resourceTag: executionAsyncResource()?.__resourceTag ?? null,
+                triggerAsyncId: triggerAsyncId(),
+              });
+            }
+          },
+          after(asyncId) {
+            if (hookEvents.length < 200) {
+              hookEvents.push({
+                asyncId,
+                event: "after",
+                executionAsyncId: executionAsyncId(),
+                resourceTag: executionAsyncResource()?.__resourceTag ?? null,
+                triggerAsyncId: triggerAsyncId(),
+              });
+            }
+          },
+          destroy(asyncId) {
+            if (hookEvents.length < 200) {
+              hookEvents.push({
+                asyncId,
+                event: "destroy",
+              });
+            }
+          },
+          promiseResolve(asyncId) {
+            if (hookEvents.length < 200) {
+              hookEvents.push({
+                asyncId,
+                event: "promiseResolve",
+              });
+            }
+          },
+        });
+        const sameEnable = hook.enable() === hook && hook.enable() === hook;
 
         const syncValue = storage.run({ requestId: "sync" }, () => storage.getStore()?.requestId ?? null);
         const asyncValue = await storage.run({ requestId: "async" }, async () => {
@@ -134,12 +204,71 @@ describe("createIsolateHost runtime integration", () => {
             setTimeout(() => resolve(storage.getStore()?.requestId ?? null), 0);
           })
         ));
+        const timerAsyncInfo = await new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({
+              executionAsyncId: executionAsyncId(),
+              resourceTag: executionAsyncResource()?.__resourceTag ?? null,
+              triggerAsyncId: triggerAsyncId(),
+            });
+          }, 0);
+        });
+        const intervalExecutions = [];
+        let intervalResource = null;
+        await new Promise((resolve) => {
+          const intervalId = setInterval(() => {
+            const resource = executionAsyncResource();
+            if (!intervalResource) {
+              intervalResource = resource;
+            }
+            intervalExecutions.push({
+              executionAsyncId: executionAsyncId(),
+              sameResource: resource === intervalResource,
+              triggerAsyncId: triggerAsyncId(),
+            });
+            if (intervalExecutions.length === 2) {
+              clearInterval(intervalId);
+              resolve();
+            }
+          }, 0);
+        });
 
         const resourceValue = await storage.run({ requestId: "resource" }, async () => {
           const resource = new AsyncResource("test-resource");
           await Promise.resolve();
           return resource.runInAsyncScope(() => storage.getStore()?.requestId ?? null);
         });
+        const resourceLifecycle = (() => {
+          const resource = new AsyncResource("hook-resource");
+          const inScope = resource.runInAsyncScope(() => ({
+            executionAsyncId: executionAsyncId(),
+            sameResource: executionAsyncResource() === resource,
+            triggerAsyncId: triggerAsyncId(),
+          }));
+          const propagationResource = new AsyncResource("propagation-resource");
+          const propagationValue = propagationResource.runInAsyncScope(() => {
+            executionAsyncResource().sharedValue = "persisted";
+            return propagationResource.bind(
+              () => executionAsyncResource().sharedValue ?? null,
+            )();
+          });
+          propagationResource.emitDestroy();
+          const sameResource = resource.emitDestroy() === resource;
+          let throwsOnSecondDestroy = false;
+          try {
+            resource.emitDestroy();
+          } catch {
+            throwsOnSecondDestroy = true;
+          }
+          return {
+            asyncId: resource.asyncId(),
+            inScope,
+            propagationValue,
+            sameResource,
+            throwsOnSecondDestroy,
+            triggerAsyncId: resource.triggerAsyncId(),
+          };
+        })();
         const emitDestroy = (() => {
           const resource = new AsyncResource("destroy-resource");
           const sameResource = resource.emitDestroy() === resource;
@@ -172,18 +301,55 @@ describe("createIsolateHost runtime integration", () => {
           await Promise.resolve();
           return asyncContextVariable.get();
         });
+        const promiseInfo = await Promise.resolve("promise").then(() => ({
+          executionAsyncId: executionAsyncId(),
+          resourceIsPromise: executionAsyncResource() instanceof Promise,
+          resourceTag: executionAsyncResource()?.__resourceTag ?? null,
+          triggerAsyncId: triggerAsyncId(),
+        }));
+        const invalidHookError = (() => {
+          try {
+            createHook({ init: 1 });
+            return null;
+          } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+          }
+        })();
+        const inheritedHook = createHook(Object.create({
+          init() {},
+        }));
+        const sameDisable = hook.disable() === hook && hook.disable() === hook;
 
         console.log(JSON.stringify({
+          asyncWrapProviders,
+          defaultExportKeys: Object.keys(asyncHooks).sort(),
+          hasAsyncHooksExports: {
+            asyncWrapProviders: typeof asyncWrapProviders === "object",
+            createHook: typeof createHook === "function",
+            executionAsyncId: typeof executionAsyncId === "function",
+            executionAsyncResource: typeof executionAsyncResource === "function",
+            triggerAsyncId: typeof triggerAsyncId === "function",
+          },
           hasAsyncContext: typeof AsyncContext === "object",
           isConstructor: typeof AsyncLocalStorage === "function",
           hasAsyncResource: typeof AsyncResource === "function",
+          hookEvents,
+          inheritedHook: typeof inheritedHook.enable === "function",
+          invalidHookError,
+          sameDisable,
+          sameEnable,
           syncValue,
           asyncValue,
           parallelValues,
           boundValue,
           snapshotValue,
+          promiseInfo,
           timerValue,
+          timerAsyncInfo,
+          topLevel,
+          intervalExecutions,
           resourceValue,
+          resourceLifecycle,
           emitDestroy,
           enterValue,
           exitValue,
@@ -197,9 +363,95 @@ describe("createIsolateHost runtime integration", () => {
       await runtime.dispose();
     }
 
-    assert.deepEqual(collectOutput(entries), [
-      '{"hasAsyncContext":true,"isConstructor":true,"hasAsyncResource":true,"syncValue":"sync","asyncValue":"async","parallelValues":["A","B"],"boundValue":"bind","snapshotValue":"snapshot","timerValue":"timer","resourceValue":"resource","emitDestroy":{"sameResource":true,"throwsOnSecondCall":true},"enterValue":"entered","exitValue":null,"afterExitValue":"entered","disabledValue":null,"staleDisabledValue":null,"asyncContextValue":"ctx"}',
+    assert.equal(entries.length, 1);
+    const result = JSON.parse(collectOutput(entries)[0] ?? "{}") as Record<string, unknown>;
+
+    assert.deepEqual(result.defaultExportKeys, [
+      "AsyncLocalStorage",
+      "AsyncResource",
+      "asyncWrapProviders",
+      "createHook",
+      "executionAsyncId",
+      "executionAsyncResource",
+      "triggerAsyncId",
     ]);
+    assert.deepEqual(
+      Object.entries(result.asyncWrapProviders as Record<string, unknown>).sort(),
+      Object.entries(hostAsyncWrapProviders).sort(),
+    );
+    assert.deepEqual(result.hasAsyncHooksExports, {
+      asyncWrapProviders: true,
+      createHook: true,
+      executionAsyncId: true,
+      executionAsyncResource: true,
+      triggerAsyncId: true,
+    });
+    assert.equal(result.hasAsyncContext, true);
+    assert.equal(result.isConstructor, true);
+    assert.equal(result.hasAsyncResource, true);
+    assert.equal(result.inheritedHook, true);
+    assert.equal(result.invalidHookError, "hook.init must be a function");
+    assert.equal(result.sameEnable, true);
+    assert.equal(result.sameDisable, true);
+    assert.deepEqual(result.topLevel, {
+      executionAsyncId: 1,
+      sameResource: true,
+      triggerAsyncId: 0,
+    });
+    assert.equal(result.syncValue, "sync");
+    assert.equal(result.asyncValue, "async");
+    assert.deepEqual(result.parallelValues, ["A", "B"]);
+    assert.equal(result.boundValue, "bind");
+    assert.equal(result.snapshotValue, "snapshot");
+    assert.equal(result.timerValue, "timer");
+    assert.equal(result.resourceValue, "resource");
+    assert.deepEqual(result.emitDestroy, {
+      sameResource: true,
+      throwsOnSecondCall: true,
+    });
+    assert.equal(result.enterValue, "entered");
+    assert.equal(result.exitValue, null);
+    assert.equal(result.afterExitValue, "entered");
+    assert.equal(result.disabledValue, null);
+    assert.equal(result.staleDisabledValue, null);
+    assert.equal(result.asyncContextValue, "ctx");
+
+    const promiseInfo = result.promiseInfo as Record<string, unknown>;
+    assert.equal(promiseInfo.resourceIsPromise, true);
+    assert.equal(typeof promiseInfo.executionAsyncId, "number");
+    assert.equal(typeof promiseInfo.triggerAsyncId, "number");
+    assert.notEqual(promiseInfo.executionAsyncId, 1);
+
+    const timerAsyncInfo = result.timerAsyncInfo as Record<string, unknown>;
+    assert.equal(typeof timerAsyncInfo.executionAsyncId, "number");
+    assert.equal(typeof timerAsyncInfo.triggerAsyncId, "number");
+    assert.match(String(timerAsyncInfo.resourceTag), /^Timeout:/);
+
+    const intervalExecutions = result.intervalExecutions as Array<Record<string, unknown>>;
+    assert.equal(intervalExecutions.length, 2);
+    assert.equal(intervalExecutions[0]?.sameResource, true);
+    assert.equal(intervalExecutions[1]?.sameResource, true);
+    assert.equal(intervalExecutions[0]?.executionAsyncId, intervalExecutions[1]?.executionAsyncId);
+
+    const resourceLifecycle = result.resourceLifecycle as Record<string, unknown>;
+    assert.equal(typeof resourceLifecycle.asyncId, "number");
+    assert.equal(resourceLifecycle.propagationValue, "persisted");
+    assert.equal(resourceLifecycle.sameResource, true);
+    assert.equal(resourceLifecycle.throwsOnSecondDestroy, true);
+    assert.deepEqual(resourceLifecycle.inScope, {
+      executionAsyncId: resourceLifecycle.asyncId,
+      sameResource: true,
+      triggerAsyncId: resourceLifecycle.triggerAsyncId,
+    });
+
+    const hookEvents = result.hookEvents as Array<Record<string, unknown>>;
+    assert.ok(hookEvents.some((event) => event.event === "init" && event.type === "PROMISE"));
+    assert.ok(hookEvents.some((event) => event.event === "init" && event.type === "Timeout"));
+    assert.ok(hookEvents.some((event) => event.event === "init" && event.type === "hook-resource"));
+    assert.ok(hookEvents.some((event) => event.event === "before"));
+    assert.ok(hookEvents.some((event) => event.event === "after"));
+    assert.ok(hookEvents.some((event) => event.event === "destroy"));
+    assert.ok(hookEvents.some((event) => event.event === "promiseResolve"));
   });
 
   test("preserves async context for emitted runtime events", async () => {
@@ -221,13 +473,23 @@ describe("createIsolateHost runtime integration", () => {
 
     try {
       await runtime.eval(`
-        import { AsyncLocalStorage } from "node:async_hooks";
+        import {
+          AsyncLocalStorage,
+          executionAsyncId,
+          executionAsyncResource,
+          triggerAsyncId,
+        } from "node:async_hooks";
 
         const storage = new AsyncLocalStorage();
         globalThis.__eventValuePromise = storage.run({ requestId: "event" }, () => (
           new Promise((resolve) => {
             __on("demo", () => {
-              resolve(storage.getStore()?.requestId ?? null);
+              resolve({
+                executionAsyncId: executionAsyncId(),
+                hasResource: typeof executionAsyncResource() === "object",
+                requestId: storage.getStore()?.requestId ?? null,
+                triggerAsyncId: triggerAsyncId(),
+              });
             });
           })
         ));
@@ -243,9 +505,20 @@ describe("createIsolateHost runtime integration", () => {
       await runtime.dispose();
     }
 
-    assert.deepEqual(collectOutput(entries), [
-      '{"eventValue":"event"}',
-    ]);
+    assert.equal(entries.length, 1);
+    const eventResult = JSON.parse(collectOutput(entries)[0] ?? "{}") as {
+      eventValue?: {
+        executionAsyncId: number;
+        hasResource: boolean;
+        requestId: string | null;
+        triggerAsyncId: number;
+      };
+    };
+    assert.equal(eventResult.eventValue?.requestId, "event");
+    assert.equal(eventResult.eventValue?.hasResource, true);
+    assert.equal(typeof eventResult.eventValue?.executionAsyncId, "number");
+    assert.equal(typeof eventResult.eventValue?.triggerAsyncId, "number");
+    assert.ok((eventResult.eventValue?.executionAsyncId ?? 0) > 1);
   });
 
   test("preserves async context for isolate callbacks invoked by host tools", async () => {
@@ -275,13 +548,23 @@ describe("createIsolateHost runtime integration", () => {
 
     try {
       await runtime.eval(`
-        import { AsyncLocalStorage } from "node:async_hooks";
+        import {
+          AsyncLocalStorage,
+          executionAsyncId,
+          executionAsyncResource,
+          triggerAsyncId,
+        } from "node:async_hooks";
 
         const storage = new AsyncLocalStorage();
         await storage.run({ requestId: "callback" }, async () => {
           await registerCallback(async () => {
             await Promise.resolve();
-            return storage.getStore()?.requestId ?? null;
+            return {
+              executionAsyncId: executionAsyncId(),
+              hasResource: typeof executionAsyncResource() === "object",
+              requestId: storage.getStore()?.requestId ?? null,
+              triggerAsyncId: triggerAsyncId(),
+            };
           });
         });
       `);
@@ -298,9 +581,20 @@ describe("createIsolateHost runtime integration", () => {
       await runtime.dispose();
     }
 
-    assert.deepEqual(collectOutput(entries), [
-      '{"callbackValue":"callback"}',
-    ]);
+    assert.equal(entries.length, 1);
+    const callbackResult = JSON.parse(collectOutput(entries)[0] ?? "{}") as {
+      callbackValue?: {
+        executionAsyncId: number;
+        hasResource: boolean;
+        requestId: string | null;
+        triggerAsyncId: number;
+      };
+    };
+    assert.equal(callbackResult.callbackValue?.requestId, "callback");
+    assert.equal(callbackResult.callbackValue?.hasResource, true);
+    assert.equal(typeof callbackResult.callbackValue?.executionAsyncId, "number");
+    assert.equal(typeof callbackResult.callbackValue?.triggerAsyncId, "number");
+    assert.ok((callbackResult.callbackValue?.executionAsyncId ?? 0) > 1);
   });
 
   test("bridges outbound fetch callbacks through the public runtime API", async () => {

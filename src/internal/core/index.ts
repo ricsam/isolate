@@ -2191,9 +2191,14 @@ async function injectAbortController(context: ivm.Context): Promise<void> {
   // Use WeakMap for private state (similar to Blob pattern)
   const _abortSignalState = new WeakMap();
   const __wrapAsyncContextCallback = (callback) => (
-    typeof callback === 'function' && globalThis.AsyncContext?.Snapshot?.wrap
-      ? globalThis.AsyncContext.Snapshot.wrap(callback)
+    typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.wrapCallback
+      ? globalThis.__isolateAsyncContextInternals.wrapCallback(callback, { type: 'isolate.abort' })
       : callback
+  );
+  const __releaseAsyncContextCallback = (callback) => (
+    typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.releaseCallback
+      ? globalThis.__isolateAsyncContextInternals.releaseCallback(callback)
+      : false
   );
 
   class AbortSignal {
@@ -2255,7 +2260,10 @@ async function injectAbortController(context: ivm.Context): Promise<void> {
         const idx = state.listeners.findIndex((entry) => (
           entry.original === listener || entry.wrapped === listener
         ));
-        if (idx !== -1) state.listeners.splice(idx, 1);
+        if (idx !== -1) {
+          __releaseAsyncContextCallback(state.listeners[idx].wrapped);
+          state.listeners.splice(idx, 1);
+        }
       }
     }
 

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { asyncWrapProviders as hostAsyncWrapProviders } from "node:async_hooks";
 import { builtinModules, createRequire } from "node:module";
 import { rollup, type Plugin } from "rollup";
 import * as nodeResolveModule from "@rollup/plugin-node-resolve";
@@ -57,6 +58,7 @@ function isNodeBuiltin(source: string): boolean {
 }
 
 const NODE_BUILTIN_SHIM_PREFIX = "\0node-builtin-shim:";
+const HOST_ASYNC_WRAP_PROVIDERS_JSON = JSON.stringify(hostAsyncWrapProviders);
 
 export function getNodeBuiltinShimCode(source: string): string {
   if (source === "ws" || source === "node:ws") {
@@ -77,58 +79,117 @@ export default WebSocketShim;
 const AsyncContextShim = globalThis.AsyncContext;
 const asyncInternals = globalThis.__isolateAsyncContextInternals;
 
-if (!AsyncContextShim || !asyncInternals?.AsyncContextFrame) {
+if (
+  !AsyncContextShim
+  || !asyncInternals?.AsyncContextFrame
+  || typeof asyncInternals.createResource !== "function"
+  || typeof asyncInternals.runWithResource !== "function"
+  || typeof asyncInternals.destroyResource !== "function"
+  || typeof asyncInternals.enableHook !== "function"
+  || typeof asyncInternals.disableHook !== "function"
+) {
   throw new Error(
     "node:async_hooks requires AsyncContext support in the isolate engine."
   );
 }
 
-const { AsyncContextFrame, currentAsyncResource } = asyncInternals;
-let nextAsyncResourceId = 1;
+const { AsyncContextFrame } = asyncInternals;
 const NO_STORE = Symbol("AsyncLocalStorage.noStore");
+const asyncWrapProviders = Object.assign(
+  Object.create(null),
+  ${HOST_ASYNC_WRAP_PROVIDERS_JSON},
+);
 
-function currentAsyncResourceState() {
-  return currentAsyncResource.get() ?? {
-    asyncId: 0,
-    triggerAsyncId: 0,
-    resource: undefined,
-  };
+function validateHookCallback(name, value) {
+  if (value !== undefined && typeof value !== "function") {
+    throw new TypeError("hook." + name + " must be a function");
+  }
+}
+
+class AsyncHook {
+  #callbacks;
+  #enabled;
+
+  constructor(callbacks) {
+    this.#callbacks = callbacks;
+    this.#enabled = false;
+  }
+
+  enable() {
+    if (!this.#enabled) {
+      this.#enabled = true;
+      asyncInternals.enableHook(this, this.#callbacks);
+    }
+    return this;
+  }
+
+  disable() {
+    if (this.#enabled) {
+      this.#enabled = false;
+      asyncInternals.disableHook(this);
+    }
+    return this;
+  }
+}
+
+function createHook(callbacks) {
+  const { init, before, after, destroy, promiseResolve } = callbacks;
+
+  validateHookCallback("init", init);
+  validateHookCallback("before", before);
+  validateHookCallback("after", after);
+  validateHookCallback("destroy", destroy);
+  validateHookCallback("promiseResolve", promiseResolve);
+
+  return new AsyncHook({
+    init,
+    before,
+    after,
+    destroy,
+    promiseResolve,
+  });
+}
+
+function executionAsyncId() {
+  return asyncInternals.executionAsyncId();
+}
+
+function triggerAsyncId() {
+  return asyncInternals.triggerAsyncId();
+}
+
+function executionAsyncResource() {
+  return asyncInternals.executionAsyncResource();
 }
 
 class AsyncResource {
   #snapshot;
-  #asyncId;
-  #triggerAsyncId;
-  #destroyed;
+  #resourceState;
 
   constructor(type, options = {}) {
-    void type;
-
     const normalizedOptions =
       options && typeof options === "object" ? options : {};
-    const currentState = currentAsyncResourceState();
 
     this.#snapshot = new AsyncContextShim.Snapshot();
-    this.#asyncId = nextAsyncResourceId++;
-    this.#triggerAsyncId = Number.isSafeInteger(normalizedOptions.triggerAsyncId)
-      ? normalizedOptions.triggerAsyncId
-      : currentState.asyncId;
-    this.#destroyed = false;
+    this.#resourceState = asyncInternals.createResource(
+      String(type),
+      this,
+      {
+        triggerAsyncId: normalizedOptions.triggerAsyncId,
+      },
+    );
   }
 
   runInAsyncScope(fn, thisArg, ...args) {
     if (typeof fn !== "function") {
       throw new TypeError("AsyncResource.runInAsyncScope requires a function");
     }
-    const state = {
-      asyncId: this.#asyncId,
-      triggerAsyncId: this.#triggerAsyncId,
-      resource: this,
-    };
     return this.#snapshot.run(
-      () => currentAsyncResource.run(
-        state,
-        () => Reflect.apply(fn, thisArg, args),
+      () => asyncInternals.runWithResource(
+        this.#resourceState,
+        fn,
+        thisArg,
+        args,
       ),
     );
   }
@@ -148,19 +209,18 @@ class AsyncResource {
   }
 
   emitDestroy() {
-    if (this.#destroyed) {
+    if (!asyncInternals.destroyResource(this.#resourceState)) {
       throw new Error("AsyncResource.emitDestroy() must only be called once");
     }
-    this.#destroyed = true;
     return this;
   }
 
   asyncId() {
-    return this.#asyncId;
+    return this.#resourceState.asyncId;
   }
 
   triggerAsyncId() {
-    return this.#triggerAsyncId;
+    return this.#resourceState.triggerAsyncId;
   }
 
   static bind(fn, type, thisArg) {
@@ -268,8 +328,24 @@ class AsyncLocalStorage {
   }
 }
 
-export { AsyncLocalStorage, AsyncResource };
-export default { AsyncLocalStorage, AsyncResource };
+export {
+  AsyncLocalStorage,
+  AsyncResource,
+  asyncWrapProviders,
+  createHook,
+  executionAsyncId,
+  executionAsyncResource,
+  triggerAsyncId,
+};
+export default {
+  AsyncLocalStorage,
+  AsyncResource,
+  asyncWrapProviders,
+  createHook,
+  executionAsyncId,
+  executionAsyncResource,
+  triggerAsyncId,
+};
 `;
   }
 
