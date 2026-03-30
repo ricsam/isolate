@@ -15,6 +15,54 @@ function isLinkerConflictError(error: unknown): boolean {
   return message.includes(LINKER_CONFLICT_ERROR);
 }
 
+function isDisposedRuntimeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /runtime has been disposed|runtime was permanently disposed|runtime was soft-disposed|isolated is disposed/i.test(
+    message
+  );
+}
+
+type RuntimeRetirementAction = "reload" | "close";
+
+interface RuntimeRetirementRecord {
+  runtimeId: string;
+  action: RuntimeRetirementAction;
+  reason: string;
+  hard: boolean;
+  at: number;
+  activeRequests: number;
+  replacementRuntimeId?: string;
+}
+
+function formatLifecycleReason(action: string, reason?: string): string {
+  const trimmedReason = reason?.trim();
+  return trimmedReason ? `${action}(${trimmedReason})` : `${action}()`;
+}
+
+function formatLogValue(value: unknown): string {
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return String(value);
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify(String(value));
+  }
+}
+
+function summarizeRequest(request: Request): string {
+  try {
+    const url = new URL(request.url);
+    return `${request.method} ${url.origin}${url.pathname}${url.search}`;
+  } catch {
+    return `${request.method} ${request.url}`;
+  }
+}
+
 export interface IsolateServerOptions {
   namespaceId: string;
   getConnection: () => Promise<DaemonConnection>;
@@ -44,6 +92,8 @@ export class IsolateServer {
   private runtime: RemoteRuntime | null = null;
   private lastStartOptions: IsolateServerStartOptions | null = null;
   private lifecycleLock: Promise<void> = Promise.resolve();
+  private activeRequestCount = 0;
+  private lastRuntimeRetirement: RuntimeRetirementRecord | null = null;
   private closed = true;
 
   readonly fetch: IsolateServerFetch = {
@@ -96,36 +146,90 @@ export class IsolateServer {
     });
   }
 
-  async reload(): Promise<void> {
+  async reload(reason?: string): Promise<void> {
     const startOptions = this.lastStartOptions;
     if (!startOptions) {
       throw new Error("Server not configured. Call start() first.");
     }
 
+    const lifecycleReason = formatLifecycleReason("IsolateServer.reload", reason);
     this.closed = false;
     await this.withLifecycleLock(async () => {
-      if (this.runtime) {
-        const runtime = this.runtime;
+      const previousRuntime = this.runtime;
+      this.log("reload requested", {
+        namespaceId: this.namespaceId,
+        runtimeId: previousRuntime?.id ?? null,
+        reason: lifecycleReason,
+        activeRequests: this.activeRequestCount,
+      });
+
+      if (previousRuntime) {
         this.runtime = null;
-        await this.disposeRuntime(runtime, {
+        this.recordRuntimeRetirement(previousRuntime, "reload", lifecycleReason, true);
+        await this.disposeRuntime(previousRuntime, {
           hard: true,
-          reason: "IsolateServer.reload()",
+          reason: lifecycleReason,
         });
       }
 
-      this.runtime = await this.createAndInitializeRuntime(startOptions);
+      try {
+        const nextRuntime = await this.createAndInitializeRuntime(startOptions);
+        this.runtime = nextRuntime;
+      } catch (error) {
+        this.log("reload failed", {
+          namespaceId: this.namespaceId,
+          previousRuntimeId: previousRuntime?.id ?? null,
+          reason: lifecycleReason,
+          activeRequests: this.activeRequestCount,
+          error: error instanceof Error ? error.message : String(error),
+        }, "warn");
+        throw error;
+      }
+
+      if (
+        previousRuntime &&
+        this.lastRuntimeRetirement?.runtimeId === previousRuntime.id &&
+        this.lastRuntimeRetirement.action === "reload"
+      ) {
+        this.lastRuntimeRetirement.replacementRuntimeId = this.runtime?.id;
+      }
+
+      this.log("reload completed", {
+        namespaceId: this.namespaceId,
+        previousRuntimeId: previousRuntime?.id ?? null,
+        runtimeId: this.runtime?.id ?? null,
+        reason: lifecycleReason,
+        activeRequests: this.activeRequestCount,
+      });
     });
   }
 
-  async close(): Promise<void> {
+  async close(reason?: string): Promise<void> {
+    const lifecycleReason = formatLifecycleReason("IsolateServer.close", reason);
     await this.withLifecycleLock(async () => {
-      if (this.runtime) {
-        const runtime = this.runtime;
+      const previousRuntime = this.runtime;
+      this.log("close requested", {
+        namespaceId: this.namespaceId,
+        runtimeId: previousRuntime?.id ?? null,
+        reason: lifecycleReason,
+        activeRequests: this.activeRequestCount,
+      });
+
+      if (previousRuntime) {
         this.runtime = null;
-        await this.disposeRuntime(runtime);
+        this.recordRuntimeRetirement(previousRuntime, "close", lifecycleReason, false);
+        await this.disposeRuntime(previousRuntime, {
+          reason: lifecycleReason,
+        });
       }
 
       this.closed = true;
+      this.log("close completed", {
+        namespaceId: this.namespaceId,
+        previousRuntimeId: previousRuntime?.id ?? null,
+        reason: lifecycleReason,
+        activeRequests: this.activeRequestCount,
+      });
     });
   }
 
@@ -231,21 +335,99 @@ export class IsolateServer {
     return this.runtime;
   }
 
+  private recordRuntimeRetirement(
+    runtime: RemoteRuntime,
+    action: RuntimeRetirementAction,
+    reason: string,
+    hard: boolean
+  ): RuntimeRetirementRecord {
+    const record: RuntimeRetirementRecord = {
+      runtimeId: runtime.id,
+      action,
+      reason,
+      hard,
+      at: Date.now(),
+      activeRequests: this.activeRequestCount,
+    };
+    this.lastRuntimeRetirement = record;
+    return record;
+  }
+
+  private getLastRuntimeRetirementLogFields(): Record<string, unknown> {
+    if (!this.lastRuntimeRetirement) {
+      return {
+        lastRetirementAction: "unknown",
+      };
+    }
+
+    return {
+      lastRetirementAction: this.lastRuntimeRetirement.action,
+      lastRetirementReason: this.lastRuntimeRetirement.reason,
+      lastRetirementRuntimeId: this.lastRuntimeRetirement.runtimeId,
+      lastRetirementHard: this.lastRuntimeRetirement.hard,
+      lastRetirementAgeMs: Date.now() - this.lastRuntimeRetirement.at,
+      lastRetirementActiveRequests: this.lastRuntimeRetirement.activeRequests,
+      lastRetirementReplacementRuntimeId: this.lastRuntimeRetirement.replacementRuntimeId ?? null,
+    };
+  }
+
+  private log(
+    message: string,
+    fields: Record<string, unknown>,
+    level: "log" | "warn" = "log"
+  ): void {
+    const suffix = Object.entries(fields)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => `${key}=${formatLogValue(value)}`)
+      .join(" ");
+
+    const logger = level === "warn" ? console.warn : console.log;
+    logger(`[isolate-server] ${message}${suffix ? `; ${suffix}` : ""}`);
+  }
+
   private async dispatchRequestWithRetry(
     request: Request,
     options?: DispatchOptions
   ): Promise<Response> {
-    const runtime = await this.getActiveRuntime();
+    this.activeRequestCount += 1;
     try {
-      return await runtime.fetch.dispatchRequest(request, options);
-    } catch (error) {
-      if (!isLinkerConflictError(error)) {
-        throw error;
-      }
+      const runtime = await this.getActiveRuntime();
+      try {
+        return await runtime.fetch.dispatchRequest(request, options);
+      } catch (error) {
+        if (!isLinkerConflictError(error) && !isDisposedRuntimeError(error)) {
+          throw error;
+        }
 
-      await this.reload();
-      const retryRuntime = await this.getActiveRuntime();
-      return retryRuntime.fetch.dispatchRequest(request, options);
+        const requestSummary = summarizeRequest(request);
+        if (isLinkerConflictError(error)) {
+          await this.reload(`request-linker-conflict: ${requestSummary}`);
+        } else if (this.runtime?.id === runtime.id) {
+          this.runtime = null;
+        }
+
+        const retryRuntime = await this.getActiveRuntime();
+        this.log(
+          isLinkerConflictError(error)
+            ? "request recovered after linker conflict"
+            : "request recovered after disposed runtime",
+          {
+            namespaceId: this.namespaceId,
+            request: requestSummary,
+            requestId: options?.requestId ?? null,
+            metadataKeys: Object.keys(options?.metadata ?? {}),
+            previousRuntimeId: runtime.id,
+            runtimeId: retryRuntime.id,
+            activeRequests: this.activeRequestCount,
+            error: error instanceof Error ? error.message : String(error),
+            ...this.getLastRuntimeRetirementLogFields(),
+          },
+          "warn"
+        );
+        return retryRuntime.fetch.dispatchRequest(request, options);
+      }
+    } finally {
+      this.activeRequestCount -= 1;
     }
   }
 }

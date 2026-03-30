@@ -95,11 +95,11 @@ export async function createAppServerAdapter(
         await server.fetch.dispatchWebSocketError(connectionId, error);
       },
     },
-    reload: async () => {
+    reload: async (reason) => {
       diagnostics.lifecycleState = "reloading";
       try {
-        bindingsAdapter.reset("AppServer.reload()");
-        await server.reload();
+        bindingsAdapter.reset(reason ? `AppServer.reload(${reason})` : "AppServer.reload()");
+        await server.reload(reason);
         runtimeId = server.getRuntime()?.id ?? options.key;
       } finally {
         diagnostics.lifecycleState = "idle";
@@ -109,14 +109,20 @@ export async function createAppServerAdapter(
       diagnostics.lifecycleState = "disposing";
       try {
         if (disposeOptions?.hard) {
-          bindingsAdapter.reset(disposeOptions?.reason ?? "AppServer.dispose(hard)");
-          await server.reload();
-          bindingsAdapter.abort(disposeOptions?.reason ?? "AppServer.dispose(hard)");
-          await server.close();
+          const hardDisposeReason = disposeOptions?.reason
+            ? `AppServer.dispose(hard): ${disposeOptions.reason}`
+            : "AppServer.dispose(hard)";
+          bindingsAdapter.reset(hardDisposeReason);
+          await server.reload(hardDisposeReason);
+          bindingsAdapter.abort(hardDisposeReason);
+          await server.close(hardDisposeReason);
           return;
         }
-        bindingsAdapter.abort(disposeOptions?.reason ?? "AppServer.dispose()");
-        await server.close();
+        const disposeReason = disposeOptions?.reason
+          ? `AppServer.dispose(): ${disposeOptions.reason}`
+          : "AppServer.dispose()";
+        bindingsAdapter.abort(disposeReason);
+        await server.close(disposeReason);
       } finally {
         diagnostics.lifecycleState = "idle";
       }

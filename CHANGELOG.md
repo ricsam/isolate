@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.7
+
+### Patch Changes
+
+- add more logging and crash handling
+
 ## 0.1.6
 
 ### Patch Changes
