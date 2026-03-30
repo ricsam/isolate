@@ -199,6 +199,7 @@ export interface ConnectionState {
   pendingCallbacks: Map<number, PendingRequest>;
   nextRequestId: number;
   nextCallbackId: number;
+  nextLocalCallbackId: number;
   nextStreamId: number;
   /** Active download streams (daemon sending to client) */
   activeStreams: Map<number, StreamSession>;

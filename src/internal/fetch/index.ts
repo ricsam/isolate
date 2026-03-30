@@ -1,4 +1,4 @@
-import ivm from "isolated-vm";
+import ivm from "@ricsam/isolated-vm";
 import { setupCore, clearAllInstanceState } from "../core/index.ts";
 import {
   getStreamRegistryForContext,
@@ -2391,21 +2391,27 @@ function setupClientWebSocket(
     }
   };
 
+  const __wrapAsyncContextCallback = (callback) => (
+    typeof callback === 'function' && globalThis.AsyncContext?.Snapshot?.wrap
+      ? globalThis.AsyncContext.Snapshot.wrap(callback)
+      : callback
+  );
+
   // Helper to dispatch events
   function dispatchEvent(ws, event) {
     const listeners = ws._listeners.get(event.type) || [];
     for (const listener of listeners) {
       try {
-        listener.call(ws, event);
+        listener.wrapped.call(ws, event);
       } catch (e) {
         console.error('WebSocket event listener error:', e);
       }
     }
     // Also call on* handler if set
-    const handler = ws['on' + event.type];
-    if (typeof handler === 'function') {
+    const handler = ws._handlers.get(event.type);
+    if (handler?.wrapped) {
       try {
-        handler.call(ws, event);
+        handler.wrapped.call(ws, event);
       } catch (e) {
         console.error('WebSocket handler error:', e);
       }
@@ -2426,12 +2432,21 @@ function setupClientWebSocket(
     #protocol = '';
     #binaryType = 'blob';
     _listeners = new Map();
+    _handlers = new Map([
+      ['open', null],
+      ['message', null],
+      ['error', null],
+      ['close', null],
+    ]);
 
-    // Event handlers
-    onopen = null;
-    onmessage = null;
-    onerror = null;
-    onclose = null;
+    get onopen() { return this._handlers.get('open')?.original ?? null; }
+    set onopen(handler) { this._setHandler('open', handler); }
+    get onmessage() { return this._handlers.get('message')?.original ?? null; }
+    set onmessage(handler) { this._setHandler('message', handler); }
+    get onerror() { return this._handlers.get('error')?.original ?? null; }
+    set onerror(handler) { this._setHandler('error', handler); }
+    get onclose() { return this._handlers.get('close')?.original ?? null; }
+    set onclose(handler) { this._setHandler('close', handler); }
 
     constructor(url, protocols) {
       // Validate URL
@@ -2516,6 +2531,17 @@ function setupClientWebSocket(
     get CLOSING() { return WebSocket.CLOSING; }
     get CLOSED() { return WebSocket.CLOSED; }
 
+    _setHandler(type, handler) {
+      if (typeof handler !== 'function') {
+        this._handlers.set(type, null);
+        return;
+      }
+      this._handlers.set(type, {
+        original: handler,
+        wrapped: __wrapAsyncContextCallback(handler),
+      });
+    }
+
     send(data) {
       if (this.#readyState === WebSocket.CONNECTING) {
         throw new DOMException("Failed to execute 'send' on 'WebSocket': Still in CONNECTING state.", 'InvalidStateError');
@@ -2589,15 +2615,18 @@ function setupClientWebSocket(
         listeners = [];
         this._listeners.set(type, listeners);
       }
-      if (!listeners.includes(listener)) {
-        listeners.push(listener);
+      if (!listeners.some((entry) => entry.original === listener)) {
+        listeners.push({
+          original: listener,
+          wrapped: __wrapAsyncContextCallback(listener),
+        });
       }
     }
 
     removeEventListener(type, listener, options) {
       const listeners = this._listeners.get(type);
       if (!listeners) return;
-      const index = listeners.indexOf(listener);
+      const index = listeners.findIndex((entry) => entry.original === listener || entry.wrapped === listener);
       if (index !== -1) {
         listeners.splice(index, 1);
       }
@@ -2698,9 +2727,36 @@ function setupServe(context: ivm.Context): void {
   context.evalSync(`
 (function() {
   globalThis.__serveOptions__ = null;
+  const __wrapAsyncContextCallback = (callback) => (
+    typeof callback === 'function' && globalThis.AsyncContext?.Snapshot?.wrap
+      ? globalThis.AsyncContext.Snapshot.wrap(callback)
+      : callback
+  );
+
+  function wrapServeOptions(options) {
+    if (!options || typeof options !== 'object') {
+      return options;
+    }
+
+    const wrapped = { ...options };
+    if (typeof options.fetch === 'function') {
+      wrapped.fetch = __wrapAsyncContextCallback(options.fetch);
+    }
+
+    if (options.websocket && typeof options.websocket === 'object') {
+      wrapped.websocket = { ...options.websocket };
+      for (const name of ['open', 'message', 'close', 'error']) {
+        if (typeof options.websocket[name] === 'function') {
+          wrapped.websocket[name] = __wrapAsyncContextCallback(options.websocket[name]);
+        }
+      }
+    }
+
+    return wrapped;
+  }
 
   function serve(options) {
-    globalThis.__serveOptions__ = options;
+    globalThis.__serveOptions__ = wrapServeOptions(options);
   }
 
   globalThis.serve = serve;
@@ -2803,6 +2859,11 @@ export async function setupFetch(
   context.evalSync(`
 (function() {
   const __eventListeners = new Map();
+  const __wrapAsyncContextCallback = (callback) => (
+    typeof callback === 'function' && globalThis.AsyncContext?.Snapshot?.wrap
+      ? globalThis.AsyncContext.Snapshot.wrap(callback)
+      : callback
+  );
 
   globalThis.__on = function(event, callback) {
     let listeners = __eventListeners.get(event);
@@ -2810,9 +2871,10 @@ export async function setupFetch(
       listeners = new Set();
       __eventListeners.set(event, listeners);
     }
-    listeners.add(callback);
+    const wrapped = __wrapAsyncContextCallback(callback);
+    listeners.add(wrapped);
     return function() {
-      listeners.delete(callback);
+      listeners.delete(wrapped);
       if (listeners.size === 0) {
         __eventListeners.delete(event);
       }

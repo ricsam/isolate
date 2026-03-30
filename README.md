@@ -1,12 +1,14 @@
 # @ricsam/isolate
 
-`@ricsam/isolate` is a runtime-centric JavaScript sandbox built on [`isolated-vm`](https://github.com/nicknisi/isolated-vm). It gives you a single host API for running isolated code with web-style capabilities such as `fetch`, files, streams, server handlers, module loading, and Playwright-backed browser tests.
+`@ricsam/isolate` is a runtime-centric JavaScript sandbox built on an async-context-enabled [`@ricsam/isolated-vm`](https://github.com/ricsam/isolated-vm) engine build. It gives you a single host API for running isolated code with web-style capabilities such as `fetch`, files, streams, server handlers, module loading, and Playwright-backed browser tests.
 
 ## Installation
 
 ```bash
-npm add @ricsam/isolate isolated-vm
+npm add @ricsam/isolate @ricsam/isolated-vm
 ```
+
+The `@ricsam/isolated-vm` peer includes the `createContext({ asyncContext: true })` support required by this repo. Upstream `isolated-vm` will fail fast during runtime boot with a clear AsyncContext error.
 
 Install Playwright when you want browser runtimes:
 
@@ -40,6 +42,27 @@ Each runtime is configured through `bindings`, which describe how sandboxed code
 - `tools` exposes async host functions and async iterators
 
 Every host callback receives a `HostCallContext` with an `AbortSignal`, runtime identity, resource identity, and request metadata.
+
+## Async Context
+
+Runtimes created by `@ricsam/isolate` enable the TC39 proposal-style `AsyncContext` global inside the sandbox. This is an experimental surface for now, and the proposal API is used to implement the `node:async_hooks` shim exported to sandboxed code.
+
+This shim is intended for async context propagation inside the sandbox. It is not a full reimplementation of Node's `async_hooks` lifecycle, resource graph, or profiling APIs.
+
+What is currently supported:
+
+- `AsyncContext.Variable`
+- `AsyncContext.Snapshot`
+- `node:async_hooks` `AsyncLocalStorage`
+- `node:async_hooks` `AsyncResource`
+
+What is intentionally not implemented in `node:async_hooks` yet:
+
+- `createHook()`
+- `executionAsyncId()`
+- `triggerAsyncId()`
+- `executionAsyncResource()`
+- `asyncWrapProviders`
 
 ## Quick Start
 

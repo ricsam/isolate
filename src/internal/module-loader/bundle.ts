@@ -72,6 +72,207 @@ export default WebSocketShim;
 `;
   }
 
+  if (source === "async_hooks" || source === "node:async_hooks") {
+    return `
+const AsyncContextShim = globalThis.AsyncContext;
+const asyncInternals = globalThis.__isolateAsyncContextInternals;
+
+if (!AsyncContextShim || !asyncInternals?.AsyncContextFrame) {
+  throw new Error(
+    "node:async_hooks requires AsyncContext support in the isolate engine."
+  );
+}
+
+const { AsyncContextFrame, currentAsyncResource } = asyncInternals;
+let nextAsyncResourceId = 1;
+const NO_STORE = Symbol("AsyncLocalStorage.noStore");
+
+function currentAsyncResourceState() {
+  return currentAsyncResource.get() ?? {
+    asyncId: 0,
+    triggerAsyncId: 0,
+    resource: undefined,
+  };
+}
+
+class AsyncResource {
+  #snapshot;
+  #asyncId;
+  #triggerAsyncId;
+  #destroyed;
+
+  constructor(type, options = {}) {
+    void type;
+
+    const normalizedOptions =
+      options && typeof options === "object" ? options : {};
+    const currentState = currentAsyncResourceState();
+
+    this.#snapshot = new AsyncContextShim.Snapshot();
+    this.#asyncId = nextAsyncResourceId++;
+    this.#triggerAsyncId = Number.isSafeInteger(normalizedOptions.triggerAsyncId)
+      ? normalizedOptions.triggerAsyncId
+      : currentState.asyncId;
+    this.#destroyed = false;
+  }
+
+  runInAsyncScope(fn, thisArg, ...args) {
+    if (typeof fn !== "function") {
+      throw new TypeError("AsyncResource.runInAsyncScope requires a function");
+    }
+    const state = {
+      asyncId: this.#asyncId,
+      triggerAsyncId: this.#triggerAsyncId,
+      resource: this,
+    };
+    return this.#snapshot.run(
+      () => currentAsyncResource.run(
+        state,
+        () => Reflect.apply(fn, thisArg, args),
+      ),
+    );
+  }
+
+  bind(fn, thisArg) {
+    if (typeof fn !== "function") {
+      throw new TypeError("AsyncResource.bind requires a function");
+    }
+    const resource = this;
+    return function bound(...args) {
+      return resource.runInAsyncScope(
+        fn,
+        thisArg === undefined ? this : thisArg,
+        ...args,
+      );
+    };
+  }
+
+  emitDestroy() {
+    if (this.#destroyed) {
+      throw new Error("AsyncResource.emitDestroy() must only be called once");
+    }
+    this.#destroyed = true;
+    return this;
+  }
+
+  asyncId() {
+    return this.#asyncId;
+  }
+
+  triggerAsyncId() {
+    return this.#triggerAsyncId;
+  }
+
+  static bind(fn, type, thisArg) {
+    return new AsyncResource(type).bind(fn, thisArg);
+  }
+}
+
+class AsyncLocalStorage {
+  #variable;
+  #defaultValue;
+  #token;
+  #disabled;
+
+  constructor(options = {}) {
+    const normalizedOptions =
+      options && typeof options === "object" ? options : {};
+
+    this.#defaultValue = normalizedOptions.defaultValue;
+    this.#token = Symbol("AsyncLocalStorage.token");
+    this.#disabled = false;
+    this.#variable = new AsyncContextShim.Variable({
+      defaultValue: NO_STORE,
+      name: normalizedOptions.name,
+    });
+  }
+
+  get name() {
+    return this.#variable.name;
+  }
+
+  disable() {
+    this.#token = Symbol("AsyncLocalStorage.token");
+    this.#disabled = true;
+    AsyncContextFrame.disable(this.#variable);
+  }
+
+  enterWith(store) {
+    this.#disabled = false;
+    AsyncContextFrame.set(
+      new AsyncContextFrame(this.#variable, {
+        token: this.#token,
+        hasValue: true,
+        store,
+      }),
+    );
+  }
+
+  run(store, callback, ...args) {
+    if (typeof callback !== "function") {
+      throw new TypeError("AsyncLocalStorage.run requires a function");
+    }
+    this.#disabled = false;
+    return this.#variable.run(
+      {
+        token: this.#token,
+        hasValue: true,
+        store,
+      },
+      callback,
+      ...args,
+    );
+  }
+
+  exit(callback, ...args) {
+    if (typeof callback !== "function") {
+      throw new TypeError("AsyncLocalStorage.exit requires a function");
+    }
+    return this.#variable.run(
+      {
+        token: this.#token,
+        hasValue: false,
+        store: undefined,
+      },
+      callback,
+      ...args,
+    );
+  }
+
+  getStore() {
+    const entry = this.#variable.get();
+    if (entry === NO_STORE) {
+      return this.#disabled ? undefined : this.#defaultValue;
+    }
+    if (!entry || entry.token !== this.#token) {
+      return undefined;
+    }
+    if (!entry.hasValue) {
+      return undefined;
+    }
+    return entry.store;
+  }
+
+  static bind(fn) {
+    return AsyncResource.bind(fn, "AsyncLocalStorage.bind");
+  }
+
+  static snapshot() {
+    const snapshot = new AsyncContextShim.Snapshot();
+    return function runInAsyncScope(fn, ...args) {
+      if (typeof fn !== "function") {
+        throw new TypeError("AsyncLocalStorage.snapshot requires a function");
+      }
+      return snapshot.run(fn, ...args);
+    };
+  }
+}
+
+export { AsyncLocalStorage, AsyncResource };
+export default { AsyncLocalStorage, AsyncResource };
+`;
+  }
+
   return "export default {};\n";
 }
 

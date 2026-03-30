@@ -1,5 +1,5 @@
-import type ivm from "isolated-vm";
-import IsolatedVM from "isolated-vm";
+import type ivm from "@ricsam/isolated-vm";
+import IsolatedVM from "@ricsam/isolated-vm";
 
 // ============================================================
 // Test Environment Options

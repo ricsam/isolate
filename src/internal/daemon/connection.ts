@@ -185,6 +185,7 @@ export function handleConnection(socket: Socket, state: DaemonState): void {
     pendingCallbacks: new Map(),
     nextRequestId: 1,
     nextCallbackId: 1,
+    nextLocalCallbackId: 1_000_000,
     nextStreamId: 1,
     activeStreams: new Map(),
     streamReceivers: new Map(),
@@ -372,6 +373,10 @@ async function handleMessage(
 
     case MessageType.CALLBACK_RESPONSE:
       handleCallbackResponse(message as CallbackResponseMsg, connection);
+      break;
+
+    case MessageType.CALLBACK_INVOKE:
+      await handleCallbackInvoke(message as CallbackInvoke, connection, state);
       break;
 
     // WebSocket operations
@@ -1088,20 +1093,28 @@ async function handleCreateRuntime(
     let customFnMarshalOptions: CustomFunctionsMarshalOptions | undefined;
 
     if (customCallbacks) {
+      const allocateLocalCallbackId = (): number => {
+        const currentConnection = callbackContext.connection;
+        if (!currentConnection) {
+          throw new Error("Cannot register callback without an active client connection");
+        }
+        return currentConnection.nextLocalCallbackId++;
+      };
+
       // Create MarshalContext factory and addCallbackIdsToRefs for custom function results
       const createMarshalContext = (): MarshalContext => ({
         registerCallback: (fn: Function): number => {
-          const callbackId = instance.nextLocalCallbackId!++;
+          const callbackId = allocateLocalCallbackId();
           instance.returnedCallbacks!.set(callbackId, fn);
           return callbackId;
         },
         registerPromise: (promise: Promise<unknown>): number => {
-          const promiseId = instance.nextLocalCallbackId!++;
+          const promiseId = allocateLocalCallbackId();
           instance.returnedPromises!.set(promiseId, promise);
           return promiseId;
         },
         registerIterator: (iterator: AsyncIterator<unknown>): number => {
-          const iteratorId = instance.nextLocalCallbackId!++;
+          const iteratorId = allocateLocalCallbackId();
           instance.returnedIterators!.set(iteratorId, iterator);
           return iteratorId;
         },
@@ -1112,7 +1125,7 @@ async function handleCreateRuntime(
 
         if (isPromiseRef(value)) {
           if ('__resolveCallbackId' in value) return value;
-          const resolveCallbackId = instance.nextLocalCallbackId!++;
+          const resolveCallbackId = allocateLocalCallbackId();
           instance.returnedCallbacks!.set(resolveCallbackId, async (promiseId: number) => {
             const promise = instance.returnedPromises!.get(promiseId);
             if (!promise) throw new Error(`Promise ${promiseId} not found`);
@@ -1127,7 +1140,7 @@ async function handleCreateRuntime(
 
         if (isAsyncIteratorRef(value)) {
           if ('__nextCallbackId' in value) return value;
-          const nextCallbackId = instance.nextLocalCallbackId!++;
+          const nextCallbackId = allocateLocalCallbackId();
           instance.returnedCallbacks!.set(nextCallbackId, async (iteratorId: number) => {
             const iterator = instance.returnedIterators!.get(iteratorId);
             if (!iterator) throw new Error(`Iterator ${iteratorId} not found`);
@@ -1137,7 +1150,7 @@ async function handleCreateRuntime(
             const marshalledValue = await marshalValue(result.value, ctx);
             return { done: result.done, value: addCallbackIdsToRefs(marshalledValue) };
           });
-          const returnCallbackId = instance.nextLocalCallbackId!++;
+          const returnCallbackId = allocateLocalCallbackId();
           instance.returnedCallbacks!.set(returnCallbackId, async (iteratorId: number, returnValue?: unknown) => {
             const iterator = instance.returnedIterators!.get(iteratorId);
             instance.returnedIterators!.delete(iteratorId);
@@ -1147,7 +1160,7 @@ async function handleCreateRuntime(
             const marshalledValue = await marshalValue(result.value, ctx);
             return { done: true, value: addCallbackIdsToRefs(marshalledValue) };
           });
-          const throwCallbackId = instance.nextLocalCallbackId!++;
+          const throwCallbackId = allocateLocalCallbackId();
           instance.returnedCallbacks!.set(
             throwCallbackId,
             async (
@@ -1200,6 +1213,11 @@ async function handleCreateRuntime(
       };
 
       const LOCAL_CALLBACK_THRESHOLD = 1_000_000;
+      const marshalArgsForClient = async (args: unknown[]): Promise<unknown[]> => {
+        const ctx = createMarshalContext();
+        const marshalledArgs = await marshalValue(args, ctx);
+        return addCallbackIdsToRefs(marshalledArgs) as unknown[];
+      };
 
       const invokeCallback = async (callbackId: number, args: unknown[]): Promise<unknown> => {
         if (callbackId >= LOCAL_CALLBACK_THRESHOLD) {
@@ -1212,14 +1230,15 @@ async function handleCreateRuntime(
         } else {
           // Client-side callback — forward via IPC (with reconnection support)
           const conn = await waitForConnection(callbackContext);
+          const marshalledArgs = await marshalArgsForClient(args);
           try {
-            return await invokeClientCallback(conn, callbackId, args, {
+            return await invokeClientCallback(conn, callbackId, marshalledArgs, {
               signal: getCurrentHostSignal(instance),
             });
           } catch (err) {
             if (callbackContext.reconnectionPromise && !callbackContext.connection) {
               const newConn = await callbackContext.reconnectionPromise.promise;
-              return invokeClientCallback(newConn, callbackId, args, {
+              return invokeClientCallback(newConn, callbackId, marshalledArgs, {
                 signal: getCurrentHostSignal(instance),
               });
             }
@@ -1254,11 +1273,12 @@ async function handleCreateRuntime(
 
               // Create async generator (with reconnection support)
               async function* bridgedIterator() {
+                const marshalledArgs = await marshalArgsForClient(args);
                 // Start the iterator on the client
                 const startResult = await invokeCallbackWithReconnect(
                   callbackContext_,
                   () => callbackContext_.custom.get(`${name}:start`),
-                  args,
+                  marshalledArgs,
                   `AsyncIterator '${name}' start`,
                   invokeClientCallback,
                   { signal: getCurrentHostSignal(instance) },
@@ -1300,10 +1320,11 @@ async function handleCreateRuntime(
           bridgedCustomFunctions[name] = {
             type: registration.type as 'sync' | 'async',
             fn: async (...args: unknown[]) => {
+              const marshalledArgs = await marshalArgsForClient(args);
               return invokeCallbackWithReconnect(
                 callbackContext_,
                 () => callbackContext_.custom.get(name),
-                args,
+                marshalledArgs,
                 `Custom function '${name}'`,
                 invokeClientCallback,
                 { signal: getCurrentHostSignal(instance) },
@@ -2502,6 +2523,65 @@ function handleCallbackResponse(
   } else {
     pending.resolve(message.result);
   }
+}
+
+async function handleCallbackInvoke(
+  message: CallbackInvoke,
+  connection: ConnectionState,
+  state: DaemonState,
+): Promise<void> {
+  const response: CallbackResponseMsg = {
+    type: MessageType.CALLBACK_RESPONSE,
+    requestId: message.requestId,
+  };
+
+  let instance: IsolateInstance | undefined;
+  for (const isolateId of connection.isolates) {
+    const candidate = state.isolates.get(isolateId);
+    if (candidate?.returnedCallbacks?.has(message.callbackId)) {
+      instance = candidate;
+      break;
+    }
+  }
+
+  if (!instance) {
+    response.error = {
+      name: "Error",
+      message: `Unknown callback: ${message.callbackId}`,
+    };
+    sendMessage(connection.socket, response);
+    return;
+  }
+
+  instance.lastActivity = Date.now();
+  const callback = instance.returnedCallbacks!.get(message.callbackId);
+  if (!callback) {
+    response.error = {
+      name: "Error",
+      message: `Unknown callback: ${message.callbackId}`,
+    };
+    sendMessage(connection.socket, response);
+    return;
+  }
+
+  try {
+    response.result = await requestContextStorage.run(
+      {
+        ...(message.context ?? {}),
+        signal: getCurrentHostSignal(instance),
+      },
+      async () => await callback(...message.args),
+    );
+  } catch (err) {
+    const error = err as Error;
+    response.error = {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
+
+  sendMessage(connection.socket, response);
 }
 
 /**

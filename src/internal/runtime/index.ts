@@ -1,6 +1,7 @@
-import ivm from "isolated-vm";
+import ivm from "@ricsam/isolated-vm";
 import path from "node:path";
 import { setupCore } from "../core/index.ts";
+import { setupAsyncContext } from "../async-context/index.ts";
 import { normalizeEntryFilename } from "../protocol/index.ts";
 import {
   transformEntryCode,
@@ -85,6 +86,7 @@ import {
   marshalValue,
   unmarshalValue,
   type MarshalContext,
+  type UnmarshalContext,
 } from "../protocol/index.ts";
 
 // Re-export shared types from protocol
@@ -488,6 +490,20 @@ let nextIteratorId = 1;
  */
 const ISOLATE_MARSHAL_CODE = `
 (function() {
+  const __wrapAsyncContextCallback = (callback) => (
+    typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.wrapCallback
+      ? globalThis.__isolateAsyncContextInternals.wrapCallback(callback)
+      : callback
+  );
+  let __customFn_nextCallbackId = 1;
+  const __customFn_callbacks = new Map();
+
+  function __customFn_registerCallback(callback) {
+    const callbackId = __customFn_nextCallbackId++;
+    __customFn_callbacks.set(callbackId, __wrapAsyncContextCallback(callback));
+    return callbackId;
+  }
+
   // Marshal a value (JavaScript → Ref)
   function marshalForHost(value, depth = 0) {
     if (depth > 100) throw new Error('Maximum marshalling depth exceeded');
@@ -498,7 +514,9 @@ const ISOLATE_MARSHAL_CODE = `
     const type = typeof value;
     if (type === 'string' || type === 'number' || type === 'boolean') return value;
     if (type === 'bigint') return { __type: 'BigIntRef', value: value.toString() };
-    if (type === 'function') throw new Error('Cannot marshal functions from isolate');
+    if (type === 'function') {
+      return { __type: 'CallbackRef', callbackId: __customFn_registerCallback(value) };
+    }
     if (type === 'symbol') throw new Error('Cannot marshal Symbol values');
 
     if (type === 'object') {
@@ -548,6 +566,35 @@ const ISOLATE_MARSHAL_CODE = `
       return result;
     }
     return value;
+  }
+
+  async function invokeLocalCallback(callbackId, argsJson) {
+    const callback = __customFn_callbacks.get(callbackId);
+    if (!callback) {
+      return JSON.stringify({
+        ok: false,
+        error: {
+          message: 'Callback ' + callbackId + ' not found',
+          name: 'Error',
+        },
+      });
+    }
+
+    try {
+      const rawArgs = JSON.parse(argsJson);
+      const args = unmarshalFromHost(rawArgs);
+      const result = await callback(...args);
+      return JSON.stringify({ ok: true, value: marshalForHost(result) });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      return JSON.stringify({
+        ok: false,
+        error: {
+          message: err.message,
+          name: err.name,
+        },
+      });
+    }
   }
 
   // Unmarshal a value (Ref → JavaScript)
@@ -737,6 +784,7 @@ const ISOLATE_MARSHAL_CODE = `
   // Expose as globals
   globalThis.__marshalForHost = marshalForHost;
   globalThis.__unmarshalFromHost = unmarshalFromHost;
+  globalThis.__customFn_invokeLocalCallback = invokeLocalCallback;
 })();
 `;
 
@@ -755,6 +803,7 @@ async function setupCustomFunctions(
   marshalOptions?: CustomFunctionsMarshalOptions,
 ): Promise<ivm.Reference<(name: string, argsJson: string) => Promise<string>>> {
   const global = context.global;
+  const isolateUnmarshalContext: UnmarshalContext = {};
 
   // Reference that invokes the callback and returns the result.
   // The first argument can be a string function name (for custom functions) or a
@@ -764,7 +813,7 @@ async function setupCustomFunctions(
       // Check if this is a local callback ID (numeric, used by returned callbacks/promises/iterators)
       if (typeof nameOrId === "number" && marshalOptions) {
         const rawArgs = JSON.parse(argsJson) as unknown[];
-        const args = unmarshalValue(rawArgs) as unknown[];
+        const args = unmarshalValue(rawArgs, isolateUnmarshalContext) as unknown[];
         try {
           const result = await marshalOptions.invokeCallback(nameOrId, args);
           const ctx = marshalOptions.createMarshalContext();
@@ -793,7 +842,7 @@ async function setupCustomFunctions(
       }
       // Unmarshal args from isolate (converts Refs back to JavaScript types)
       const rawArgs = JSON.parse(argsJson) as unknown[];
-      const args = unmarshalValue(rawArgs) as unknown[];
+      const args = unmarshalValue(rawArgs, isolateUnmarshalContext) as unknown[];
       try {
         // Always await the result: for daemon-bridged functions, even "sync" custom functions
         // are async due to IPC, so we need to resolve the promise.
@@ -821,6 +870,42 @@ async function setupCustomFunctions(
 
   // Inject marshalling helpers into the isolate
   context.evalSync(ISOLATE_MARSHAL_CODE);
+  const invokeIsolateCallbackRef = context.global.getSync(
+    "__customFn_invokeLocalCallback",
+    { reference: true },
+  ) as ivm.Reference<(callbackId: number, argsJson: string) => Promise<string>>;
+
+  isolateUnmarshalContext.getCallback = (callbackId: number) => {
+    return async (...args: unknown[]) => {
+      let marshalledArgs: unknown;
+      if (marshalOptions) {
+        const ctx = marshalOptions.createMarshalContext();
+        marshalledArgs = await marshalValue(args, ctx);
+        marshalledArgs = marshalOptions.addCallbackIdsToRefs(marshalledArgs);
+      } else {
+        marshalledArgs = await marshalValue(args);
+      }
+
+      const resultJson = await invokeIsolateCallbackRef.apply(
+        undefined,
+        [callbackId, JSON.stringify(marshalledArgs)],
+        { result: { promise: true, copy: true } },
+      ) as string;
+      const result = JSON.parse(resultJson) as {
+        ok: boolean;
+        value?: unknown;
+        error?: { message?: string; name?: string };
+      };
+
+      if (result.ok) {
+        return unmarshalValue(result.value, isolateUnmarshalContext);
+      }
+
+      const error = new Error(result.error?.message ?? `Callback ${callbackId} failed`);
+      error.name = result.error?.name ?? "Error";
+      throw error;
+    };
+  };
 
   // Create wrapper functions for each custom function
   for (const name of Object.keys(customFunctions)) {
@@ -1273,7 +1358,9 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
   const isolate = new ivm.Isolate({
     memoryLimit: opts.memoryLimitMB,
   });
-  const context = await isolate.createContext();
+  const context = await isolate.createContext({
+    asyncContext: true,
+  } as any);
 
   // Initialize state
   const state: RuntimeState = {
@@ -1298,6 +1385,8 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
   };
 
   // Setup all APIs in order
+  await setupAsyncContext(context);
+
   // Core must be first as it provides Blob, File, streams, URL, etc.
   state.handles.core = await setupCore(context);
 

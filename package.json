@@ -14,7 +14,7 @@
   },
   "homepage": "https://github.com/ricsam/isolate#readme",
   "keywords": [
-    "isolated-vm",
+    "@ricsam/isolated-vm",
     "sandbox",
     "javascript",
     "runtime",
@@ -75,7 +75,7 @@
     "typescript": "^5"
   },
   "peerDependencies": {
-    "isolated-vm": "^6",
+    "@ricsam/isolated-vm": "^6.1.2",
     "playwright": "^1"
   },
   "peerDependenciesMeta": {

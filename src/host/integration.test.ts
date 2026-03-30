@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { createModuleResolver } from "../index.ts";
 import { createTestHost, createTestId, withTimeout } from "../testing/integration-helpers.ts";
@@ -60,6 +61,245 @@ describe("createIsolateHost runtime integration", () => {
       "hello from runtime",
       "careful",
       "still working",
+    ]);
+  });
+
+  test("provides AsyncContext-backed async_hooks shims", async () => {
+    const entries: ConsoleEntry[] = [];
+    const resolver = createModuleResolver().mountNodeModules(
+      "/node_modules",
+      path.resolve(import.meta.dirname, "../../node_modules"),
+    );
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+        modules: resolver,
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
+
+        function createDeferred() {
+          let resolve;
+          const promise = new Promise((resolvePromise) => {
+            resolve = resolvePromise;
+          });
+          return { promise, resolve };
+        }
+
+        const storage = new AsyncLocalStorage({ name: "requestId" });
+        const asyncContextVariable = new AsyncContext.Variable({
+          name: "variable",
+          defaultValue: "unset",
+        });
+
+        const syncValue = storage.run({ requestId: "sync" }, () => storage.getStore()?.requestId ?? null);
+        const asyncValue = await storage.run({ requestId: "async" }, async () => {
+          await Promise.resolve();
+          return storage.getStore()?.requestId ?? null;
+        });
+
+        const deferredA = createDeferred();
+        const deferredB = createDeferred();
+        const promiseA = storage.run({ requestId: "A" }, async () => {
+          await deferredA.promise;
+          return storage.getStore()?.requestId ?? null;
+        });
+        const promiseB = storage.run({ requestId: "B" }, async () => {
+          await deferredB.promise;
+          return storage.getStore()?.requestId ?? null;
+        });
+        deferredB.resolve();
+        deferredA.resolve();
+        const parallelValues = await Promise.all([promiseA, promiseB]);
+
+        const boundValue = storage.run({ requestId: "bind" }, () => {
+          const bound = AsyncLocalStorage.bind(() => storage.getStore()?.requestId ?? null);
+          return bound();
+        });
+
+        const snapshotValue = storage.run({ requestId: "snapshot" }, () => {
+          const snapshot = AsyncLocalStorage.snapshot();
+          return snapshot(() => storage.getStore()?.requestId ?? null);
+        });
+
+        const timerValue = await storage.run({ requestId: "timer" }, () => (
+          new Promise((resolve) => {
+            setTimeout(() => resolve(storage.getStore()?.requestId ?? null), 0);
+          })
+        ));
+
+        const resourceValue = await storage.run({ requestId: "resource" }, async () => {
+          const resource = new AsyncResource("test-resource");
+          await Promise.resolve();
+          return resource.runInAsyncScope(() => storage.getStore()?.requestId ?? null);
+        });
+        const emitDestroy = (() => {
+          const resource = new AsyncResource("destroy-resource");
+          const sameResource = resource.emitDestroy() === resource;
+          let throwsOnSecondCall = false;
+          try {
+            resource.emitDestroy();
+          } catch {
+            throwsOnSecondCall = true;
+          }
+          return { sameResource, throwsOnSecondCall };
+        })();
+
+        const enterExitStorage = new AsyncLocalStorage({ defaultValue: "default" });
+        const disabledDeferred = createDeferred();
+        const staleDisabledPromise = enterExitStorage.run("before-disable", async () => {
+          await disabledDeferred.promise;
+          return enterExitStorage.getStore() ?? null;
+        });
+        enterExitStorage.enterWith("entered");
+        const enterValue = enterExitStorage.getStore();
+        const exitValue = enterExitStorage.exit(() => enterExitStorage.getStore() ?? null);
+        const afterExitValue = enterExitStorage.getStore();
+        enterExitStorage.disable();
+        const disabledValue = enterExitStorage.getStore() ?? null;
+        enterExitStorage.enterWith("after-disable");
+        disabledDeferred.resolve();
+        const staleDisabledValue = await staleDisabledPromise;
+
+        const asyncContextValue = await asyncContextVariable.run("ctx", async () => {
+          await Promise.resolve();
+          return asyncContextVariable.get();
+        });
+
+        console.log(JSON.stringify({
+          hasAsyncContext: typeof AsyncContext === "object",
+          isConstructor: typeof AsyncLocalStorage === "function",
+          hasAsyncResource: typeof AsyncResource === "function",
+          syncValue,
+          asyncValue,
+          parallelValues,
+          boundValue,
+          snapshotValue,
+          timerValue,
+          resourceValue,
+          emitDestroy,
+          enterValue,
+          exitValue,
+          afterExitValue,
+          disabledValue,
+          staleDisabledValue,
+          asyncContextValue,
+        }));
+      `);
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.deepEqual(collectOutput(entries), [
+      '{"hasAsyncContext":true,"isConstructor":true,"hasAsyncResource":true,"syncValue":"sync","asyncValue":"async","parallelValues":["A","B"],"boundValue":"bind","snapshotValue":"snapshot","timerValue":"timer","resourceValue":"resource","emitDestroy":{"sameResource":true,"throwsOnSecondCall":true},"enterValue":"entered","exitValue":null,"afterExitValue":"entered","disabledValue":null,"staleDisabledValue":null,"asyncContextValue":"ctx"}',
+    ]);
+  });
+
+  test("preserves async context for emitted runtime events", async () => {
+    const entries: ConsoleEntry[] = [];
+    const resolver = createModuleResolver().mountNodeModules(
+      "/node_modules",
+      path.resolve(import.meta.dirname, "../../node_modules"),
+    );
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+        modules: resolver,
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { AsyncLocalStorage } from "node:async_hooks";
+
+        const storage = new AsyncLocalStorage();
+        globalThis.__eventValuePromise = storage.run({ requestId: "event" }, () => (
+          new Promise((resolve) => {
+            __on("demo", () => {
+              resolve(storage.getStore()?.requestId ?? null);
+            });
+          })
+        ));
+      `);
+
+      await runtime.events.emit("demo", { ok: true });
+      await runtime.eval(`
+        console.log(JSON.stringify({
+          eventValue: await globalThis.__eventValuePromise,
+        }));
+      `);
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.deepEqual(collectOutput(entries), [
+      '{"eventValue":"event"}',
+    ]);
+  });
+
+  test("preserves async context for isolate callbacks invoked by host tools", async () => {
+    const entries: ConsoleEntry[] = [];
+    const resolver = createModuleResolver().mountNodeModules(
+      "/node_modules",
+      path.resolve(import.meta.dirname, "../../node_modules"),
+    );
+    let storedCallback: (() => Promise<unknown>) | undefined;
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+        modules: resolver,
+        tools: {
+          registerCallback: async (...args: [...unknown[], HostCallContext]) => {
+            const callback = args[0] as () => Promise<unknown>;
+            storedCallback = callback;
+            return "registered";
+          },
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { AsyncLocalStorage } from "node:async_hooks";
+
+        const storage = new AsyncLocalStorage();
+        await storage.run({ requestId: "callback" }, async () => {
+          await registerCallback(async () => {
+            await Promise.resolve();
+            return storage.getStore()?.requestId ?? null;
+          });
+        });
+      `);
+
+      assert.ok(storedCallback);
+      const callbackValue = await storedCallback!();
+
+      await runtime.eval(`
+        console.log(JSON.stringify({
+          callbackValue: ${JSON.stringify(callbackValue)},
+        }));
+      `);
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.deepEqual(collectOutput(entries), [
+      '{"callbackValue":"callback"}',
     ]);
   });
 

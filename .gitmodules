@@ -1,0 +1,3 @@
+[submodule "vendor/isolated-vm"]
+	path = vendor/isolated-vm
+	url = https://github.com/ricsam/isolated-vm.git

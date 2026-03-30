@@ -1,4 +1,4 @@
-import ivm from "isolated-vm";
+import ivm from "@ricsam/isolated-vm";
 
 export interface TimersHandle {
   /** Clear all pending timers */
@@ -100,13 +100,18 @@ export async function setupTimers(
   const timersCode = `
 (function() {
   const __timers_callbacks = new Map();
+  const __wrapAsyncContextCallback = (callback) => (
+    typeof callback === 'function' && globalThis.AsyncContext?.Snapshot?.wrap
+      ? globalThis.AsyncContext.Snapshot.wrap(callback)
+      : callback
+  );
 
   globalThis.setTimeout = function(callback, delay, ...args) {
     if (typeof callback !== 'function') {
       throw new TypeError('Callback must be a function');
     }
     const id = __timers_registerTimeout(delay || 0);
-    __timers_callbacks.set(id, { callback, args });
+    __timers_callbacks.set(id, { callback: __wrapAsyncContextCallback(callback), args });
     return id;
   };
 
@@ -115,7 +120,7 @@ export async function setupTimers(
       throw new TypeError('Callback must be a function');
     }
     const id = __timers_registerInterval(delay || 0);
-    __timers_callbacks.set(id, { callback, args });
+    __timers_callbacks.set(id, { callback: __wrapAsyncContextCallback(callback), args });
     return id;
   };
 

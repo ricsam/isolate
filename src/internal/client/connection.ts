@@ -69,12 +69,14 @@ import {
   type CallbackStreamEnd,
   type CallbackAbort,
   marshalValue,
+  unmarshalValue,
   isPromiseRef,
   isAsyncIteratorRef,
   serializeResponse,
   deserializeRequest,
   deserializeResponse,
   type MarshalContext,
+  type UnmarshalContext,
 } from "../protocol/index.ts";
 import {
   defaultPlaywrightHandler,
@@ -162,6 +164,7 @@ interface NamespacedRuntimeDescriptor {
 interface ConnectionState {
   socket: Socket;
   pendingRequests: Map<number, PendingRequest>;
+  pendingCallbackCalls: Map<number, PendingRequest>;
   callbacks: Map<number, (...args: unknown[]) => unknown>;
   /** Callback IDs that need requestId passed as last argument (e.g., fetch callbacks for streaming) */
   callbacksNeedingRequestId: Set<number>;
@@ -198,6 +201,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
   const state: ConnectionState = {
     socket,
     pendingRequests: new Map(),
+    pendingCallbackCalls: new Map(),
     callbacks: new Map(),
     callbacksNeedingRequestId: new Set(),
     nextRequestId: 1,
@@ -234,6 +238,10 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
         pending.reject(new Error("Connection closed"));
       }
       state.pendingRequests.clear();
+      for (const [, pending] of state.pendingCallbackCalls) {
+        pending.reject(new Error("Connection closed"));
+      }
+      state.pendingCallbackCalls.clear();
 
       // Clean up streaming responses - error any pending streams
       for (const [, receiver] of state.streamResponses) {
@@ -490,6 +498,25 @@ function handleMessage(message: Message, state: ConnectionState): void {
     case MessageType.CALLBACK_INVOKE: {
       const invoke = message as CallbackInvoke;
       handleCallbackInvoke(invoke, state);
+      break;
+    }
+
+    case MessageType.CALLBACK_RESPONSE: {
+      const response = message as CallbackResponseMsg;
+      const pending = state.pendingCallbackCalls.get(response.requestId);
+      if (pending) {
+        state.pendingCallbackCalls.delete(response.requestId);
+        if (response.error) {
+          const error = new Error(response.error.message);
+          error.name = response.error.name;
+          if (response.error.stack) {
+            error.stack = response.error.stack;
+          }
+          pending.reject(error);
+        } else {
+          pending.resolve(response.result);
+        }
+      }
       break;
     }
 
@@ -830,6 +857,36 @@ async function handleCallbackInvoke(
       state.callbackAbortControllers.delete(invoke.requestId);
     }
   }
+}
+
+function invokeDaemonCallback(
+  state: ConnectionState,
+  callbackId: number,
+  args: unknown[],
+): Promise<unknown> {
+  if (!state.connected) {
+    return Promise.reject(new Error("Not connected"));
+  }
+
+  const requestId = state.nextRequestId++;
+  const requestContext = getRequestContext();
+  const invoke: CallbackInvoke = {
+    type: MessageType.CALLBACK_INVOKE,
+    requestId,
+    callbackId,
+    args,
+    context: requestContext
+      ? {
+          requestId: requestContext.requestId,
+          metadata: requestContext.metadata,
+        }
+      : undefined,
+  };
+
+  return new Promise((resolve, reject) => {
+    state.pendingCallbackCalls.set(requestId, { resolve, reject });
+    sendMessage(state.socket, invoke);
+  });
 }
 
 /**
@@ -2032,6 +2089,155 @@ function registerCustomFunctions(
   customFunctions: CustomFunctions
 ): Record<string, CallbackRegistration> {
   const registrations: Record<string, CallbackRegistration> = {};
+  const addCallbackIdsToRefs = (value: unknown): unknown => {
+    if (value === null || typeof value !== 'object') {
+      return value;
+    }
+
+    if (isPromiseRef(value)) {
+      const resolveCallbackId = state.nextCallbackId++;
+      state.callbacks.set(resolveCallbackId, async (...args: unknown[]) => {
+        const promiseId = args[0] as number;
+        const promise = returnedPromiseRegistry.get(promiseId);
+        if (!promise) {
+          throw new Error(`Promise ${promiseId} not found`);
+        }
+        const promiseResult = await promise;
+        returnedPromiseRegistry.delete(promiseId);
+        const marshalledResult = await marshalValue(promiseResult, marshalCtx);
+        return addCallbackIdsToRefs(marshalledResult);
+      });
+      return {
+        ...value,
+        __resolveCallbackId: resolveCallbackId,
+      };
+    }
+
+    if (isAsyncIteratorRef(value)) {
+      const nextCallbackId = state.nextCallbackId++;
+      state.callbacks.set(nextCallbackId, async (...args: unknown[]) => {
+        const iteratorId = args[0] as number;
+        const iterator = returnedIteratorRegistry.get(iteratorId);
+        if (!iterator) {
+          throw new Error(`Iterator ${iteratorId} not found`);
+        }
+        const iterResult = await iterator.next();
+        if (iterResult.done) {
+          returnedIteratorRegistry.delete(iteratorId);
+        }
+        const marshalledValue = await marshalValue(iterResult.value, marshalCtx);
+        return {
+          done: iterResult.done,
+          value: addCallbackIdsToRefs(marshalledValue),
+        };
+      });
+
+      const returnCallbackId = state.nextCallbackId++;
+      state.callbacks.set(returnCallbackId, async (...args: unknown[]) => {
+        const iteratorId = args[0] as number;
+        const returnValue = args[1];
+        const iterator = returnedIteratorRegistry.get(iteratorId);
+        returnedIteratorRegistry.delete(iteratorId);
+        if (!iterator || !iterator.return) {
+          return { done: true, value: undefined };
+        }
+        const iterResult = await iterator.return(returnValue);
+        const marshalledValue = await marshalValue(iterResult.value, marshalCtx);
+        return {
+          done: true,
+          value: addCallbackIdsToRefs(marshalledValue),
+        };
+      });
+
+      const throwCallbackId = state.nextCallbackId++;
+      state.callbacks.set(throwCallbackId, async (...args: unknown[]) => {
+        const iteratorId = args[0] as number;
+        const errorValue = args[1] as { message?: string; name?: string; stack?: string } | undefined;
+        const iterator = returnedIteratorRegistry.get(iteratorId);
+        if (!iterator) {
+          throw new Error(`Iterator ${iteratorId} not found`);
+        }
+
+        try {
+          if (!iterator.throw) {
+            throw Object.assign(
+              new Error(errorValue?.message ?? "Iterator does not support throw()"),
+              { name: errorValue?.name ?? "Error", stack: errorValue?.stack },
+            );
+          }
+
+          const thrownError = Object.assign(
+            new Error(errorValue?.message ?? "Iterator throw()"),
+            { name: errorValue?.name ?? "Error", stack: errorValue?.stack },
+          );
+          const iterResult = await iterator.throw(thrownError);
+          if (iterResult.done) {
+            returnedIteratorRegistry.delete(iteratorId);
+          }
+          const marshalledValue = await marshalValue(iterResult.value, marshalCtx);
+          return {
+            done: iterResult.done,
+            value: addCallbackIdsToRefs(marshalledValue),
+          };
+        } catch (error) {
+          returnedIteratorRegistry.delete(iteratorId);
+          throw error;
+        }
+      });
+
+      return {
+        ...value,
+        __nextCallbackId: nextCallbackId,
+        __returnCallbackId: returnCallbackId,
+        __throwCallbackId: throwCallbackId,
+      };
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) => addCallbackIdsToRefs(item));
+    }
+
+    const objResult: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+      objResult[key] = addCallbackIdsToRefs((value as Record<string, unknown>)[key]);
+    }
+    return objResult;
+  };
+
+  const marshalCtx: MarshalContext = {
+    registerCallback: (fn: Function): number => {
+      const returnedCallbackId = state.nextCallbackId++;
+      state.callbacks.set(returnedCallbackId, async (...args: unknown[]) => {
+        const fnResult = await fn(...args);
+        const marshalledResult = await marshalValue(fnResult, marshalCtx);
+        return addCallbackIdsToRefs(marshalledResult);
+      });
+      return returnedCallbackId;
+    },
+    registerPromise: (promise: Promise<unknown>): number => {
+      const promiseId = state.nextCallbackId++;
+      returnedPromiseRegistry.set(promiseId, promise);
+      return promiseId;
+    },
+    registerIterator: (iterator: AsyncIterator<unknown>): number => {
+      const iteratorId = state.nextCallbackId++;
+      returnedIteratorRegistry.set(iteratorId, iterator);
+      return iteratorId;
+    },
+  };
+
+  const unmarshalCtx: UnmarshalContext = {};
+  unmarshalCtx.getCallback = (callbackId: number) => {
+    return async (...args: unknown[]) => {
+      const marshalledArgs = await marshalValue(args, marshalCtx);
+      const result = await invokeDaemonCallback(
+        state,
+        callbackId,
+        addCallbackIdsToRefs(marshalledArgs) as unknown[],
+      );
+      return unmarshalValue(result, unmarshalCtx);
+    };
+  };
 
   for (const [name, def] of Object.entries(customFunctions)) {
     if (def.type === 'asyncIterator') {
@@ -2043,7 +2249,7 @@ function registerCustomFunctions(
       state.callbacks.set(startCallbackId, async (...args: unknown[]) => {
         try {
           const fn = def.fn as (...args: unknown[]) => AsyncGenerator<unknown, unknown, unknown>;
-          const iterator = fn(...args);
+          const iterator = fn(...(unmarshalValue(args, unmarshalCtx) as unknown[]));
           const iteratorId = nextClientIteratorId++;
           clientIteratorSessions.set(iteratorId, { iterator });
           return { iteratorId };
@@ -2126,162 +2332,7 @@ function registerCustomFunctions(
       // (Request, Response, File, undefined, etc. → Refs)
       // Also register returned functions/promises/iterators so they can be called back
       state.callbacks.set(callbackId, async (...args: unknown[]) => {
-        const result = await def.fn(...args);
-
-        // Helper to add callback IDs to PromiseRef and AsyncIteratorRef
-        const addCallbackIdsToRefs = (value: unknown): unknown => {
-          if (value === null || typeof value !== 'object') {
-            return value;
-          }
-
-          // Check for PromiseRef
-          if (isPromiseRef(value)) {
-            // Create a resolve callback
-            const resolveCallbackId = state.nextCallbackId++;
-            state.callbacks.set(resolveCallbackId, async (...args: unknown[]) => {
-              const promiseId = args[0] as number;
-              const promise = returnedPromiseRegistry.get(promiseId);
-              if (!promise) {
-                throw new Error(`Promise ${promiseId} not found`);
-              }
-              const promiseResult = await promise;
-              // Clean up
-              returnedPromiseRegistry.delete(promiseId);
-              // Marshal and process the result recursively
-              const marshalledResult = await marshalValue(promiseResult, marshalCtx);
-              return addCallbackIdsToRefs(marshalledResult);
-            });
-            return {
-              ...value,
-              __resolveCallbackId: resolveCallbackId,
-            };
-          }
-
-          // Check for AsyncIteratorRef
-          if (isAsyncIteratorRef(value)) {
-            // Create next callback
-            const nextCallbackId = state.nextCallbackId++;
-            state.callbacks.set(nextCallbackId, async (...args: unknown[]) => {
-              const iteratorId = args[0] as number;
-              const iterator = returnedIteratorRegistry.get(iteratorId);
-              if (!iterator) {
-                throw new Error(`Iterator ${iteratorId} not found`);
-              }
-              const iterResult = await iterator.next();
-              if (iterResult.done) {
-                returnedIteratorRegistry.delete(iteratorId);
-              }
-              // Marshal and process the value recursively
-              const marshalledValue = await marshalValue(iterResult.value, marshalCtx);
-              return {
-                done: iterResult.done,
-                value: addCallbackIdsToRefs(marshalledValue),
-              };
-            });
-
-            // Create return callback
-            const returnCallbackId = state.nextCallbackId++;
-            state.callbacks.set(returnCallbackId, async (...args: unknown[]) => {
-              const iteratorId = args[0] as number;
-              const returnValue = args[1];
-              const iterator = returnedIteratorRegistry.get(iteratorId);
-              returnedIteratorRegistry.delete(iteratorId);
-              if (!iterator || !iterator.return) {
-                return { done: true, value: undefined };
-              }
-              const iterResult = await iterator.return(returnValue);
-              const marshalledValue = await marshalValue(iterResult.value, marshalCtx);
-              return {
-                done: true,
-                value: addCallbackIdsToRefs(marshalledValue),
-              };
-            });
-
-            // Create throw callback
-            const throwCallbackId = state.nextCallbackId++;
-            state.callbacks.set(throwCallbackId, async (...args: unknown[]) => {
-              const iteratorId = args[0] as number;
-              const errorValue = args[1] as { message?: string; name?: string; stack?: string } | undefined;
-              const iterator = returnedIteratorRegistry.get(iteratorId);
-              if (!iterator) {
-                throw new Error(`Iterator ${iteratorId} not found`);
-              }
-
-              try {
-                if (!iterator.throw) {
-                  throw Object.assign(
-                    new Error(errorValue?.message ?? "Iterator does not support throw()"),
-                    { name: errorValue?.name ?? "Error", stack: errorValue?.stack },
-                  );
-                }
-
-                const thrownError = Object.assign(
-                  new Error(errorValue?.message ?? "Iterator throw()"),
-                  { name: errorValue?.name ?? "Error", stack: errorValue?.stack },
-                );
-                const iterResult = await iterator.throw(thrownError);
-                if (iterResult.done) {
-                  returnedIteratorRegistry.delete(iteratorId);
-                }
-                const marshalledValue = await marshalValue(iterResult.value, marshalCtx);
-                return {
-                  done: iterResult.done,
-                  value: addCallbackIdsToRefs(marshalledValue),
-                };
-              } catch (error) {
-                returnedIteratorRegistry.delete(iteratorId);
-                throw error;
-              }
-            });
-
-            return {
-              ...value,
-              __nextCallbackId: nextCallbackId,
-              __returnCallbackId: returnCallbackId,
-              __throwCallbackId: throwCallbackId,
-            };
-          }
-
-          // Handle arrays
-          if (Array.isArray(value)) {
-            return value.map(item => addCallbackIdsToRefs(item));
-          }
-
-          // Handle plain objects (recursively process values)
-          const objResult: Record<string, unknown> = {};
-          for (const key of Object.keys(value)) {
-            objResult[key] = addCallbackIdsToRefs((value as Record<string, unknown>)[key]);
-          }
-          return objResult;
-        };
-
-        // Create context for registering returned callbacks/promises/iterators
-        // These will be registered in state.callbacks so the daemon can call them back
-        const marshalCtx: MarshalContext = {
-          registerCallback: (fn: Function): number => {
-            const returnedCallbackId = state.nextCallbackId++;
-            // Register a callback that marshals its result recursively
-            state.callbacks.set(returnedCallbackId, async (...args: unknown[]) => {
-              const fnResult = await fn(...args);
-              const marshalledResult = await marshalValue(fnResult, marshalCtx);
-              return addCallbackIdsToRefs(marshalledResult);
-            });
-            return returnedCallbackId;
-          },
-          registerPromise: (promise: Promise<unknown>): number => {
-            const promiseId = state.nextCallbackId++;
-            // Store the promise - callback to resolve it will be created in addCallbackIdsToRefs
-            returnedPromiseRegistry.set(promiseId, promise);
-            return promiseId;
-          },
-          registerIterator: (iterator: AsyncIterator<unknown>): number => {
-            const iteratorId = state.nextCallbackId++;
-            // Store the iterator - callbacks for next/return/throw will be created in addCallbackIdsToRefs
-            returnedIteratorRegistry.set(iteratorId, iterator);
-            return iteratorId;
-          },
-        };
-
+        const result = await def.fn(...(unmarshalValue(args, unmarshalCtx) as unknown[]));
         const marshalled = await marshalValue(result, marshalCtx);
         const withCallbackIds = addCallbackIdsToRefs(marshalled);
         return withCallbackIds;

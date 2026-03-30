@@ -37,6 +37,41 @@ export {};
 
 declare global {
   // ============================================
+  // Async Context
+  // ============================================
+
+  interface AsyncContextVariableOptions<T = unknown> {
+    defaultValue?: T;
+    name?: string;
+  }
+
+  interface AsyncContextVariable<T = unknown> {
+    readonly name: string;
+    run<R, A extends unknown[]>(value: T, fn: (...args: A) => R, ...args: A): R;
+    get(): T;
+  }
+
+  interface AsyncContextVariableConstructor {
+    new <T = unknown>(options?: AsyncContextVariableOptions<T>): AsyncContextVariable<T>;
+    readonly prototype: AsyncContextVariable<unknown>;
+  }
+
+  interface AsyncContextSnapshot {
+    run<R, A extends unknown[]>(fn: (...args: A) => R, ...args: A): R;
+  }
+
+  interface AsyncContextSnapshotConstructor {
+    new (): AsyncContextSnapshot;
+    wrap<T extends (...args: any[]) => any>(fn: T): T;
+    readonly prototype: AsyncContextSnapshot;
+  }
+
+  const AsyncContext: {
+    Variable: AsyncContextVariableConstructor;
+    Snapshot: AsyncContextSnapshotConstructor;
+  };
+
+  // ============================================
   // Web Streams API
   // ============================================
 

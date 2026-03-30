@@ -1,4 +1,4 @@
-import type ivm from "isolated-vm";
+import type ivm from "@ricsam/isolated-vm";
 
 export interface EncodingHandle {
   dispose(): void;

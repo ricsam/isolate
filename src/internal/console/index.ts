@@ -1,4 +1,4 @@
-import ivm from "isolated-vm";
+import ivm from "@ricsam/isolated-vm";
 
 /**
  * Console entry types for structured console output.

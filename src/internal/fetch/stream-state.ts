@@ -1,4 +1,4 @@
-import ivm from "isolated-vm";
+import ivm from "@ricsam/isolated-vm";
 
 // ============================================================================
 // Types

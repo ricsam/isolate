@@ -29,6 +29,8 @@ jobs:
         run: echo "Skipping tests because skip_tests=true."
       - uses: actions/checkout@v4
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
+        with:
+          submodules: recursive
       - uses: oven-sh/setup-bun@v2
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
       - uses: actions/setup-node@v4
@@ -38,7 +40,9 @@ jobs:
       - name: Update npm
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
         run: npm install -g npm@latest
-      - run: npm ci
+      - run: |
+          npm ci
+          npm install --no-save ./vendor/isolated-vm
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
       - run: npm run typecheck
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
@@ -54,6 +58,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
         with:
@@ -61,7 +67,9 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - name: Update npm
         run: npm install -g npm@latest
-      - run: npm ci
+      - run: |
+          npm ci
+          npm install --no-save ./vendor/isolated-vm
       - run: npm run build:npm
       - run: npx changeset publish --access=public --registry=https://registry.npmjs.org/
         env:

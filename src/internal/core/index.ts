@@ -1,10 +1,10 @@
-import ivm from "isolated-vm";
+import ivm from "@ricsam/isolated-vm";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 
 // Types for isolated-vm context
-export type { Isolate, Context, Reference } from "isolated-vm";
+export type { Isolate, Context, Reference } from "@ricsam/isolated-vm";
 
 const runtimeRequire = createRequire(path.join(process.cwd(), "package.json"));
 
@@ -2190,6 +2190,11 @@ async function injectAbortController(context: ivm.Context): Promise<void> {
 (function() {
   // Use WeakMap for private state (similar to Blob pattern)
   const _abortSignalState = new WeakMap();
+  const __wrapAsyncContextCallback = (callback) => (
+    typeof callback === 'function' && globalThis.AsyncContext?.Snapshot?.wrap
+      ? globalThis.AsyncContext.Snapshot.wrap(callback)
+      : callback
+  );
 
   class AbortSignal {
     constructor() {
@@ -2238,7 +2243,8 @@ async function injectAbortController(context: ivm.Context): Promise<void> {
       if (type !== 'abort') return;
       const state = _abortSignalState.get(this);
       if (state) {
-        state.listeners.push(listener);
+        const wrapped = __wrapAsyncContextCallback(listener);
+        state.listeners.push({ original: listener, wrapped });
       }
     }
 
@@ -2246,7 +2252,9 @@ async function injectAbortController(context: ivm.Context): Promise<void> {
       if (type !== 'abort') return;
       const state = _abortSignalState.get(this);
       if (state) {
-        const idx = state.listeners.indexOf(listener);
+        const idx = state.listeners.findIndex((entry) => (
+          entry.original === listener || entry.wrapped === listener
+        ));
         if (idx !== -1) state.listeners.splice(idx, 1);
       }
     }
@@ -2259,7 +2267,7 @@ async function injectAbortController(context: ivm.Context): Promise<void> {
       const event = { type: 'abort', target: this };
       for (const listener of state.listeners) {
         try {
-          listener(event);
+          listener.wrapped(event);
         } catch (e) {
           // Ignore listener errors
         }
