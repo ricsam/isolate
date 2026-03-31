@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.9
+
+### Patch Changes
+
+- fix some encoding issue
+
 ## 0.1.8
 
 ### Patch Changes

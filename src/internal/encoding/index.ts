@@ -182,6 +182,8 @@ const encodingCode = `
       encoding = normalizeEncoding(encoding);
       if (encoding === 'utf8') {
         return new TextDecoder('utf-8').decode(this);
+      } else if (encoding === 'latin1') {
+        return bytesToLatin1(this);
       } else if (encoding === 'base64') {
         return bytesToBase64(this);
       } else if (encoding === 'hex') {
@@ -293,6 +295,8 @@ const encodingCode = `
       encoding = normalizeEncoding(encoding);
       if (encoding === 'utf8') {
         return new TextEncoder().encode(string).length;
+      } else if (encoding === 'latin1') {
+        return string.length;
       } else if (encoding === 'base64') {
         const padding = (string.match(/=+$/) || [''])[0].length;
         return Math.floor((string.length * 3) / 4) - padding;
@@ -303,14 +307,15 @@ const encodingCode = `
     }
 
     static isEncoding(encoding) {
-      return ['utf8', 'utf-8', 'base64', 'hex'].includes(normalizeEncoding(encoding));
+      return ['utf8', 'latin1', 'base64', 'hex'].includes(normalizeEncoding(encoding));
     }
   }
 
   function normalizeEncoding(encoding) {
     if (!encoding) return 'utf8';
-    const lower = String(encoding).toLowerCase().replace('-', '');
-    if (lower === 'utf8' || lower === 'utf-8') return 'utf8';
+    const lower = String(encoding).toLowerCase().replace(/-/g, '');
+    if (lower === 'utf8') return 'utf8';
+    if (lower === 'latin1' || lower === 'binary') return 'latin1';
     if (lower === 'base64') return 'base64';
     if (lower === 'hex') return 'hex';
     return lower;
@@ -320,6 +325,8 @@ const encodingCode = `
     encoding = normalizeEncoding(encoding);
     if (encoding === 'utf8') {
       return new TextEncoder().encode(str);
+    } else if (encoding === 'latin1') {
+      return latin1ToBytes(str);
     } else if (encoding === 'base64') {
       return base64ToBytes(str);
     } else if (encoding === 'hex') {
@@ -343,6 +350,22 @@ const encodingCode = `
       binary += String.fromCharCode(bytes[i]);
     }
     return btoa(binary);
+  }
+
+  function latin1ToBytes(str) {
+    const bytes = new Uint8Array(str.length);
+    for (let i = 0; i < str.length; i++) {
+      bytes[i] = str.charCodeAt(i) & 0xFF;
+    }
+    return bytes;
+  }
+
+  function bytesToLatin1(bytes) {
+    let result = '';
+    for (let i = 0; i < bytes.length; i++) {
+      result += String.fromCharCode(bytes[i]);
+    }
+    return result;
   }
 
   function hexToBytes(str) {

@@ -3385,12 +3385,7 @@ export async function setupFetch(
         `);
       } else {
         // ArrayBuffer - convert to base64 with marker
-        const bytes = new Uint8Array(data);
-        let binary = "";
-        for (let i = 0; i < bytes.byteLength; i++) {
-          binary += String.fromCharCode(bytes[i]!);
-        }
-        const base64 = Buffer.from(binary, "binary").toString("base64");
+        const base64 = Buffer.from(data).toString("base64");
         context.evalSync(`
           __dispatchClientWebSocketEvent("${socketId}", "message", { data: "__BINARY__${base64}" });
         `);
