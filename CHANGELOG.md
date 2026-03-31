@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.8
+
+### Patch Changes
+
+- add more logs
+
 ## 0.1.7
 
 ### Patch Changes

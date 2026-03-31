@@ -568,6 +568,69 @@ function logRuntimeLifecycle(
   );
 }
 
+function formatDebugValue(value: unknown): string {
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return String(value);
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify(String(value));
+  }
+}
+
+function formatDebugFields(fields: Record<string, unknown>): string {
+  return Object.entries(fields)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${formatDebugValue(value)}`)
+    .join(" ");
+}
+
+function isDisposedOperationError(error: unknown): boolean {
+  const text = getErrorText(error).toLowerCase();
+  return text.includes("disposed");
+}
+
+function buildRuntimeDebugFields(
+  instance: IsolateInstance,
+  connection: ConnectionState,
+  extras: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    isolateId: instance.isolateId,
+    namespaceId: instance.namespaceId ?? null,
+    pooled: instance.isDisposed,
+    ownerMatches: instance.ownerConnection === connection.socket,
+    connectionOwnsIsolate: connection.isolates.has(instance.isolateId),
+    runtimeAbortAborted: instance.runtimeAbortController?.signal.aborted ?? null,
+    disposedForMs: instance.disposedAt !== undefined ? Date.now() - instance.disposedAt : null,
+    callbackConnectionPresent: !!instance.callbackContext?.connection,
+    reconnectPending: !!instance.callbackContext?.reconnectionPromise,
+    callbackRegistrations: instance.callbacks.size,
+    ...extras,
+  };
+}
+
+function logSuspiciousRuntimeOperation(
+  state: DaemonState,
+  operation: string,
+  instance: IsolateInstance,
+  connection: ConnectionState,
+  extras: Record<string, unknown> = {},
+  level: "log" | "warn" = "warn",
+): void {
+  const logger = level === "warn" ? console.warn : console.log;
+  logger(
+    `[isolate-daemon] ${operation} runtime ${formatRuntimeLabel(instance)}; ${formatRuntimePoolSnapshot(collectRuntimePoolSnapshot(state))} ${formatDebugFields(
+      buildRuntimeDebugFields(instance, connection, extras),
+    )}`
+  );
+}
+
 async function hardDeleteRuntime(
   instance: IsolateInstance,
   state: DaemonState,
@@ -630,6 +693,8 @@ function softDeleteRuntime(
   state: DaemonState,
   reason?: string,
 ): void {
+  const runtimeAbortWasAborted = instance.runtimeAbortController?.signal.aborted ?? false;
+  const hadCallbackConnection = !!instance.callbackContext?.connection;
   if (instance.runtimeAbortController && !instance.runtimeAbortController.signal.aborted) {
     instance.runtimeAbortController.abort(
       new Error(reason ?? "Runtime was soft-disposed"),
@@ -684,6 +749,16 @@ function softDeleteRuntime(
   instance.runtime.clearModuleCache();
 
   logRuntimeLifecycle(state, "soft-disposed", instance, reason);
+  console.warn(
+    `[isolate-daemon] soft-dispose state runtime ${formatRuntimeLabel(instance)}; ${formatRuntimePoolSnapshot(collectRuntimePoolSnapshot(state))} ${formatDebugFields({
+      runtimeAbortWasAborted,
+      runtimeAbortAborted: instance.runtimeAbortController?.signal.aborted ?? null,
+      hadCallbackConnection,
+      callbackConnectionPresent: !!instance.callbackContext?.connection,
+      reconnectPending: !!instance.callbackContext?.reconnectionPromise,
+      callbackRegistrations: instance.callbacks.size,
+    })}`
+  );
 }
 
 /**
@@ -696,6 +771,10 @@ function reuseNamespacedRuntime(
   message: CreateRuntimeRequest,
   state: DaemonState
 ): void {
+  const disposedForMs = instance.disposedAt !== undefined ? Date.now() - instance.disposedAt : null;
+  const runtimeAbortWasAborted = instance.runtimeAbortController?.signal.aborted ?? false;
+  const reconnectWasPending = !!instance.callbackContext?.reconnectionPromise;
+
   // Update ownership
   instance.ownerConnection = connection.socket;
   instance.isDisposed = false;
@@ -842,6 +921,18 @@ function reuseNamespacedRuntime(
   instance.nextLocalCallbackId = 1_000_000;
 
   logRuntimeLifecycle(state, "reused pooled", instance);
+  logSuspiciousRuntimeOperation(
+    state,
+    "reuse state",
+    instance,
+    connection,
+    {
+      disposedForMs,
+      runtimeAbortWasAborted,
+      reconnectWasPending,
+    },
+    "log",
+  );
 }
 
 /**
@@ -1857,6 +1948,13 @@ async function handleDispatchRequest(
     return;
   }
 
+  if (instance.isDisposed) {
+    logSuspiciousRuntimeOperation(state, "dispatchRequest received for pooled", instance, connection, {
+      method: message.request.method,
+      url: message.request.url,
+    });
+  }
+
   instance.lastActivity = Date.now();
   const dispatchAbortController = new AbortController();
   connection.dispatchAbortControllers.set(message.requestId, dispatchAbortController);
@@ -1916,6 +2014,13 @@ async function handleDispatchRequest(
       }
     } catch (err) {
       const error = err as Error;
+      if (instance.isDisposed || isDisposedOperationError(error)) {
+        logSuspiciousRuntimeOperation(state, "dispatchRequest failed", instance, connection, {
+          method: message.request.method,
+          url: message.request.url,
+          error: error.message,
+        });
+      }
       sendError(
         connection.socket,
         message.requestId,
@@ -2181,6 +2286,10 @@ async function handleFetchGetUpgradeRequest(
     return;
   }
 
+  if (instance.isDisposed) {
+    logSuspiciousRuntimeOperation(state, "getUpgradeRequest received for pooled", instance, connection);
+  }
+
   instance.lastActivity = Date.now();
 
   try {
@@ -2188,6 +2297,11 @@ async function handleFetchGetUpgradeRequest(
     sendOk(connection.socket, message.requestId, upgradeRequest);
   } catch (err) {
     const error = err as Error;
+    if (instance.isDisposed || isDisposedOperationError(error)) {
+      logSuspiciousRuntimeOperation(state, "getUpgradeRequest failed", instance, connection, {
+        error: error.message,
+      });
+    }
     sendError(
       connection.socket,
       message.requestId,
@@ -2218,6 +2332,10 @@ async function handleFetchHasServeHandler(
     return;
   }
 
+  if (instance.isDisposed) {
+    logSuspiciousRuntimeOperation(state, "hasServeHandler received for pooled", instance, connection);
+  }
+
   instance.lastActivity = Date.now();
 
   try {
@@ -2225,6 +2343,11 @@ async function handleFetchHasServeHandler(
     sendOk(connection.socket, message.requestId, hasHandler);
   } catch (err) {
     const error = err as Error;
+    if (instance.isDisposed || isDisposedOperationError(error)) {
+      logSuspiciousRuntimeOperation(state, "hasServeHandler failed", instance, connection, {
+        error: error.message,
+      });
+    }
     sendError(
       connection.socket,
       message.requestId,
@@ -2255,6 +2378,10 @@ async function handleFetchHasActiveConnections(
     return;
   }
 
+  if (instance.isDisposed) {
+    logSuspiciousRuntimeOperation(state, "hasActiveConnections received for pooled", instance, connection);
+  }
+
   instance.lastActivity = Date.now();
 
   try {
@@ -2262,6 +2389,11 @@ async function handleFetchHasActiveConnections(
     sendOk(connection.socket, message.requestId, hasConnections);
   } catch (err) {
     const error = err as Error;
+    if (instance.isDisposed || isDisposedOperationError(error)) {
+      logSuspiciousRuntimeOperation(state, "hasActiveConnections failed", instance, connection, {
+        error: error.message,
+      });
+    }
     sendError(
       connection.socket,
       message.requestId,
