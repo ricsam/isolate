@@ -221,6 +221,76 @@ describe("createModuleResolver", () => {
     }
   });
 
+  test("applies package browser remaps for internal files without preferring browser-only package entries", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolate-browser-remaps-"));
+    const nodeModulesPath = path.join(tempRoot, "node_modules");
+    const packageRoot = path.join(nodeModulesPath, "package-a");
+    const packageBNodeRoot = path.join(nodeModulesPath, "package-b-node");
+    const packageBBrowserRoot = path.join(nodeModulesPath, "package-b-browser");
+
+    fs.mkdirSync(path.join(packageRoot, "dist-es"), { recursive: true });
+    fs.mkdirSync(packageBNodeRoot, { recursive: true });
+    fs.mkdirSync(packageBBrowserRoot, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "package-a",
+        type: "module",
+        exports: "./dist-es/index.js",
+        module: "./dist-es/index.js",
+        browser: {
+          "./dist-es/runtimeConfig": "./dist-es/runtimeConfig.browser",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(packageRoot, "dist-es/index.js"),
+      'export { value } from "./runtimeConfig";\n',
+    );
+    fs.writeFileSync(
+      path.join(packageRoot, "dist-es/runtimeConfig.js"),
+      'export { value } from "package-b-node";\n',
+    );
+    fs.writeFileSync(
+      path.join(packageRoot, "dist-es/runtimeConfig.browser.js"),
+      'export { value } from "package-b-browser";\n',
+    );
+
+    fs.writeFileSync(
+      path.join(packageBNodeRoot, "package.json"),
+      JSON.stringify({ name: "package-b-node", type: "module", exports: "./index.js" }),
+    );
+    fs.writeFileSync(
+      path.join(packageBNodeRoot, "index.js"),
+      'export const value = "node";\n',
+    );
+    fs.writeFileSync(
+      path.join(packageBBrowserRoot, "package.json"),
+      JSON.stringify({ name: "package-b-browser", type: "module", exports: "./index.js" }),
+    );
+    fs.writeFileSync(
+      path.join(packageBBrowserRoot, "index.js"),
+      'export const value = "browser";\n',
+    );
+
+    try {
+      const resolver = createModuleResolver().mountNodeModules("/node_modules", nodeModulesPath);
+
+      const result = await resolver.resolve(
+        "package-a",
+        { path: "/app/main.ts", resolveDir: "/app" },
+        TEST_CONTEXT,
+      );
+
+      assert.equal(result.filename, "package-a.bundled.js");
+      assert.match(result.code, /package-b-browser/);
+      assert.doesNotMatch(result.code, /package-b-node/);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test("resolves wildcard subpath exports to their import entrypoints", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolate-subpath-exports-"));
     const nodeModulesPath = path.join(tempRoot, "node_modules");
@@ -262,6 +332,89 @@ describe("createModuleResolver", () => {
       assert.equal(result.filename, "webhooks.bundled.js");
       assert.match(result.code, /validateEvent/);
       assert.doesNotMatch(result.code, /__packageDefault/);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rethrows node_modules loader errors when fallback returns null", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolate-loader-errors-"));
+    const nodeModulesPath = path.join(tempRoot, "node_modules");
+
+    fs.mkdirSync(nodeModulesPath, { recursive: true });
+
+    try {
+      const resolver = createModuleResolver()
+        .mountNodeModules("/node_modules", nodeModulesPath)
+        .fallback(() => null);
+
+      await assert.rejects(
+        resolver.resolve(
+          "missing-package",
+          { path: "/app/main.ts", resolveDir: "/app" },
+          TEST_CONTEXT,
+        ),
+        /Cannot resolve bare specifier "missing-package"/,
+      );
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("resolves explicit subpath exports with nested import conditions", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolate-explicit-subpath-exports-"));
+    const nodeModulesPath = path.join(tempRoot, "node_modules");
+    const packageRoot = path.join(nodeModulesPath, "@lexical", "react");
+
+    fs.mkdirSync(packageRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "@lexical/react",
+        type: "module",
+        exports: {
+          "./LexicalComposer": {
+            import: {
+              types: "./LexicalComposer.d.ts",
+              development: "./LexicalComposer.dev.mjs",
+              production: "./LexicalComposer.prod.mjs",
+              node: "./LexicalComposer.node.mjs",
+              default: "./LexicalComposer.mjs",
+            },
+            require: {
+              types: "./LexicalComposer.d.ts",
+              development: "./LexicalComposer.dev.js",
+              production: "./LexicalComposer.prod.js",
+              default: "./LexicalComposer.js",
+            },
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(path.join(packageRoot, "LexicalComposer.d.ts"), "export declare const source: string;\n");
+    fs.writeFileSync(path.join(packageRoot, "LexicalComposer.dev.mjs"), 'export const source = "esm-development";\n');
+    fs.writeFileSync(path.join(packageRoot, "LexicalComposer.prod.mjs"), 'export const source = "esm-production";\n');
+    fs.writeFileSync(path.join(packageRoot, "LexicalComposer.node.mjs"), 'export const source = "esm-node";\n');
+    fs.writeFileSync(path.join(packageRoot, "LexicalComposer.mjs"), 'export const source = "esm-default";\n');
+    fs.writeFileSync(path.join(packageRoot, "LexicalComposer.dev.js"), 'exports.source = "cjs-development";\n');
+    fs.writeFileSync(path.join(packageRoot, "LexicalComposer.prod.js"), 'exports.source = "cjs-production";\n');
+    fs.writeFileSync(path.join(packageRoot, "LexicalComposer.js"), 'exports.source = "cjs-default";\n');
+
+    try {
+      const resolver = createModuleResolver().mountNodeModules("/node_modules", nodeModulesPath);
+
+      const result = await resolver.resolve(
+        "@lexical/react/LexicalComposer",
+        { path: "/app/main.ts", resolveDir: "/app" },
+        TEST_CONTEXT,
+      );
+
+      assert.equal(result.filename, "LexicalComposer.bundled.js");
+      assert.match(result.code, /esm-(development|production|node|default)/);
+      assert.doesNotMatch(result.code, /cjs-default/);
+      assert.doesNotMatch(result.code, /cjs-development/);
+      assert.doesNotMatch(result.code, /cjs-production/);
+      assert.doesNotMatch(result.code, /LexicalComposer\.d\.ts/);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

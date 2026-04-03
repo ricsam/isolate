@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.10
+
+### Patch Changes
+
+- make module loader resolve browser deps earlier
+
 ## 0.1.9
 
 ### Patch Changes

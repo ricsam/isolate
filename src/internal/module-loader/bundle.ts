@@ -7,7 +7,7 @@ import * as nodeResolveModule from "@rollup/plugin-node-resolve";
 import * as commonjsModule from "@rollup/plugin-commonjs";
 import * as jsonModule from "@rollup/plugin-json";
 import * as replaceModule from "@rollup/plugin-replace";
-import { detectFormat, parseSpecifier } from "./resolve.ts";
+import { detectFormat, parseSpecifier, isBareSpecifier, resolveFilePath } from "./resolve.ts";
 import { processTypeScript, isTypeScriptFile } from "./strip-types.ts";
 import type { RollupCommonJSOptions } from "@rollup/plugin-commonjs";
 import type { RollupJsonOptions } from "@rollup/plugin-json";
@@ -58,7 +58,9 @@ function isNodeBuiltin(source: string): boolean {
 }
 
 const NODE_BUILTIN_SHIM_PREFIX = "\0node-builtin-shim:";
+const BROWSER_EMPTY_MODULE_PREFIX = "\0browser-empty:";
 const HOST_ASYNC_WRAP_PROVIDERS_JSON = JSON.stringify(hostAsyncWrapProviders);
+const BROWSER_MAPPING_EXTENSIONS = [".tsx", ".jsx", ".ts", ".mjs", ".js", ".cjs", ".json"];
 
 export function getNodeBuiltinShimCode(source: string): string {
   if (source === "ws" || source === "node:ws") {
@@ -552,6 +554,178 @@ function pickImportTarget(value: unknown, wildcardMatch?: string): string | null
   return null;
 }
 
+const browserMappingsByPackageRoot = new Map<string, Record<string, string | false> | null>();
+
+function packageBrowserMappingsPlugin(): Plugin {
+  return {
+    name: "package-browser-mappings",
+    resolveId(source, importer) {
+      if (!importer || importer.startsWith("\0")) {
+        return null;
+      }
+
+      const browserMappings = getBrowserMappingsForImporter(importer);
+      if (!browserMappings) {
+        return null;
+      }
+
+      const mappedTarget = resolveBrowserMapping(source, importer, browserMappings);
+      if (mappedTarget === undefined) {
+        return null;
+      }
+
+      if (mappedTarget === false) {
+        return `${BROWSER_EMPTY_MODULE_PREFIX}${browserMappings.packageRoot}\0${source}`;
+      }
+
+      if (isBareSpecifier(mappedTarget) || mappedTarget.startsWith("node:")) {
+        return this.resolve(mappedTarget, importer, { skipSelf: true }).then(
+          (resolved) => resolved ?? { id: mappedTarget },
+        );
+      }
+
+      return mappedTarget;
+    },
+    load(id) {
+      if (id.startsWith(BROWSER_EMPTY_MODULE_PREFIX)) {
+        return "export default {};\n";
+      }
+      return null;
+    },
+  };
+}
+
+function getBrowserMappingsForImporter(importer: string): {
+  packageRoot: string;
+  mappings: Record<string, string | false>;
+} | null {
+  const packageJsonPath = findNearestPackageJsonPath(importer);
+  if (!packageJsonPath) {
+    return null;
+  }
+
+  const packageRoot = path.dirname(packageJsonPath);
+  let cachedMappings = browserMappingsByPackageRoot.get(packageRoot);
+  if (cachedMappings === undefined) {
+    try {
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as { browser?: unknown };
+      const browserField = packageJson.browser;
+      cachedMappings = typeof browserField === "object" && browserField !== null && !Array.isArray(browserField)
+        ? Object.fromEntries(
+            Object.entries(browserField)
+              .filter((entry): entry is [string, string | false] => typeof entry[1] === "string" || entry[1] === false),
+          )
+        : null;
+    } catch {
+      cachedMappings = null;
+    }
+    browserMappingsByPackageRoot.set(packageRoot, cachedMappings);
+  }
+
+  if (!cachedMappings) {
+    return null;
+  }
+
+  return { packageRoot, mappings: cachedMappings };
+}
+
+function resolveBrowserMapping(
+  source: string,
+  importer: string,
+  browserMappings: { packageRoot: string; mappings: Record<string, string | false> },
+): string | false | undefined {
+  const keysToTry: string[] = [];
+
+  if (isBareSpecifier(source) || source.startsWith("node:")) {
+    keysToTry.push(source);
+    if (source.startsWith("node:")) {
+      keysToTry.push(source.slice(5));
+    }
+  } else {
+    const importerDir = path.dirname(importer);
+    const unresolvedTarget = source.startsWith("/")
+      ? source
+      : path.resolve(importerDir, source);
+
+    if (unresolvedTarget !== browserMappings.packageRoot
+      && !unresolvedTarget.startsWith(browserMappings.packageRoot + path.sep)) {
+      return undefined;
+    }
+
+    keysToTry.push(`./${toPosixPath(path.relative(browserMappings.packageRoot, unresolvedTarget))}`);
+
+    const resolvedTarget = resolveFilePath(unresolvedTarget);
+    if (resolvedTarget) {
+      keysToTry.push(`./${toPosixPath(path.relative(browserMappings.packageRoot, resolvedTarget))}`);
+    }
+  }
+
+  for (const key of keysToTry) {
+    const mappedTarget = browserMappings.mappings[key];
+    if (mappedTarget === undefined) {
+      continue;
+    }
+
+    if (mappedTarget === false) {
+      return false;
+    }
+
+    if (isBareSpecifier(mappedTarget) || mappedTarget.startsWith("node:")) {
+      return mappedTarget;
+    }
+
+    const absoluteTarget = mappedTarget.startsWith("/")
+      ? mappedTarget
+      : path.resolve(browserMappings.packageRoot, mappedTarget);
+    return resolveBrowserMappingTargetPath(absoluteTarget) ?? absoluteTarget;
+  }
+
+  return undefined;
+}
+
+function findNearestPackageJsonPath(filePath: string): string | null {
+  let currentDir = path.dirname(filePath);
+
+  while (true) {
+    const packageJsonPath = path.join(currentDir, "package.json");
+    if (fs.existsSync(packageJsonPath)) {
+      return packageJsonPath;
+    }
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      return null;
+    }
+    currentDir = parentDir;
+  }
+}
+
+function toPosixPath(filePath: string): string {
+  return filePath.split(path.sep).join("/");
+}
+
+function resolveBrowserMappingTargetPath(basePath: string): string | null {
+  const resolved = resolveFilePath(basePath);
+  if (resolved) {
+    return resolved;
+  }
+
+  if (path.extname(basePath) === ".browser") {
+    for (const extension of BROWSER_MAPPING_EXTENSIONS) {
+      const candidate = `${basePath}${extension}`;
+      try {
+        if (fs.statSync(candidate).isFile()) {
+          return candidate;
+        }
+      } catch {
+        // Try the next extension.
+      }
+    }
+  }
+
+  return null;
+}
+
 function getCommonJsNamedExports(specifier: string, rootDir: string): string[] {
   const resolvedHostPath = resolvePackageImportPath(specifier, rootDir);
   if (!resolvedHostPath) {
@@ -729,6 +903,7 @@ async function doBundleSpecifier(
     plugins: [
       packageEntryWrapperPlugin(specifier, namedExports),
       externalizeDepsPlugin(packageName),
+      packageBrowserMappingsPlugin(),
       nodeResolve({
         rootDir,
         browser: false,

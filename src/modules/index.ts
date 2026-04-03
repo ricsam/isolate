@@ -39,6 +39,8 @@ class ModuleResolverBuilder implements ModuleResolver {
   }
 
   async resolve(specifier: string, importer: { path: string; resolveDir: string }, context: HostCallContext): Promise<ModuleSource> {
+    let nodeModulesError: unknown;
+
     const explicit = this.virtualEntries.get(specifier);
     if (explicit) {
       const raw = typeof explicit.source === "function" ? await explicit.source() : await explicit.source;
@@ -86,6 +88,7 @@ class ModuleResolverBuilder implements ModuleResolver {
       try {
         return await this.getNodeModulesLoader()(specifier, importer);
       } catch (error) {
+        nodeModulesError = error;
         if (!this.fallbackLoader) {
           throw error;
         }
@@ -97,6 +100,10 @@ class ModuleResolverBuilder implements ModuleResolver {
       if (normalized) {
         return normalized;
       }
+    }
+
+    if (nodeModulesError) {
+      throw nodeModulesError;
     }
 
     throw new Error(`Unable to resolve module: ${specifier}`);
