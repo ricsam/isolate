@@ -185,12 +185,21 @@ interface ConnectionState {
   activeCallbackInvocations: Map<number, { aborted: boolean }>;
   /** Abort controllers for callback invocations that support cancellation */
   callbackAbortControllers: Map<number, AbortController>;
+  /** Track async iterator sessions created for host-defined async iterator tools */
+  clientIteratorSessions: Map<number, ClientIteratorSession>;
+  /** Promises returned by isolate-authored callbacks, scoped to this connection */
+  returnedPromiseRegistry: Map<number, Promise<unknown>>;
+  /** Async iterators returned by isolate-authored callbacks, scoped to this connection */
+  returnedIteratorRegistry: Map<number, AsyncIterator<unknown>>;
   /** True when close() was called explicitly (prevents auto-reconnect) */
   closing: boolean;
   /** Tracked namespaced runtimes for auto-reconnection */
   namespacedRuntimes: Map<string, NamespacedRuntimeDescriptor>;
   /** Promise that resolves when reconnection completes (set during auto-reconnect) */
   reconnecting?: Promise<void>;
+  /** Monotonic ids for connection-scoped returned refs and iterator sessions */
+  nextClientIteratorId: number;
+  nextReturnedRefId: number;
 }
 
 /**
@@ -215,8 +224,13 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
     callbackStreamReaders: new Map(),
     activeCallbackInvocations: new Map(),
     callbackAbortControllers: new Map(),
+    clientIteratorSessions: new Map(),
+    returnedPromiseRegistry: new Map(),
+    returnedIteratorRegistry: new Map(),
     closing: false,
     namespacedRuntimes: new Map(),
+    nextClientIteratorId: 1,
+    nextReturnedRefId: 1,
   };
 
   function setupSocket(sock: Socket): void {
@@ -270,6 +284,9 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
       }
       state.callbackAbortControllers.clear();
       state.activeCallbackInvocations.clear();
+      state.clientIteratorSessions.clear();
+      state.returnedPromiseRegistry.clear();
+      state.returnedIteratorRegistry.clear();
 
       // Auto-reconnect if not intentional close and we have namespaced runtimes
       if (!state.closing && state.namespacedRuntimes.size > 0) {
@@ -1938,14 +1955,6 @@ interface ClientIteratorSession {
   iterator: AsyncGenerator<unknown, unknown, unknown>;
 }
 
-const clientIteratorSessions = new Map<number, ClientIteratorSession>();
-let nextClientIteratorId = 1;
-
-// Registries for returned promises/iterators from custom function callbacks
-// These are populated when a custom function returns a Promise or AsyncIterator
-const returnedPromiseRegistry = new Map<number, Promise<unknown>>();
-const returnedIteratorRegistry = new Map<number, AsyncIterator<unknown>>();
-
 /**
  * Register custom function callbacks.
  */
@@ -1963,12 +1972,12 @@ function registerCustomFunctions(
       const resolveCallbackId = state.nextCallbackId++;
       state.callbacks.set(resolveCallbackId, async (...args: unknown[]) => {
         const promiseId = args[0] as number;
-        const promise = returnedPromiseRegistry.get(promiseId);
+        const promise = state.returnedPromiseRegistry.get(promiseId);
         if (!promise) {
           throw new Error(`Promise ${promiseId} not found`);
         }
         const promiseResult = await promise;
-        returnedPromiseRegistry.delete(promiseId);
+        state.returnedPromiseRegistry.delete(promiseId);
         const marshalledResult = await marshalValue(promiseResult, marshalCtx);
         return addCallbackIdsToRefs(marshalledResult);
       });
@@ -1982,13 +1991,13 @@ function registerCustomFunctions(
       const nextCallbackId = state.nextCallbackId++;
       state.callbacks.set(nextCallbackId, async (...args: unknown[]) => {
         const iteratorId = args[0] as number;
-        const iterator = returnedIteratorRegistry.get(iteratorId);
+        const iterator = state.returnedIteratorRegistry.get(iteratorId);
         if (!iterator) {
           throw new Error(`Iterator ${iteratorId} not found`);
         }
         const iterResult = await iterator.next();
         if (iterResult.done) {
-          returnedIteratorRegistry.delete(iteratorId);
+          state.returnedIteratorRegistry.delete(iteratorId);
         }
         const marshalledValue = await marshalValue(iterResult.value, marshalCtx);
         return {
@@ -2001,8 +2010,8 @@ function registerCustomFunctions(
       state.callbacks.set(returnCallbackId, async (...args: unknown[]) => {
         const iteratorId = args[0] as number;
         const returnValue = args[1];
-        const iterator = returnedIteratorRegistry.get(iteratorId);
-        returnedIteratorRegistry.delete(iteratorId);
+        const iterator = state.returnedIteratorRegistry.get(iteratorId);
+        state.returnedIteratorRegistry.delete(iteratorId);
         if (!iterator || !iterator.return) {
           return { done: true, value: undefined };
         }
@@ -2018,7 +2027,7 @@ function registerCustomFunctions(
       state.callbacks.set(throwCallbackId, async (...args: unknown[]) => {
         const iteratorId = args[0] as number;
         const errorValue = args[1] as { message?: string; name?: string; stack?: string } | undefined;
-        const iterator = returnedIteratorRegistry.get(iteratorId);
+        const iterator = state.returnedIteratorRegistry.get(iteratorId);
         if (!iterator) {
           throw new Error(`Iterator ${iteratorId} not found`);
         }
@@ -2037,7 +2046,7 @@ function registerCustomFunctions(
           );
           const iterResult = await iterator.throw(thrownError);
           if (iterResult.done) {
-            returnedIteratorRegistry.delete(iteratorId);
+            state.returnedIteratorRegistry.delete(iteratorId);
           }
           const marshalledValue = await marshalValue(iterResult.value, marshalCtx);
           return {
@@ -2045,7 +2054,7 @@ function registerCustomFunctions(
             value: addCallbackIdsToRefs(marshalledValue),
           };
         } catch (error) {
-          returnedIteratorRegistry.delete(iteratorId);
+          state.returnedIteratorRegistry.delete(iteratorId);
           throw error;
         }
       });
@@ -2080,13 +2089,13 @@ function registerCustomFunctions(
       return returnedCallbackId;
     },
     registerPromise: (promise: Promise<unknown>): number => {
-      const promiseId = state.nextCallbackId++;
-      returnedPromiseRegistry.set(promiseId, promise);
+      const promiseId = state.nextReturnedRefId++;
+      state.returnedPromiseRegistry.set(promiseId, promise);
       return promiseId;
     },
     registerIterator: (iterator: AsyncIterator<unknown>): number => {
-      const iteratorId = state.nextCallbackId++;
-      returnedIteratorRegistry.set(iteratorId, iterator);
+      const iteratorId = state.nextReturnedRefId++;
+      state.returnedIteratorRegistry.set(iteratorId, iterator);
       return iteratorId;
     },
   };
@@ -2222,8 +2231,8 @@ function registerCustomFunctions(
         try {
           const fn = def.fn as (...args: unknown[]) => AsyncGenerator<unknown, unknown, unknown>;
           const iterator = fn(...(unmarshalValue(args, unmarshalCtx) as unknown[]));
-          const iteratorId = nextClientIteratorId++;
-          clientIteratorSessions.set(iteratorId, { iterator });
+          const iteratorId = state.nextClientIteratorId++;
+          state.clientIteratorSessions.set(iteratorId, { iterator });
           return { iteratorId };
         } catch (error: unknown) {
           throw error;
@@ -2233,18 +2242,18 @@ function registerCustomFunctions(
       // Next callback: calls iterator.next() - marshal the value for type fidelity
       const nextCallbackId = state.nextCallbackId++;
       state.callbacks.set(nextCallbackId, async (iteratorId: unknown) => {
-        const session = clientIteratorSessions.get(iteratorId as number);
+        const session = state.clientIteratorSessions.get(iteratorId as number);
         if (!session) {
           throw new Error(`Iterator session ${iteratorId} not found`);
         }
         try {
           const result = await session.iterator.next();
           if (result.done) {
-            clientIteratorSessions.delete(iteratorId as number);
+            state.clientIteratorSessions.delete(iteratorId as number);
           }
           return { done: result.done, value: await marshalValue(result.value) };
         } catch (error: unknown) {
-          clientIteratorSessions.delete(iteratorId as number);
+          state.clientIteratorSessions.delete(iteratorId as number);
           throw error;
         }
       });
@@ -2252,16 +2261,16 @@ function registerCustomFunctions(
       // Return callback: calls iterator.return() - marshal the value for type fidelity
       const returnCallbackId = state.nextCallbackId++;
       state.callbacks.set(returnCallbackId, async (iteratorId: unknown, value: unknown) => {
-        const session = clientIteratorSessions.get(iteratorId as number);
+        const session = state.clientIteratorSessions.get(iteratorId as number);
         if (!session) {
           return { done: true, value: await marshalValue(undefined) };
         }
         try {
           const result = await session.iterator.return?.(value);
-          clientIteratorSessions.delete(iteratorId as number);
+          state.clientIteratorSessions.delete(iteratorId as number);
           return { done: true, value: await marshalValue(result?.value) };
         } catch (error: unknown) {
-          clientIteratorSessions.delete(iteratorId as number);
+          state.clientIteratorSessions.delete(iteratorId as number);
           throw error;
         }
       });
@@ -2269,7 +2278,7 @@ function registerCustomFunctions(
       // Throw callback: calls iterator.throw() - marshal the value for type fidelity
       const throwCallbackId = state.nextCallbackId++;
       state.callbacks.set(throwCallbackId, async (iteratorId: unknown, errorData: unknown) => {
-        const session = clientIteratorSessions.get(iteratorId as number);
+        const session = state.clientIteratorSessions.get(iteratorId as number);
         if (!session) {
           throw new Error(`Iterator session ${iteratorId} not found`);
         }
@@ -2277,10 +2286,10 @@ function registerCustomFunctions(
           const errInfo = errorData as { message: string; name: string };
           const error = Object.assign(new Error(errInfo.message), { name: errInfo.name });
           const result = await session.iterator.throw?.(error);
-          clientIteratorSessions.delete(iteratorId as number);
+          state.clientIteratorSessions.delete(iteratorId as number);
           return { done: result?.done ?? true, value: await marshalValue(result?.value) };
         } catch (error: unknown) {
-          clientIteratorSessions.delete(iteratorId as number);
+          state.clientIteratorSessions.delete(iteratorId as number);
           throw error;
         }
       });
