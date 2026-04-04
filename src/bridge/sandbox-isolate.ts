@@ -322,6 +322,27 @@ class NestedTestRuntime {
     );
     await __waitForNestedCallbacks();
   }
+
+  test = {
+    onEvent: (handler) => {
+      const subscriptionPromise = __isolateHost_callResource(
+        "testRuntime",
+        this.#resourceId,
+        "test.on",
+        [handler],
+      );
+      return () => {
+        void subscriptionPromise
+          .then((subscriptionId) => __isolateHost_callResource(
+            "testRuntime",
+            this.#resourceId,
+            "test.off",
+            [subscriptionId],
+          ))
+          .catch(() => {});
+      };
+    },
+  };
 }
 
 class NestedNamespacedRuntime {
@@ -370,6 +391,27 @@ class NestedNamespacedRuntime {
     );
     await __waitForNestedCallbacks();
   }
+
+  test = {
+    onEvent: (handler) => {
+      const subscriptionPromise = __isolateHost_callResource(
+        "namespacedRuntime",
+        this.#resourceId,
+        "test.on",
+        [handler],
+      );
+      return () => {
+        void subscriptionPromise
+          .then((subscriptionId) => __isolateHost_callResource(
+            "namespacedRuntime",
+            this.#resourceId,
+            "test.off",
+            [subscriptionId],
+          ))
+          .catch(() => {});
+      };
+    },
+  };
 
   events = {
     on: (event, handler) => {

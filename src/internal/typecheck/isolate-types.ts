@@ -2745,6 +2745,49 @@ declare module "@ricsam/isolate" {
     lastRun?: unknown;
   }
 
+  export interface NestedSuiteInfo {
+    name: string;
+    path: string[];
+    fullName: string;
+    depth: number;
+  }
+
+  export interface NestedSuiteResult extends NestedSuiteInfo {
+    passed: number;
+    failed: number;
+    skipped: number;
+    todo: number;
+    duration: number;
+  }
+
+  export interface NestedTestInfo {
+    name: string;
+    suitePath: string[];
+    fullName: string;
+  }
+
+  export interface NestedTestError {
+    message: string;
+    stack?: string;
+    expected?: unknown;
+    actual?: unknown;
+    matcherName?: string;
+  }
+
+  export interface NestedTestResult extends NestedTestInfo {
+    status: "pass" | "fail" | "skip" | "todo";
+    duration: number;
+    error?: NestedTestError;
+  }
+
+  export type NestedTestEvent =
+    | { type: "runStart"; testCount: number; suiteCount: number }
+    | { type: "suiteStart"; suite: NestedSuiteInfo }
+    | { type: "suiteEnd"; suite: NestedSuiteResult }
+    | { type: "testStart"; test: NestedTestInfo }
+    | { type: "testEnd"; test: NestedTestResult }
+    | { type: "runEnd"; results: unknown };
+
   export interface NestedTestRuntimeDiagnostics extends NestedRuntimeResourceDiagnostics {
     test: NestedTestDiagnostics;
   }
@@ -2795,6 +2838,9 @@ declare module "@ricsam/isolate" {
     ): Promise<unknown>;
     diagnostics(): Promise<NestedTestRuntimeDiagnostics>;
     dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+    test: {
+      onEvent(handler: (event: NestedTestEvent) => void): () => void;
+    };
   }
 
   export interface NestedNamespacedRuntime {
@@ -2808,6 +2854,9 @@ declare module "@ricsam/isolate" {
     ): Promise<unknown>;
     diagnostics(): Promise<NestedTestRuntimeDiagnostics>;
     dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+    test: {
+      onEvent(handler: (event: NestedTestEvent) => void): () => void;
+    };
     events: {
       on(event: string, handler: (payload: unknown) => void): () => void;
       emit(event: string, payload: unknown): Promise<void>;

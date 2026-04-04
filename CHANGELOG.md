@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.13
+
+### Patch Changes
+
+- improve test API
+
 ## 0.1.12
 
 ### Patch Changes

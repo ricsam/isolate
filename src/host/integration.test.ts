@@ -859,6 +859,60 @@ describe("createIsolateHost runtime integration", () => {
     }
   });
 
+  test("exposes test lifecycle events on public test runtimes", async () => {
+    const runtime = await host.createTestRuntime({
+      bindings: {},
+    });
+
+    const startedSuites: string[] = [];
+    const startedTests: string[] = [];
+    let sawRunEnd = false;
+    const unsubscribe = runtime.test.onEvent((event) => {
+      if (event.type === "suiteStart") {
+        startedSuites.push(event.suite.fullName);
+      }
+      if (event.type === "testStart") {
+        startedTests.push(event.test.fullName);
+      }
+      if (event.type === "runEnd") {
+        sawRunEnd = true;
+      }
+    });
+
+    try {
+      const results = await runtime.run(`
+        describe("math", () => {
+          test("adds numbers", () => {
+            expect(1 + 2).toBe(3);
+          });
+        });
+      `, { timeoutMs: 5_000 });
+
+      assert.equal(results.success, true);
+      assert.deepEqual(startedSuites, ["math"]);
+      assert.deepEqual(startedTests, ["math > adds numbers"]);
+      assert.equal(sawRunEnd, true);
+    } finally {
+      unsubscribe();
+      await runtime.dispose();
+    }
+  });
+
+  test("rejects test lifecycle subscriptions after test runtime disposal", async () => {
+    const runtime = await host.createTestRuntime({
+      bindings: {},
+    });
+
+    await runtime.dispose();
+
+    assert.throws(
+      () => runtime.test.onEvent(() => {}),
+      (error) =>
+        error instanceof Error &&
+        error.message === "Test runtime has already been disposed.",
+    );
+  });
+
   test("reuses namespaced runtimes and reloads modules on reuse", async () => {
     let version = 1;
     let loadCount = 0;
@@ -1012,6 +1066,46 @@ describe("createIsolateHost runtime integration", () => {
     ]);
   });
 
+  test("exposes test lifecycle events on public namespaced runtimes", async () => {
+    const key = createTestId("namespaced-session-events");
+    const runtime = await host.getNamespacedRuntime(key, {
+      bindings: {},
+    });
+
+    const startedSuites: string[] = [];
+    const startedTests: string[] = [];
+    let sawRunEnd = false;
+    const unsubscribe = runtime.test.onEvent((event) => {
+      if (event.type === "suiteStart") {
+        startedSuites.push(event.suite.fullName);
+      }
+      if (event.type === "testStart") {
+        startedTests.push(event.test.fullName);
+      }
+      if (event.type === "runEnd") {
+        sawRunEnd = true;
+      }
+    });
+
+    try {
+      const results = await runtime.runTests(`
+        describe("session", () => {
+          test("tracks the active test", () => {
+            expect(2 * 3).toBe(6);
+          });
+        });
+      `, { timeoutMs: 5_000 });
+
+      assert.equal(results.success, true);
+      assert.deepEqual(startedSuites, ["session"]);
+      assert.deepEqual(startedTests, ["session > tracks the active test"]);
+      assert.equal(sawRunEnd, true);
+    } finally {
+      unsubscribe();
+      await runtime.dispose({ hard: true });
+    }
+  });
+
   test("rejects concurrent namespaced runtime acquisition", async () => {
     const key = createTestId("namespaced-session-live");
     const runtime = await host.getNamespacedRuntime(key, {
@@ -1044,6 +1138,12 @@ describe("createIsolateHost runtime integration", () => {
 
     await assert.rejects(
       () => runtime.eval("globalThis.__disposedByKey += 1;"),
+      (error) =>
+        error instanceof Error &&
+        error.name === "NamespacedRuntimeInvalidatedError",
+    );
+    assert.throws(
+      () => runtime.test.onEvent(() => {}),
       (error) =>
         error instanceof Error &&
         error.name === "NamespacedRuntimeInvalidatedError",
@@ -1247,6 +1347,65 @@ describe("createIsolateHost runtime integration", () => {
 
     assert.deepEqual(collectOutput(entries), [
       '{"reused":true,"success":true,"invalidatedName":"NamespacedRuntimeInvalidatedError"}',
+    ]);
+  });
+
+  test("forwards nested test lifecycle events through the synthetic @ricsam/isolate module", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        const nestedHost = createIsolateHost();
+        const nestedRuntime = await nestedHost.createTestRuntime({
+          bindings: {},
+        });
+
+        const startedSuites = [];
+        const startedTests = [];
+        const unsubscribe = nestedRuntime.test.onEvent((event) => {
+          if (event.type === "suiteStart") {
+            startedSuites.push(event.suite.fullName);
+          }
+          if (event.type === "testStart") {
+            startedTests.push(event.test.fullName);
+          }
+        });
+
+        const results = await nestedRuntime.run(\`
+          describe("nested", () => {
+            test("emits lifecycle events", () => {
+              expect(true).toBe(true);
+            });
+          });
+        \`, { timeoutMs: 5_000 });
+
+        unsubscribe();
+        await nestedRuntime.dispose();
+        await nestedHost.close();
+
+        console.log(JSON.stringify({
+          startedSuites,
+          startedTests,
+          success: results.success,
+        }));
+      `, { executionTimeout: 20_000 });
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.deepEqual(collectOutput(entries), [
+      '{"startedSuites":["nested"],"startedTests":["nested > emits lifecycle events"],"success":true}',
     ]);
   });
 

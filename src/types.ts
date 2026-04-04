@@ -202,6 +202,9 @@ export interface TestRuntime {
   ): Promise<RunResults>;
   diagnostics(): Promise<TestRuntimeDiagnostics>;
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+  test: {
+    onEvent(handler: (event: TestEvent) => void): () => void;
+  };
 }
 
 export interface NamespacedRuntime {
@@ -215,6 +218,9 @@ export interface NamespacedRuntime {
   ): Promise<RunResults>;
   diagnostics(): Promise<TestRuntimeDiagnostics>;
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+  test: {
+    onEvent(handler: (event: TestEvent) => void): () => void;
+  };
   events: {
     on(event: string, handler: (payload: unknown) => void): () => void;
     emit(event: string, payload: unknown): Promise<void>;

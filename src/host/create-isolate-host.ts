@@ -11,6 +11,7 @@ import { createRuntimeBindingsAdapter } from "../bridge/runtime-bindings.ts";
 import { createNamespacedRuntimeAdapter } from "../runtime/namespaced-runtime.ts";
 import { createScriptRuntimeAdapter } from "../runtime/script-runtime.ts";
 import { createTestRuntimeAdapter } from "../runtime/test-runtime.ts";
+import { createTestEventSubscriptions } from "../runtime/test-event-subscriptions.ts";
 import { createAppServerAdapter } from "../server/app-server.ts";
 import { createNestedHostBindings } from "./nested-host-controller.ts";
 import type {
@@ -220,6 +221,7 @@ class HostImpl implements IsolateHost {
 
     this.pendingNamespacedKeys.add(key);
     const diagnostics = createRuntimeDiagnostics();
+    const testEvents = createTestEventSubscriptions();
     let runtimeId = key;
     const browserSource = createBrowserSourceFromBindings(options.bindings.browser);
     const bindingsAdapter = createRuntimeBindingsAdapter(
@@ -238,7 +240,9 @@ class HostImpl implements IsolateHost {
           cwd: options.cwd,
           memoryLimitMB: options.memoryLimitMB,
           executionTimeout: options.executionTimeout,
-          testEnvironment: true,
+          testEnvironment: {
+            onEvent: (event) => testEvents.emit(event),
+          },
         },
         key,
       );
@@ -248,6 +252,7 @@ class HostImpl implements IsolateHost {
       adapter = createNamespacedRuntimeAdapter(runtime, diagnostics, {
         hasBrowser: Boolean(options.bindings.browser),
         abortBindings: (reason) => bindingsAdapter.abort(reason),
+        testEvents,
         onRelease: () => {
           if (this.namespacedRuntimes.get(key) === adapter) {
             this.namespacedRuntimes.delete(key);

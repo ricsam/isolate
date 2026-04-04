@@ -3,6 +3,7 @@ import {
   type MutableRuntimeDiagnostics,
 } from "../bridge/diagnostics.ts";
 import { isBenignDisposeError, type RemoteRuntime } from "../internal/client/index.ts";
+import type { TestEventSubscriptions } from "./test-event-subscriptions.ts";
 import type {
   NamespacedRuntime,
   RunResults,
@@ -34,10 +35,11 @@ function createStateError(state: RuntimeState, reason?: string): Error {
 export function createNamespacedRuntimeAdapter(
   runtime: RemoteRuntime,
   diagnostics: MutableRuntimeDiagnostics,
-  options?: {
+  options: {
     hasBrowser?: boolean;
     abortBindings?: (reason?: string) => void;
     onRelease?: () => void;
+    testEvents: TestEventSubscriptions;
   },
 ): NamespacedRuntimeAdapter {
   let state: RuntimeState = "active";
@@ -55,6 +57,7 @@ export function createNamespacedRuntimeAdapter(
       unsubscribe();
     }
     subscriptions.clear();
+    options?.testEvents.clear();
     options?.onRelease?.();
   };
 
@@ -63,6 +66,7 @@ export function createNamespacedRuntimeAdapter(
       throw createStateError(state, invalidationReason);
     }
   };
+  options.testEvents.setEnsureUsable(ensureActive);
 
   return {
     async eval(code, evalOptions) {
@@ -155,6 +159,7 @@ export function createNamespacedRuntimeAdapter(
       options?.abortBindings?.(reason);
       release();
     },
+    test: options.testEvents.api,
     events: {
       on: (event, handler) => {
         ensureActive();

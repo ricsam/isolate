@@ -8,11 +8,16 @@ import {
 } from "../bridge/runtime-bindings.ts";
 import type { RemoteRuntime, RuntimeOptions } from "../internal/client/index.ts";
 import { isBenignDisposeError } from "../internal/client/index.ts";
+import { createTestEventSubscriptions } from "./test-event-subscriptions.ts";
 import type {
   CreateTestRuntimeOptions,
   RunResults,
   TestRuntime,
 } from "../types.ts";
+
+function createDisposedTestRuntimeError(): Error {
+  return new Error("Test runtime has already been disposed.");
+}
 
 export async function createTestRuntimeAdapter(
   createRuntime: (options: RuntimeOptions) => Promise<RemoteRuntime>,
@@ -20,7 +25,9 @@ export async function createTestRuntimeAdapter(
   adapterOptions?: RuntimeBindingsAdapterOptions,
 ): Promise<TestRuntime> {
   const diagnostics = createRuntimeDiagnostics();
+  const testEvents = createTestEventSubscriptions();
   let runtimeId = options.key ?? "test-runtime";
+  let isDisposed = false;
   const bindingsAdapter = createRuntimeBindingsAdapter(
     options.bindings,
     () => runtimeId,
@@ -32,14 +39,23 @@ export async function createTestRuntimeAdapter(
     cwd: options.cwd,
     memoryLimitMB: options.memoryLimitMB,
     executionTimeout: options.executionTimeout,
-    testEnvironment: true,
+    testEnvironment: {
+      onEvent: (event) => testEvents.emit(event),
+    },
   });
   runtimeId = runtime.id;
 
   let lastRun: RunResults | undefined;
+  const ensureActive = (): void => {
+    if (isDisposed) {
+      throw createDisposedTestRuntimeError();
+    }
+  };
+  testEvents.setEnsureUsable(ensureActive);
 
   return {
     async run(code, runOptions) {
+      ensureActive();
       diagnostics.lifecycleState = "active";
       try {
         await runtime.testEnvironment.reset();
@@ -57,6 +73,7 @@ export async function createTestRuntimeAdapter(
       }
     },
     async diagnostics() {
+      ensureActive();
       const runtimeDiagnostics = {
         ...diagnostics,
         reused: runtime.reused,
@@ -80,6 +97,12 @@ export async function createTestRuntimeAdapter(
       };
     },
     async dispose(disposeOptions) {
+      if (isDisposed) {
+        testEvents.clear();
+        return;
+      }
+
+      isDisposed = true;
       diagnostics.lifecycleState = "disposing";
       try {
         bindingsAdapter.abort(disposeOptions?.reason);
@@ -91,7 +114,9 @@ export async function createTestRuntimeAdapter(
         }
       } finally {
         diagnostics.lifecycleState = "idle";
+        testEvents.clear();
       }
     },
+    test: testEvents.api,
   };
 }

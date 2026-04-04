@@ -55,6 +55,7 @@ interface TestRuntimeResourceRecord {
   kind: "testRuntime";
   hostId: string;
   resource: TestRuntime;
+  subscriptions: Map<string, () => void>;
 }
 
 interface NamespacedRuntimeResourceRecord {
@@ -217,7 +218,11 @@ export function createNestedHostBindings(
       }
     }
 
-    if (record.kind === "runtime" || record.kind === "namespacedRuntime") {
+    if (
+      record.kind === "runtime" ||
+      record.kind === "testRuntime" ||
+      record.kind === "namespacedRuntime"
+    ) {
       for (const unsubscribe of record.subscriptions.values()) {
         unsubscribe();
       }
@@ -325,6 +330,7 @@ export function createNestedHostBindings(
             kind,
             hostId,
             resource,
+            subscriptions: new Map(),
           });
           host.runtimeIds.add(resourceId);
           return resourceId;
@@ -454,7 +460,8 @@ export function createNestedHostBindings(
         }
 
         case "testRuntime": {
-          const runtime = (record as TestRuntimeResourceRecord).resource;
+          const runtimeRecord = record as TestRuntimeResourceRecord;
+          const runtime = runtimeRecord.resource;
           switch (method) {
             case "run":
               return await runtime.run(
@@ -472,6 +479,23 @@ export function createNestedHostBindings(
               return undefined;
             case "diagnostics":
               return await runtime.diagnostics();
+            case "test.on": {
+              const subscriptionId = randomUUID();
+              const unsubscribe = runtime.test.onEvent(
+                args[0] as (payload: unknown) => void,
+              );
+              runtimeRecord.subscriptions.set(subscriptionId, unsubscribe);
+              return subscriptionId;
+            }
+            case "test.off": {
+              const subscriptionId = args[0] as string;
+              const unsubscribe = runtimeRecord.subscriptions.get(subscriptionId);
+              if (unsubscribe) {
+                unsubscribe();
+                runtimeRecord.subscriptions.delete(subscriptionId);
+              }
+              return undefined;
+            }
             default:
               throw new Error(
                 `Unsupported nested test runtime method: ${method}`,
@@ -507,6 +531,24 @@ export function createNestedHostBindings(
               return undefined;
             case "diagnostics":
               return await runtimeRecord.resource.diagnostics();
+            case "test.on": {
+              const subscriptionId = randomUUID();
+              const unsubscribe = runtimeRecord.resource.test.onEvent(
+                args[0] as (payload: unknown) => void,
+              );
+              runtimeRecord.subscriptions.set(subscriptionId, unsubscribe);
+              return subscriptionId;
+            }
+            case "test.off": {
+              const subscriptionId = args[0] as string;
+              const unsubscribe =
+                runtimeRecord.subscriptions.get(subscriptionId);
+              if (unsubscribe) {
+                unsubscribe();
+                runtimeRecord.subscriptions.delete(subscriptionId);
+              }
+              return undefined;
+            }
             case "events.on": {
               const subscriptionId = randomUUID();
               const unsubscribe = runtimeRecord.resource.events.on(

@@ -294,6 +294,12 @@ const reused = await host.getNamespacedRuntime("playwright:preview:session", {
   },
 });
 
+const unsubscribe = reused.test.onEvent((event) => {
+  if (event.type === "testStart") {
+    console.log("running", event.test.fullName);
+  }
+});
+
 const results = await reused.runTests(`
   test("sees the existing browser state", async () => {
     const contexts = await browser.contexts();
@@ -305,6 +311,7 @@ const results = await reused.runTests(`
 
 console.log(results.success);
 
+unsubscribe();
 await host.disposeNamespace("playwright:preview:session");
 await browser.close();
 await host.close();
@@ -314,6 +321,7 @@ Lifecycle notes:
 
 - only one live handle per namespace is allowed at a time
 - `runTests(code)` resets test registration before loading and running the provided suite
+- `session.test.onEvent(...)` exposes suite/test lifecycle events for timeout and progress reporting
 - runtime globals, module state, and Playwright resources are preserved across soft dispose and reacquire
 - browser shutdown stays host-owned; page/context shutdown stays sandbox-owned
 - preview URL rewriting remains host-specific and stays outside isolate
@@ -392,6 +400,12 @@ const runtime = await host.createTestRuntime({
   },
 });
 
+const unsubscribe = runtime.test.onEvent((event) => {
+  if (event.type === "testStart") {
+    console.log("running", event.test.fullName);
+  }
+});
+
 const result = await runtime.run(
   `
     let ctx;
@@ -423,6 +437,7 @@ const result = await runtime.run(
 
 console.log(result);
 
+unsubscribe();
 await runtime.dispose();
 await browser.close();
 await host.close();
