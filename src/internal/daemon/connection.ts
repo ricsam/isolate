@@ -25,6 +25,7 @@ import {
   type ResponseError,
   type CreateRuntimeRequest,
   type DisposeRuntimeRequest,
+  type DisposeNamespaceRequest,
   type EvalRequest,
   type DispatchRequestRequest,
   type DispatchRequestAbort,
@@ -352,6 +353,14 @@ async function handleMessage(
       );
       break;
 
+    case MessageType.DISPOSE_NAMESPACE:
+      await handleDisposeNamespace(
+        message as DisposeNamespaceRequest,
+        connection,
+        state,
+      );
+      break;
+
     case MessageType.EVAL:
       await handleEval(message as EvalRequest, connection, state);
       break;
@@ -646,6 +655,7 @@ async function hardDeleteRuntime(
     }
     await instance.runtime.dispose();
   } finally {
+    detachRuntimeFromOwningConnection(instance, state);
     state.isolates.delete(instance.isolateId);
     if (instance.namespaceId != null) {
       const indexed = state.namespacedRuntimes.get(instance.namespaceId);
@@ -678,6 +688,19 @@ async function hardDeleteRuntime(
       reason,
     );
   }
+}
+
+function detachRuntimeFromOwningConnection(
+  instance: IsolateInstance,
+  state: DaemonState,
+): void {
+  if (!instance.ownerConnection) {
+    return;
+  }
+
+  state.connections.get(instance.ownerConnection)?.isolates.delete(
+    instance.isolateId,
+  );
 }
 
 /** Default timeout for waiting for reconnection (30 seconds) */
@@ -1044,21 +1067,12 @@ async function handleCreateRuntime(
 
     if (existing) {
       if (!existing.isDisposed) {
-        // Check if same connection already owns this runtime (idempotent case)
-        if (existing.ownerConnection === connection.socket) {
-          sendOk(connection.socket, message.requestId, {
-            isolateId: existing.isolateId,
-            reused: true,
-          });
-          return;
-        }
-
-        // Different connection - still error
         sendError(
           connection.socket,
           message.requestId,
           ErrorCode.SCRIPT_ERROR,
-          `Namespace "${namespaceId}" already has an active runtime`
+          `Namespace "${namespaceId}" already has an active runtime`,
+          { name: "NamespaceInUseError" },
         );
         return;
       }
@@ -1078,7 +1092,8 @@ async function handleCreateRuntime(
         connection.socket,
         message.requestId,
         ErrorCode.SCRIPT_ERROR,
-        `Namespace "${namespaceId}" creation already in progress`
+        `Namespace "${namespaceId}" creation already in progress`,
+        { name: "NamespaceInUseError" },
       );
       return;
     }
@@ -1872,6 +1887,38 @@ async function handleDisposeRuntime(
       ErrorCode.SCRIPT_ERROR,
       error.message,
       { name: error.name, stack: error.stack }
+    );
+  }
+}
+
+async function handleDisposeNamespace(
+  message: DisposeNamespaceRequest,
+  connection: ConnectionState,
+  state: DaemonState,
+): Promise<void> {
+  const instance = state.namespacedRuntimes.get(message.namespaceId);
+
+  if (!instance) {
+    sendOk(connection.socket, message.requestId);
+    return;
+  }
+
+  const requestReason =
+    typeof message.reason === "string" && message.reason.length > 0
+      ? message.reason
+      : "client requested namespace dispose";
+
+  try {
+    await hardDeleteRuntime(instance, state, requestReason);
+    sendOk(connection.socket, message.requestId);
+  } catch (err) {
+    const error = err as Error;
+    sendError(
+      connection.socket,
+      message.requestId,
+      ErrorCode.SCRIPT_ERROR,
+      error.message,
+      { name: error.name, stack: error.stack },
     );
   }
 }

@@ -95,6 +95,8 @@ export interface DaemonConnection {
   createRuntime(options?: RuntimeOptions): Promise<RemoteRuntime>;
   /** Create a namespace for runtime pooling/reuse */
   createNamespace(id: string): Namespace;
+  /** Permanently delete the runtime currently associated with a namespace key */
+  disposeNamespace(id: string, options?: { reason?: string }): Promise<void>;
   /** Close the connection */
   close(): Promise<void>;
   /** Check if connected */

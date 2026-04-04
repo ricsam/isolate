@@ -2797,8 +2797,32 @@ declare module "@ricsam/isolate" {
     dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
   }
 
+  export interface NestedNamespacedRuntime {
+    eval(
+      code: string,
+      options?: { filename?: string; executionTimeout?: number },
+    ): Promise<void>;
+    runTests(
+      code: string,
+      options?: { filename?: string; timeoutMs?: number },
+    ): Promise<unknown>;
+    diagnostics(): Promise<NestedTestRuntimeDiagnostics>;
+    dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+    events: {
+      on(event: string, handler: (payload: unknown) => void): () => void;
+      emit(event: string, payload: unknown): Promise<void>;
+    };
+  }
+
   export interface NestedCreateRuntimeOptions {
     key?: string;
+    bindings?: NestedHostBindings;
+    cwd?: string;
+    executionTimeout?: number;
+    memoryLimitMB?: number;
+  }
+
+  export interface NestedCreateNamespacedRuntimeOptions {
     bindings?: NestedHostBindings;
     cwd?: string;
     executionTimeout?: number;
@@ -2819,6 +2843,14 @@ declare module "@ricsam/isolate" {
     createTestRuntime(
       options?: NestedCreateTestRuntimeOptions,
     ): Promise<NestedTestRuntime>;
+    getNamespacedRuntime(
+      key: string,
+      options?: NestedCreateNamespacedRuntimeOptions,
+    ): Promise<NestedNamespacedRuntime>;
+    disposeNamespace(
+      key: string,
+      options?: { reason?: string },
+    ): Promise<void>;
     diagnostics(): Promise<NestedHostDiagnostics>;
     close(): Promise<void>;
   }

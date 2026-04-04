@@ -16,6 +16,7 @@ export const MessageType = {
   // Client → Daemon: Runtime management
   CREATE_RUNTIME: 0x01,
   DISPOSE_RUNTIME: 0x02,
+  DISPOSE_NAMESPACE: 0x06,
   EVAL: 0x03,
   DISPATCH_REQUEST: 0x04,
   DISPATCH_REQUEST_ABORT: 0x05,
@@ -314,6 +315,13 @@ export interface DisposeRuntimeRequest extends BaseMessage {
   isolateId: string;
   /** When true, permanently delete the runtime instead of soft-deleting namespaced runtimes. */
   hard?: boolean;
+  /** Optional caller-supplied reason for disposal, used for diagnostics/logging. */
+  reason?: string;
+}
+
+export interface DisposeNamespaceRequest extends BaseMessage {
+  type: typeof MessageType.DISPOSE_NAMESPACE;
+  namespaceId: string;
   /** Optional caller-supplied reason for disposal, used for diagnostics/logging. */
   reason?: string;
 }
@@ -789,6 +797,7 @@ export interface PongMessage {
 export type ClientMessage =
   | CreateRuntimeRequest
   | DisposeRuntimeRequest
+  | DisposeNamespaceRequest
   | EvalRequest
   | DispatchRequestRequest
   | DispatchRequestAbort

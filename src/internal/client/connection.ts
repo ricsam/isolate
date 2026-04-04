@@ -17,6 +17,7 @@ import {
   type ResponseError,
   type CreateRuntimeRequest,
   type DisposeRuntimeRequest,
+  type DisposeNamespaceRequest,
   type EvalRequest,
   type DispatchRequestRequest,
   type DispatchRequestAbort,
@@ -428,6 +429,20 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
       createRuntime: (runtimeOptions) =>
         createRuntime(state, runtimeOptions, id),
     }),
+    disposeNamespace: async (id, options) => {
+      state.namespacedRuntimes.delete(id);
+      const requestId = state.nextRequestId++;
+      const request: DisposeNamespaceRequest = {
+        type: MessageType.DISPOSE_NAMESPACE,
+        requestId,
+        namespaceId: id,
+        reason:
+          typeof options?.reason === "string" && options.reason.length > 0
+            ? options.reason
+            : undefined,
+      };
+      await sendRequest(state, request);
+    },
     close: async () => {
       state.closing = true;
       state.connected = false;

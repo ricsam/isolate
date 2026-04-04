@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { createPlaywrightSessionHandler } from "../playwright.ts";
 import { createTestHost, createTestId } from "../testing/integration-helpers.ts";
 import type {
   ConsoleEntry,
@@ -72,6 +74,12 @@ async function launchChromium(): Promise<{
   const context = await browser.newContext();
   const page = await context.newPage();
   return { browser, context, page };
+}
+
+async function closeAllContexts(browser: Browser): Promise<void> {
+  for (const context of browser.contexts()) {
+    await context.close().catch(() => {});
+  }
 }
 
 describe("browser-enabled runtimes", () => {
@@ -413,6 +421,186 @@ describe("browser-enabled runtimes", () => {
     } finally {
       await runtime?.dispose({ hard: true, reason: "test cleanup" });
       await browserHarness.context.close();
+      await browserHarness.browser.close();
+      await browserServer.close();
+    }
+  });
+
+  test("preserves browser contexts across soft-disposed namespaced sessions", async () => {
+    const browserHarness = await launchChromium();
+    const browserServer = await createBrowserServer();
+    const key = createTestId("browser-namespaced-session");
+    const helper = createPlaywrightSessionHandler<BrowserContext, Page>({
+      createContext: async (options) =>
+        await browserHarness.browser.newContext(options as never),
+      createPage: async (context) => await context.newPage(),
+    });
+    let runtime:
+      | Awaited<ReturnType<IsolateHost["getNamespacedRuntime"]>>
+      | undefined;
+
+    try {
+      runtime = await host.getNamespacedRuntime(key, {
+        bindings: {
+          browser: {
+            handler: helper.handler,
+          },
+        },
+      });
+
+      await runtime.eval(`
+        globalThis.__browserContext = await browser.newContext();
+        globalThis.__browserPage = await globalThis.__browserContext.newPage();
+        await globalThis.__browserPage.goto(${JSON.stringify(browserServer.url)});
+      `);
+      await runtime.dispose();
+
+      runtime = await host.getNamespacedRuntime(key, {
+        bindings: {
+          browser: {
+            handler: helper.handler,
+          },
+        },
+      });
+
+      const diagnostics = await runtime.diagnostics();
+      assert.equal(diagnostics.runtime.reused, true);
+
+      const results = await runtime.runTests(`
+        test("sees the same browser state", async () => {
+          const contexts = await browser.contexts();
+          expect(contexts.length).toBe(1);
+
+          const ctx = contexts[0];
+          const pages = await ctx.pages();
+          expect(pages.length).toBe(1);
+
+          const page = pages[0];
+          await expect(page.locator("#ready")).toContainText("ready");
+        });
+      `, { timeoutMs: 10_000 });
+
+      assert.equal(results.success, true, JSON.stringify(results.tests, null, 2));
+      assert.equal(results.passed, 1);
+    } finally {
+      await runtime?.dispose({ hard: true, reason: "test cleanup" }).catch(() => {});
+      await closeAllContexts(browserHarness.browser);
+      await browserHarness.browser.close();
+      await browserServer.close();
+    }
+  });
+
+  test("supports the public Playwright session helper in handler-first mode", async () => {
+    const browserHarness = await launchChromium();
+    const browserServer = await createBrowserServer();
+    const readFileCalls: string[] = [];
+    const writtenFiles = new Map<string, Buffer>();
+    const helperEvents: PlaywrightEvent[] = [];
+    const helper = createPlaywrightSessionHandler<BrowserContext, Page>({
+      timeout: 5_000,
+      createContext: async (options) =>
+        await browserHarness.browser.newContext(options as never),
+      createPage: async (context) => await context.newPage(),
+      readFile: async (filePath) => {
+        readFileCalls.push(filePath);
+        return {
+          name: path.basename(filePath),
+          mimeType: "text/plain",
+          buffer: Buffer.from("Hello from public helper"),
+        };
+      },
+      writeFile: async (filePath, data) => {
+        writtenFiles.set(filePath, Buffer.from(data));
+      },
+    });
+    const unsubscribe = helper.onEvent((event) => {
+      helperEvents.push(event);
+    });
+    let runtime: TestRuntime | undefined;
+
+    try {
+      runtime = await host.createTestRuntime({
+        bindings: {
+          browser: {
+            handler: helper.handler,
+            captureConsole: true,
+          },
+        },
+      });
+
+      const result = await runtime.run(
+        `
+          let ctx;
+          let page;
+
+          beforeAll(async () => {
+            ctx = await browser.newContext();
+            page = await ctx.newPage();
+          });
+
+          test("uses uploads and file writes through the helper", async () => {
+            await page.goto(${JSON.stringify(browserServer.url)});
+            await page.goto('data:text/html,<input type="file" id="upload" />');
+
+            await page.locator("#upload").setInputFiles("/fixtures/helper.txt");
+            const files = await page.evaluate(() => Array.from(
+              document.querySelector("#upload").files || [],
+            ).map((file) => ({ name: file.name, size: file.size })));
+
+            expect(files).toHaveLength(1);
+            expect(files[0].name).toBe("helper.txt");
+
+            const screenshotResult = await page.screenshot({
+              path: "/tmp/public-helper.png",
+            });
+            expect(screenshotResult).toBeUndefined();
+          });
+        `,
+        {
+          filename: "/browser-public-helper.test.ts",
+          timeoutMs: 10_000,
+        },
+      );
+
+      assert.equal(result.success, true, JSON.stringify(result.tests, null, 2));
+      assert.equal(result.passed, 1);
+
+      const tracked = helper.getTrackedResources();
+      assert.equal(tracked.contexts.length, 1);
+      assert.equal(tracked.pages.length, 1);
+
+      const collectedData = helper.getCollectedData();
+      assert.ok(
+        collectedData.browserConsoleLogs.some((entry) =>
+          entry.stdout.includes("browser ready"),
+        ),
+      );
+      assert.ok(collectedData.networkRequests.length > 0);
+      assert.ok(collectedData.networkResponses.length > 0);
+      assert.ok(helperEvents.some((event) => event.type === "networkRequest"));
+      assert.ok(
+        helperEvents.some(
+          (event) =>
+            event.type === "browserConsoleLog" &&
+            event.stdout.includes("browser ready"),
+        ),
+      );
+      assert.deepEqual(readFileCalls, ["/fixtures/helper.txt"]);
+      assert.ok(writtenFiles.has("/tmp/public-helper.png"));
+      assert.ok((writtenFiles.get("/tmp/public-helper.png")?.byteLength ?? 0) > 0);
+
+      helper.clearCollectedData();
+      assert.deepEqual(helper.getCollectedData(), {
+        browserConsoleLogs: [],
+        pageErrors: [],
+        networkRequests: [],
+        networkResponses: [],
+        requestFailures: [],
+      });
+    } finally {
+      unsubscribe();
+      await runtime?.dispose({ hard: true, reason: "test cleanup" });
+      await closeAllContexts(browserHarness.browser);
       await browserHarness.browser.close();
       await browserServer.close();
     }

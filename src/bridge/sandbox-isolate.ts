@@ -1,6 +1,7 @@
 import { ISOLATE_BROWSER_DESCRIPTOR_PROPERTY } from "../internal/browser-source.ts";
 import type {
   CreateAppServerOptions,
+  CreateNamespacedRuntimeOptions,
   CreateRuntimeOptions,
   CreateTestRuntimeOptions,
   HostCallContext,
@@ -8,7 +9,11 @@ import type {
 
 export const SANDBOX_ISOLATE_MODULE_SPECIFIER = "@ricsam/isolate";
 
-export type NestedResourceKind = "runtime" | "appServer" | "testRuntime";
+export type NestedResourceKind =
+  | "runtime"
+  | "appServer"
+  | "testRuntime"
+  | "namespacedRuntime";
 
 export interface NestedHostBindings {
   createHost(context: HostCallContext): Promise<string>;
@@ -23,9 +28,19 @@ export interface NestedHostBindings {
     options:
       | CreateRuntimeOptions
       | CreateAppServerOptions
-      | CreateTestRuntimeOptions,
+      | CreateTestRuntimeOptions
+      | {
+          key: string;
+          options: CreateNamespacedRuntimeOptions;
+        },
     context: HostCallContext,
   ): Promise<string>;
+  disposeNamespace(
+    hostId: string,
+    key: string,
+    options: { reason?: string } | undefined,
+    context: HostCallContext,
+  ): Promise<void>;
   callResource(
     kind: NestedResourceKind,
     resourceId: string,
@@ -67,6 +82,13 @@ function __normalizeRuntimeOptions(options) {
   const normalized = options ? { ...options } : {};
   normalized.bindings = __normalizeBindings(normalized.bindings);
   return normalized;
+}
+
+function __normalizeNamespacedRuntimeOptions(key, options) {
+  return {
+    key,
+    options: __normalizeRuntimeOptions(options),
+  };
 }
 
 async function __serializeRequest(requestLike) {
@@ -302,6 +324,84 @@ class NestedTestRuntime {
   }
 }
 
+class NestedNamespacedRuntime {
+  #resourceId;
+
+  constructor(resourceId) {
+    this.#resourceId = resourceId;
+  }
+
+  async eval(code, options) {
+    await __isolateHost_callResource(
+      "namespacedRuntime",
+      this.#resourceId,
+      "eval",
+      [code, __normalizeEvalOptions(options)],
+    );
+    await __waitForNestedCallbacks();
+  }
+
+  async runTests(code, options) {
+    const result = await __isolateHost_callResource(
+      "namespacedRuntime",
+      this.#resourceId,
+      "runTests",
+      [code, options ?? null],
+    );
+    await __waitForNestedCallbacks();
+    return result;
+  }
+
+  async diagnostics() {
+    return await __isolateHost_callResource(
+      "namespacedRuntime",
+      this.#resourceId,
+      "diagnostics",
+      [],
+    );
+  }
+
+  async dispose(options) {
+    await __isolateHost_callResource(
+      "namespacedRuntime",
+      this.#resourceId,
+      "dispose",
+      [options ?? null],
+    );
+    await __waitForNestedCallbacks();
+  }
+
+  events = {
+    on: (event, handler) => {
+      const subscriptionPromise = __isolateHost_callResource(
+        "namespacedRuntime",
+        this.#resourceId,
+        "events.on",
+        [event, handler],
+      );
+      return () => {
+        void subscriptionPromise
+          .then((subscriptionId) => __isolateHost_callResource(
+            "namespacedRuntime",
+            this.#resourceId,
+            "events.off",
+            [subscriptionId],
+          ))
+          .catch(() => {});
+      };
+    },
+    emit: async (event, payload) => {
+      await __isolateHost_callResource(
+        "namespacedRuntime",
+        this.#resourceId,
+        "events.emit",
+        [event, payload],
+      );
+      await __waitForNestedCallbacks();
+    },
+  };
+}
+
 export function createIsolateHost() {
   let hostIdPromise;
 
@@ -339,6 +439,20 @@ export function createIsolateHost() {
         __normalizeRuntimeOptions(options),
       );
       return new NestedTestRuntime(resourceId);
+    },
+    async getNamespacedRuntime(key, options) {
+      const hostId = await ensureHostId();
+      const resourceId = await __isolateHost_createResource(
+        hostId,
+        "namespacedRuntime",
+        __normalizeNamespacedRuntimeOptions(key, options),
+      );
+      return new NestedNamespacedRuntime(resourceId);
+    },
+    async disposeNamespace(key, options) {
+      const hostId = await ensureHostId();
+      await __isolateHost_disposeNamespace(hostId, key, options ?? null);
+      await __waitForNestedCallbacks();
     },
     async diagnostics() {
       return await __isolateHost_hostDiagnostics(await ensureHostId());

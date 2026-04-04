@@ -1,6 +1,6 @@
 {
   "name": "@ricsam/isolate",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "type": "module",
   "description": "Unified runtime host for app servers, script runtimes, browser runtimes, module resolution, file bindings, and typechecking",
   "author": "ricsam <oss@ricsam.dev>",
@@ -37,6 +37,11 @@
       "types": "./dist/types/daemon.d.ts",
       "require": "./dist/cjs/daemon.cjs",
       "import": "./dist/mjs/daemon.mjs"
+    },
+    "./playwright": {
+      "types": "./dist/types/playwright.d.ts",
+      "require": "./dist/cjs/playwright.cjs",
+      "import": "./dist/mjs/playwright.mjs"
     }
   },
   "bin": {

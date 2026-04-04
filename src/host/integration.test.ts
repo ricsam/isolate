@@ -941,6 +941,187 @@ describe("createIsolateHost runtime integration", () => {
     }
   });
 
+  test("reuses namespaced sessions with preserved state and fresh bindings", async () => {
+    const key = createTestId("namespaced-session-reuse");
+    const firstEntries: ConsoleEntry[] = [];
+    const firstRuntime = await host.getNamespacedRuntime(key, {
+      bindings: {
+        console: {
+          onEntry(entry) {
+            firstEntries.push(entry);
+          },
+        },
+        tools: {
+          getValue: async () => 1,
+        },
+      },
+    });
+
+    await firstRuntime.eval(`
+      globalThis.__sessionCounter = 41;
+      console.log(JSON.stringify({
+        counter: globalThis.__sessionCounter,
+        value: await getValue(),
+      }));
+    `);
+    await firstRuntime.dispose();
+
+    const secondEntries: ConsoleEntry[] = [];
+    const secondRuntime = await host.getNamespacedRuntime(key, {
+      bindings: {
+        console: {
+          onEntry(entry) {
+            secondEntries.push(entry);
+          },
+        },
+        tools: {
+          getValue: async () => 2,
+        },
+      },
+    });
+
+    try {
+      const diagnostics = await secondRuntime.diagnostics();
+      assert.equal(diagnostics.runtime.reused, true);
+
+      await secondRuntime.eval(`
+        console.log(JSON.stringify({
+          counter: globalThis.__sessionCounter,
+          value: await getValue(),
+        }));
+      `);
+
+      const results = await secondRuntime.runTests(`
+        test("keeps globals and refreshes bindings", async () => {
+          expect(globalThis.__sessionCounter).toBe(41);
+          expect(await getValue()).toBe(2);
+        });
+      `, { timeoutMs: 5_000 });
+
+      assert.equal(results.success, true);
+      assert.equal(results.passed, 1);
+    } finally {
+      await secondRuntime.dispose({ hard: true });
+    }
+
+    assert.deepEqual(collectOutput(firstEntries), [
+      '{"counter":41,"value":1}',
+    ]);
+    assert.deepEqual(collectOutput(secondEntries), [
+      '{"counter":41,"value":2}',
+    ]);
+  });
+
+  test("rejects concurrent namespaced runtime acquisition", async () => {
+    const key = createTestId("namespaced-session-live");
+    const runtime = await host.getNamespacedRuntime(key, {
+      bindings: {},
+    });
+
+    try {
+      await assert.rejects(
+        () => host.getNamespacedRuntime(key, { bindings: {} }),
+        (error) =>
+          error instanceof Error &&
+          error.name === "NamespaceInUseError" &&
+          error.message.includes(key),
+      );
+    } finally {
+      await runtime.dispose({ hard: true });
+    }
+  });
+
+  test("disposes active namespaces by key and invalidates stale handles", async () => {
+    const key = createTestId("namespaced-session-dispose");
+    const runtime = await host.getNamespacedRuntime(key, {
+      bindings: {},
+    });
+
+    await runtime.eval("globalThis.__disposedByKey = 1;");
+    await host.disposeNamespace(key, {
+      reason: "test cleanup",
+    });
+
+    await assert.rejects(
+      () => runtime.eval("globalThis.__disposedByKey += 1;"),
+      (error) =>
+        error instanceof Error &&
+        error.name === "NamespacedRuntimeInvalidatedError",
+    );
+
+    await runtime.dispose();
+
+    const replacement = await host.getNamespacedRuntime(key, {
+      bindings: {},
+    });
+
+    try {
+      const diagnostics = await replacement.diagnostics();
+      assert.equal(diagnostics.runtime.reused, false);
+      await replacement.eval(`
+        if (globalThis.__disposedByKey !== undefined) {
+          throw new Error("expected namespace disposal to clear runtime state");
+        }
+      `);
+    } finally {
+      await replacement.dispose({ hard: true });
+    }
+  });
+
+  test("deletes pooled namespaced runtimes by key", async () => {
+    const key = createTestId("namespaced-session-pooled-dispose");
+    const runtime = await host.getNamespacedRuntime(key, {
+      bindings: {},
+    });
+
+    await runtime.eval("globalThis.__pooledValue = 99;");
+    await runtime.dispose();
+
+    await host.disposeNamespace(key, {
+      reason: "drop pooled runtime",
+    });
+
+    const replacement = await host.getNamespacedRuntime(key, {
+      bindings: {},
+    });
+
+    try {
+      const diagnostics = await replacement.diagnostics();
+      assert.equal(diagnostics.runtime.reused, false);
+      await replacement.eval(`
+        if (globalThis.__pooledValue !== undefined) {
+          throw new Error("expected pooled namespace disposal to remove runtime state");
+        }
+      `);
+    } finally {
+      await replacement.dispose({ hard: true });
+    }
+  });
+
+  test("rejects mixed browser handler and factory bindings", async () => {
+    const browserBinding = {
+      handler: async () => ({
+        ok: false,
+        error: {
+          name: "Error",
+          message: "unused",
+        },
+      }),
+      createContext: async () => ({}),
+    } as any;
+
+    await assert.rejects(
+      () => host.createRuntime({
+        bindings: {
+          browser: browserBinding,
+        },
+      }),
+      (error) =>
+        error instanceof Error &&
+        error.message.includes("either handler-first or factory-first mode"),
+    );
+  });
+
   test("imports the synthetic @ricsam/isolate module without a user module resolver", async () => {
     const entries: ConsoleEntry[] = [];
     const runtime = await host.createRuntime({
@@ -994,6 +1175,79 @@ describe("createIsolateHost runtime integration", () => {
       servers: 0,
       connected: true,
     });
+  });
+
+  test("supports namespaced runtimes through the synthetic @ricsam/isolate module", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        const nestedHost = createIsolateHost();
+        const first = await nestedHost.getNamespacedRuntime("nested-session", {
+          bindings: {
+            tools: {
+              getValue: async () => 1,
+            },
+          },
+        });
+
+        await first.eval("globalThis.__nestedCounter = 41;");
+        await first.dispose();
+
+        const second = await nestedHost.getNamespacedRuntime("nested-session", {
+          bindings: {
+            tools: {
+              getValue: async () => 2,
+            },
+          },
+        });
+
+        const diagnostics = await second.diagnostics();
+        const results = await second.runTests(\`
+          test("keeps globals and refreshed bindings", async () => {
+            expect(globalThis.__nestedCounter).toBe(41);
+            expect(await getValue()).toBe(2);
+          });
+        \`, { timeoutMs: 5_000 });
+
+        await nestedHost.disposeNamespace("nested-session", {
+          reason: "nested cleanup",
+        });
+
+        let invalidatedName = null;
+        try {
+          await second.eval("globalThis.__nestedCounter += 1;");
+        } catch (error) {
+          invalidatedName = error.name;
+        }
+
+        await second.dispose();
+        await nestedHost.close();
+
+        console.log(JSON.stringify({
+          reused: diagnostics.runtime.reused,
+          success: results.success,
+          invalidatedName,
+        }));
+      `, { executionTimeout: 20_000 });
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.deepEqual(collectOutput(entries), [
+      '{"reused":true,"success":true,"invalidatedName":"NamespacedRuntimeInvalidatedError"}',
+    ]);
   });
 
   test("delivers nested console entries back into the parent isolate", async () => {

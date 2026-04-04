@@ -9,10 +9,12 @@ import {
 import type {
   AppServer,
   CreateAppServerOptions,
+  CreateNamespacedRuntimeOptions,
   CreateRuntimeOptions,
   CreateTestRuntimeOptions,
   HostBindings,
   HostCallContext,
+  NamespacedRuntime,
   RequestResult,
   ScriptRuntime,
   TestRuntime,
@@ -22,6 +24,11 @@ interface NestedHostFactory {
   createRuntime(options: CreateRuntimeOptions): Promise<ScriptRuntime>;
   createAppServer(options: CreateAppServerOptions): Promise<AppServer>;
   createTestRuntime(options: CreateTestRuntimeOptions): Promise<TestRuntime>;
+  getNamespacedRuntime(
+    key: string,
+    options: CreateNamespacedRuntimeOptions,
+  ): Promise<NamespacedRuntime>;
+  disposeNamespace(key: string, options?: { reason?: string }): Promise<void>;
   isConnected(): boolean;
 }
 
@@ -50,10 +57,18 @@ interface TestRuntimeResourceRecord {
   resource: TestRuntime;
 }
 
+interface NamespacedRuntimeResourceRecord {
+  kind: "namespacedRuntime";
+  hostId: string;
+  resource: NamespacedRuntime;
+  subscriptions: Map<string, () => void>;
+}
+
 type NestedResourceRecord =
   | RuntimeResourceRecord
   | AppServerResourceRecord
-  | TestRuntimeResourceRecord;
+  | TestRuntimeResourceRecord
+  | NamespacedRuntimeResourceRecord;
 
 interface SerializedRequestLike {
   url: string;
@@ -97,7 +112,7 @@ function normalizeBindings(
   const browserSource = createBrowserSourceFromUnknown(bindings.browser);
   if (!browserSource) {
     throw new Error(
-      "Nested browser bindings must use the sandbox browser handle or expose createContext()/createPage().",
+      "Nested browser bindings must use the sandbox browser handle, a Playwright handler, or expose createContext()/createPage().",
     );
   }
 
@@ -119,6 +134,16 @@ function normalizeAppServerOptions(
   options: CreateAppServerOptions,
   defaultBrowserSource: BrowserSource | undefined,
 ): CreateAppServerOptions {
+  return {
+    ...options,
+    bindings: normalizeBindings(options.bindings, defaultBrowserSource),
+  };
+}
+
+function normalizeNamespacedRuntimeOptions(
+  options: CreateNamespacedRuntimeOptions,
+  defaultBrowserSource: BrowserSource | undefined,
+): CreateNamespacedRuntimeOptions {
   return {
     ...options,
     bindings: normalizeBindings(options.bindings, defaultBrowserSource),
@@ -192,7 +217,7 @@ export function createNestedHostBindings(
       }
     }
 
-    if (record.kind === "runtime") {
+    if (record.kind === "runtime" || record.kind === "namespacedRuntime") {
       for (const unsubscribe of record.subscriptions.values()) {
         unsubscribe();
       }
@@ -300,6 +325,29 @@ export function createNestedHostBindings(
             kind,
             hostId,
             resource,
+          });
+          host.runtimeIds.add(resourceId);
+          return resourceId;
+        }
+
+        case "namespacedRuntime": {
+          const namespacedOptions = rawOptions as {
+            key: string;
+            options: CreateNamespacedRuntimeOptions;
+          };
+          const resource = await factory.getNamespacedRuntime(
+            namespacedOptions.key,
+            normalizeNamespacedRuntimeOptions(
+              namespacedOptions.options,
+              defaultBrowserSource,
+            ),
+          );
+          const resourceId = randomUUID();
+          resources.set(resourceId, {
+            kind,
+            hostId,
+            resource,
+            subscriptions: new Map(),
           });
           host.runtimeIds.add(resourceId);
           return resourceId;
@@ -430,7 +478,71 @@ export function createNestedHostBindings(
               );
           }
         }
+
+        case "namespacedRuntime": {
+          const runtimeRecord = record as NamespacedRuntimeResourceRecord;
+          switch (method) {
+            case "eval":
+              await runtimeRecord.resource.eval(
+                args[0] as string,
+                ((args[1] as {
+                  filename?: string;
+                  executionTimeout?: number;
+                } | null) ?? undefined),
+              );
+              return undefined;
+            case "runTests":
+              return await runtimeRecord.resource.runTests(
+                args[0] as string,
+                ((args[1] as {
+                  filename?: string;
+                  timeoutMs?: number;
+                } | null) ?? undefined),
+              );
+            case "dispose":
+              await disposeResource(
+                resourceId,
+                ((args[0] as { hard?: boolean; reason?: string } | null) ?? {}),
+              );
+              return undefined;
+            case "diagnostics":
+              return await runtimeRecord.resource.diagnostics();
+            case "events.on": {
+              const subscriptionId = randomUUID();
+              const unsubscribe = runtimeRecord.resource.events.on(
+                args[0] as string,
+                args[1] as (payload: unknown) => void,
+              );
+              runtimeRecord.subscriptions.set(subscriptionId, unsubscribe);
+              return subscriptionId;
+            }
+            case "events.off": {
+              const subscriptionId = args[0] as string;
+              const unsubscribe =
+                runtimeRecord.subscriptions.get(subscriptionId);
+              if (unsubscribe) {
+                unsubscribe();
+                runtimeRecord.subscriptions.delete(subscriptionId);
+              }
+              return undefined;
+            }
+            case "events.emit":
+              await runtimeRecord.resource.events.emit(
+                args[0] as string,
+                args[1],
+              );
+              return undefined;
+            default:
+              throw new Error(
+                `Unsupported nested namespaced runtime method: ${method}`,
+              );
+          }
+        }
       }
+    },
+    async disposeNamespace(hostId, key, options) {
+      requireHost(hostId);
+      await factory.disposeNamespace(key, options);
     },
   };
 }

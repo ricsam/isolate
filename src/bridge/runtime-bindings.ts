@@ -11,6 +11,7 @@ import {
 } from "./sandbox-isolate.ts";
 import type {
   CreateAppServerOptions,
+  CreateNamespacedRuntimeOptions,
   CreateRuntimeOptions,
   CreateTestRuntimeOptions,
   HostBindings,
@@ -492,6 +493,35 @@ function createBrowserPlaywrightOptions(
     return undefined;
   }
 
+  const hasHandler = typeof browser.handler === "function";
+  const hasFactoryBindings =
+    typeof browser.createContext === "function" ||
+    typeof browser.createPage === "function" ||
+    typeof browser.readFile === "function" ||
+    typeof browser.writeFile === "function";
+
+  if (hasHandler && hasFactoryBindings) {
+    throw new Error(
+      "browser bindings must use either handler-first or factory-first mode, not both.",
+    );
+  }
+
+  if (hasHandler) {
+    return {
+      handler: browser.handler,
+      hasDefaultPage: false,
+      console: browser.captureConsole ?? false,
+      onEvent: browser.onEvent
+        ? (event) => {
+            const context = createHostCallContext(
+              `browser:event:${event.type}:${crypto.randomUUID()}`,
+            );
+            browser.onEvent?.(event, context);
+          }
+        : undefined,
+    };
+  }
+
   return {
     handler: createPlaywrightFactoryHandler({
       createContext: browser.createContext
@@ -631,6 +661,7 @@ function createCustomFunctions(
       "__isolateHost_closeHost",
       "__isolateHost_hostDiagnostics",
       "__isolateHost_createResource",
+      "__isolateHost_disposeNamespace",
       "__isolateHost_callResource",
       "__isolateHost_drainCallbacks",
     ];
@@ -679,7 +710,11 @@ function createCustomFunctions(
         const resourceOptions = args[2] as
           | CreateRuntimeOptions
           | CreateAppServerOptions
-          | CreateTestRuntimeOptions;
+          | CreateTestRuntimeOptions
+          | {
+              key: string;
+              options: CreateNamespacedRuntimeOptions;
+            };
         const context = createHostCallContext(
           `nestedHost:createResource:${kind}:${crypto.randomUUID()}`,
         );
@@ -689,6 +724,19 @@ function createCustomFunctions(
           resourceOptions,
           context,
         );
+      },
+    };
+    definitions.__isolateHost_disposeNamespace = {
+      type: "async",
+      fn: async (...args: unknown[]) => {
+        const hostId = args[0] as string;
+        const key = args[1] as string;
+        const options =
+          ((args[2] as { reason?: string } | null) ?? undefined);
+        const context = createHostCallContext(
+          `nestedHost:disposeNamespace:${crypto.randomUUID()}`,
+        );
+        await nestedHost.disposeNamespace(hostId, key, options, context);
       },
     };
     definitions.__isolateHost_callResource = {

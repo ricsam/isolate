@@ -24,12 +24,14 @@ npm add playwright
 - `createModuleResolver()` to provide virtual modules, source trees, mounted `node_modules`, and fallback resolution
 - `createFileBindings()` to expose a rooted file API to sandboxed code
 - `getTypeProfile()`, `typecheck()`, and `formatTypecheckErrors()` for sandbox-aware TypeScript tooling
+- `@ricsam/isolate/playwright` to build handler-first Playwright sessions without importing internals
 
 The host can create three runtime styles:
 
 - `host.createRuntime()` for scripts, agents, and ad hoc execution
 - `host.createAppServer()` for `serve()`-based request handlers
 - `host.createTestRuntime()` for test suites with optional Playwright-backed browser access
+- `host.getNamespacedRuntime()` for persistent mixed script/test/browser sessions keyed by namespace
 
 Inside sandbox code, `@ricsam/isolate` is also available as a synthetic module. It exports a sandbox-only `createIsolateHost()` that lets a runtime create nested runtimes, app servers, and test runtimes without exposing daemon configuration to the sandbox.
 
@@ -42,11 +44,18 @@ Each runtime is configured through `bindings`, which describe how sandboxed code
 - `files` exposes a safe, root-scoped filesystem
 - `modules` resolves virtual modules, source trees, and mounted packages
 - `tools` exposes async host functions and async iterators
-- `browser` exposes a Playwright-like browser factory backed by host `createContext()` and `createPage()` callbacks
+- `browser` exposes a Playwright-like browser surface backed either by a stable handler or by host `createContext()` and `createPage()` callbacks
 
 Every host callback receives a `HostCallContext` with an `AbortSignal`, runtime identity, resource identity, and request metadata.
 
 `bindings.browser` is intentionally smaller than a full Playwright browser. It injects a global `browser` object with `browser.newContext()` and `browser.contexts()`, and returned contexts expose `context.newPage()` and `context.pages()`. Browser-level shutdown stays on the host side, while the sandbox can still close pages and contexts that it created.
+
+Choose exactly one browser mode per runtime:
+
+- factory-first: provide `createContext()` and optionally `createPage()`, `readFile()`, and `writeFile()`
+- handler-first: provide `handler`, usually from `createPlaywrightSessionHandler(...)`
+
+Do not mix `handler` with `createContext()` / `createPage()` / `readFile()` / `writeFile()` in the same binding.
 
 ## Async Context
 
@@ -232,6 +241,82 @@ await host.close();
 ```
 
 `server.handle()` returns either a normal HTTP response or WebSocket upgrade metadata. The `server.ws` helpers let the host continue an upgraded connection by sending open, message, close, and error events back into the runtime.
+
+## Browser Bindings In Script And Server Runtimes
+
+## Namespaced Sessions
+
+`host.getNamespacedRuntime(key, options)` is the public persistent-session API. It is the supported way to reuse one underlying runtime across multiple calls while refreshing host bindings on each acquire.
+
+Use it when you want patterns like:
+
+- script calls that keep module state or globals between runs
+- Playwright browser contexts/pages that stay alive behind one stable handler
+- later `runTests(code)` calls that should see existing `browser.contexts()`
+
+Normal `session.dispose()` is a soft dispose for that namespace. The next acquire of the same key reuses the cached runtime. `host.disposeNamespace(key)` is the hard-delete path for active or pooled namespaces and invalidates any live handles in the current process.
+
+```ts
+import { chromium } from "playwright";
+import { createIsolateHost } from "@ricsam/isolate";
+import { createPlaywrightSessionHandler } from "@ricsam/isolate/playwright";
+
+const browser = await chromium.launch();
+const host = await createIsolateHost();
+const playwright = createPlaywrightSessionHandler({
+  createContext: async (options) =>
+    await browser.newContext(options ?? undefined),
+  createPage: async (context) =>
+    await context.newPage(),
+});
+
+const session = await host.getNamespacedRuntime("playwright:preview:session", {
+  bindings: {
+    browser: {
+      handler: playwright.handler,
+    },
+  },
+});
+
+await session.eval(`
+  globalThis.ctx = await browser.newContext();
+  globalThis.page = await globalThis.ctx.newPage();
+  await globalThis.page.goto("https://example.com");
+`);
+
+await session.dispose();
+
+const reused = await host.getNamespacedRuntime("playwright:preview:session", {
+  bindings: {
+    browser: {
+      handler: playwright.handler,
+    },
+  },
+});
+
+const results = await reused.runTests(`
+  test("sees the existing browser state", async () => {
+    const contexts = await browser.contexts();
+    expect(contexts.length).toBe(1);
+    const pages = await contexts[0].pages();
+    expect(pages.length).toBe(1);
+  });
+`);
+
+console.log(results.success);
+
+await host.disposeNamespace("playwright:preview:session");
+await browser.close();
+await host.close();
+```
+
+Lifecycle notes:
+
+- only one live handle per namespace is allowed at a time
+- `runTests(code)` resets test registration before loading and running the provided suite
+- runtime globals, module state, and Playwright resources are preserved across soft dispose and reacquire
+- browser shutdown stays host-owned; page/context shutdown stays sandbox-owned
+- preview URL rewriting remains host-specific and stays outside isolate
 
 ## Browser Bindings In Script And Server Runtimes
 

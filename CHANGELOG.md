@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.12
+
+### Patch Changes
+
+- add more APIs for namespaced runtimes
+
 ## 0.1.11
 
 ### Patch Changes

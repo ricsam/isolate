@@ -5,7 +5,7 @@ import type {
 export const ISOLATE_BROWSER_DESCRIPTOR_PROPERTY = "__isolateBrowserBinding";
 export const ISOLATE_BROWSER_DESCRIPTOR_VALUE = "default";
 
-export interface BrowserSource extends HostBrowserBindings {}
+export type BrowserSource = HostBrowserBindings;
 
 export function isBrowserBindingLike(value: unknown): value is HostBrowserBindings {
   if (!value || typeof value !== "object") {
@@ -14,6 +14,7 @@ export function isBrowserBindingLike(value: unknown): value is HostBrowserBindin
 
   const candidate = value as Record<string, unknown>;
   return (
+    typeof candidate.handler === "function" ||
     typeof candidate.createContext === "function" ||
     typeof candidate.createPage === "function"
   );
@@ -35,9 +36,21 @@ export function createBrowserSourceFromBindings(
     return undefined;
   }
 
+  if ("handler" in browser && typeof browser.handler === "function") {
+    return {
+      handler: browser.handler,
+      captureConsole: browser.captureConsole,
+      onEvent: browser.onEvent,
+    };
+  }
+
   return {
     createContext: browser.createContext,
     createPage: browser.createPage,
+    captureConsole: browser.captureConsole,
+    onEvent: browser.onEvent,
+    readFile: browser.readFile,
+    writeFile: browser.writeFile,
   };
 }
 
@@ -55,9 +68,9 @@ export function requireBrowserSource(
   source: BrowserSource | undefined,
   operation: string,
 ): BrowserSource {
-  if (!source?.createContext || !source.createPage) {
+  if (!source) {
     throw new Error(
-      `${operation} requires a browser binding with createContext() and createPage().`,
+      `${operation} requires a browser binding.`,
     );
   }
   return source;

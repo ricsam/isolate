@@ -4,6 +4,7 @@ import type {
   RunResults as LegacyRunResults,
   TestEvent as LegacyTestEvent,
 } from "./internal/client/index.ts";
+import type { PlaywrightSessionHandlerCallback } from "./playwright.ts";
 
 export type ConsoleEntry = LegacyConsoleEntry;
 export type RunResults = LegacyRunResults;
@@ -71,14 +72,30 @@ export interface FileBindings {
   rename?: (from: string, to: string, context: HostCallContext) => Promise<void>;
 }
 
-export interface HostBrowserBindings {
-  createContext?: (options: unknown, context: HostCallContext) => Promise<any> | any;
-  createPage?: (contextHandle: any, context: HostCallContext) => Promise<any> | any;
+interface HostBrowserBindingBase {
   captureConsole?: boolean;
   onEvent?: (event: PlaywrightEvent, context: HostCallContext) => void;
+}
+
+export interface HostBrowserFactoryBindings extends HostBrowserBindingBase {
+  createContext?: (options: unknown, context: HostCallContext) => Promise<any> | any;
+  createPage?: (contextHandle: any, context: HostCallContext) => Promise<any> | any;
   readFile?: (path: string, context: HostCallContext) => Promise<Buffer> | Buffer;
   writeFile?: (path: string, data: Buffer, context: HostCallContext) => Promise<void> | void;
+  handler?: never;
 }
+
+export interface HostBrowserHandlerBindings extends HostBrowserBindingBase {
+  handler: PlaywrightSessionHandlerCallback;
+  createContext?: never;
+  createPage?: never;
+  readFile?: never;
+  writeFile?: never;
+}
+
+export type HostBrowserBindings =
+  | HostBrowserFactoryBindings
+  | HostBrowserHandlerBindings;
 
 export type ToolHandler = (
   ...args: [...unknown[], HostCallContext]
@@ -187,8 +204,32 @@ export interface TestRuntime {
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
 }
 
+export interface NamespacedRuntime {
+  eval(
+    code: string,
+    options?: { filename?: string; executionTimeout?: number },
+  ): Promise<void>;
+  runTests(
+    code: string,
+    options?: { filename?: string; timeoutMs?: number },
+  ): Promise<RunResults>;
+  diagnostics(): Promise<TestRuntimeDiagnostics>;
+  dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+  events: {
+    on(event: string, handler: (payload: unknown) => void): () => void;
+    emit(event: string, payload: unknown): Promise<void>;
+  };
+}
+
 export interface CreateRuntimeOptions {
   key?: string;
+  bindings: HostBindings;
+  cwd?: string;
+  executionTimeout?: number;
+  memoryLimitMB?: number;
+}
+
+export interface CreateNamespacedRuntimeOptions {
   bindings: HostBindings;
   cwd?: string;
   executionTimeout?: number;
@@ -210,6 +251,11 @@ export interface IsolateHost {
   createAppServer(options: CreateAppServerOptions): Promise<AppServer>;
   createRuntime(options: CreateRuntimeOptions): Promise<ScriptRuntime>;
   createTestRuntime(options: CreateTestRuntimeOptions): Promise<TestRuntime>;
+  getNamespacedRuntime(
+    key: string,
+    options: CreateNamespacedRuntimeOptions,
+  ): Promise<NamespacedRuntime>;
+  disposeNamespace(key: string, options?: { reason?: string }): Promise<void>;
   diagnostics(): Promise<{ runtimes: number; servers: number; connected: boolean }>;
   close(): Promise<void>;
 }
