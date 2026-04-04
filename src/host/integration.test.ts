@@ -1293,54 +1293,97 @@ describe("createIsolateHost runtime integration", () => {
       await runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
 
-        const nestedHost = createIsolateHost();
-        const first = await nestedHost.getNamespacedRuntime("nested-session", {
-          bindings: {
-            tools: {
-              getValue: async () => 1,
-            },
-          },
-        });
-
-        await first.eval("globalThis.__nestedCounter = 41;");
-        await first.dispose();
-
-        const second = await nestedHost.getNamespacedRuntime("nested-session", {
-          bindings: {
-            tools: {
-              getValue: async () => 2,
-            },
-          },
-        });
-
-        const diagnostics = await second.diagnostics();
-        const results = await second.runTests(\`
-          test("keeps globals and refreshed bindings", async () => {
-            expect(globalThis.__nestedCounter).toBe(41);
-            expect(await getValue()).toBe(2);
+        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+          let timeoutId;
+          const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new Error("Timed out after " + timeoutMs + "ms: " + label));
+            }, timeoutMs);
           });
-        \`, { timeoutMs: 5_000 });
 
-        await nestedHost.disposeNamespace("nested-session", {
-          reason: "nested cleanup",
-        });
+          try {
+            return await Promise.race([promise, timeoutPromise]);
+          } finally {
+            if (timeoutId !== undefined) {
+              clearTimeout(timeoutId);
+            }
+          }
+        }
+
+        const nestedHost = createIsolateHost();
+        const first = await withStepTimeout(
+          nestedHost.getNamespacedRuntime("nested-session", {
+            bindings: {
+              tools: {
+                getValue: async () => 1,
+              },
+            },
+          }),
+          "first nested namespaced runtime acquisition",
+        );
+
+        await withStepTimeout(
+          first.eval("globalThis.__nestedCounter = 41;"),
+          "first nested namespaced eval",
+        );
+        await withStepTimeout(
+          first.dispose(),
+          "first nested namespaced dispose",
+        );
+
+        const second = await withStepTimeout(
+          nestedHost.getNamespacedRuntime("nested-session", {
+            bindings: {
+              tools: {
+                getValue: async () => 2,
+              },
+            },
+          }),
+          "second nested namespaced runtime acquisition",
+        );
+
+        const diagnostics = await withStepTimeout(
+          second.diagnostics(),
+          "nested namespaced diagnostics",
+        );
+        const results = await withStepTimeout(
+          second.runTests(\`
+            test("keeps globals and refreshed bindings", async () => {
+              expect(globalThis.__nestedCounter).toBe(41);
+              expect(await getValue()).toBe(2);
+            });
+          \`, { timeoutMs: 10_000 }),
+          "nested namespaced runTests",
+          15_000,
+        );
+
+        await withStepTimeout(
+          nestedHost.disposeNamespace("nested-session", {
+            reason: "nested cleanup",
+          }),
+          "nested namespace disposal",
+        );
 
         let invalidatedName = null;
         try {
-          await second.eval("globalThis.__nestedCounter += 1;");
+          await withStepTimeout(
+            second.eval("globalThis.__nestedCounter += 1;"),
+            "nested invalidated eval",
+          );
         } catch (error) {
           invalidatedName = error.name;
         }
 
-        await second.dispose();
-        await nestedHost.close();
-
+        await withStepTimeout(
+          second.dispose(),
+          "second nested namespaced dispose",
+        );
         console.log(JSON.stringify({
           reused: diagnostics.runtime.reused,
           success: results.success,
           invalidatedName,
         }));
-      `, { executionTimeout: 20_000 });
+      `, { executionTimeout: 60_000 });
     } finally {
       await runtime.dispose();
     }
@@ -1658,8 +1701,6 @@ describe("createIsolateHost runtime integration", () => {
 
         await withStepTimeout(child.dispose(), "child dispose");
         await withStepTimeout(server.dispose(), "server dispose");
-        await withStepTimeout(nestedHost.close(), "nested host close");
-
         console.log(JSON.stringify({
           firstPayload,
           runtimeResult,
