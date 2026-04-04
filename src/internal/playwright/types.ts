@@ -9,6 +9,8 @@ export type {
   PlaywrightResult,
   PlaywrightEvent,
   PlaywrightFileData,
+  CollectedData,
+  ConsoleEntry,
 } from "../protocol/index.ts";
 
 // ============================================================================
@@ -16,6 +18,8 @@ export type {
 // ============================================================================
 
 export interface NetworkRequestInfo {
+  contextId: string;
+  pageId: string;
   requestId: string;
   url: string;
   method: string;
@@ -26,6 +30,8 @@ export interface NetworkRequestInfo {
 }
 
 export interface NetworkResponseInfo {
+  contextId: string;
+  pageId: string;
   requestId: string;
   url: string;
   status: number;
@@ -39,6 +45,8 @@ export interface NetworkResponseInfo {
  * Browser console log entry - logs from the page context (not sandbox).
  */
 export interface BrowserConsoleLogEntry {
+  contextId: string;
+  pageId: string;
   level: string;
   stdout: string;
   location?: {
@@ -50,6 +58,8 @@ export interface BrowserConsoleLogEntry {
 }
 
 export interface PageErrorInfo {
+  contextId: string;
+  pageId: string;
   name: string;
   message: string;
   stack?: string;
@@ -57,6 +67,8 @@ export interface PageErrorInfo {
 }
 
 export interface RequestFailureInfo {
+  contextId: string;
+  pageId: string;
   requestId: string;
   url: string;
   method: string;
@@ -108,11 +120,32 @@ export interface DefaultPlaywrightHandlerMetadata {
   options?: DefaultPlaywrightHandlerOptions;
 }
 
+export interface PlaywrightCollector {
+  getCollectedData(): import("../protocol/index.ts").CollectedData;
+  getTrackedResources(): { contexts: string[]; pages: string[] };
+  clearCollectedData(): void;
+  onEvent(
+    callback: (event: import("../protocol/index.ts").PlaywrightEvent) => void,
+  ): () => void;
+}
+
+export interface PlaywrightHandlerMetadata {
+  collector: PlaywrightCollector;
+}
+
 /**
  * Handler created by defaultPlaywrightHandler().
  */
 export type DefaultPlaywrightHandler = PlaywrightCallback & {
   [DEFAULT_PLAYWRIGHT_HANDLER_META]?: DefaultPlaywrightHandlerMetadata;
+};
+
+export const PLAYWRIGHT_HANDLER_META = Symbol.for(
+  "./index.ts/handler-meta"
+);
+
+export type InstrumentedPlaywrightHandler = PlaywrightCallback & {
+  [PLAYWRIGHT_HANDLER_META]?: PlaywrightHandlerMetadata;
 };
 
 /**
@@ -170,5 +203,6 @@ export interface PlaywrightHandle {
   getNetworkResponses(): NetworkResponseInfo[];
   /** Get network request failures (DNS, abort, connection reset, etc.) */
   getRequestFailures(): RequestFailureInfo[];
+  getTrackedResources(): { contexts: string[]; pages: string[] };
   clearCollected(): void;
 }

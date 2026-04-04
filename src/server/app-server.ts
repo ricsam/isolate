@@ -1,6 +1,9 @@
 import { IsolateServer } from "../internal/server/index.ts";
 import type { DaemonConnection } from "../internal/client/index.ts";
-import { createRuntimeDiagnostics } from "../bridge/diagnostics.ts";
+import {
+  createBrowserDiagnostics,
+  createRuntimeDiagnostics,
+} from "../bridge/diagnostics.ts";
 import {
   createRuntimeBindingsAdapter,
   type RuntimeBindingsAdapterOptions,
@@ -34,7 +37,6 @@ export async function createAppServerAdapter(
       cwd: options.cwd,
       memoryLimitMB: options.memoryLimitMB,
       executionTimeout: options.executionTimeout,
-      testEnvironment: options.features?.tests ?? false,
     },
     onWebSocketCommand: (command) => {
       options.webSockets?.onCommand?.(command);
@@ -132,9 +134,23 @@ export async function createAppServerAdapter(
         diagnostics.lifecycleState = "idle";
       }
     },
-    diagnostics: async () => ({
-      ...diagnostics,
-      reused: server.getRuntime()?.reused,
-    }),
+    diagnostics: async () => {
+      const runtimeDiagnostics = {
+        ...diagnostics,
+        reused: server.getRuntime()?.reused,
+      };
+      const collectedData = options.bindings.browser && server.getRuntime()
+        ? server.getRuntime()!.playwright.getCollectedData()
+        : undefined;
+      const trackedResources = options.bindings.browser && server.getRuntime()
+        ? server.getRuntime()!.playwright.getTrackedResources()
+        : undefined;
+      return {
+        runtime: runtimeDiagnostics,
+        browser: collectedData
+          ? createBrowserDiagnostics(collectedData, trackedResources)
+          : undefined,
+      };
+    },
   };
 }

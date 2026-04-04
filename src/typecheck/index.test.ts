@@ -18,9 +18,15 @@ describe("typecheck helpers", () => {
     assert.ok(profile.files.some((file) => file.name === "isolate-playwright.d.ts"));
   });
 
-  test("typechecks code against the selected capabilities", () => {
+  test("typechecks browser-test code without implicit page globals", () => {
     const ok = typecheck({
-      code: "page.goto('/');",
+      code: `
+        let page;
+        beforeAll(async () => {
+          const context = await browser.newContext();
+          page = await context.newPage();
+        });
+      `,
       profile: "browser-test",
     });
     const missing = typecheck({
@@ -33,9 +39,9 @@ describe("typecheck helpers", () => {
     assert.ok(missing.errors.some((error) => error.message.includes("page")));
   });
 
-  test("supports the browser factory capability without full page globals", () => {
+  test("supports browser factory-style globals through the browser capability", () => {
     const profile = getTypeProfile({
-      capabilities: ["browserFactory"],
+      capabilities: ["browser"],
     });
     const ok = typecheck({
       code: `
@@ -44,16 +50,15 @@ describe("typecheck helpers", () => {
         const page = await context.newPage();
         await page.goto("/");
       `,
-      capabilities: ["browserFactory"],
+      capabilities: ["browser"],
     });
     const missingPageGlobal = typecheck({
       code: "await page.goto('/')",
-      capabilities: ["browserFactory"],
+      capabilities: ["browser"],
     });
 
-    assert.ok(profile.include.includes("browserFactory"));
-    assert.ok(!profile.include.includes("playwright"));
-    assert.ok(profile.files.some((file) => file.name === "isolate-browserFactory.d.ts"));
+    assert.ok(profile.include.includes("playwright"));
+    assert.ok(profile.files.some((file) => file.name === "isolate-playwright.d.ts"));
     assert.equal(ok.success, true);
     assert.equal(missingPageGlobal.success, false);
     assert.ok(

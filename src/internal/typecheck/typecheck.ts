@@ -98,7 +98,6 @@ export interface TypecheckOptions {
     | "timers"
     | "testEnvironment"
     | "playwright"
-    | "browserFactory"
   >;
 
   /**

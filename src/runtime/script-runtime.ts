@@ -1,11 +1,17 @@
-import type { MutableRuntimeDiagnostics } from "../bridge/diagnostics.ts";
+import {
+  createBrowserDiagnostics,
+  type MutableRuntimeDiagnostics,
+} from "../bridge/diagnostics.ts";
 import { isBenignDisposeError, type RemoteRuntime } from "../internal/client/index.ts";
 import type { ScriptRuntime } from "../types.ts";
 
 export function createScriptRuntimeAdapter(
   runtime: RemoteRuntime,
   diagnostics: MutableRuntimeDiagnostics,
-  options?: { onBeforeDispose?: (reason?: string) => void },
+  options?: {
+    hasBrowser?: boolean;
+    onBeforeDispose?: (reason?: string) => void;
+  },
 ): ScriptRuntime {
   return {
     async eval(code, evalOptions) {
@@ -39,21 +45,28 @@ export function createScriptRuntimeAdapter(
         diagnostics.lifecycleState = "idle";
       }
     },
-    diagnostics: async () => ({
-      ...diagnostics,
-      reused: runtime.reused,
-    }),
+    diagnostics: async () => {
+      const runtimeDiagnostics = {
+        ...diagnostics,
+        reused: runtime.reused,
+      };
+      const collectedData = options?.hasBrowser
+        ? runtime.playwright.getCollectedData()
+        : undefined;
+      const trackedResources = options?.hasBrowser
+        ? runtime.playwright.getTrackedResources()
+        : undefined;
+      return {
+        runtime: runtimeDiagnostics,
+        browser: collectedData
+          ? createBrowserDiagnostics(collectedData, trackedResources)
+          : undefined,
+      };
+    },
     events: {
       on: (event, handler) => runtime.on(event, handler),
       emit: async (event, payload) => {
         runtime.emit(event, payload);
-      },
-    },
-    tests: {
-      run: async (testOptions) => await runtime.testEnvironment.runTests(testOptions?.timeoutMs),
-      hasTests: async () => await runtime.testEnvironment.hasTests(),
-      reset: async () => {
-        await runtime.testEnvironment.reset();
       },
     },
   };

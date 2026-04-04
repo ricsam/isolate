@@ -11,8 +11,8 @@ import {
 } from "./sandbox-isolate.ts";
 import type {
   CreateAppServerOptions,
-  CreateBrowserRuntimeOptions,
   CreateRuntimeOptions,
+  CreateTestRuntimeOptions,
   HostBindings,
   HostCallContext,
   ModuleResolveResult,
@@ -510,8 +510,38 @@ function createBrowserPlaywrightOptions(
             return await browser.createPage!(contextHandle, context);
           }
         : undefined,
+      readFile: browser.readFile
+        ? async (filePath) => {
+            const context = createHostCallContext(
+              `browser:readFile:${crypto.randomUUID()}`,
+            );
+            const buffer = await browser.readFile!(filePath, context);
+            return {
+              name: path.basename(filePath),
+              mimeType: "application/octet-stream",
+              buffer,
+            };
+          }
+        : undefined,
+      writeFile: browser.writeFile
+        ? async (filePath, data) => {
+            const context = createHostCallContext(
+              `browser:writeFile:${crypto.randomUUID()}`,
+            );
+            await browser.writeFile!(filePath, data, context);
+          }
+        : undefined,
     }),
     hasDefaultPage: false,
+    console: browser.captureConsole ?? false,
+    onEvent: browser.onEvent
+      ? (event) => {
+          const context = createHostCallContext(
+            `browser:event:${event.type}:${crypto.randomUUID()}`,
+          );
+          browser.onEvent?.(event, context);
+        }
+      : undefined,
   };
 }
 
@@ -649,9 +679,7 @@ function createCustomFunctions(
         const resourceOptions = args[2] as
           | CreateRuntimeOptions
           | CreateAppServerOptions
-          | (Omit<CreateBrowserRuntimeOptions, "browser"> & {
-              browser?: Record<string, unknown>;
-            });
+          | CreateTestRuntimeOptions;
         const context = createHostCallContext(
           `nestedHost:createResource:${kind}:${crypto.randomUUID()}`,
         );

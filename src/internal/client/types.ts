@@ -258,6 +258,8 @@ export interface RemoteTestEnvironmentHandle {
 export interface RemotePlaywrightHandle {
   /** Get collected browser console logs and network data */
   getCollectedData(): CollectedData;
+  /** Get tracked browser context/page ids */
+  getTrackedResources(): { contexts: string[]; pages: string[] };
   /** Clear collected data */
   clearCollectedData(): void;
 }

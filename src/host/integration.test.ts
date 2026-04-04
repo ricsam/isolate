@@ -637,8 +637,8 @@ describe("createIsolateHost runtime integration", () => {
       `);
 
       const diagnostics = await runtime.diagnostics();
-      assert.equal(diagnostics.pendingFetches, 0);
-      assert.equal(diagnostics.activeResources, 0);
+      assert.equal(diagnostics.runtime.pendingFetches, 0);
+      assert.equal(diagnostics.runtime.activeResources, 0);
     } finally {
       await runtime.dispose();
     }
@@ -690,8 +690,8 @@ describe("createIsolateHost runtime integration", () => {
       `);
 
       const diagnostics = await runtime.diagnostics();
-      assert.equal(diagnostics.pendingTools, 0);
-      assert.equal(diagnostics.activeResources, 0);
+      assert.equal(diagnostics.runtime.pendingTools, 0);
+      assert.equal(diagnostics.runtime.activeResources, 0);
     } finally {
       await runtime.dispose();
     }
@@ -832,29 +832,27 @@ describe("createIsolateHost runtime integration", () => {
     ]);
   });
 
-  test("runs tests inside a script runtime", async () => {
-    const runtime = await host.createRuntime({
+  test("runs tests inside a test runtime", async () => {
+    const runtime = await host.createTestRuntime({
       bindings: {},
-      features: {
-        tests: true,
-      },
     });
 
     try {
-      await runtime.eval(`
+      const results = await runtime.run(`
         describe("math", () => {
           test("adds numbers", () => {
             expect(1 + 2).toBe(3);
           });
         });
-      `);
+      `, { timeoutMs: 5_000 });
 
-      assert.equal(await runtime.tests.hasTests(), true);
-      const results = await runtime.tests.run({ timeoutMs: 5_000 });
       assert.equal(results.success, true);
       assert.equal(results.total, 1);
       assert.equal(results.passed, 1);
       assert.equal(results.failed, 0);
+      const diagnostics = await runtime.diagnostics();
+      assert.equal(diagnostics.test.registeredTests, 1);
+      assert.deepEqual(diagnostics.test.lastRun, results);
     } finally {
       await runtime.dispose();
     }
@@ -905,7 +903,7 @@ describe("createIsolateHost runtime integration", () => {
 
     try {
       const diagnostics = await runtime2.diagnostics();
-      assert.equal(diagnostics.reused, true);
+      assert.equal(diagnostics.runtime.reused, true);
 
       await runtime2.eval(`
         import { version } from "/config.ts";
@@ -927,7 +925,7 @@ describe("createIsolateHost runtime integration", () => {
       bindings: {},
     });
 
-    assert.equal((await runtime1.diagnostics()).reused, false);
+    assert.equal((await runtime1.diagnostics()).runtime.reused, false);
     await runtime1.dispose({ hard: true });
 
     const runtime2 = await host.createRuntime({
@@ -936,7 +934,7 @@ describe("createIsolateHost runtime integration", () => {
     });
 
     try {
-      assert.equal((await runtime2.diagnostics()).reused, false);
+      assert.equal((await runtime2.diagnostics()).runtime.reused, false);
     } finally {
       await runtime2.dispose();
     }

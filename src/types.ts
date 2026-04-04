@@ -74,6 +74,10 @@ export interface FileBindings {
 export interface HostBrowserBindings {
   createContext?: (options: unknown, context: HostCallContext) => Promise<any> | any;
   createPage?: (contextHandle: any, context: HostCallContext) => Promise<any> | any;
+  captureConsole?: boolean;
+  onEvent?: (event: PlaywrightEvent, context: HostCallContext) => void;
+  readFile?: (path: string, context: HostCallContext) => Promise<Buffer> | Buffer;
+  writeFile?: (path: string, data: Buffer, context: HostCallContext) => Promise<void> | void;
 }
 
 export type ToolHandler = (
@@ -106,7 +110,9 @@ export interface RuntimeDiagnostics {
   lifecycleState: "idle" | "active" | "reloading" | "disposing";
 }
 
-export interface BrowserRuntimeDiagnostics extends RuntimeDiagnostics {
+export interface BrowserDiagnostics {
+  contexts: number;
+  pages: number;
   browserConsoleLogs: number;
   networkRequests: number;
   networkResponses: number;
@@ -119,6 +125,21 @@ export interface BrowserRuntimeDiagnostics extends RuntimeDiagnostics {
     networkResponses: unknown[];
     requestFailures: unknown[];
   };
+}
+
+export interface RuntimeResourceDiagnostics {
+  runtime: RuntimeDiagnostics;
+  browser?: BrowserDiagnostics;
+}
+
+export interface TestDiagnostics {
+  enabled: true;
+  registeredTests: number;
+  lastRun?: RunResults;
+}
+
+export interface TestRuntimeDiagnostics extends RuntimeResourceDiagnostics {
+  test: TestDiagnostics;
 }
 
 export interface WebSocketUpgradeData {
@@ -141,7 +162,7 @@ export interface AppServer {
   };
   reload(reason?: string): Promise<void>;
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
-  diagnostics(): Promise<RuntimeDiagnostics>;
+  diagnostics(): Promise<RuntimeResourceDiagnostics>;
 }
 
 export interface ScriptRuntime {
@@ -150,37 +171,31 @@ export interface ScriptRuntime {
     options?: string | { filename?: string; executionTimeout?: number },
   ): Promise<void>;
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
-  diagnostics(): Promise<RuntimeDiagnostics>;
+  diagnostics(): Promise<RuntimeResourceDiagnostics>;
   events: {
     on(event: string, handler: (payload: unknown) => void): () => void;
     emit(event: string, payload: unknown): Promise<void>;
   };
-  tests: {
-    run(options?: { timeoutMs?: number }): Promise<RunResults>;
-    hasTests(): Promise<boolean>;
-    reset(): Promise<void>;
-  };
 }
 
-export interface BrowserRuntime {
+export interface TestRuntime {
   run(
     code: string,
-    options?: { filename?: string; asTestSuite?: boolean; timeoutMs?: number },
-  ): Promise<{ tests?: RunResults; value?: unknown }>;
-  diagnostics(): Promise<BrowserRuntimeDiagnostics>;
+    options?: { filename?: string; timeoutMs?: number },
+  ): Promise<RunResults>;
+  diagnostics(): Promise<TestRuntimeDiagnostics>;
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
 }
 
 export interface CreateRuntimeOptions {
   key?: string;
   bindings: HostBindings;
-  features?: {
-    tests?: boolean;
-  };
   cwd?: string;
   executionTimeout?: number;
   memoryLimitMB?: number;
 }
+
+export interface CreateTestRuntimeOptions extends CreateRuntimeOptions {}
 
 export interface CreateAppServerOptions extends CreateRuntimeOptions {
   key: string;
@@ -191,22 +206,10 @@ export interface CreateAppServerOptions extends CreateRuntimeOptions {
   };
 }
 
-export interface CreateBrowserRuntimeOptions extends CreateRuntimeOptions {
-  browser: {
-    page: any;
-    readFile?: (normalizedVirtualPath: string) => Promise<Buffer>;
-    captureConsole?: boolean;
-    writeFile?: (normalizedVirtualPath: string, data: Buffer) => Promise<void> | void;
-    createPage?: (context: any) => Promise<any> | any;
-    createContext?: (options?: any) => Promise<any> | any;
-    onEvent?: (event: PlaywrightEvent) => void;
-  };
-}
-
 export interface IsolateHost {
   createAppServer(options: CreateAppServerOptions): Promise<AppServer>;
   createRuntime(options: CreateRuntimeOptions): Promise<ScriptRuntime>;
-  createBrowserRuntime(options: CreateBrowserRuntimeOptions): Promise<BrowserRuntime>;
+  createTestRuntime(options: CreateTestRuntimeOptions): Promise<TestRuntime>;
   diagnostics(): Promise<{ runtimes: number; servers: number; connected: boolean }>;
   close(): Promise<void>;
 }
@@ -228,7 +231,6 @@ export type TypeCapability =
   | "files"
   | "tests"
   | "browser"
-  | "browserFactory"
   | "tools"
   | "console"
   | "encoding"
@@ -247,7 +249,6 @@ export interface TypeProfile {
     | "timers"
     | "testEnvironment"
     | "playwright"
-    | "browserFactory"
   >;
   files: Array<{ name: string; content: string }>;
 }

@@ -1,18 +1,11 @@
 import type {
-  CreateBrowserRuntimeOptions,
   HostBrowserBindings,
-  PlaywrightEvent,
 } from "../types.ts";
 
 export const ISOLATE_BROWSER_DESCRIPTOR_PROPERTY = "__isolateBrowserBinding";
 export const ISOLATE_BROWSER_DESCRIPTOR_VALUE = "default";
 
-export interface BrowserSource extends HostBrowserBindings {
-  readFile?: (normalizedVirtualPath: string) => Promise<Buffer>;
-  captureConsole?: boolean;
-  writeFile?: (normalizedVirtualPath: string, data: Buffer) => Promise<void> | void;
-  onEvent?: (event: PlaywrightEvent) => void;
-}
+export interface BrowserSource extends HostBrowserBindings {}
 
 export function isBrowserBindingLike(value: unknown): value is HostBrowserBindings {
   if (!value || typeof value !== "object") {
@@ -56,36 +49,6 @@ export function createBrowserSourceFromUnknown(
   }
 
   return createBrowserSourceFromBindings(browser);
-}
-
-export function createBrowserSourceFromRuntimeOptions(
-  browser: CreateBrowserRuntimeOptions["browser"],
-): BrowserSource {
-  return {
-    createContext: browser.createContext
-      ? async (options: unknown) => await browser.createContext!(options)
-      : undefined,
-    createPage: async (contextHandle: unknown) => {
-      if (browser.createPage) {
-        return await browser.createPage(contextHandle);
-      }
-      if (
-        contextHandle &&
-        typeof contextHandle === "object" &&
-        "newPage" in contextHandle &&
-        typeof (contextHandle as { newPage?: unknown }).newPage === "function"
-      ) {
-        return await (contextHandle as { newPage: () => Promise<unknown> }).newPage();
-      }
-      throw new Error(
-        "Browser source cannot create pages without browser.createPage or context.newPage().",
-      );
-    },
-    readFile: browser.readFile,
-    captureConsole: browser.captureConsole,
-    writeFile: browser.writeFile,
-    onEvent: browser.onEvent,
-  };
 }
 
 export function requireBrowserSource(

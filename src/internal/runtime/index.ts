@@ -230,6 +230,8 @@ export interface RuntimeTestEnvironmentHandle {
 export interface RuntimePlaywrightHandle {
   /** Get collected browser data (console logs, network requests/responses) */
   getCollectedData(): CollectedData;
+  /** Get tracked browser context/page ids */
+  getTrackedResources(): { contexts: string[]; pages: string[] };
   /** Clear collected browser data */
   clearCollectedData(): void;
 }
@@ -2113,6 +2115,15 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
         networkResponses: state.handles.playwright.getNetworkResponses(),
         requestFailures: state.handles.playwright.getRequestFailures(),
       };
+    },
+    getTrackedResources() {
+      ensureRuntimeUsable();
+      if (!state.handles.playwright) {
+        throw new Error(
+          "Playwright not configured. Provide playwright.handler in createRuntime options."
+        );
+      }
+      return state.handles.playwright.getTrackedResources();
     },
     clearCollectedData() {
       ensureRuntimeUsable();

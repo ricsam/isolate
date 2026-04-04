@@ -81,6 +81,7 @@ import {
 import {
   defaultPlaywrightHandler,
   getDefaultPlaywrightHandlerMetadata,
+  getPlaywrightHandlerMetadata,
   type PlaywrightCallback,
 } from "../playwright/client.ts";
 import type {
@@ -1001,20 +1002,55 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
 
   // Playwright callback registration - client owns the browser
   let playwrightHandler: PlaywrightCallback | undefined;
-  // Client-side browser event buffers
-  const browserConsoleLogs: Array<CollectedData["browserConsoleLogs"][number]> = [];
-  const pageErrors: Array<CollectedData["pageErrors"][number]> = [];
-  const networkRequests: Array<CollectedData["networkRequests"][number]> = [];
-  const networkResponses: Array<CollectedData["networkResponses"][number]> = [];
-  const requestFailures: Array<CollectedData["requestFailures"][number]> = [];
-  const pageListenerCleanups: (() => void)[] = [];
+  let getCollectedData = (): CollectedData => ({
+    browserConsoleLogs: [],
+    pageErrors: [],
+    networkRequests: [],
+    networkResponses: [],
+    requestFailures: [],
+  });
+  let getTrackedResources = (): { contexts: string[]; pages: string[] } => ({
+    contexts: [],
+    pages: [],
+  });
+  let clearCollectedData = (): void => {};
+  const playwrightListenerCleanups: (() => void)[] = [];
 
   if (normalizedPlaywrightOptions) {
     playwrightHandler = normalizedPlaywrightOptions.handler;
     if (!playwrightHandler) {
       throw new Error("playwright.handler is required when using playwright options");
     }
-    const page = getDefaultPlaywrightHandlerMetadata(playwrightHandler)?.page;
+    const handlerMetadata = getPlaywrightHandlerMetadata(playwrightHandler);
+    if (handlerMetadata) {
+      getCollectedData = () => handlerMetadata.collector.getCollectedData();
+      getTrackedResources = () => handlerMetadata.collector.getTrackedResources();
+      clearCollectedData = () => {
+        handlerMetadata.collector.clearCollectedData();
+      };
+      playwrightListenerCleanups.push(
+        handlerMetadata.collector.onEvent((event) => {
+          if (normalizedPlaywrightOptions.onEvent) {
+            normalizedPlaywrightOptions.onEvent(event);
+          }
+
+          if (event.type === "browserConsoleLog") {
+            if (normalizedPlaywrightOptions.console && options.console?.onEntry) {
+              options.console.onEntry({
+                type: "browserOutput",
+                level: event.level,
+                stdout: event.stdout,
+                location: event.location,
+                timestamp: event.timestamp,
+              });
+            } else if (normalizedPlaywrightOptions.console) {
+              const prefix = event.level === "error" ? "[browser:error]" : "[browser]";
+              console.log(prefix, event.stdout);
+            }
+          }
+        }),
+      );
+    }
 
     const handlerCallbackId = state.nextCallbackId++;
     state.callbacks.set(handlerCallbackId, async (opJson: unknown) => {
@@ -1022,176 +1058,6 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const result = await playwrightHandler!(op);
       return JSON.stringify(result);
     });
-
-    // If handler was created from a page via defaultPlaywrightHandler(),
-    // preserve local event capture and collected-data ergonomics.
-    if (page) {
-      const requestIds = new WeakMap<object, string>();
-      let nextRequestId = 1;
-      const getRequestId = (request: object): string => {
-        let requestId = requestIds.get(request);
-        if (!requestId) {
-          requestId = `req_${nextRequestId++}`;
-          requestIds.set(request, requestId);
-        }
-        return requestId;
-      };
-      const toLocation = (
-        location: { url?: string; lineNumber?: number; columnNumber?: number } | undefined,
-      ): CollectedData["browserConsoleLogs"][number]["location"] => {
-        if (!location || (!location.url && location.lineNumber == null && location.columnNumber == null)) {
-          return undefined;
-        }
-
-        return {
-          url: location.url || undefined,
-          lineNumber: location.lineNumber != null ? location.lineNumber + 1 : undefined,
-          columnNumber: location.columnNumber != null ? location.columnNumber + 1 : undefined,
-        };
-      };
-      const onConsole = (msg: {
-        type: () => string;
-        text: () => string;
-        location: () => { url?: string; lineNumber?: number; columnNumber?: number };
-      }) => {
-        const entry = {
-          level: msg.type(),
-          stdout: msg.text(),
-          location: toLocation(msg.location()),
-          timestamp: Date.now(),
-        };
-        browserConsoleLogs.push(entry);
-
-        if (normalizedPlaywrightOptions.onEvent) {
-          normalizedPlaywrightOptions.onEvent({
-            type: "browserConsoleLog",
-            ...entry,
-          });
-        }
-
-        if (normalizedPlaywrightOptions.console && options.console?.onEntry) {
-          options.console.onEntry({
-            type: "browserOutput",
-            ...entry,
-          });
-        } else if (normalizedPlaywrightOptions.console) {
-          const prefix = entry.level === "error" ? "[browser:error]" : "[browser]";
-          console.log(prefix, entry.stdout);
-        }
-      };
-
-      const onRequest = (request: {
-        url: () => string;
-        method: () => string;
-        headers: () => Record<string, string>;
-        postData: () => string | null;
-        resourceType: () => string;
-      }) => {
-        const info = {
-          requestId: getRequestId(request),
-          url: request.url(),
-          method: request.method(),
-          headers: request.headers(),
-          postData: request.postData() ?? undefined,
-          resourceType: request.resourceType(),
-          timestamp: Date.now(),
-        };
-        networkRequests.push(info);
-
-        if (normalizedPlaywrightOptions.onEvent) {
-          normalizedPlaywrightOptions.onEvent({
-            type: "networkRequest",
-            ...info,
-          });
-        }
-      };
-
-      const onResponse = (response: {
-        url: () => string;
-        status: () => number;
-        statusText: () => string;
-        headers: () => Record<string, string>;
-        request: () => {
-          url: () => string;
-          method: () => string;
-          resourceType: () => string;
-        };
-      }) => {
-        const request = response.request();
-        const info = {
-          requestId: getRequestId(request),
-          url: response.url(),
-          status: response.status(),
-          statusText: response.statusText(),
-          headers: response.headers(),
-          resourceType: request.resourceType(),
-          timestamp: Date.now(),
-        };
-        networkResponses.push(info);
-
-        if (normalizedPlaywrightOptions.onEvent) {
-          normalizedPlaywrightOptions.onEvent({
-            type: "networkResponse",
-            ...info,
-          });
-        }
-      };
-
-      const onRequestFailed = (request: {
-        url: () => string;
-        method: () => string;
-        resourceType: () => string;
-        failure: () => { errorText?: string } | null;
-      }) => {
-        const info = {
-          requestId: getRequestId(request),
-          url: request.url(),
-          method: request.method(),
-          failureText: request.failure()?.errorText || "request failed",
-          resourceType: request.resourceType(),
-          timestamp: Date.now(),
-        };
-        requestFailures.push(info);
-
-        if (normalizedPlaywrightOptions.onEvent) {
-          normalizedPlaywrightOptions.onEvent({
-            type: "requestFailure",
-            ...info,
-          });
-        }
-      };
-
-      const onPageError = (error: Error) => {
-        const entry = {
-          name: error.name,
-          message: error.message,
-          stack: error.stack,
-          timestamp: Date.now(),
-        };
-        pageErrors.push(entry);
-
-        if (normalizedPlaywrightOptions.onEvent) {
-          normalizedPlaywrightOptions.onEvent({
-            type: "pageError",
-            ...entry,
-          });
-        }
-      };
-
-      page.on("console", onConsole);
-      page.on("request", onRequest);
-      page.on("response", onResponse);
-      page.on("requestfailed", onRequestFailed);
-      page.on("pageerror", onPageError);
-
-      pageListenerCleanups.push(
-        () => page.removeListener("console", onConsole),
-        () => page.removeListener("request", onRequest),
-        () => page.removeListener("response", onResponse),
-        () => page.removeListener("requestfailed", onRequestFailed),
-        () => page.removeListener("pageerror", onPageError),
-      );
-    }
 
     callbacks.playwright = {
       handlerCallbackId,
@@ -1613,24 +1479,20 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       if (!playwrightEnabled) {
         throw new Error("Playwright not configured. Provide playwright.handler in createRuntime options.");
       }
-      return {
-        browserConsoleLogs: [...browserConsoleLogs],
-        pageErrors: [...pageErrors],
-        networkRequests: [...networkRequests],
-        networkResponses: [...networkResponses],
-        requestFailures: [...requestFailures],
-      };
+      return getCollectedData();
+    },
+    getTrackedResources(): { contexts: string[]; pages: string[] } {
+      if (!playwrightEnabled) {
+        throw new Error("Playwright not configured. Provide playwright.handler in createRuntime options.");
+      }
+      return getTrackedResources();
     },
 
     clearCollectedData(): void {
       if (!playwrightEnabled) {
         throw new Error("Playwright not configured. Provide playwright.handler in createRuntime options.");
       }
-      browserConsoleLogs.length = 0;
-      pageErrors.length = 0;
-      networkRequests.length = 0;
-      networkResponses.length = 0;
-      requestFailures.length = 0;
+      clearCollectedData();
     },
   };
 
@@ -1700,7 +1562,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
 
     dispose: async (options?: DisposeRuntimeOptions) => {
       // Clean up page listeners
-      for (const cleanup of pageListenerCleanups) {
+      for (const cleanup of playwrightListenerCleanups) {
         cleanup();
       }
       // Clean up WebSocket callbacks

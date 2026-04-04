@@ -4,24 +4,23 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { connect, type DaemonConnection, type RemoteRuntime, type RuntimeOptions } from "../internal/client/index.ts";
 import {
   createBrowserSourceFromBindings,
-  createBrowserSourceFromRuntimeOptions,
   type BrowserSource,
 } from "../internal/browser-source.ts";
 import { createRuntimeDiagnostics } from "../bridge/diagnostics.ts";
 import { createRuntimeBindingsAdapter } from "../bridge/runtime-bindings.ts";
-import { createBrowserRuntimeAdapter } from "../browser/browser-runtime.ts";
 import { createScriptRuntimeAdapter } from "../runtime/script-runtime.ts";
+import { createTestRuntimeAdapter } from "../runtime/test-runtime.ts";
 import { createAppServerAdapter } from "../server/app-server.ts";
 import { createNestedHostBindings } from "./nested-host-controller.ts";
 import type {
   AppServer,
-  BrowserRuntime,
   CreateAppServerOptions,
-  CreateBrowserRuntimeOptions,
   CreateIsolateHostOptions,
   CreateRuntimeOptions,
+  CreateTestRuntimeOptions,
   IsolateHost,
   ScriptRuntime,
+  TestRuntime,
 } from "../types.ts";
 
 function resolveDefaultDaemonEntrypoint(): string | null {
@@ -65,8 +64,8 @@ class HostImpl implements IsolateHost {
     return await this.createRuntimeInternal(options);
   }
 
-  async createBrowserRuntime(options: CreateBrowserRuntimeOptions) {
-    return await this.createBrowserRuntimeInternal(options);
+  async createTestRuntime(options: CreateTestRuntimeOptions) {
+    return await this.createTestRuntimeInternal(options);
   }
 
   async diagnostics() {
@@ -121,31 +120,32 @@ class HostImpl implements IsolateHost {
         cwd: options.cwd,
         memoryLimitMB: options.memoryLimitMB,
         executionTimeout: options.executionTimeout,
-        testEnvironment: options.features?.tests ?? false,
       },
       options.key,
     );
     runtimeId = runtime.id;
     const adapter = createScriptRuntimeAdapter(runtime, diagnostics, {
+      hasBrowser: Boolean(options.bindings.browser),
       onBeforeDispose: (reason) => bindingsAdapter.abort(reason),
     });
     this.runtimes.add(adapter);
     return adapter;
   }
 
-  private async createBrowserRuntimeInternal(
-    options: CreateBrowserRuntimeOptions,
-    browserSource: BrowserSource = createBrowserSourceFromRuntimeOptions(options.browser),
-  ): Promise<BrowserRuntime> {
-    const browserRuntime = await createBrowserRuntimeAdapter(
+  private async createTestRuntimeInternal(
+    options: CreateTestRuntimeOptions,
+  ): Promise<TestRuntime> {
+    const testRuntime = await createTestRuntimeAdapter(
       async (runtimeOptions) => await this.createRemoteRuntime(runtimeOptions, options.key),
       options,
       {
-        nestedHost: this.createNestedBindings(browserSource),
+        nestedHost: this.createNestedBindings(
+          createBrowserSourceFromBindings(options.bindings.browser),
+        ),
       },
     );
-    this.runtimes.add(browserRuntime);
-    return browserRuntime;
+    this.runtimes.add(testRuntime);
+    return testRuntime;
   }
 
   private async createAppServerInternal(
@@ -172,8 +172,8 @@ class HostImpl implements IsolateHost {
         createRuntime: async (options) => await this.createRuntimeInternal(options),
         createAppServer: async (options) =>
           await this.createAppServerInternal(options),
-        createBrowserRuntime: async (options, browserSource) =>
-          await this.createBrowserRuntimeInternal(options, browserSource),
+        createTestRuntime: async (options) =>
+          await this.createTestRuntimeInternal(options),
         isConnected: () => this.connection?.isConnected() ?? false,
       },
       defaultBrowserSource,

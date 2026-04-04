@@ -1,4 +1,5 @@
-import type { RuntimeDiagnostics } from "../types.ts";
+import type { CollectedData } from "../internal/client/index.ts";
+import type { BrowserDiagnostics, RuntimeDiagnostics } from "../types.ts";
 
 export interface MutableRuntimeDiagnostics extends RuntimeDiagnostics {
   activeRequests: number;
@@ -21,5 +22,44 @@ export function createRuntimeDiagnostics(): MutableRuntimeDiagnostics {
     pendingTools: 0,
     streamCount: 0,
     lifecycleState: "idle",
+  };
+}
+
+export function createBrowserDiagnostics(
+  collectedData: CollectedData,
+  trackedResources?: { contexts: string[]; pages: string[] },
+): BrowserDiagnostics {
+  const contextIds = new Set<string>();
+  const pageIds = new Set<string>();
+  for (const entry of collectedData.browserConsoleLogs) {
+    contextIds.add(entry.contextId);
+    pageIds.add(entry.pageId);
+  }
+  for (const entry of collectedData.pageErrors) {
+    contextIds.add(entry.contextId);
+    pageIds.add(entry.pageId);
+  }
+  for (const entry of collectedData.networkRequests) {
+    contextIds.add(entry.contextId);
+    pageIds.add(entry.pageId);
+  }
+  for (const entry of collectedData.networkResponses) {
+    contextIds.add(entry.contextId);
+    pageIds.add(entry.pageId);
+  }
+  for (const entry of collectedData.requestFailures) {
+    contextIds.add(entry.contextId);
+    pageIds.add(entry.pageId);
+  }
+
+  return {
+    contexts: trackedResources?.contexts.length ?? contextIds.size,
+    pages: trackedResources?.pages.length ?? pageIds.size,
+    browserConsoleLogs: collectedData.browserConsoleLogs.length,
+    networkRequests: collectedData.networkRequests.length,
+    networkResponses: collectedData.networkResponses.length,
+    pageErrors: collectedData.pageErrors.length,
+    requestFailures: collectedData.requestFailures.length,
+    collectedData,
   };
 }

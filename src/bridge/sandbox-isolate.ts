@@ -1,14 +1,14 @@
 import { ISOLATE_BROWSER_DESCRIPTOR_PROPERTY } from "../internal/browser-source.ts";
 import type {
   CreateAppServerOptions,
-  CreateBrowserRuntimeOptions,
   CreateRuntimeOptions,
+  CreateTestRuntimeOptions,
   HostCallContext,
 } from "../types.ts";
 
 export const SANDBOX_ISOLATE_MODULE_SPECIFIER = "@ricsam/isolate";
 
-export type NestedResourceKind = "runtime" | "appServer" | "browserRuntime";
+export type NestedResourceKind = "runtime" | "appServer" | "testRuntime";
 
 export interface NestedHostBindings {
   createHost(context: HostCallContext): Promise<string>;
@@ -23,9 +23,7 @@ export interface NestedHostBindings {
     options:
       | CreateRuntimeOptions
       | CreateAppServerOptions
-      | (Omit<CreateBrowserRuntimeOptions, "browser"> & {
-          browser?: Record<string, unknown>;
-        }),
+      | CreateTestRuntimeOptions,
     context: HostCallContext,
   ): Promise<string>;
   callResource(
@@ -71,15 +69,6 @@ function __normalizeRuntimeOptions(options) {
   return normalized;
 }
 
-function __normalizeBrowserRuntimeOptions(options) {
-  const normalized = options ? { ...options } : {};
-  normalized.bindings = __normalizeBindings(normalized.bindings);
-  if ("browser" in normalized) {
-    normalized.browser = __normalizeBrowserHandle(normalized.browser);
-  }
-  return normalized;
-}
-
 async function __serializeRequest(requestLike) {
   const request = requestLike instanceof Request
     ? requestLike
@@ -113,17 +102,21 @@ async function __waitForNestedCallbacks() {
 }
 
 function __isNestedResourceSettled(diagnostics) {
+  const runtimeDiagnostics =
+    diagnostics && typeof diagnostics === "object" && "runtime" in diagnostics
+      ? diagnostics.runtime
+      : diagnostics;
   return Boolean(
-    diagnostics &&
-      typeof diagnostics === "object" &&
-      diagnostics.activeRequests === 0 &&
-      diagnostics.activeResources === 0 &&
-      diagnostics.pendingFiles === 0 &&
-      diagnostics.pendingFetches === 0 &&
-      diagnostics.pendingModules === 0 &&
-      diagnostics.pendingTools === 0 &&
-      diagnostics.streamCount === 0 &&
-      diagnostics.lifecycleState === "idle",
+    runtimeDiagnostics &&
+      typeof runtimeDiagnostics === "object" &&
+      runtimeDiagnostics.activeRequests === 0 &&
+      runtimeDiagnostics.activeResources === 0 &&
+      runtimeDiagnostics.pendingFiles === 0 &&
+      runtimeDiagnostics.pendingFetches === 0 &&
+      runtimeDiagnostics.pendingModules === 0 &&
+      runtimeDiagnostics.pendingTools === 0 &&
+      runtimeDiagnostics.streamCount === 0 &&
+      runtimeDiagnostics.lifecycleState === "idle",
   );
 }
 
@@ -217,36 +210,6 @@ class NestedScriptRuntime {
       );
       await __waitForNestedResource(this);
       await __flushNestedCallbacks();
-    },
-  };
-
-  tests = {
-    run: async (options) => {
-      const result = await __isolateHost_callResource(
-        "runtime",
-        this.#resourceId,
-        "tests.run",
-        [options ?? null],
-      );
-      await __waitForNestedResource(this);
-      await __flushNestedCallbacks();
-      return result;
-    },
-    hasTests: async () => {
-      return await __isolateHost_callResource(
-        "runtime",
-        this.#resourceId,
-        "tests.hasTests",
-        [],
-      );
-    },
-    reset: async () => {
-      await __isolateHost_callResource(
-        "runtime",
-        this.#resourceId,
-        "tests.reset",
-        [],
-      );
     },
   };
 }
@@ -353,7 +316,7 @@ class NestedAppServer {
   }
 }
 
-class NestedBrowserRuntime {
+class NestedTestRuntime {
   #resourceId;
 
   constructor(resourceId) {
@@ -362,7 +325,7 @@ class NestedBrowserRuntime {
 
   async run(code, options) {
     const result = await __isolateHost_callResource(
-      "browserRuntime",
+      "testRuntime",
       this.#resourceId,
       "run",
       [code, options ?? null],
@@ -374,7 +337,7 @@ class NestedBrowserRuntime {
 
   async diagnostics() {
     return await __isolateHost_callResource(
-      "browserRuntime",
+      "testRuntime",
       this.#resourceId,
       "diagnostics",
       [],
@@ -383,7 +346,7 @@ class NestedBrowserRuntime {
 
   async dispose(options) {
     await __isolateHost_callResource(
-      "browserRuntime",
+      "testRuntime",
       this.#resourceId,
       "dispose",
       [options ?? null],
@@ -421,14 +384,14 @@ export function createIsolateHost() {
       );
       return new NestedAppServer(resourceId);
     },
-    async createBrowserRuntime(options) {
+    async createTestRuntime(options) {
       const hostId = await ensureHostId();
       const resourceId = await __isolateHost_createResource(
         hostId,
-        "browserRuntime",
-        __normalizeBrowserRuntimeOptions(options),
+        "testRuntime",
+        __normalizeRuntimeOptions(options),
       );
-      return new NestedBrowserRuntime(resourceId);
+      return new NestedTestRuntime(resourceId);
     },
     async diagnostics() {
       return await __isolateHost_hostDiagnostics(await ensureHostId());

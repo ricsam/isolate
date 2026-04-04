@@ -13,6 +13,8 @@ export type {
   DefaultPlaywrightHandler,
   DefaultPlaywrightHandlerMetadata,
   DefaultPlaywrightHandlerOptions,
+  PlaywrightCollector,
+  PlaywrightHandlerMetadata,
   PlaywrightSetupOptions,
   PlaywrightHandle,
   PlaywrightCallback,
@@ -26,4 +28,5 @@ export {
   createPlaywrightFactoryHandler,
   defaultPlaywrightHandler,
   getDefaultPlaywrightHandlerMetadata,
+  getPlaywrightHandlerMetadata,
 } from "./handler.ts";

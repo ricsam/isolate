@@ -15,6 +15,7 @@ export {
   createPlaywrightHandler,
   defaultPlaywrightHandler,
   getDefaultPlaywrightHandlerMetadata,
+  getPlaywrightHandlerMetadata,
 } from "./handler.ts";
 
 // Re-export protocol types
@@ -29,6 +30,7 @@ export type {
   PageErrorInfo,
   RequestFailureInfo,
   PlaywrightCallback,
+  PlaywrightHandlerMetadata,
   PlaywrightSetupOptions,
   PlaywrightHandle,
 } from "./types.ts";
@@ -255,6 +257,8 @@ export async function setupPlaywright(
   if (page) {
     // Get onEvent callback if provided
     const onEvent = "onEvent" in options ? options.onEvent : undefined;
+    const contextId = "ctx_0";
+    const pageId = "page_0";
     const requestIds = new WeakMap<import("playwright").Request, string>();
     let nextRequestId = 1;
     const getRequestId = (request: import("playwright").Request): string => {
@@ -281,6 +285,8 @@ export async function setupPlaywright(
 
     requestHandler = (request: import("playwright").Request) => {
       const info: NetworkRequestInfo = {
+        contextId,
+        pageId,
         requestId: getRequestId(request),
         url: request.url(),
         method: request.method(),
@@ -294,6 +300,8 @@ export async function setupPlaywright(
       if (onEvent) {
         onEvent({
           type: "networkRequest",
+          contextId: info.contextId,
+          pageId: info.pageId,
           requestId: info.requestId,
           url: info.url,
           method: info.method,
@@ -308,6 +316,8 @@ export async function setupPlaywright(
     responseHandler = (response: import("playwright").Response) => {
       const request = response.request();
       const info: NetworkResponseInfo = {
+        contextId,
+        pageId,
         requestId: getRequestId(request),
         url: response.url(),
         status: response.status(),
@@ -321,6 +331,8 @@ export async function setupPlaywright(
       if (onEvent) {
         onEvent({
           type: "networkResponse",
+          contextId: info.contextId,
+          pageId: info.pageId,
           requestId: info.requestId,
           url: info.url,
           status: info.status,
@@ -334,6 +346,8 @@ export async function setupPlaywright(
 
     requestFailedHandler = (request: import("playwright").Request) => {
       const info: RequestFailureInfo = {
+        contextId,
+        pageId,
         requestId: getRequestId(request),
         url: request.url(),
         method: request.method(),
@@ -346,6 +360,8 @@ export async function setupPlaywright(
       if (onEvent) {
         onEvent({
           type: "requestFailure",
+          contextId: info.contextId,
+          pageId: info.pageId,
           requestId: info.requestId,
           url: info.url,
           method: info.method,
@@ -359,6 +375,8 @@ export async function setupPlaywright(
     consoleHandler = (msg: import("playwright").ConsoleMessage) => {
       const args = msg.args().map((arg) => String(arg));
       const entry: BrowserConsoleLogEntry = {
+        contextId,
+        pageId,
         level: msg.type(),
         stdout: args.join(" "),
         location: toLocation(msg.location()),
@@ -369,6 +387,8 @@ export async function setupPlaywright(
       if (onEvent) {
         onEvent({
           type: "browserConsoleLog",
+          contextId: entry.contextId,
+          pageId: entry.pageId,
           level: entry.level,
           stdout: entry.stdout,
           location: entry.location,
@@ -385,6 +405,8 @@ export async function setupPlaywright(
 
     pageErrorHandler = (error: Error) => {
       const entry: PageErrorInfo = {
+        contextId,
+        pageId,
         name: error.name,
         message: error.message,
         stack: error.stack,
@@ -395,6 +417,8 @@ export async function setupPlaywright(
       if (onEvent) {
         onEvent({
           type: "pageError",
+          contextId: entry.contextId,
+          pageId: entry.pageId,
           name: entry.name,
           message: entry.message,
           stack: entry.stack,
@@ -786,6 +810,10 @@ export async function setupPlaywright(
     async clearCookies() { return __pw_invoke("clearCookies", [], { contextId: this.#contextId }); }
     async addCookies(cookies) { return __pw_invoke("addCookies", [cookies], { contextId: this.#contextId }); }
     async cookies(urls) { return __pw_invoke("cookies", [urls], { contextId: this.#contextId }); }
+    async pages() {
+      const pageIds = await __pw_invoke("pages", [], { contextId: this.#contextId });
+      return pageIds.map((pageId) => new IsolatePage(pageId, this.#contextId));
+    }
   }
   globalThis.IsolateContext = IsolateContext;
 
@@ -794,6 +822,10 @@ export async function setupPlaywright(
     async newContext(options) {
       const result = await __pw_invoke("newContext", [options || null]);
       return new IsolateContext(result.contextId);
+    },
+    async contexts() {
+      const contextIds = await __pw_invoke("contexts", []);
+      return contextIds.map((contextId) => new IsolateContext(contextId));
     }
   };
   Object.defineProperty(globalThis.browser, ${JSON.stringify(ISOLATE_BROWSER_DESCRIPTOR_PROPERTY)}, {
@@ -1379,6 +1411,11 @@ export async function setupPlaywright(
     },
     getRequestFailures() {
       return [...requestFailures];
+    },
+    getTrackedResources() {
+      return page
+        ? { contexts: ["ctx_0"], pages: ["page_0"] }
+        : { contexts: [], pages: [] };
     },
     clearCollected() {
       browserConsoleLogs.length = 0;

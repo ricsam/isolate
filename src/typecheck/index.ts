@@ -10,15 +10,13 @@ type IncludedType =
   | "encoding"
   | "timers"
   | "testEnvironment"
-  | "playwright"
-  | "browserFactory";
+  | "playwright";
 
 const CAPABILITY_MAP: Record<TypeCapability, IncludedType[]> = {
   fetch: ["fetch"],
   files: ["fs"],
   tests: ["testEnvironment"],
   browser: ["playwright"],
-  browserFactory: ["browserFactory"],
   tools: [],
   console: ["console"],
   encoding: ["encoding"],

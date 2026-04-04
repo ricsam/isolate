@@ -221,6 +221,8 @@ export interface PlaywrightOperation {
     | "addCookies"
     | "cookies"
     // Browser/Context lifecycle operations
+    | "contexts"
+    | "pages"
     | "newContext"
     | "newPage"
     | "closeContext";
@@ -712,6 +714,8 @@ export interface WsClientErrorPayload {
 export type PlaywrightEvent =
   | {
       type: "browserConsoleLog";
+      contextId: string;
+      pageId: string;
       level: string;
       stdout: string;
       location?: {
@@ -723,6 +727,8 @@ export type PlaywrightEvent =
     }
   | {
       type: "pageError";
+      contextId: string;
+      pageId: string;
       name: string;
       message: string;
       stack?: string;
@@ -730,6 +736,8 @@ export type PlaywrightEvent =
     }
   | {
       type: "networkRequest";
+      contextId: string;
+      pageId: string;
       requestId: string;
       url: string;
       method: string;
@@ -740,6 +748,8 @@ export type PlaywrightEvent =
     }
   | {
       type: "networkResponse";
+      contextId: string;
+      pageId: string;
       requestId: string;
       url: string;
       status: number;
@@ -750,6 +760,8 @@ export type PlaywrightEvent =
     }
   | {
       type: "requestFailure";
+      contextId: string;
+      pageId: string;
       requestId: string;
       url: string;
       method: string;
@@ -1198,6 +1210,8 @@ export interface PlaywrightTestResult {
 export interface CollectedData {
   /** Browser console logs (from the page, not sandbox) */
   browserConsoleLogs: {
+    contextId: string;
+    pageId: string;
     level: string;
     stdout: string;
     location?: {
@@ -1208,12 +1222,16 @@ export interface CollectedData {
     timestamp: number;
   }[];
   pageErrors: {
+    contextId: string;
+    pageId: string;
     name: string;
     message: string;
     stack?: string;
     timestamp: number;
   }[];
   networkRequests: {
+    contextId: string;
+    pageId: string;
     requestId: string;
     url: string;
     method: string;
@@ -1223,6 +1241,8 @@ export interface CollectedData {
     timestamp: number;
   }[];
   networkResponses: {
+    contextId: string;
+    pageId: string;
     requestId: string;
     url: string;
     status: number;
@@ -1232,6 +1252,8 @@ export interface CollectedData {
     timestamp: number;
   }[];
   requestFailures: {
+    contextId: string;
+    pageId: string;
     requestId: string;
     url: string;
     method: string;

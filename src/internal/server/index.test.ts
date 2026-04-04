@@ -80,6 +80,10 @@ class FakeRuntime implements Partial<RemoteRuntime> {
       pageErrors: [],
       requestFailures: [],
     }),
+    getTrackedResources: () => ({
+      contexts: [],
+      pages: [],
+    }),
     clearCollectedData: (): void => {},
   };
 

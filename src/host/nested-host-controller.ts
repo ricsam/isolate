@@ -8,23 +8,20 @@ import {
 } from "../internal/browser-source.ts";
 import type {
   AppServer,
-  BrowserRuntime,
   CreateAppServerOptions,
-  CreateBrowserRuntimeOptions,
   CreateRuntimeOptions,
+  CreateTestRuntimeOptions,
   HostBindings,
   HostCallContext,
   RequestResult,
   ScriptRuntime,
+  TestRuntime,
 } from "../types.ts";
 
 interface NestedHostFactory {
   createRuntime(options: CreateRuntimeOptions): Promise<ScriptRuntime>;
   createAppServer(options: CreateAppServerOptions): Promise<AppServer>;
-  createBrowserRuntime(
-    options: CreateBrowserRuntimeOptions,
-    browserSource: BrowserSource,
-  ): Promise<BrowserRuntime>;
+  createTestRuntime(options: CreateTestRuntimeOptions): Promise<TestRuntime>;
   isConnected(): boolean;
 }
 
@@ -47,16 +44,16 @@ interface AppServerResourceRecord {
   resource: AppServer;
 }
 
-interface BrowserRuntimeResourceRecord {
-  kind: "browserRuntime";
+interface TestRuntimeResourceRecord {
+  kind: "testRuntime";
   hostId: string;
-  resource: BrowserRuntime;
+  resource: TestRuntime;
 }
 
 type NestedResourceRecord =
   | RuntimeResourceRecord
   | AppServerResourceRecord
-  | BrowserRuntimeResourceRecord;
+  | TestRuntimeResourceRecord;
 
 interface SerializedRequestLike {
   url: string;
@@ -126,28 +123,6 @@ function normalizeAppServerOptions(
     ...options,
     bindings: normalizeBindings(options.bindings, defaultBrowserSource),
   };
-}
-
-function resolveBrowserSource(
-  handle: unknown,
-  defaultBrowserSource: BrowserSource | undefined,
-  operation: string,
-): BrowserSource {
-  if (handle == null) {
-    return requireBrowserSource(defaultBrowserSource, operation);
-  }
-
-  if (!isDefaultBrowserDescriptor(handle)) {
-    const browserSource = createBrowserSourceFromUnknown(handle);
-    if (!browserSource) {
-      throw new Error(
-        `${operation} expects the sandbox browser handle or a browser binding with createContext()/createPage().`,
-      );
-    }
-    return requireBrowserSource(browserSource, operation);
-  }
-
-  return requireBrowserSource(defaultBrowserSource, operation);
 }
 
 function toError(value: unknown): Error {
@@ -278,7 +253,7 @@ export function createNestedHostBindings(
         connected: factory.isConnected(),
       };
     },
-    async createResource(hostId, kind, rawOptions, context) {
+    async createResource(hostId, kind, rawOptions) {
       const host = requireHost(hostId);
       switch (kind) {
         case "runtime": {
@@ -314,52 +289,12 @@ export function createNestedHostBindings(
           return resourceId;
         }
 
-        case "browserRuntime": {
-          const browserOptions = rawOptions as Omit<CreateBrowserRuntimeOptions, "browser"> & {
-            browser?: unknown;
-          };
-          const browserSource = resolveBrowserSource(
-            browserOptions.browser,
+        case "testRuntime": {
+          const options = normalizeRuntimeOptions(
+            rawOptions as CreateTestRuntimeOptions,
             defaultBrowserSource,
-            "createBrowserRuntime()",
           );
-          const contextHandle = await browserSource.createContext?.(
-            undefined,
-            context,
-          );
-          const pageHandle = await browserSource.createPage?.(
-            contextHandle,
-            context,
-          );
-          const resource = await factory.createBrowserRuntime(
-            {
-              key: browserOptions.key,
-              bindings: normalizeBindings(
-                browserOptions.bindings,
-                defaultBrowserSource,
-              ),
-              features: browserOptions.features,
-              cwd: browserOptions.cwd,
-              executionTimeout: browserOptions.executionTimeout,
-              memoryLimitMB: browserOptions.memoryLimitMB,
-              browser: {
-                page: pageHandle,
-                readFile: browserSource.readFile,
-                captureConsole: browserSource.captureConsole,
-                writeFile: browserSource.writeFile,
-                createPage: browserSource.createPage
-                  ? async (targetContext: unknown) =>
-                      await browserSource.createPage!(targetContext, context)
-                  : undefined,
-                createContext: browserSource.createContext
-                  ? async (contextOptions?: unknown) =>
-                      await browserSource.createContext!(contextOptions, context)
-                  : undefined,
-                onEvent: browserSource.onEvent,
-              },
-            },
-            browserSource,
-          );
+          const resource = await factory.createTestRuntime(options);
           const resourceId = randomUUID();
           resources.set(resourceId, {
             kind,
@@ -413,15 +348,6 @@ export function createNestedHostBindings(
                 args[0] as string,
                 args[1],
               );
-              return undefined;
-            case "tests.run":
-              return await runtimeRecord.resource.tests.run(
-                ((args[0] as { timeoutMs?: number } | null) ?? undefined),
-              );
-            case "tests.hasTests":
-              return await runtimeRecord.resource.tests.hasTests();
-            case "tests.reset":
-              await runtimeRecord.resource.tests.reset();
               return undefined;
             default:
               throw new Error(`Unsupported nested runtime method: ${method}`);
@@ -479,15 +405,14 @@ export function createNestedHostBindings(
           }
         }
 
-        case "browserRuntime": {
-          const runtime = (record as BrowserRuntimeResourceRecord).resource;
+        case "testRuntime": {
+          const runtime = (record as TestRuntimeResourceRecord).resource;
           switch (method) {
             case "run":
               return await runtime.run(
                 args[0] as string,
                 ((args[1] as {
                   filename?: string;
-                  asTestSuite?: boolean;
                   timeoutMs?: number;
                 } | null) ?? undefined),
               );
@@ -501,7 +426,7 @@ export function createNestedHostBindings(
               return await runtime.diagnostics();
             default:
               throw new Error(
-                `Unsupported nested browser runtime method: ${method}`,
+                `Unsupported nested test runtime method: ${method}`,
               );
           }
         }

@@ -2251,8 +2251,8 @@ declare global {
 /**
  * Playwright types for isolated-vm.
  *
- * These types define the globals injected by setupPlaywright() into an isolated-vm context.
- * Playwright brings 3 globals: page, context, and browser.
+ * These types define the browser-facing globals and classes injected by
+ * setupPlaywright() into an isolated-vm context.
  */
 export const PLAYWRIGHT_TYPES = `
 /**
@@ -2534,6 +2534,8 @@ declare class IsolatePage {
 declare class IsolateContext {
   /** Create a new page in this context (requires createPage callback) */
   newPage(): Promise<IsolatePage>;
+  /** Get tracked pages for this context */
+  pages(): Promise<IsolatePage[]>;
   /** Close this context and all its pages */
   close(): Promise<void>;
   /** Clear all cookies */
@@ -2558,17 +2560,9 @@ interface IsolateBrowser {
     permissions?: string[];
     colorScheme?: "light" | "dark" | "no-preference";
   }): Promise<IsolateContext>;
+  /** Get tracked browser contexts */
+  contexts(): Promise<IsolateContext[]>;
 }
-
-/**
- * The default page object.
- */
-declare const page: IsolatePage;
-
-/**
- * The default browser context.
- */
-declare const context: IsolateContext;
 
 /**
  * Browser object for creating new contexts.
@@ -2655,30 +2649,6 @@ interface PlaywrightPageMatchers {
 }
 `;
 
-const PLAYWRIGHT_DEFAULT_GLOBAL_TYPES = `
-/**
- * The default page object.
- */
-declare const page: IsolatePage;
-
-/**
- * The default browser context.
- */
-declare const context: IsolateContext;
-
-/**
- * Browser object for creating new contexts.
- */
-declare const browser: IsolateBrowser;
-`;
-
-const PLAYWRIGHT_BROWSER_FACTORY_GLOBAL_TYPES = `
-/**
- * Browser object for creating new contexts.
- */
-declare const browser: IsolateBrowser;
-`;
-
 export const SANDBOX_ISOLATE_TYPES = `
 declare module "@ricsam/isolate" {
   export interface NestedModuleImporter {
@@ -2747,6 +2717,38 @@ declare module "@ricsam/isolate" {
     lifecycleState: "idle" | "active" | "reloading" | "disposing";
   }
 
+  export interface NestedBrowserDiagnostics {
+    contexts: number;
+    pages: number;
+    browserConsoleLogs: number;
+    networkRequests: number;
+    networkResponses: number;
+    pageErrors: number;
+    requestFailures: number;
+    collectedData: {
+      browserConsoleLogs: unknown[];
+      pageErrors: unknown[];
+      networkRequests: unknown[];
+      networkResponses: unknown[];
+      requestFailures: unknown[];
+    };
+  }
+
+  export interface NestedRuntimeResourceDiagnostics {
+    runtime: NestedRuntimeDiagnostics;
+    browser?: NestedBrowserDiagnostics;
+  }
+
+  export interface NestedTestDiagnostics {
+    enabled: true;
+    registeredTests: number;
+    lastRun?: unknown;
+  }
+
+  export interface NestedTestRuntimeDiagnostics extends NestedRuntimeResourceDiagnostics {
+    test: NestedTestDiagnostics;
+  }
+
   export interface NestedHostDiagnostics {
     runtimes: number;
     servers: number;
@@ -2763,15 +2765,10 @@ declare module "@ricsam/isolate" {
       options?: string | { filename?: string; executionTimeout?: number },
     ): Promise<void>;
     dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
-    diagnostics(): Promise<NestedRuntimeDiagnostics>;
+    diagnostics(): Promise<NestedRuntimeResourceDiagnostics>;
     events: {
       on(event: string, handler: (payload: unknown) => void): () => void;
       emit(event: string, payload: unknown): Promise<void>;
-    };
-    tests: {
-      run(options?: { timeoutMs?: number }): Promise<unknown>;
-      hasTests(): Promise<boolean>;
-      reset(): Promise<void>;
     };
   }
 
@@ -2788,28 +2785,27 @@ declare module "@ricsam/isolate" {
     };
     reload(reason?: string): Promise<void>;
     dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
-    diagnostics(): Promise<NestedRuntimeDiagnostics>;
+    diagnostics(): Promise<NestedRuntimeResourceDiagnostics>;
   }
 
-  export interface NestedBrowserRuntime {
+  export interface NestedTestRuntime {
     run(
       code: string,
-      options?: { filename?: string; asTestSuite?: boolean; timeoutMs?: number },
-    ): Promise<{ tests?: unknown; value?: unknown }>;
-    diagnostics(): Promise<NestedRuntimeDiagnostics & Record<string, unknown>>;
+      options?: { filename?: string; timeoutMs?: number },
+    ): Promise<unknown>;
+    diagnostics(): Promise<NestedTestRuntimeDiagnostics>;
     dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
   }
 
   export interface NestedCreateRuntimeOptions {
     key?: string;
     bindings?: NestedHostBindings;
-    features?: {
-      tests?: boolean;
-    };
     cwd?: string;
     executionTimeout?: number;
     memoryLimitMB?: number;
   }
+
+  export interface NestedCreateTestRuntimeOptions extends NestedCreateRuntimeOptions {}
 
   export interface NestedCreateAppServerOptions extends NestedCreateRuntimeOptions {
     key: string;
@@ -2817,16 +2813,12 @@ declare module "@ricsam/isolate" {
     entryFilename?: string;
   }
 
-  export interface NestedCreateBrowserRuntimeOptions extends NestedCreateRuntimeOptions {
-    browser?: unknown;
-  }
-
   export interface NestedIsolateHost {
     createRuntime(options?: NestedCreateRuntimeOptions): Promise<NestedScriptRuntime>;
     createAppServer(options: NestedCreateAppServerOptions): Promise<NestedAppServer>;
-    createBrowserRuntime(
-      options?: NestedCreateBrowserRuntimeOptions,
-    ): Promise<NestedBrowserRuntime>;
+    createTestRuntime(
+      options?: NestedCreateTestRuntimeOptions,
+    ): Promise<NestedTestRuntime>;
     diagnostics(): Promise<NestedHostDiagnostics>;
     close(): Promise<void>;
   }
@@ -2834,11 +2826,6 @@ declare module "@ricsam/isolate" {
   export function createIsolateHost(): NestedIsolateHost;
 }
 `;
-
-export const BROWSER_FACTORY_TYPES = PLAYWRIGHT_TYPES.replace(
-  PLAYWRIGHT_DEFAULT_GLOBAL_TYPES,
-  PLAYWRIGHT_BROWSER_FACTORY_GLOBAL_TYPES,
-);
 
 /**
  * Map of package names to their type definitions.
@@ -2855,7 +2842,6 @@ export const TYPE_DEFINITIONS = {
   testEnvironment: TEST_ENV_TYPES,
   timers: TIMERS_TYPES,
   playwright: PLAYWRIGHT_TYPES,
-  browserFactory: BROWSER_FACTORY_TYPES,
 } as const;
 
 /**

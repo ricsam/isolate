@@ -5,6 +5,8 @@
 
 import type { Page, Locator as PlaywrightLocator, BrowserContext, BrowserContextOptions, Response } from "playwright";
 import type {
+  CollectedData,
+  PlaywrightEvent,
   PlaywrightOperation,
   PlaywrightResult,
 } from "../protocol/index.ts";
@@ -14,7 +16,11 @@ import {
   type DefaultPlaywrightHandler,
   type DefaultPlaywrightHandlerMetadata,
   type DefaultPlaywrightHandlerOptions,
+  type InstrumentedPlaywrightHandler,
   type PlaywrightCallback,
+  PLAYWRIGHT_HANDLER_META,
+  type PlaywrightCollector,
+  type PlaywrightHandlerMetadata,
   type PlaywrightSetupOptions,
 } from "./types.ts";
 
@@ -28,6 +34,16 @@ type WriteFileCallback = NonNullable<PlaywrightSetupOptions['writeFile']>;
 export interface FileIOCallbacks {
   readFile?: ReadFileCallback;
   writeFile?: WriteFileCallback;
+}
+
+interface CollectorContextRecord {
+  context: BrowserContext;
+  pageIds: Set<string>;
+}
+
+interface CollectorPageRecord {
+  page: Page;
+  contextId: string;
 }
 
 interface SerializedInputFilePayload {
@@ -47,6 +63,303 @@ const INPUT_FILES_VALIDATION_ERROR =
 
 const MIXED_INPUT_FILES_ERROR =
   "setInputFiles() does not support mixing file paths and inline file objects in the same array.";
+
+function cloneCollectedData(collectedData: CollectedData): CollectedData {
+  return {
+    browserConsoleLogs: [...collectedData.browserConsoleLogs],
+    pageErrors: [...collectedData.pageErrors],
+    networkRequests: [...collectedData.networkRequests],
+    networkResponses: [...collectedData.networkResponses],
+    requestFailures: [...collectedData.requestFailures],
+  };
+}
+
+function createPlaywrightCollector(
+  registry: PlaywrightRegistry,
+): PlaywrightCollector & {
+  registerContext(
+    context: BrowserContext,
+    preferredId?: string,
+    includeExistingPages?: boolean,
+  ): string;
+  registerPage(
+    page: Page,
+    preferredContextId?: string,
+    preferredPageId?: string,
+  ): string;
+  unregisterContext(contextId: string): void;
+  unregisterPage(pageId: string): void;
+} {
+  const emitEvent = (event: PlaywrightEvent): void => {
+    for (const callback of registry.eventSubscribers) {
+      try {
+        callback(event);
+      } catch {
+        // Ignore subscriber errors.
+      }
+    }
+  };
+
+  const getRequestId = (request: object): string => {
+    let requestId = registry.requestIds.get(request);
+    if (!requestId) {
+      requestId = `req_${registry.nextRequestId++}`;
+      registry.requestIds.set(request, requestId);
+    }
+    return requestId;
+  };
+
+  const toLocation = (
+    location: { url?: string; lineNumber?: number; columnNumber?: number } | undefined,
+  ): CollectedData["browserConsoleLogs"][number]["location"] => {
+    if (!location || (!location.url && location.lineNumber == null && location.columnNumber == null)) {
+      return undefined;
+    }
+
+    return {
+      url: location.url || undefined,
+      lineNumber: location.lineNumber != null ? location.lineNumber + 1 : undefined,
+      columnNumber: location.columnNumber != null ? location.columnNumber + 1 : undefined,
+    };
+  };
+
+  const registerContext = (
+    context: BrowserContext,
+    preferredId?: string,
+    includeExistingPages = true,
+  ): string => {
+    const existingId = registry.contextIdsByObject.get(context);
+    if (existingId) {
+      return existingId;
+    }
+
+    const contextId = preferredId ?? `ctx_${registry.nextContextId++}`;
+    registry.contexts.set(contextId, {
+      context,
+      pageIds: new Set<string>(),
+    });
+    registry.contextIdsByObject.set(context, contextId);
+
+    const onPage = (page: Page) => {
+      registerPage(page, contextId);
+    };
+    const onClose = () => {
+      unregisterContext(contextId);
+    };
+
+    context.on("page", onPage);
+    context.on("close", onClose);
+    registry.contextListenerCleanups.set(contextId, () => {
+      context.removeListener("page", onPage);
+      context.removeListener("close", onClose);
+    });
+
+    if (includeExistingPages) {
+      for (const page of context.pages()) {
+        registerPage(page, contextId);
+      }
+    }
+
+    return contextId;
+  };
+
+  const unregisterPage = (pageId: string): void => {
+    const record = registry.pages.get(pageId);
+    if (!record) {
+      return;
+    }
+
+    registry.pageListenerCleanups.get(pageId)?.();
+    registry.pageListenerCleanups.delete(pageId);
+    registry.pageIdsByObject.delete(record.page);
+    registry.pages.delete(pageId);
+    registry.contexts.get(record.contextId)?.pageIds.delete(pageId);
+  };
+
+  const unregisterContext = (contextId: string): void => {
+    const record = registry.contexts.get(contextId);
+    if (!record) {
+      return;
+    }
+
+    for (const pageId of [...record.pageIds]) {
+      unregisterPage(pageId);
+    }
+
+    registry.contextListenerCleanups.get(contextId)?.();
+    registry.contextListenerCleanups.delete(contextId);
+    registry.contextIdsByObject.delete(record.context);
+    registry.contexts.delete(contextId);
+  };
+
+  const registerPage = (
+    page: Page,
+    preferredContextId?: string,
+    preferredPageId?: string,
+  ): string => {
+    const existingId = registry.pageIdsByObject.get(page);
+    if (existingId) {
+      const existingRecord = registry.pages.get(existingId);
+      if (existingRecord && preferredContextId) {
+        registry.contexts.get(preferredContextId)?.pageIds.add(existingId);
+      }
+      return existingId;
+    }
+
+    const contextId =
+      preferredContextId ??
+      registry.contextIdsByObject.get(page.context()) ??
+      registerContext(page.context());
+    const pageId = preferredPageId ?? `page_${registry.nextPageId++}`;
+
+    registry.pages.set(pageId, {
+      page,
+      contextId,
+    });
+    registry.pageIdsByObject.set(page, pageId);
+    registry.contexts.get(contextId)?.pageIds.add(pageId);
+
+    const requestHandler = (request: import("playwright").Request) => {
+      const info = {
+        contextId,
+        pageId,
+        requestId: getRequestId(request),
+        url: request.url(),
+        method: request.method(),
+        headers: request.headers(),
+        postData: request.postData() ?? undefined,
+        resourceType: request.resourceType(),
+        timestamp: Date.now(),
+      };
+      registry.collectedData.networkRequests.push(info);
+      emitEvent({
+        type: "networkRequest",
+        ...info,
+      });
+    };
+
+    const responseHandler = (response: import("playwright").Response) => {
+      const request = response.request();
+      const info = {
+        contextId,
+        pageId,
+        requestId: getRequestId(request),
+        url: response.url(),
+        status: response.status(),
+        statusText: response.statusText(),
+        headers: response.headers(),
+        resourceType: request.resourceType(),
+        timestamp: Date.now(),
+      };
+      registry.collectedData.networkResponses.push(info);
+      emitEvent({
+        type: "networkResponse",
+        ...info,
+      });
+    };
+
+    const requestFailedHandler = (request: import("playwright").Request) => {
+      const info = {
+        contextId,
+        pageId,
+        requestId: getRequestId(request),
+        url: request.url(),
+        method: request.method(),
+        failureText: request.failure()?.errorText || "request failed",
+        resourceType: request.resourceType(),
+        timestamp: Date.now(),
+      };
+      registry.collectedData.requestFailures.push(info);
+      emitEvent({
+        type: "requestFailure",
+        ...info,
+      });
+    };
+
+    const consoleHandler = (msg: import("playwright").ConsoleMessage) => {
+      const args = msg.args().map((arg) => String(arg));
+      const entry = {
+        contextId,
+        pageId,
+        level: msg.type(),
+        stdout: args.join(" "),
+        location: toLocation(msg.location()),
+        timestamp: Date.now(),
+      };
+      registry.collectedData.browserConsoleLogs.push(entry);
+      emitEvent({
+        type: "browserConsoleLog",
+        ...entry,
+      });
+    };
+
+    const pageErrorHandler = (error: Error) => {
+      const entry = {
+        contextId,
+        pageId,
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+        timestamp: Date.now(),
+      };
+      registry.collectedData.pageErrors.push(entry);
+      emitEvent({
+        type: "pageError",
+        ...entry,
+      });
+    };
+
+    const closeHandler = () => {
+      unregisterPage(pageId);
+    };
+
+    page.on("request", requestHandler);
+    page.on("response", responseHandler);
+    page.on("requestfailed", requestFailedHandler);
+    page.on("console", consoleHandler);
+    page.on("pageerror", pageErrorHandler);
+    page.on("close", closeHandler);
+    registry.pageListenerCleanups.set(pageId, () => {
+      page.removeListener("request", requestHandler);
+      page.removeListener("response", responseHandler);
+      page.removeListener("requestfailed", requestFailedHandler);
+      page.removeListener("console", consoleHandler);
+      page.removeListener("pageerror", pageErrorHandler);
+      page.removeListener("close", closeHandler);
+    });
+
+    return pageId;
+  };
+
+  return {
+    registerContext,
+    registerPage,
+    unregisterContext,
+    unregisterPage,
+    getCollectedData() {
+      return cloneCollectedData(registry.collectedData);
+    },
+    getTrackedResources() {
+      return {
+        contexts: [...registry.contexts.keys()],
+        pages: [...registry.pages.keys()],
+      };
+    },
+    clearCollectedData() {
+      registry.collectedData.browserConsoleLogs.length = 0;
+      registry.collectedData.pageErrors.length = 0;
+      registry.collectedData.networkRequests.length = 0;
+      registry.collectedData.networkResponses.length = 0;
+      registry.collectedData.requestFailures.length = 0;
+    },
+    onEvent(callback) {
+      registry.eventSubscribers.add(callback);
+      return () => {
+        registry.eventSubscribers.delete(callback);
+      };
+    },
+  };
+}
 
 function isSerializedInputFilePayload(value: unknown): value is SerializedInputFilePayload {
   if (!value || typeof value !== "object") {
@@ -919,13 +1232,21 @@ export async function executePageExpectAssertion(
  * Registry for tracking multiple pages and contexts.
  */
 export interface PlaywrightRegistry {
-  pages: Map<string, Page>;
-  contexts: Map<string, BrowserContext>;
+  pages: Map<string, CollectorPageRecord>;
+  contexts: Map<string, CollectorContextRecord>;
+  pageIdsByObject: WeakMap<Page, string>;
+  contextIdsByObject: WeakMap<BrowserContext, string>;
   nextPageId: number;
   nextContextId: number;
+  nextRequestId: number;
   pendingResponses: Map<string, Promise<Response>>;
   pendingRequests: Map<string, Promise<import("playwright").Request>>;
   nextListenerId: number;
+  requestIds: WeakMap<object, string>;
+  pageListenerCleanups: Map<string, () => void>;
+  contextListenerCleanups: Map<string, () => void>;
+  eventSubscribers: Set<(event: PlaywrightEvent) => void>;
+  collectedData: CollectedData;
 }
 
 /**
@@ -945,27 +1266,60 @@ export function createPlaywrightHandler(
 
   // Registry for tracking multiple pages and contexts
   const registry: PlaywrightRegistry = {
-    pages: page ? new Map<string, Page>([["page_0", page]]) : new Map<string, Page>(),
-    contexts: page ? new Map<string, BrowserContext>([["ctx_0", page.context()]]) : new Map<string, BrowserContext>(),
+    pages: new Map<string, CollectorPageRecord>(),
+    contexts: new Map<string, CollectorContextRecord>(),
+    pageIdsByObject: new WeakMap<Page, string>(),
+    contextIdsByObject: new WeakMap<BrowserContext, string>(),
     nextPageId: 1,
     nextContextId: 1,
+    nextRequestId: 1,
     pendingResponses: new Map(),
     pendingRequests: new Map(),
     nextListenerId: 0,
+    requestIds: new WeakMap<object, string>(),
+    pageListenerCleanups: new Map<string, () => void>(),
+    contextListenerCleanups: new Map<string, () => void>(),
+    eventSubscribers: new Set<(event: PlaywrightEvent) => void>(),
+    collectedData: {
+      browserConsoleLogs: [],
+      pageErrors: [],
+      networkRequests: [],
+      networkResponses: [],
+      requestFailures: [],
+    },
   };
+  const collector = createPlaywrightCollector(registry);
 
-  return async (op: PlaywrightOperation): Promise<PlaywrightResult> => {
+  if (page) {
+    collector.registerContext(page.context(), "ctx_0", false);
+    collector.registerPage(page, "ctx_0", "page_0");
+  }
+
+  const handler: InstrumentedPlaywrightHandler = async (
+    op: PlaywrightOperation,
+  ): Promise<PlaywrightResult> => {
     try {
       // Handle lifecycle operations first (they don't require existing page)
       switch (op.type) {
+        case "contexts":
+          return { ok: true, value: [...registry.contexts.keys()] };
+
+        case "pages": {
+          const contextId = op.contextId ?? "ctx_0";
+          const context = registry.contexts.get(contextId);
+          if (!context) {
+            return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
+          }
+          return { ok: true, value: [...context.pageIds] };
+        }
+
         case "newContext": {
           if (!options?.createContext) {
             return { ok: false, error: { name: "Error", message: "createContext callback not provided. Configure createContext in playwright options to enable browser.newContext()." } };
           }
           const [contextOptions] = op.args as [BrowserContextOptions?];
           const newContext = await options.createContext(contextOptions);
-          const contextId = `ctx_${registry.nextContextId++}`;
-          registry.contexts.set(contextId, newContext);
+          const contextId = collector.registerContext(newContext);
           return { ok: true, value: { contextId } };
         }
 
@@ -978,9 +1332,8 @@ export function createPlaywrightHandler(
           if (!targetContext) {
             return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
           }
-          const newPage = await options.createPage(targetContext);
-          const pageId = `page_${registry.nextPageId++}`;
-          registry.pages.set(pageId, newPage);
+          const newPage = await options.createPage(targetContext.context);
+          const pageId = collector.registerPage(newPage, contextId);
           return { ok: true, value: { pageId } };
         }
 
@@ -990,28 +1343,22 @@ export function createPlaywrightHandler(
           if (!context) {
             return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
           }
-          await context.close();
-          registry.contexts.delete(contextId);
-          // Remove pages belonging to this context
-          for (const [pid, p] of registry.pages) {
-            if (p.context() === context) {
-              registry.pages.delete(pid);
-            }
-          }
+          await context.context.close();
+          collector.unregisterContext(contextId);
           return { ok: true };
         }
       }
 
       // Resolve page from pageId for page-specific operations
       const pageId = op.pageId ?? "page_0";
-      const targetPage = registry.pages.get(pageId);
+      const targetPage = registry.pages.get(pageId)?.page;
       if (!targetPage) {
         return { ok: false, error: { name: "Error", message: `Page ${pageId} not found` } };
       }
 
       // Resolve context from contextId for context-specific operations
       const contextId = op.contextId ?? "ctx_0";
-      const targetContext = registry.contexts.get(contextId);
+      const targetContext = registry.contexts.get(contextId)?.context;
 
       switch (op.type) {
         case "goto": {
@@ -1537,8 +1884,7 @@ export function createPlaywrightHandler(
         }
         case "close": {
           await targetPage.close();
-          // Remove from registry
-          registry.pages.delete(pageId);
+          collector.unregisterPage(pageId);
           return { ok: true };
         }
         case "isClosed": {
@@ -1620,6 +1966,12 @@ export function createPlaywrightHandler(
       return { ok: false, error: { name: error.name, message: error.message } };
     }
   };
+
+  handler[PLAYWRIGHT_HANDLER_META] = {
+    collector,
+  };
+
+  return handler;
 }
 
 /**
@@ -1643,6 +1995,12 @@ export function createPlaywrightFactoryHandler(
   options?: DefaultPlaywrightHandlerOptions
 ): PlaywrightCallback {
   return createPlaywrightHandler(undefined, options);
+}
+
+export function getPlaywrightHandlerMetadata(
+  handler: PlaywrightCallback,
+): PlaywrightHandlerMetadata | undefined {
+  return (handler as InstrumentedPlaywrightHandler)[PLAYWRIGHT_HANDLER_META];
 }
 
 /**
