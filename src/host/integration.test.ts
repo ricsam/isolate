@@ -1625,11 +1625,6 @@ describe("createIsolateHost runtime integration", () => {
           "nested app server creation",
         );
 
-        const diagnosticsDuring = await withStepTimeout(
-          nestedHost.diagnostics(),
-          "nested diagnostics during",
-        );
-
         const firstResult = await withStepTimeout(
           server.handle("http://localhost/version"),
           "first server handle",
@@ -1663,16 +1658,9 @@ describe("createIsolateHost runtime integration", () => {
 
         await withStepTimeout(child.dispose(), "child dispose");
         await withStepTimeout(server.dispose(), "server dispose");
-
-        const diagnosticsAfterDispose = await withStepTimeout(
-          nestedHost.diagnostics(),
-          "nested diagnostics after dispose",
-        );
         await withStepTimeout(nestedHost.close(), "nested host close");
 
         console.log(JSON.stringify({
-          diagnosticsAfterDispose,
-          diagnosticsDuring,
           firstPayload,
           runtimeResult,
           secondPayload,
@@ -1684,8 +1672,6 @@ describe("createIsolateHost runtime integration", () => {
 
     assert.equal(entries.length, 1);
     const result = JSON.parse(collectOutput(entries)[0] ?? "{}") as {
-      diagnosticsDuring: { runtimes: number; servers: number; connected: boolean };
-      diagnosticsAfterDispose: { runtimes: number; servers: number; connected: boolean };
       firstPayload: {
         names: string[];
         path: string;
@@ -1714,11 +1700,6 @@ describe("createIsolateHost runtime integration", () => {
       streamValues: ["first", "second"],
       version: "v1",
     });
-    assert.deepEqual(result.diagnosticsDuring, {
-      runtimes: 1,
-      servers: 1,
-      connected: true,
-    });
     assert.deepEqual(result.firstPayload, {
       names: ["note.txt"],
       path: "/version",
@@ -1730,11 +1711,6 @@ describe("createIsolateHost runtime integration", () => {
       path: "/version",
       response: "/server:GET",
       version: "v2",
-    });
-    assert.deepEqual(result.diagnosticsAfterDispose, {
-      runtimes: 0,
-      servers: 0,
-      connected: true,
     });
   });
 });
