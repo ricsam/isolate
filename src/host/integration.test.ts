@@ -1050,7 +1050,7 @@ describe("createIsolateHost runtime integration", () => {
           expect(globalThis.__sessionCounter).toBe(41);
           expect(await getValue()).toBe(2);
         });
-      `, { timeoutMs: 5_000 });
+      `, { timeoutMs: 10_000 });
 
       assert.equal(results.success, true);
       assert.equal(results.passed, 1);

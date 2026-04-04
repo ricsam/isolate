@@ -120,6 +120,13 @@ function __normalizeEvalOptions(options) {
 }
 
 async function __waitForNestedCallbacks() {
+  if (typeof __isolateHost_drainCallbacks === "function") {
+    await __isolateHost_drainCallbacks(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    return;
+  }
+
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
