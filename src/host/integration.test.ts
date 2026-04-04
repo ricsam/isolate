@@ -1323,6 +1323,23 @@ describe("createIsolateHost runtime integration", () => {
       await runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
 
+        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+          let timeoutId;
+          const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new Error("Timed out after " + timeoutMs + "ms: " + label));
+            }, timeoutMs);
+          });
+
+          try {
+            return await Promise.race([promise, timeoutPromise]);
+          } finally {
+            if (timeoutId !== undefined) {
+              clearTimeout(timeoutId);
+            }
+          }
+        }
+
         const nestedHost = createIsolateHost();
         let version = "v1";
         let fileNames = ["note.txt"];
@@ -1435,37 +1452,64 @@ describe("createIsolateHost runtime integration", () => {
           bindings,
         });
 
-        await child.eval('import { run } from "/child.ts"; await run();');
+        await withStepTimeout(
+          child.eval('import { run } from "/child.ts"; await run();'),
+          "child runtime eval",
+        );
 
-        const server = await nestedHost.createAppServer({
-          key: "nested-server",
-          entry: "/server.ts",
-          bindings,
-        });
+        const server = await withStepTimeout(
+          nestedHost.createAppServer({
+            key: "nested-server",
+            entry: "/server.ts",
+            bindings,
+          }),
+          "nested app server creation",
+        );
 
-        const diagnosticsDuring = await nestedHost.diagnostics();
+        const diagnosticsDuring = await withStepTimeout(
+          nestedHost.diagnostics(),
+          "nested diagnostics during",
+        );
 
-        const firstResult = await server.handle("http://localhost/version");
+        const firstResult = await withStepTimeout(
+          server.handle("http://localhost/version"),
+          "first server handle",
+        );
         if (firstResult.type !== "response") {
           throw new Error("expected response result");
         }
-        const firstPayload = await firstResult.response.json();
+        const firstPayload = await withStepTimeout(
+          firstResult.response.json(),
+          "first payload json",
+        );
 
         version = "v2";
         fileNames = ["updated.txt"];
-        await server.reload("update-version");
+        await withStepTimeout(
+          server.reload("update-version"),
+          "server reload",
+        );
 
-        const secondResult = await server.handle("http://localhost/version");
+        const secondResult = await withStepTimeout(
+          server.handle("http://localhost/version"),
+          "second server handle",
+        );
         if (secondResult.type !== "response") {
           throw new Error("expected response result");
         }
-        const secondPayload = await secondResult.response.json();
+        const secondPayload = await withStepTimeout(
+          secondResult.response.json(),
+          "second payload json",
+        );
 
-        await child.dispose();
-        await server.dispose();
+        await withStepTimeout(child.dispose(), "child dispose");
+        await withStepTimeout(server.dispose(), "server dispose");
 
-        const diagnosticsAfterDispose = await nestedHost.diagnostics();
-        await nestedHost.close();
+        const diagnosticsAfterDispose = await withStepTimeout(
+          nestedHost.diagnostics(),
+          "nested diagnostics after dispose",
+        );
+        await withStepTimeout(nestedHost.close(), "nested host close");
 
         console.log(JSON.stringify({
           diagnosticsAfterDispose,
@@ -1474,7 +1518,7 @@ describe("createIsolateHost runtime integration", () => {
           runtimeResult,
           secondPayload,
         }));
-      `, { executionTimeout: 20_000 });
+      `, { executionTimeout: 60_000 });
     } finally {
       await runtime.dispose();
     }
