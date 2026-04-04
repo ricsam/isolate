@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.11
+
+### Patch Changes
+
+- enable nested isolate executions and improve the browser API
+
 ## 0.1.10
 
 ### Patch Changes
