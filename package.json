@@ -56,8 +56,8 @@
   "scripts": {
     "build": "bun scripts/build.ts",
     "build:npm": "bun scripts/build.ts",
-    "test": "node --test --experimental-strip-types 'src/**/*.test.ts' --test-reporter tap --test-reporter-destination stdout",
-    "test:spec": "node --test --experimental-strip-types 'src/**/*.test.ts' --test-reporter spec --test-reporter-destination stdout",
+    "test": "node --test --test-concurrency=1 --experimental-strip-types 'src/**/*.test.ts' --test-reporter tap --test-reporter-destination stdout",
+    "test:spec": "node --test --test-concurrency=1 --experimental-strip-types 'src/**/*.test.ts' --test-reporter spec --test-reporter-destination stdout",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

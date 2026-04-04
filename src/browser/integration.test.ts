@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { after, before, describe, test, type TestContext } from "node:test";
+import { after, before, describe, test } from "node:test";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { createTestHost, createTestId } from "../testing/integration-helpers.ts";
 import type {
@@ -63,22 +63,15 @@ async function createBrowserServer(): Promise<{
   };
 }
 
-async function launchChromiumOrSkip(testContext: TestContext): Promise<{
+async function launchChromium(): Promise<{
   browser: Browser;
   context: BrowserContext;
   page: Page;
 }> {
-  try {
-    const browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    return { browser, context, page };
-  } catch (error) {
-    testContext.skip(
-      `Playwright Chromium is unavailable in this environment: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    throw error;
-  }
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  return { browser, context, page };
 }
 
 describe("browser-enabled runtimes", () => {
@@ -95,8 +88,8 @@ describe("browser-enabled runtimes", () => {
     await cleanup?.();
   });
 
-  test("runs Playwright test suites, tracks reused contexts, and records browser diagnostics", async (testContext) => {
-    const browserHarness = await launchChromiumOrSkip(testContext);
+  test("runs Playwright test suites, tracks reused contexts, and records browser diagnostics", async () => {
+    const browserHarness = await launchChromium();
     const browserServer = await createBrowserServer();
     const consoleEntries: ConsoleEntry[] = [];
     const browserEvents: PlaywrightEvent[] = [];
@@ -209,8 +202,8 @@ describe("browser-enabled runtimes", () => {
     }
   });
 
-  test("uses browser.readFile for Playwright file uploads", async (testContext) => {
-    const browserHarness = await launchChromiumOrSkip(testContext);
+  test("uses browser.readFile for Playwright file uploads", async () => {
+    const browserHarness = await launchChromium();
     const readFileCalls: string[] = [];
     let runtime: TestRuntime | undefined;
 
@@ -285,8 +278,8 @@ describe("browser-enabled runtimes", () => {
     }
   });
 
-  test("routes Playwright screenshots through browser.writeFile and returns undefined", async (testContext) => {
-    const browserHarness = await launchChromiumOrSkip(testContext);
+  test("routes Playwright screenshots through browser.writeFile and returns undefined", async () => {
+    const browserHarness = await launchChromium();
     const screenshotResults: string[] = [];
     const writeFileCalls: Array<{ path: string; size: number }> = [];
     let runtime: Awaited<ReturnType<IsolateHost["createRuntime"]>> | undefined;
@@ -352,8 +345,8 @@ describe("browser-enabled runtimes", () => {
     }
   });
 
-  test("starts Playwright waiters without blocking later isolate work", async (testContext) => {
-    const browserHarness = await launchChromiumOrSkip(testContext);
+  test("starts Playwright waiters without blocking later isolate work", async () => {
+    const browserHarness = await launchChromium();
     const browserServer = await createBrowserServer();
     const marks: string[] = [];
     let runtime: TestRuntime | undefined;
@@ -425,8 +418,8 @@ describe("browser-enabled runtimes", () => {
     }
   });
 
-  test("injects a browser factory into script runtimes and supports nested test runtimes", async (testContext) => {
-    const browserHarness = await launchChromiumOrSkip(testContext);
+  test("injects a browser factory into script runtimes and supports nested test runtimes", async () => {
+    const browserHarness = await launchChromium();
     const browserServer = await createBrowserServer();
     const consoleEntries: ConsoleEntry[] = [];
     let runtime: Awaited<ReturnType<IsolateHost["createRuntime"]>> | undefined;
