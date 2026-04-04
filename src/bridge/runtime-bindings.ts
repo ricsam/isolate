@@ -1,8 +1,18 @@
 import path from "node:path";
 import type { RuntimeOptions } from "../internal/client/index.ts";
 import type { ModuleLoaderCallback } from "../internal/protocol/index.ts";
+import { createPlaywrightFactoryHandler } from "../internal/playwright/client.ts";
 import { getRequestContext } from "./request-context.ts";
+import {
+  SANDBOX_ISOLATE_MODULE_SOURCE,
+  SANDBOX_ISOLATE_MODULE_SPECIFIER,
+  type NestedHostBindings,
+  type NestedResourceKind,
+} from "./sandbox-isolate.ts";
 import type {
+  CreateAppServerOptions,
+  CreateBrowserRuntimeOptions,
+  CreateRuntimeOptions,
   HostBindings,
   HostCallContext,
   ModuleResolveResult,
@@ -16,6 +26,22 @@ export interface RuntimeBindingsAdapter {
   runtimeOptions: RuntimeOptions;
   abort(reason?: unknown): void;
   reset(reason?: unknown): void;
+}
+
+export interface RuntimeBindingsAdapterOptions {
+  nestedHost?: NestedHostBindings;
+}
+
+interface ResponseDescriptor {
+  __type: "ResponseRef";
+  status: number;
+  statusText: string;
+  headers: Array<[string, string]>;
+  body?: number[] | null;
+}
+
+interface AsyncIteratorMarkedHandler {
+  __isolateCallbackKind?: "asyncGenerator";
 }
 
 function createAbortError(reason?: unknown): Error {
@@ -158,19 +184,61 @@ async function normalizeModuleResolveResult(
 }
 
 function isAsyncGeneratorFunction(handler: ToolHandler): boolean {
-  return handler.constructor.name === "AsyncGeneratorFunction";
+  return (
+    handler.constructor.name === "AsyncGeneratorFunction" ||
+    (handler as AsyncIteratorMarkedHandler).__isolateCallbackKind ===
+      "asyncGenerator"
+  );
+}
+
+function isResponseDescriptor(value: unknown): value is ResponseDescriptor {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as { __type?: unknown }).__type === "ResponseRef" &&
+      Array.isArray((value as { headers?: unknown }).headers),
+  );
+}
+
+function normalizeFetchResponse(value: unknown): Response {
+  if (value instanceof Response) {
+    return value;
+  }
+
+  if (isResponseDescriptor(value)) {
+    const body = value.body ? new Uint8Array(value.body) : null;
+    return new Response(body, {
+      status: value.status,
+      statusText: value.statusText,
+      headers: value.headers,
+    });
+  }
+
+  throw new TypeError("Fetch bindings must return a Response.");
 }
 
 export function createRuntimeBindingsAdapter(
   bindings: HostBindings,
   getRuntimeId: () => string,
   diagnostics: MutableRuntimeDiagnostics,
+  options?: RuntimeBindingsAdapterOptions,
 ): RuntimeBindingsAdapter {
   const contextFactory = createHostCallContextFactory(getRuntimeId);
   const moduleLoader = createModuleLoader(
     bindings.modules,
     contextFactory.createHostCallContext,
     diagnostics,
+    options?.nestedHost,
+  );
+  const customFunctions = createCustomFunctions(
+    bindings.tools,
+    options?.nestedHost,
+    contextFactory.createHostCallContext,
+    diagnostics,
+  );
+  const browserPlaywright = createBrowserPlaywrightOptions(
+    bindings.browser,
+    contextFactory.createHostCallContext,
   );
 
   return {
@@ -200,7 +268,9 @@ export function createRuntimeBindingsAdapter(
                 body: init.rawBody ? init.rawBody.slice(0) : null,
                 signal: context.signal,
               });
-              return await bindings.fetch!(request, context);
+              return normalizeFetchResponse(
+                await bindings.fetch!(request, context),
+              );
             } finally {
               diagnostics.pendingFetches -= 1;
               diagnostics.activeResources -= 1;
@@ -332,59 +402,8 @@ export function createRuntimeBindingsAdapter(
           }
         : undefined,
       moduleLoader,
-      customFunctions: bindings.tools
-        ? Object.fromEntries(
-            Object.entries(bindings.tools).map(([name, handler]) => {
-              if (isAsyncGeneratorFunction(handler)) {
-                return [
-                  name,
-                  {
-                    type: "asyncIterator" as const,
-                    fn: (...args: unknown[]) => {
-                      diagnostics.pendingTools += 1;
-                      diagnostics.activeResources += 1;
-                      const context = contextFactory.createHostCallContext(
-                        `tool:${name}:${crypto.randomUUID()}`,
-                      );
-                      const iterator = handler(
-                        ...args,
-                        context,
-                      ) as AsyncGenerator<unknown, unknown, unknown>;
-                      return (async function* () {
-                        try {
-                          yield* iterator;
-                        } finally {
-                          diagnostics.pendingTools -= 1;
-                          diagnostics.activeResources -= 1;
-                        }
-                      })();
-                    },
-                  },
-                ];
-              }
-
-              return [
-                name,
-                {
-                  type: "async" as const,
-                  fn: async (...args: unknown[]) => {
-                    diagnostics.pendingTools += 1;
-                    diagnostics.activeResources += 1;
-                    try {
-                      const context = contextFactory.createHostCallContext(
-                        `tool:${name}:${crypto.randomUUID()}`,
-                      );
-                      return await handler(...args, context);
-                    } finally {
-                      diagnostics.pendingTools -= 1;
-                      diagnostics.activeResources -= 1;
-                    }
-                  },
-                },
-              ];
-            }),
-          )
-        : undefined,
+      customFunctions,
+      playwright: browserPlaywright,
     },
     abort: contextFactory.abort,
     reset: contextFactory.reset,
@@ -398,17 +417,39 @@ function createModuleLoader(
     baseSignal?: AbortSignal,
   ) => HostCallContext,
   diagnostics: MutableRuntimeDiagnostics,
+  nestedHost: NestedHostBindings | undefined,
 ): ModuleLoaderCallback | undefined {
-  if (!resolver) {
+  if (!resolver && !nestedHost) {
     return undefined;
   }
 
   return async (specifier, importer) => {
+    if (nestedHost && specifier === SANDBOX_ISOLATE_MODULE_SPECIFIER) {
+      return {
+        code: SANDBOX_ISOLATE_MODULE_SOURCE,
+        filename: "isolate-sandbox.js",
+        resolveDir: "/",
+        static: true,
+      };
+    }
+
+    if (!resolver) {
+      throw new Error(`Unable to resolve module: ${specifier}`);
+    }
+
     diagnostics.pendingModules += 1;
     diagnostics.activeResources += 1;
     try {
       const context = createHostCallContext(`module:${crypto.randomUUID()}`);
-      return await resolver.resolve(specifier, importer, context);
+      const resolved = await normalizeExplicitModuleResult(
+        specifier,
+        resolver.resolve(specifier, importer, context),
+        importer.resolveDir,
+      );
+      if (!resolved) {
+        throw new Error(`Unable to resolve module: ${specifier}`);
+      }
+      return resolved;
     } finally {
       diagnostics.pendingModules -= 1;
       diagnostics.activeResources -= 1;
@@ -438,4 +479,219 @@ export async function normalizeExplicitModuleResult(
   fallbackResolveDir?: string,
 ): Promise<ModuleSource | null> {
   return normalizeModuleResolveResult(specifier, result, fallbackResolveDir);
+}
+
+function createBrowserPlaywrightOptions(
+  browser: HostBindings["browser"] | undefined,
+  createHostCallContext: (
+    resourceId: string,
+    baseSignal?: AbortSignal,
+  ) => HostCallContext,
+): RuntimeOptions["playwright"] | undefined {
+  if (!browser) {
+    return undefined;
+  }
+
+  return {
+    handler: createPlaywrightFactoryHandler({
+      createContext: browser.createContext
+        ? async (options) => {
+            const context = createHostCallContext(
+              `browser:createContext:${crypto.randomUUID()}`,
+            );
+            return await browser.createContext!(options, context);
+          }
+        : undefined,
+      createPage: browser.createPage
+        ? async (contextHandle) => {
+            const context = createHostCallContext(
+              `browser:createPage:${crypto.randomUUID()}`,
+            );
+            return await browser.createPage!(contextHandle, context);
+          }
+        : undefined,
+    }),
+    hasDefaultPage: false,
+  };
+}
+
+function createCustomFunctions(
+  tools: HostBindings["tools"] | undefined,
+  nestedHost: NestedHostBindings | undefined,
+  createHostCallContext: (
+    resourceId: string,
+    baseSignal?: AbortSignal,
+  ) => HostCallContext,
+  diagnostics: MutableRuntimeDiagnostics,
+): RuntimeOptions["customFunctions"] {
+  const definitions: NonNullable<RuntimeOptions["customFunctions"]> = {};
+
+  if (tools) {
+    for (const [name, handler] of Object.entries(tools)) {
+      if (isAsyncGeneratorFunction(handler)) {
+        definitions[name] = {
+          type: "asyncIterator",
+          fn: (...args: unknown[]) => {
+            diagnostics.pendingTools += 1;
+            diagnostics.activeResources += 1;
+            const context = createHostCallContext(
+              `tool:${name}:${crypto.randomUUID()}`,
+            );
+            const iteratorResult = handler(
+              ...args,
+              context,
+            ) as
+              | AsyncIterable<unknown>
+              | Promise<AsyncIterable<unknown>>;
+            return (async function* () {
+              const iterator = await iteratorResult;
+              const iterable =
+                iterator &&
+                typeof (iterator as { [Symbol.asyncIterator]?: unknown })[
+                  Symbol.asyncIterator
+                ] === "function"
+                  ? (iterator as AsyncIterable<unknown>)
+                  : iterator &&
+                      typeof (iterator as { next?: unknown }).next === "function"
+                    ? {
+                        [Symbol.asyncIterator]() {
+                          return iterator as unknown as AsyncIterator<unknown>;
+                        },
+                      }
+                    : null;
+              try {
+                if (!iterable) {
+                  throw new TypeError(
+                    `Tool ${name} did not return an async iterator.`,
+                  );
+                }
+                yield* iterable;
+              } finally {
+                diagnostics.pendingTools -= 1;
+                diagnostics.activeResources -= 1;
+              }
+            })();
+          },
+        };
+        continue;
+      }
+
+      definitions[name] = {
+        type: "async",
+        fn: async (...args: unknown[]) => {
+          diagnostics.pendingTools += 1;
+          diagnostics.activeResources += 1;
+          try {
+            const context = createHostCallContext(
+              `tool:${name}:${crypto.randomUUID()}`,
+            );
+            return await handler(...args, context);
+          } finally {
+            diagnostics.pendingTools -= 1;
+            diagnostics.activeResources -= 1;
+          }
+        },
+      };
+    }
+  }
+
+  if (nestedHost) {
+    const reservedNames = [
+      "__isolateHost_createHost",
+      "__isolateHost_closeHost",
+      "__isolateHost_hostDiagnostics",
+      "__isolateHost_createResource",
+      "__isolateHost_callResource",
+      "__isolateHost_drainCallbacks",
+    ];
+    for (const name of reservedNames) {
+      if (definitions[name]) {
+        throw new Error(
+          `Tool name ${name} is reserved for internal sandbox host bindings.`,
+        );
+      }
+    }
+
+    definitions.__isolateHost_createHost = {
+      type: "async",
+      fn: async () => {
+        const context = createHostCallContext(
+          `nestedHost:createHost:${crypto.randomUUID()}`,
+        );
+        return await nestedHost.createHost(context);
+      },
+    };
+    definitions.__isolateHost_closeHost = {
+      type: "async",
+      fn: async (...args: unknown[]) => {
+        const hostId = args[0] as string;
+        const context = createHostCallContext(
+          `nestedHost:closeHost:${crypto.randomUUID()}`,
+        );
+        await nestedHost.closeHost(hostId, context);
+      },
+    };
+    definitions.__isolateHost_hostDiagnostics = {
+      type: "async",
+      fn: async (...args: unknown[]) => {
+        const hostId = args[0] as string;
+        const context = createHostCallContext(
+          `nestedHost:diagnostics:${crypto.randomUUID()}`,
+        );
+        return await nestedHost.diagnostics(hostId, context);
+      },
+    };
+    definitions.__isolateHost_createResource = {
+      type: "async",
+      fn: async (...args: unknown[]) => {
+        const hostId = args[0] as string;
+        const kind = args[1] as NestedResourceKind;
+        const resourceOptions = args[2] as
+          | CreateRuntimeOptions
+          | CreateAppServerOptions
+          | (Omit<CreateBrowserRuntimeOptions, "browser"> & {
+              browser?: Record<string, unknown>;
+            });
+        const context = createHostCallContext(
+          `nestedHost:createResource:${kind}:${crypto.randomUUID()}`,
+        );
+        return await nestedHost.createResource(
+          hostId,
+          kind,
+          resourceOptions,
+          context,
+        );
+      },
+    };
+    definitions.__isolateHost_callResource = {
+      type: "async",
+      fn: async (...args: unknown[]) => {
+        const kind = args[0] as NestedResourceKind;
+        const resourceId = args[1] as string;
+        const method = args[2] as string;
+        const methodArgs = args[3] as unknown[];
+        const context = createHostCallContext(
+          `nestedHost:callResource:${kind}:${method}:${crypto.randomUUID()}`,
+        );
+        return await nestedHost.callResource(
+          kind,
+          resourceId,
+          method,
+          Array.isArray(methodArgs) ? methodArgs : [],
+          context,
+        );
+      },
+    };
+    definitions.__isolateHost_drainCallbacks = {
+      type: "async",
+      fn: async (...args: unknown[]) => {
+        const callback = args[0];
+        if (typeof callback === "function") {
+          await callback();
+        }
+      },
+    };
+  }
+
+  return Object.keys(definitions).length > 0 ? definitions : undefined;
 }

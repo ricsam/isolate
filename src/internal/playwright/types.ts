@@ -123,6 +123,8 @@ export interface PlaywrightSetupOptions {
   page?: import("playwright").Page;
   /** Handler callback (for remote use - daemon invokes this) */
   handler?: PlaywrightCallback;
+  /** Whether the isolate should expose default page/context globals. */
+  hasDefaultPage?: boolean;
   /** Default timeout for operations */
   timeout?: number;
   /** If true, browser console logs are printed to stdout */

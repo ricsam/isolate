@@ -1,13 +1,24 @@
 import { TYPE_DEFINITIONS, formatTypecheckErrors as formatLegacyTypecheckErrors, typecheckIsolateCode } from "../internal/typecheck/index.ts";
 import type { TypeCapability, TypeProfile, TypeProfileName, TypecheckRequest } from "../types.ts";
 
-type IncludedType = "core" | "fetch" | "fs" | "console" | "encoding" | "timers" | "testEnvironment" | "playwright";
+type IncludedType =
+  | "core"
+  | "sandboxIsolate"
+  | "fetch"
+  | "fs"
+  | "console"
+  | "encoding"
+  | "timers"
+  | "testEnvironment"
+  | "playwright"
+  | "browserFactory";
 
 const CAPABILITY_MAP: Record<TypeCapability, IncludedType[]> = {
   fetch: ["fetch"],
   files: ["fs"],
   tests: ["testEnvironment"],
   browser: ["playwright"],
+  browserFactory: ["browserFactory"],
   tools: [],
   console: ["console"],
   encoding: ["encoding"],
@@ -32,6 +43,7 @@ export function getTypeProfile(input?: {
   const capabilities = unique([...(PROFILE_DEFAULTS[profile] ?? PROFILE_DEFAULTS.backend), ...(input?.capabilities ?? [])]);
   const include: IncludedType[] = unique([
     "core",
+    "sandboxIsolate",
     ...capabilities.flatMap((capability) => CAPABILITY_MAP[capability]),
   ]) as IncludedType[];
 

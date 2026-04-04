@@ -64,11 +64,11 @@ export function createCallbackFileSystemHandler(
     const cleanPath = path.startsWith("/") ? path.slice(1) : path;
     // Handle root case
     if (!basePath || basePath === "/") {
-      return `/${cleanPath}`;
+      return cleanPath ? `/${cleanPath}` : "/";
     }
     // Remove trailing slash from basePath
     const cleanBase = basePath.endsWith("/") ? basePath.slice(0, -1) : basePath;
-    return `${cleanBase}/${cleanPath}`;
+    return cleanPath ? `${cleanBase}/${cleanPath}` : cleanBase;
   };
 
   // Helper to get current callback ID (supports runtime reuse)

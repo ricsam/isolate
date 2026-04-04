@@ -941,4 +941,344 @@ describe("createIsolateHost runtime integration", () => {
       await runtime2.dispose();
     }
   });
+
+  test("imports the synthetic @ricsam/isolate module without a user module resolver", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        const nestedHost = createIsolateHost();
+        const before = await nestedHost.diagnostics();
+        const child = await nestedHost.createRuntime();
+        await child.eval("globalThis.__nestedValue = 42;");
+        const during = await nestedHost.diagnostics();
+        await child.dispose();
+        const afterDispose = await nestedHost.diagnostics();
+        await nestedHost.close();
+
+        console.log(JSON.stringify({ before, during, afterDispose }));
+      `);
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.equal(entries.length, 1);
+    const result = JSON.parse(collectOutput(entries)[0] ?? "{}") as {
+      before: { runtimes: number; servers: number; connected: boolean };
+      during: { runtimes: number; servers: number; connected: boolean };
+      afterDispose: { runtimes: number; servers: number; connected: boolean };
+    };
+
+    assert.deepEqual(result.before, {
+      runtimes: 0,
+      servers: 0,
+      connected: true,
+    });
+    assert.deepEqual(result.during, {
+      runtimes: 1,
+      servers: 0,
+      connected: true,
+    });
+    assert.deepEqual(result.afterDispose, {
+      runtimes: 0,
+      servers: 0,
+      connected: true,
+    });
+  });
+
+  test("delivers nested console entries back into the parent isolate", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        const nestedHost = createIsolateHost();
+        const seen = [];
+
+        const child = await nestedHost.createRuntime({
+          bindings: {
+            console: {
+              onEntry(entry) {
+                seen.push({
+                  keys: Object.keys(entry ?? {}),
+                  stdout: entry?.stdout ?? null,
+                  type: entry?.type ?? null,
+                });
+              },
+            },
+          },
+        });
+
+        await child.eval('console.log("hello from child")');
+        await child.dispose({ hard: true });
+        await nestedHost.close();
+
+        console.log(JSON.stringify(seen));
+      `);
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.equal(entries.length, 1);
+    const seen = JSON.parse(collectOutput(entries)[0] ?? "[]") as Array<{
+      keys: string[];
+      stdout: string | null;
+      type: string | null;
+    }>;
+
+    assert.deepEqual(seen, [{
+      keys: ["type", "level", "stdout", "groupDepth"],
+      stdout: "hello from child",
+      type: "output",
+    }]);
+  });
+
+  test("reuses isolate-authored bindings across nested runtimes and app servers", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        const nestedHost = createIsolateHost();
+        let version = "v1";
+        let fileNames = ["note.txt"];
+        let runtimeResult = null;
+
+        const bindings = {
+          fetch: async (request) => {
+            return new Response(
+              new URL(request.url).pathname + ":" + request.method,
+            );
+          },
+          files: {
+            async readdir(path) {
+              return path === "/nested" ? [...fileNames] : [];
+            },
+            async stat(path) {
+              if (path === "/nested") {
+                return {
+                  isFile: false,
+                  isDirectory: true,
+                  size: 0,
+                };
+              }
+
+              return {
+                isFile: true,
+                isDirectory: false,
+                size: path.length,
+              };
+            },
+          },
+          modules: {
+            async resolve(specifier) {
+              if (specifier === "/child.ts") {
+                return [
+                  'import { version } from "/value.ts";',
+                  "",
+                  "export async function run() {",
+                  '  const response = await fetch("https://nested.test/runtime", {',
+                  '    method: "POST",',
+                  "  });",
+                  '  const root = await getDirectory("/nested");',
+                  "  const names = [];",
+                  "  for await (const [name] of root.entries()) {",
+                  "    names.push(name);",
+                  "  }",
+                  "  const streamValues = [];",
+                  "  for await (const value of toolStream()) {",
+                  "    streamValues.push(value);",
+                  "  }",
+                  '  const formatter = await createFormatter("runtime");',
+                  "  const formatted = await formatter(version);",
+                  "  await reportRuntime({",
+                  "    formatted,",
+                  "    names,",
+                  "    response: await response.text(),",
+                  "    streamValues,",
+                  "    version,",
+                  "  });",
+                  "}",
+                ].join("\\n");
+              }
+
+              if (specifier === "/server.ts") {
+                return [
+                  'import { version } from "/value.ts";',
+                  "",
+                  "serve({",
+                  "  async fetch(request) {",
+                  '    const response = await fetch("https://nested.test/server");',
+                  '    const root = await getDirectory("/nested");',
+                  "    const names = [];",
+                  "    for await (const [name] of root.entries()) {",
+                  "      names.push(name);",
+                  "    }",
+                  "",
+                  "    return Response.json({",
+                  "      names,",
+                  '      path: new URL(request.url).pathname,',
+                  "      response: await response.text(),",
+                  "      version,",
+                  "    });",
+                  "  },",
+                  "});",
+                ].join("\\n");
+              }
+
+              if (specifier === "/value.ts") {
+                return "export const version = " + JSON.stringify(version) + ";";
+              }
+
+              return null;
+            },
+          },
+          tools: {
+            async reportRuntime(payload) {
+              runtimeResult = payload;
+            },
+            async *toolStream() {
+              yield "first";
+              yield "second";
+            },
+            async createFormatter(prefix) {
+              return async (value) => prefix + ":" + value;
+            },
+          },
+        };
+
+        const child = await nestedHost.createRuntime({
+          bindings,
+        });
+
+        await child.eval('import { run } from "/child.ts"; await run();');
+
+        const server = await nestedHost.createAppServer({
+          key: "nested-server",
+          entry: "/server.ts",
+          bindings,
+        });
+
+        const diagnosticsDuring = await nestedHost.diagnostics();
+
+        const firstResult = await server.handle("http://localhost/version");
+        if (firstResult.type !== "response") {
+          throw new Error("expected response result");
+        }
+        const firstPayload = await firstResult.response.json();
+
+        version = "v2";
+        fileNames = ["updated.txt"];
+        await server.reload("update-version");
+
+        const secondResult = await server.handle("http://localhost/version");
+        if (secondResult.type !== "response") {
+          throw new Error("expected response result");
+        }
+        const secondPayload = await secondResult.response.json();
+
+        await child.dispose();
+        await server.dispose();
+
+        const diagnosticsAfterDispose = await nestedHost.diagnostics();
+        await nestedHost.close();
+
+        console.log(JSON.stringify({
+          diagnosticsAfterDispose,
+          diagnosticsDuring,
+          firstPayload,
+          runtimeResult,
+          secondPayload,
+        }));
+      `, { executionTimeout: 20_000 });
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.equal(entries.length, 1);
+    const result = JSON.parse(collectOutput(entries)[0] ?? "{}") as {
+      diagnosticsDuring: { runtimes: number; servers: number; connected: boolean };
+      diagnosticsAfterDispose: { runtimes: number; servers: number; connected: boolean };
+      firstPayload: {
+        names: string[];
+        path: string;
+        response: string;
+        version: string;
+      };
+      runtimeResult: {
+        formatted: string;
+        names: string[];
+        response: string;
+        streamValues: string[];
+        version: string;
+      };
+      secondPayload: {
+        names: string[];
+        path: string;
+        response: string;
+        version: string;
+      };
+    };
+
+    assert.deepEqual(result.runtimeResult, {
+      formatted: "runtime:v1",
+      names: ["note.txt"],
+      response: "/runtime:POST",
+      streamValues: ["first", "second"],
+      version: "v1",
+    });
+    assert.deepEqual(result.diagnosticsDuring, {
+      runtimes: 1,
+      servers: 1,
+      connected: true,
+    });
+    assert.deepEqual(result.firstPayload, {
+      names: ["note.txt"],
+      path: "/version",
+      response: "/server:GET",
+      version: "v1",
+    });
+    assert.deepEqual(result.secondPayload, {
+      names: ["updated.txt"],
+      path: "/version",
+      response: "/server:GET",
+      version: "v2",
+    });
+    assert.deepEqual(result.diagnosticsAfterDispose, {
+      runtimes: 0,
+      servers: 0,
+      connected: true,
+    });
+  });
 });

@@ -1,6 +1,6 @@
 # @ricsam/isolate
 
-`@ricsam/isolate` is a runtime-centric JavaScript sandbox built on an async-context-enabled [`@ricsam/isolated-vm`](https://github.com/ricsam/isolated-vm) engine build. It gives you a single host API for running isolated code with web-style capabilities such as `fetch`, files, streams, server handlers, module loading, and Playwright-backed browser tests.
+`@ricsam/isolate` is a runtime-centric JavaScript sandbox built on an async-context-enabled [`@ricsam/isolated-vm`](https://github.com/ricsam/isolated-vm) engine build. It gives you a single host API for running isolated code with web-style capabilities such as `fetch`, files, streams, server handlers, nested sandboxes, module loading, and Playwright-backed browser tests.
 
 ## Installation
 
@@ -31,6 +31,8 @@ The host can create three runtime styles:
 - `host.createAppServer()` for `serve()`-based request handlers
 - `host.createBrowserRuntime()` for Playwright-backed execution
 
+Inside sandbox code, `@ricsam/isolate` is also available as a synthetic module. It exports a sandbox-only `createIsolateHost()` that lets a runtime create nested runtimes, app servers, and browser runtimes without exposing daemon configuration to the sandbox.
+
 ## Host Bindings
 
 Each runtime is configured through `bindings`, which describe how sandboxed code talks to the host:
@@ -40,8 +42,11 @@ Each runtime is configured through `bindings`, which describe how sandboxed code
 - `files` exposes a safe, root-scoped filesystem
 - `modules` resolves virtual modules, source trees, and mounted packages
 - `tools` exposes async host functions and async iterators
+- `browser` exposes a minimal browser factory with `createContext()` and `createPage()`
 
 Every host callback receives a `HostCallContext` with an `AbortSignal`, runtime identity, resource identity, and request metadata.
+
+`bindings.browser` is intentionally smaller than a full Playwright browser. In script and app runtimes it injects a global `browser` object with `browser.newContext()`, and the returned contexts expose `context.newPage()`. Browser-level shutdown stays on the host side, while the sandbox can still close pages and contexts that it created.
 
 ## Async Context
 
@@ -145,6 +150,51 @@ try {
 }
 ```
 
+## Nested Hosts Inside The Sandbox
+
+Sandbox code can import `@ricsam/isolate` and create child runtimes against the same top-level host connection.
+
+```ts
+const runtime = await host.createRuntime({
+  bindings: {
+    console: {
+      onEntry(entry) {
+        if (entry.type === "output") {
+          console.log(entry.stdout);
+        }
+      },
+    },
+  },
+});
+
+await runtime.eval(`
+  import { createIsolateHost } from "@ricsam/isolate";
+
+  const nestedHost = createIsolateHost();
+  const child = await nestedHost.createRuntime({
+    bindings: {
+      tools: {
+        greet: async (name) => "hello " + name,
+      },
+    },
+  });
+
+  await child.eval('console.log(await greet("nested"))');
+  await child.dispose();
+  await nestedHost.close();
+`);
+```
+
+Nested hosts support:
+
+- `createRuntime()`
+- `createAppServer()`
+- `createBrowserRuntime()`
+- `diagnostics()`
+- `close()`
+
+Child runtimes can reuse the same binding shapes as top-level runtimes. That includes isolate-authored callbacks, async iterators, module resolvers, file bindings, and browser handles.
+
 ## App Servers
 
 `createAppServer()` is the long-lived server-oriented API. It boots a runtime around an entry module that calls `serve()` and then lets the host dispatch requests into it.
@@ -183,9 +233,58 @@ await host.close();
 
 `server.handle()` returns either a normal HTTP response or WebSocket upgrade metadata. The `server.ws` helpers let the host continue an upgraded connection by sending open, message, close, and error events back into the runtime.
 
+## Browser Bindings In Script And Server Runtimes
+
+If you provide `bindings.browser`, script and app runtimes get a global `browser` factory even when they are not full Playwright browser runtimes.
+
+```ts
+import { chromium } from "playwright";
+import { createIsolateHost } from "@ricsam/isolate";
+
+const browser = await chromium.launch();
+const host = await createIsolateHost();
+
+const runtime = await host.createRuntime({
+  bindings: {
+    browser: {
+      createContext: async (options) =>
+        await browser.newContext(options ?? undefined),
+      createPage: async (contextInstance) =>
+        await contextInstance.newPage(),
+    },
+  },
+});
+
+await runtime.eval(`
+  const ctx = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+  });
+  const page = await ctx.newPage();
+
+  await page.goto("https://example.com");
+  console.log(await page.title());
+  console.log(typeof browser.close);
+
+  await page.close();
+  await ctx.close();
+`);
+
+await runtime.dispose();
+await browser.close();
+await host.close();
+```
+
+In these runtimes:
+
+- `browser.newContext()` is available
+- `context.newPage()` is available
+- `page.close()` and `context.close()` are available
+- `browser.close()` is not exposed inside the sandbox
+- the default `page` and `context` globals are still only available in `createBrowserRuntime()`
+
 ## Browser Runtimes
 
-`createBrowserRuntime()` runs sandboxed code against a Playwright page while keeping the host in control of file access, diagnostics, and browser event collection.
+`createBrowserRuntime()` runs sandboxed code against a Playwright page while keeping the host in control of file access, diagnostics, and browser event collection. These runtimes expose the usual `page`, `context`, and `browser` globals inside the sandbox.
 
 ```ts
 import { chromium } from "playwright";
@@ -226,6 +325,28 @@ await runtime.dispose();
 await context.close();
 await browser.close();
 await host.close();
+```
+
+From inside another sandbox, `nestedHost.createBrowserRuntime()` can reuse the sandbox `browser` handle:
+
+```ts
+import { createIsolateHost } from "@ricsam/isolate";
+
+const nestedHost = createIsolateHost();
+const child = await nestedHost.createBrowserRuntime({
+  browser,
+});
+
+await child.run(`
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await page.goto("https://example.com");
+  await page.close();
+  await ctx.close();
+`);
+
+await child.dispose();
+await nestedHost.close();
 ```
 
 ## Module Resolution
@@ -276,7 +397,11 @@ Built-in profiles:
 - `agent`
 - `browser-test`
 
-Capabilities can extend a profile with `fetch`, `files`, `tests`, `browser`, `tools`, `console`, `encoding`, and `timers`.
+Capabilities can extend a profile with `fetch`, `files`, `tests`, `browser`, `browserFactory`, `tools`, `console`, `encoding`, and `timers`.
+
+- Use `browser` for full Playwright globals such as `page`, `context`, and `browser`
+- Use `browserFactory` when sandbox code only receives `bindings.browser` and should typecheck `browser.newContext()` without assuming default `page` or `context`
+- The synthetic sandbox import `import { createIsolateHost } from "@ricsam/isolate"` is included in all type profiles
 
 ## Daemon CLI
 

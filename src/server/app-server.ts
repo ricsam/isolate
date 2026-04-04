@@ -1,13 +1,17 @@
 import { IsolateServer } from "../internal/server/index.ts";
 import type { DaemonConnection } from "../internal/client/index.ts";
 import { createRuntimeDiagnostics } from "../bridge/diagnostics.ts";
-import { createRuntimeBindingsAdapter } from "../bridge/runtime-bindings.ts";
+import {
+  createRuntimeBindingsAdapter,
+  type RuntimeBindingsAdapterOptions,
+} from "../bridge/runtime-bindings.ts";
 import { withRequestContext } from "../bridge/request-context.ts";
 import type { AppServer, CreateAppServerOptions, RequestResult } from "../types.ts";
 
 export async function createAppServerAdapter(
   getConnection: () => Promise<DaemonConnection>,
   options: CreateAppServerOptions,
+  adapterOptions?: RuntimeBindingsAdapterOptions,
 ): Promise<AppServer> {
   const diagnostics = createRuntimeDiagnostics();
   const server = new IsolateServer({
@@ -20,6 +24,7 @@ export async function createAppServerAdapter(
     options.bindings,
     () => runtimeId,
     diagnostics,
+    adapterOptions,
   );
   await server.start({
     entry: options.entry,

@@ -14,6 +14,7 @@ export type {
   CreateRuntimeOptions,
   FileBindings,
   HostBindings,
+  HostBrowserBindings,
   HostCallContext,
   IsolateHost,
   ModuleImporter,

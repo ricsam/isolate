@@ -918,7 +918,6 @@ function reuseNamespacedRuntime(
   instance.returnedCallbacks = new Map();
   instance.returnedPromises = new Map();
   instance.returnedIterators = new Map();
-  instance.nextLocalCallbackId = 1_000_000;
 
   logRuntimeLifecycle(state, "reused pooled", instance);
   logSuspiciousRuntimeOperation(
@@ -1168,8 +1167,6 @@ async function handleCreateRuntime(
       returnedCallbacks: new Map(),
       returnedPromises: new Map(),
       returnedIterators: new Map(),
-      // Start at 1,000,000 to avoid conflicts with client callback IDs
-      nextLocalCallbackId: 1_000_000,
       // Namespace pooling fields
       namespaceId,
       isDisposed: false,
@@ -1479,6 +1476,7 @@ async function handleCreateRuntime(
     // Build playwright options
     let playwrightOptions: {
       handler: (op: PlaywrightOperation) => Promise<PlaywrightResult>;
+      hasDefaultPage?: boolean;
       timeout?: number;
       console?: boolean;
       onEvent?: (event: { type: string; level?: string; stdout?: string; timestamp?: number; [key: string]: unknown }) => void;
@@ -1502,6 +1500,7 @@ async function handleCreateRuntime(
             return { ok: false, error: { name: error.name, message: error.message } };
           }
         },
+        hasDefaultPage: message.options.playwright?.hasDefaultPage,
         timeout: message.options.playwright?.timeout,
         console: playwrightCallbacks.console,
         onEvent: (event: { type: string; level?: string; stdout?: string; timestamp?: number; [key: string]: unknown }) => {
@@ -2697,13 +2696,167 @@ async function handleCallbackInvoke(
   }
 
   try {
-    response.result = await requestContextStorage.run(
+    const allocateLocalCallbackId = (): number => {
+      if (!instance.ownerConnection) {
+        throw new Error("Cannot register callback without an active client connection");
+      }
+      return connection.nextLocalCallbackId++;
+    };
+
+    const createMarshalContext = (): MarshalContext => ({
+      registerCallback: (fn: Function): number => {
+        const callbackId = allocateLocalCallbackId();
+        instance.returnedCallbacks!.set(callbackId, fn);
+        return callbackId;
+      },
+      registerPromise: (promise: Promise<unknown>): number => {
+        const promiseId = allocateLocalCallbackId();
+        instance.returnedPromises!.set(promiseId, promise);
+        return promiseId;
+      },
+      registerIterator: (iterator: AsyncIterator<unknown>): number => {
+        const iteratorId = allocateLocalCallbackId();
+        instance.returnedIterators!.set(iteratorId, iterator);
+        return iteratorId;
+      },
+    });
+
+    const addCallbackIdsToRefs = (value: unknown): unknown => {
+      if (value === null || typeof value !== "object") {
+        return value;
+      }
+
+      if (isPromiseRef(value)) {
+        if ("__resolveCallbackId" in value) {
+          return value;
+        }
+
+        const resolveCallbackId = allocateLocalCallbackId();
+        instance.returnedCallbacks!.set(resolveCallbackId, async (promiseId: number) => {
+          const promise = instance.returnedPromises!.get(promiseId);
+          if (!promise) {
+            throw new Error(`Promise ${promiseId} not found`);
+          }
+          const result = await promise;
+          instance.returnedPromises!.delete(promiseId);
+          const ctx = createMarshalContext();
+          const marshalled = await marshalValue(result, ctx);
+          return addCallbackIdsToRefs(marshalled);
+        });
+
+        return { ...value, __resolveCallbackId: resolveCallbackId };
+      }
+
+      if (isAsyncIteratorRef(value)) {
+        if ("__nextCallbackId" in value) {
+          return value;
+        }
+
+        const nextCallbackId = allocateLocalCallbackId();
+        instance.returnedCallbacks!.set(nextCallbackId, async (iteratorId: number) => {
+          const iterator = instance.returnedIterators!.get(iteratorId);
+          if (!iterator) {
+            throw new Error(`Iterator ${iteratorId} not found`);
+          }
+          const result = await iterator.next();
+          if (result.done) {
+            instance.returnedIterators!.delete(iteratorId);
+          }
+          const ctx = createMarshalContext();
+          const marshalledValue = await marshalValue(result.value, ctx);
+          return {
+            done: result.done,
+            value: addCallbackIdsToRefs(marshalledValue),
+          };
+        });
+
+        const returnCallbackId = allocateLocalCallbackId();
+        instance.returnedCallbacks!.set(
+          returnCallbackId,
+          async (iteratorId: number, returnValue?: unknown) => {
+            const iterator = instance.returnedIterators!.get(iteratorId);
+            instance.returnedIterators!.delete(iteratorId);
+            if (!iterator || !iterator.return) {
+              return { done: true, value: undefined };
+            }
+            const result = await iterator.return(returnValue);
+            const ctx = createMarshalContext();
+            const marshalledValue = await marshalValue(result.value, ctx);
+            return {
+              done: true,
+              value: addCallbackIdsToRefs(marshalledValue),
+            };
+          },
+        );
+
+        const throwCallbackId = allocateLocalCallbackId();
+        instance.returnedCallbacks!.set(
+          throwCallbackId,
+          async (
+            iteratorId: number,
+            errorValue?: { message?: string; name?: string; stack?: string },
+          ) => {
+            const iterator = instance.returnedIterators!.get(iteratorId);
+            if (!iterator) {
+              throw new Error(`Iterator ${iteratorId} not found`);
+            }
+            try {
+              if (!iterator.throw) {
+                throw Object.assign(
+                  new Error(errorValue?.message ?? "Iterator does not support throw()"),
+                  { name: errorValue?.name ?? "Error", stack: errorValue?.stack },
+                );
+              }
+              const thrownError = Object.assign(
+                new Error(errorValue?.message ?? "Iterator throw()"),
+                { name: errorValue?.name ?? "Error", stack: errorValue?.stack },
+              );
+              const result = await iterator.throw(thrownError);
+              if (result.done) {
+                instance.returnedIterators!.delete(iteratorId);
+              }
+              const ctx = createMarshalContext();
+              const marshalledValue = await marshalValue(result.value, ctx);
+              return {
+                done: result.done,
+                value: addCallbackIdsToRefs(marshalledValue),
+              };
+            } catch (error) {
+              instance.returnedIterators!.delete(iteratorId);
+              throw error;
+            }
+          },
+        );
+
+        return {
+          ...value,
+          __nextCallbackId: nextCallbackId,
+          __returnCallbackId: returnCallbackId,
+          __throwCallbackId: throwCallbackId,
+        };
+      }
+
+      if (Array.isArray(value)) {
+        return value.map((item) => addCallbackIdsToRefs(item));
+      }
+
+      const result: Record<string, unknown> = {};
+      for (const key of Object.keys(value)) {
+        result[key] = addCallbackIdsToRefs((value as Record<string, unknown>)[key]);
+      }
+      return result;
+    };
+
+    const rawResult = await requestContextStorage.run(
       {
         ...(message.context ?? {}),
         signal: getCurrentHostSignal(instance),
       },
       async () => await callback(...message.args),
     );
+    const marshalContext = createMarshalContext();
+    const marshalledResult = await marshalValue(rawResult, marshalContext);
+    response.result = addCallbackIdsToRefs(marshalledResult);
   } catch (err) {
     const error = err as Error;
     response.error = {

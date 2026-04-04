@@ -2,12 +2,27 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { connect, type DaemonConnection, type RemoteRuntime, type RuntimeOptions } from "../internal/client/index.ts";
+import {
+  createBrowserSourceFromBindings,
+  createBrowserSourceFromRuntimeOptions,
+  type BrowserSource,
+} from "../internal/browser-source.ts";
 import { createRuntimeDiagnostics } from "../bridge/diagnostics.ts";
 import { createRuntimeBindingsAdapter } from "../bridge/runtime-bindings.ts";
 import { createBrowserRuntimeAdapter } from "../browser/browser-runtime.ts";
 import { createScriptRuntimeAdapter } from "../runtime/script-runtime.ts";
 import { createAppServerAdapter } from "../server/app-server.ts";
-import type { CreateBrowserRuntimeOptions, CreateIsolateHostOptions, CreateRuntimeOptions, IsolateHost } from "../types.ts";
+import { createNestedHostBindings } from "./nested-host-controller.ts";
+import type {
+  AppServer,
+  BrowserRuntime,
+  CreateAppServerOptions,
+  CreateBrowserRuntimeOptions,
+  CreateIsolateHostOptions,
+  CreateRuntimeOptions,
+  IsolateHost,
+  ScriptRuntime,
+} from "../types.ts";
 
 function resolveDefaultDaemonEntrypoint(): string | null {
   const localPath = path.resolve(import.meta.dirname, "../daemon.ts");
@@ -42,45 +57,16 @@ class HostImpl implements IsolateHost {
     this.options = options ?? {};
   }
 
-  async createAppServer(options: CreateRuntimeOptions & { key: string; entry: string; entryFilename?: string; webSockets?: { onCommand?: (command: { type: "message" | "close"; connectionId: string; data?: string | ArrayBuffer; code?: number; reason?: string }) => void } }) {
-    const server = await createAppServerAdapter(() => this.getConnection(), options);
-    this.servers.add(server);
-    return server;
+  async createAppServer(options: CreateAppServerOptions) {
+    return await this.createAppServerInternal(options);
   }
 
   async createRuntime(options: CreateRuntimeOptions) {
-    const diagnostics = createRuntimeDiagnostics();
-    let runtimeId = options.key ?? "runtime";
-    const bindingsAdapter = createRuntimeBindingsAdapter(
-      options.bindings,
-      () => runtimeId,
-      diagnostics,
-    );
-    const runtime = await this.createRemoteRuntime(
-      {
-        ...bindingsAdapter.runtimeOptions,
-        cwd: options.cwd,
-        memoryLimitMB: options.memoryLimitMB,
-        executionTimeout: options.executionTimeout,
-        testEnvironment: options.features?.tests ?? false,
-      },
-      options.key,
-    );
-    runtimeId = runtime.id;
-    const adapter = createScriptRuntimeAdapter(runtime, diagnostics, {
-      onBeforeDispose: (reason) => bindingsAdapter.abort(reason),
-    });
-    this.runtimes.add(adapter);
-    return adapter;
+    return await this.createRuntimeInternal(options);
   }
 
   async createBrowserRuntime(options: CreateBrowserRuntimeOptions) {
-    const browserRuntime = await createBrowserRuntimeAdapter(
-      async (runtimeOptions) => await this.createRemoteRuntime(runtimeOptions, options.key),
-      options,
-    );
-    this.runtimes.add(browserRuntime);
-    return browserRuntime;
+    return await this.createBrowserRuntimeInternal(options);
   }
 
   async diagnostics() {
@@ -113,6 +99,85 @@ class HostImpl implements IsolateHost {
         process.kill("SIGTERM");
       });
     }
+  }
+
+  private async createRuntimeInternal(
+    options: CreateRuntimeOptions,
+  ): Promise<ScriptRuntime> {
+    const diagnostics = createRuntimeDiagnostics();
+    let runtimeId = options.key ?? "runtime";
+    const browserSource = createBrowserSourceFromBindings(options.bindings.browser);
+    const bindingsAdapter = createRuntimeBindingsAdapter(
+      options.bindings,
+      () => runtimeId,
+      diagnostics,
+      {
+        nestedHost: this.createNestedBindings(browserSource),
+      },
+    );
+    const runtime = await this.createRemoteRuntime(
+      {
+        ...bindingsAdapter.runtimeOptions,
+        cwd: options.cwd,
+        memoryLimitMB: options.memoryLimitMB,
+        executionTimeout: options.executionTimeout,
+        testEnvironment: options.features?.tests ?? false,
+      },
+      options.key,
+    );
+    runtimeId = runtime.id;
+    const adapter = createScriptRuntimeAdapter(runtime, diagnostics, {
+      onBeforeDispose: (reason) => bindingsAdapter.abort(reason),
+    });
+    this.runtimes.add(adapter);
+    return adapter;
+  }
+
+  private async createBrowserRuntimeInternal(
+    options: CreateBrowserRuntimeOptions,
+    browserSource: BrowserSource = createBrowserSourceFromRuntimeOptions(options.browser),
+  ): Promise<BrowserRuntime> {
+    const browserRuntime = await createBrowserRuntimeAdapter(
+      async (runtimeOptions) => await this.createRemoteRuntime(runtimeOptions, options.key),
+      options,
+      {
+        nestedHost: this.createNestedBindings(browserSource),
+      },
+    );
+    this.runtimes.add(browserRuntime);
+    return browserRuntime;
+  }
+
+  private async createAppServerInternal(
+    options: CreateAppServerOptions,
+  ): Promise<AppServer> {
+    const server = await createAppServerAdapter(
+      () => this.getConnection(),
+      options,
+      {
+        nestedHost: this.createNestedBindings(
+          createBrowserSourceFromBindings(options.bindings.browser),
+        ),
+      },
+    );
+    this.servers.add(server);
+    return server;
+  }
+
+  private createNestedBindings(
+    defaultBrowserSource: BrowserSource | undefined,
+  ) {
+    return createNestedHostBindings(
+      {
+        createRuntime: async (options) => await this.createRuntimeInternal(options),
+        createAppServer: async (options) =>
+          await this.createAppServerInternal(options),
+        createBrowserRuntime: async (options, browserSource) =>
+          await this.createBrowserRuntimeInternal(options, browserSource),
+        isConnected: () => this.connection?.isConnected() ?? false,
+      },
+      defaultBrowserSource,
+    );
   }
 
   private async createRemoteRuntime(options: RuntimeOptions, key?: string): Promise<RemoteRuntime> {

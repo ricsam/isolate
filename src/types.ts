@@ -71,6 +71,11 @@ export interface FileBindings {
   rename?: (from: string, to: string, context: HostCallContext) => Promise<void>;
 }
 
+export interface HostBrowserBindings {
+  createContext?: (options: unknown, context: HostCallContext) => Promise<any> | any;
+  createPage?: (contextHandle: any, context: HostCallContext) => Promise<any> | any;
+}
+
 export type ToolHandler = (
   ...args: [...unknown[], HostCallContext]
 ) => unknown | Promise<unknown> | AsyncGenerator<unknown, unknown, unknown>;
@@ -85,6 +90,7 @@ export interface HostBindings {
   files?: FileBindings;
   modules?: ModuleResolver;
   tools?: ToolBindings;
+  browser?: HostBrowserBindings;
 }
 
 export interface RuntimeDiagnostics {
@@ -217,12 +223,32 @@ export interface CreateIsolateHostOptions {
 }
 
 export type TypeProfileName = "backend" | "agent" | "browser-test";
-export type TypeCapability = "fetch" | "files" | "tests" | "browser" | "tools" | "console" | "encoding" | "timers";
+export type TypeCapability =
+  | "fetch"
+  | "files"
+  | "tests"
+  | "browser"
+  | "browserFactory"
+  | "tools"
+  | "console"
+  | "encoding"
+  | "timers";
 
 export interface TypeProfile {
   profile: TypeProfileName;
   capabilities: TypeCapability[];
-  include: Array<"core" | "fetch" | "fs" | "console" | "encoding" | "timers" | "testEnvironment" | "playwright">;
+  include: Array<
+    "core"
+    | "sandboxIsolate"
+    | "fetch"
+    | "fs"
+    | "console"
+    | "encoding"
+    | "timers"
+    | "testEnvironment"
+    | "playwright"
+    | "browserFactory"
+  >;
   files: Array<{ name: string; content: string }>;
 }
 

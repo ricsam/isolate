@@ -32,4 +32,49 @@ describe("typecheck helpers", () => {
     assert.equal(missing.success, false);
     assert.ok(missing.errors.some((error) => error.message.includes("page")));
   });
+
+  test("supports the browser factory capability without full page globals", () => {
+    const profile = getTypeProfile({
+      capabilities: ["browserFactory"],
+    });
+    const ok = typecheck({
+      code: `
+        export {};
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        await page.goto("/");
+      `,
+      capabilities: ["browserFactory"],
+    });
+    const missingPageGlobal = typecheck({
+      code: "await page.goto('/')",
+      capabilities: ["browserFactory"],
+    });
+
+    assert.ok(profile.include.includes("browserFactory"));
+    assert.ok(!profile.include.includes("playwright"));
+    assert.ok(profile.files.some((file) => file.name === "isolate-browserFactory.d.ts"));
+    assert.equal(ok.success, true);
+    assert.equal(missingPageGlobal.success, false);
+    assert.ok(
+      missingPageGlobal.errors.some((error) => error.message.includes("page")),
+    );
+  });
+
+  test("typechecks sandbox imports for @ricsam/isolate", () => {
+    const result = typecheck({
+      code: `
+        export {};
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        const host = createIsolateHost();
+        const runtime = await host.createRuntime();
+        await runtime.eval("globalThis.ok = true;");
+        await runtime.dispose();
+      `,
+      profile: "backend",
+    });
+
+    assert.equal(result.success, true);
+  });
 });

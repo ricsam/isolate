@@ -88,7 +88,18 @@ export interface TypecheckOptions {
    * Which isolate global types to include.
    * @default ["core", "fetch", "fs"]
    */
-  include?: Array<"core" | "fetch" | "fs" | "console" | "encoding" | "timers" | "testEnvironment" | "playwright">;
+  include?: Array<
+    | "core"
+    | "sandboxIsolate"
+    | "fetch"
+    | "fs"
+    | "console"
+    | "encoding"
+    | "timers"
+    | "testEnvironment"
+    | "playwright"
+    | "browserFactory"
+  >;
 
   /**
    * Library type definitions to inject for import resolution.
@@ -185,18 +196,15 @@ export function typecheckIsolateCode(
 ): TypecheckResult {
   const include = options?.include ?? ["core", "fetch", "fs"];
   const libraryTypes = options?.libraryTypes ?? {};
-  const hasLibraries = Object.keys(libraryTypes).length > 0;
-
   // Create a project with in-memory file system
   const project = new Project({
     useInMemoryFileSystem: true,
     compilerOptions: {
       target: ts.ScriptTarget.ESNext,
       module: ts.ModuleKind.ESNext,
-      // Use NodeJs resolution for node_modules/ lookup when libraries are included
-      moduleResolution: hasLibraries
-        ? ts.ModuleResolutionKind.NodeJs
-        : undefined,
+      // Use NodeJs resolution so ambient package declarations like
+      // "@ricsam/isolate" resolve the same way sandbox imports do.
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
       lib: ["lib.esnext.d.ts", "lib.dom.d.ts"],
       strict: true,
       noEmit: true,

@@ -23,6 +23,7 @@ export type { PlaywrightOperation, PlaywrightResult, PlaywrightEvent, Playwright
 // Re-export handler functions
 export {
   createPlaywrightHandler,
+  createPlaywrightFactoryHandler,
   defaultPlaywrightHandler,
   getDefaultPlaywrightHandlerMetadata,
 } from "./handler.ts";

@@ -5,6 +5,10 @@ import type {
 import {
   DEFAULT_PLAYWRIGHT_HANDLER_META,
 } from "./types.ts";
+import {
+  ISOLATE_BROWSER_DESCRIPTOR_PROPERTY,
+  ISOLATE_BROWSER_DESCRIPTOR_VALUE,
+} from "../browser-source.ts";
 
 // Re-export handler functions from handler.ts
 export {
@@ -217,6 +221,7 @@ export async function setupPlaywright(
     ? getDefaultPlaywrightHandlerMetadata(handler)
     : undefined;
   const page = explicitPage ?? handlerMetadata?.page;
+  const hasDefaultPage = options.hasDefaultPage ?? Boolean(page);
 
   // Get lifecycle callbacks
   const createPage = "createPage" in options ? options.createPage : undefined;
@@ -509,7 +514,7 @@ export async function setupPlaywright(
     })
   );
 
-  // IsolatePage class and page/context/browser globals
+  // IsolatePage class and browser globals
   context.evalSync(`
 (function() {
   // IsolatePage class - represents a page with a specific pageId
@@ -791,12 +796,23 @@ export async function setupPlaywright(
       return new IsolateContext(result.contextId);
     }
   };
+  Object.defineProperty(globalThis.browser, ${JSON.stringify(ISOLATE_BROWSER_DESCRIPTOR_PROPERTY)}, {
+    value: ${JSON.stringify(ISOLATE_BROWSER_DESCRIPTOR_VALUE)},
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
 
-  // context global - represents the default context
-  globalThis.context = new IsolateContext("ctx_0");
+  if (${JSON.stringify(hasDefaultPage)}) {
+    // context global - represents the default context
+    globalThis.context = new IsolateContext("ctx_0");
 
-  // page global - represents the default page
-  globalThis.page = new IsolatePage("page_0", "ctx_0");
+    // page global - represents the default page
+    globalThis.page = new IsolatePage("page_0", "ctx_0");
+  } else {
+    delete globalThis.context;
+    delete globalThis.page;
+  }
 })();
 `);
 

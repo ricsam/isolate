@@ -1229,8 +1229,11 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   }
 
   const playwrightOption =
-    normalizedPlaywrightOptions?.timeout !== undefined
-      ? { timeout: normalizedPlaywrightOptions.timeout }
+    normalizedPlaywrightOptions
+      ? {
+          timeout: normalizedPlaywrightOptions.timeout,
+          hasDefaultPage: normalizedPlaywrightOptions.hasDefaultPage,
+        }
       : undefined;
 
   const requestId = state.nextRequestId++;
@@ -2236,6 +2239,113 @@ function registerCustomFunctions(
         addCallbackIdsToRefs(marshalledArgs) as unknown[],
       );
       return unmarshalValue(result, unmarshalCtx);
+    };
+  };
+  unmarshalCtx.createPromiseProxy = (
+    promiseId: number,
+    ref?: { __resolveCallbackId?: number },
+  ) => {
+    const resolveCallbackId = ref?.__resolveCallbackId;
+    if (typeof resolveCallbackId !== "number") {
+      throw new Error(`Promise ${promiseId} is missing a resolve callback`);
+    }
+
+    return (async () => {
+      const result = await invokeDaemonCallback(
+        state,
+        resolveCallbackId,
+        [promiseId],
+      );
+      return unmarshalValue(result, unmarshalCtx);
+    })();
+  };
+  unmarshalCtx.createIteratorProxy = (
+    iteratorId: number,
+    ref?: {
+      __nextCallbackId?: number;
+      __returnCallbackId?: number;
+      __throwCallbackId?: number;
+    },
+  ) => {
+    const nextCallbackId = ref?.__nextCallbackId;
+    const returnCallbackId = ref?.__returnCallbackId;
+    const throwCallbackId = ref?.__throwCallbackId;
+
+    if (typeof nextCallbackId !== "number") {
+      throw new Error(`Iterator ${iteratorId} is missing a next callback`);
+    }
+
+    const invokeIteratorCallback = async (
+      callbackId: number,
+      args: unknown[],
+      label: string,
+    ) => {
+      const result = await invokeDaemonCallback(state, callbackId, args);
+      if (
+        !result ||
+        typeof result !== "object" ||
+        !("done" in result)
+      ) {
+        throw new Error(`${label} returned an invalid iterator result`);
+      }
+      return result as { done?: boolean; value?: unknown };
+    };
+
+    return {
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      async next() {
+        const result = await invokeIteratorCallback(
+          nextCallbackId,
+          [iteratorId],
+          "Iterator next()",
+        );
+        return {
+          done: Boolean(result.done),
+          value: unmarshalValue(result.value, unmarshalCtx),
+        };
+      },
+      async return(value?: unknown) {
+        if (typeof returnCallbackId !== "number") {
+          return { done: true, value };
+        }
+
+        const result = await invokeIteratorCallback(
+          returnCallbackId,
+          [iteratorId, value],
+          "Iterator return()",
+        );
+        return {
+          done: result.done ?? true,
+          value: unmarshalValue(result.value, unmarshalCtx),
+        };
+      },
+      async throw(errorValue?: unknown) {
+        if (typeof throwCallbackId !== "number") {
+          throw errorValue;
+        }
+
+        const serializedError = errorValue && typeof errorValue === "object"
+          ? {
+              message: (errorValue as { message?: unknown }).message,
+              name: (errorValue as { name?: unknown }).name,
+              stack: (errorValue as { stack?: unknown }).stack,
+            }
+          : {
+              message: String(errorValue ?? "Iterator throw()"),
+              name: "Error",
+            };
+        const result = await invokeIteratorCallback(
+          throwCallbackId,
+          [iteratorId, serializedError],
+          "Iterator throw()",
+        );
+        return {
+          done: Boolean(result.done),
+          value: unmarshalValue(result.value, unmarshalCtx),
+        };
+      },
     };
   };
 

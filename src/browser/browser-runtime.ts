@@ -2,7 +2,10 @@ import path from "node:path";
 import { defaultPlaywrightHandler } from "../internal/playwright/client.ts";
 import type { RemoteRuntime, RuntimeOptions } from "../internal/client/index.ts";
 import { createRuntimeDiagnostics } from "../bridge/diagnostics.ts";
-import { createRuntimeBindingsAdapter } from "../bridge/runtime-bindings.ts";
+import {
+  createRuntimeBindingsAdapter,
+  type RuntimeBindingsAdapterOptions,
+} from "../bridge/runtime-bindings.ts";
 import { createScriptRuntimeAdapter } from "../runtime/script-runtime.ts";
 import type { BrowserRuntime, BrowserRuntimeDiagnostics, CreateBrowserRuntimeOptions } from "../types.ts";
 
@@ -28,6 +31,7 @@ function getMimeType(filePath: string): string {
 export async function createBrowserRuntimeAdapter(
   createRuntime: (options: RuntimeOptions) => Promise<RemoteRuntime>,
   options: CreateBrowserRuntimeOptions,
+  adapterOptions?: RuntimeBindingsAdapterOptions,
 ): Promise<BrowserRuntime> {
   const diagnostics = createRuntimeDiagnostics();
   let runtimeId = options.key ?? "browser-runtime";
@@ -35,6 +39,7 @@ export async function createBrowserRuntimeAdapter(
     options.bindings,
     () => runtimeId,
     diagnostics,
+    adapterOptions,
   );
   const readFile = options.browser.readFile
     ? async (filePath: string) => {
@@ -60,6 +65,7 @@ export async function createBrowserRuntimeAdapter(
     testEnvironment: options.features?.tests ?? false,
     playwright: {
       handler: playwrightHandler,
+      hasDefaultPage: true,
       console: options.browser.captureConsole ?? false,
       onEvent: options.browser.onEvent,
     },

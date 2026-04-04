@@ -65,6 +65,7 @@ export interface IsolateRef {
 export interface CallbackRef {
   __type: "CallbackRef";
   callbackId: number;
+  callbackKind?: "asyncGenerator";
 }
 
 /**
@@ -206,11 +207,20 @@ export interface URLRef {
 }
 
 /**
+ * Represents a serialized AbortSignal snapshot.
+ */
+export interface AbortSignalRef {
+  __type: "AbortSignalRef";
+  aborted: boolean;
+}
+
+/**
  * Represents a reference to a pending Promise.
  */
 export interface PromiseRef {
   __type: "PromiseRef";
   promiseId: number;
+  __resolveCallbackId?: number;
 }
 
 /**
@@ -240,6 +250,7 @@ export type ExtensionType =
   | FileRef
   | FormDataRef
   | URLRef
+  | AbortSignalRef
   | PromiseRef
   | AsyncIteratorRef;
 
@@ -285,13 +296,23 @@ function createExtensionCodec(): ExtensionCodec {
         (value as CallbackRef).__type === "CallbackRef"
       ) {
         const ref = value as CallbackRef;
-        return encode({ callbackId: ref.callbackId });
+        return encode({
+          callbackId: ref.callbackId,
+          callbackKind: ref.callbackKind,
+        });
       }
       return null;
     },
     decode: (data: Uint8Array): CallbackRef => {
-      const decoded = decode(data) as { callbackId: number };
-      return { __type: "CallbackRef", callbackId: decoded.callbackId };
+      const decoded = decode(data) as {
+        callbackId: number;
+        callbackKind?: "asyncGenerator";
+      };
+      return {
+        __type: "CallbackRef",
+        callbackId: decoded.callbackId,
+        callbackKind: decoded.callbackKind,
+      };
     },
   });
 
@@ -676,7 +697,7 @@ function createExtensionCodec(): ExtensionCodec {
         const encoded: Record<string, unknown> = { promiseId: ref.promiseId };
         // Preserve callback ID fields if present
         if ("__resolveCallbackId" in ref) {
-          encoded.__resolveCallbackId = (ref as Record<string, unknown>).__resolveCallbackId;
+          encoded.__resolveCallbackId = (ref as unknown as Record<string, unknown>).__resolveCallbackId;
         }
         return encode(encoded);
       }
@@ -784,8 +805,11 @@ export function createIsolateRef(isolateId: string): IsolateRef {
   return { __type: "IsolateRef", isolateId };
 }
 
-export function createCallbackRef(callbackId: number): CallbackRef {
-  return { __type: "CallbackRef", callbackId };
+export function createCallbackRef(
+  callbackId: number,
+  callbackKind?: "asyncGenerator",
+): CallbackRef {
+  return { __type: "CallbackRef", callbackId, callbackKind };
 }
 
 export function createStreamRef(
@@ -887,6 +911,10 @@ export function createFormDataRef(
 
 export function createURLRef(href: string): URLRef {
   return { __type: "URLRef", href };
+}
+
+export function createAbortSignalRef(aborted: boolean): AbortSignalRef {
+  return { __type: "AbortSignalRef", aborted };
 }
 
 export function createPromiseRef(promiseId: number): PromiseRef {

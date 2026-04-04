@@ -18,6 +18,7 @@ import {
   type FileRef,
   type FormDataRef,
   type URLRef,
+  type AbortSignalRef,
   type PromiseRef,
   type AsyncIteratorRef,
   type BlobRef,
@@ -33,6 +34,7 @@ import {
   createFileRef,
   createFormDataRef,
   createURLRef,
+  createAbortSignalRef,
   createPromiseRef,
   createAsyncIteratorRef,
   createBlobRef,
@@ -77,9 +79,15 @@ export interface UnmarshalContext {
   /** Get a callback function by ID */
   getCallback?: (id: number) => ((...args: unknown[]) => unknown) | undefined;
   /** Create a proxy Promise for a PromiseRef */
-  createPromiseProxy?: (promiseId: number) => Promise<unknown>;
+  createPromiseProxy?: (
+    promiseId: number,
+    ref?: PromiseRef,
+  ) => Promise<unknown>;
   /** Create a proxy AsyncIterator for an AsyncIteratorRef */
-  createIteratorProxy?: (iteratorId: number) => AsyncIterator<unknown>;
+  createIteratorProxy?: (
+    iteratorId: number,
+    ref?: AsyncIteratorRef,
+  ) => AsyncIterator<unknown>;
   /** Get a Blob by ID */
   getBlob?: (blobId: number) => Blob | undefined;
 }
@@ -141,6 +149,38 @@ const SUPPORTED_CLASSES = new Set([
   "ArrayBuffer",
   "DataView",
 ]);
+
+function getCallbackKind(
+  value: Function,
+): "asyncGenerator" | undefined {
+  if (
+    (value as { __isolateCallbackKind?: unknown }).__isolateCallbackKind ===
+    "asyncGenerator"
+  ) {
+    return "asyncGenerator";
+  }
+
+  return value.constructor.name === "AsyncGeneratorFunction"
+    ? "asyncGenerator"
+    : undefined;
+}
+
+function markCallbackKind<T extends Function>(
+  callback: T,
+  callbackKind: CallbackRef["callbackKind"],
+): T {
+  if (callbackKind !== "asyncGenerator") {
+    return callback;
+  }
+
+  Object.defineProperty(callback, "__isolateCallbackKind", {
+    configurable: true,
+    enumerable: false,
+    value: callbackKind,
+    writable: false,
+  });
+  return callback;
+}
 
 /**
  * Check if a value is a typed array.
@@ -233,7 +273,7 @@ export async function marshalValue(
       );
     }
     const callbackId = ctx.registerCallback(value as Function);
-    return createCallbackRef(callbackId);
+    return createCallbackRef(callbackId, getCallbackKind(value as Function));
   }
 
   // Handle objects
@@ -260,6 +300,11 @@ export async function marshalValue(
     // Handle URL
     if (obj instanceof URL) {
       return createURLRef(obj.href);
+    }
+
+    // Handle AbortSignal as a snapshot of current state.
+    if (typeof AbortSignal !== "undefined" && obj instanceof AbortSignal) {
+      return createAbortSignalRef(obj.aborted);
     }
 
     // Handle Headers
@@ -480,7 +525,7 @@ export function marshalValueSync(
       );
     }
     const callbackId = ctx.registerCallback(value as Function);
-    return createCallbackRef(callbackId);
+    return createCallbackRef(callbackId, getCallbackKind(value as Function));
   }
 
   // Handle objects
@@ -507,6 +552,11 @@ export function marshalValueSync(
     // Handle URL
     if (obj instanceof URL) {
       return createURLRef(obj.href);
+    }
+
+    // Handle AbortSignal as a snapshot of current state.
+    if (typeof AbortSignal !== "undefined" && obj instanceof AbortSignal) {
+      return createAbortSignalRef(obj.aborted);
     }
 
     // Handle Headers
@@ -709,6 +759,14 @@ export function unmarshalValue(
           return new URL(ref.href);
         }
 
+        case "AbortSignalRef": {
+          const ref = value as AbortSignalRef;
+          if (ref.aborted) {
+            return AbortSignal.abort();
+          }
+          return new AbortController().signal;
+        }
+
         case "HeadersRef": {
           const ref = value as HeadersRef;
           return new Headers(ref.pairs);
@@ -795,7 +853,7 @@ export function unmarshalValue(
               `Cannot unmarshal CallbackRef: callback ${ref.callbackId} not found`
             );
           }
-          return callback;
+          return markCallbackKind(callback, ref.callbackKind);
         }
 
         case "PromiseRef": {
@@ -805,7 +863,7 @@ export function unmarshalValue(
               `Cannot unmarshal PromiseRef: no createPromiseProxy provided`
             );
           }
-          return ctx.createPromiseProxy(ref.promiseId);
+          return ctx.createPromiseProxy(ref.promiseId, ref);
         }
 
         case "AsyncIteratorRef": {
@@ -815,7 +873,7 @@ export function unmarshalValue(
               `Cannot unmarshal AsyncIteratorRef: no createIteratorProxy provided`
             );
           }
-          const iterator = ctx.createIteratorProxy(ref.iteratorId);
+          const iterator = ctx.createIteratorProxy(ref.iteratorId, ref);
           // Return as async iterable
           return {
             [Symbol.asyncIterator]() {

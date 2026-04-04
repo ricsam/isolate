@@ -934,7 +934,7 @@ export interface PlaywrightRegistry {
  * Used for remote runtime where the browser runs on the client.
  */
 export function createPlaywrightHandler(
-  page: Page,
+  page: Page | undefined,
   options?: DefaultPlaywrightHandlerOptions
 ): PlaywrightCallback {
   const timeout = options?.timeout ?? 30000;
@@ -945,8 +945,8 @@ export function createPlaywrightHandler(
 
   // Registry for tracking multiple pages and contexts
   const registry: PlaywrightRegistry = {
-    pages: new Map<string, Page>([["page_0", page]]),
-    contexts: new Map<string, BrowserContext>([["ctx_0", page.context()]]),
+    pages: page ? new Map<string, Page>([["page_0", page]]) : new Map<string, Page>(),
+    contexts: page ? new Map<string, BrowserContext>([["ctx_0", page.context()]]) : new Map<string, BrowserContext>(),
     nextPageId: 1,
     nextContextId: 1,
     pendingResponses: new Map(),
@@ -1633,6 +1633,16 @@ export function defaultPlaywrightHandler(
   const handler = createPlaywrightHandler(page, options) as DefaultPlaywrightHandler;
   handler[DEFAULT_PLAYWRIGHT_HANDLER_META] = { page, options };
   return handler;
+}
+
+/**
+ * Handler-first factory for contexts/pages without a default page.
+ * Used by browser bindings that expose only a stable browser object.
+ */
+export function createPlaywrightFactoryHandler(
+  options?: DefaultPlaywrightHandlerOptions
+): PlaywrightCallback {
+  return createPlaywrightHandler(undefined, options);
 }
 
 /**

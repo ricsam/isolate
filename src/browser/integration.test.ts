@@ -289,4 +289,111 @@ describe("BrowserRuntime integration", () => {
       await browserServer.close();
     }
   });
+
+  test("injects a browser factory into script runtimes and supports nested browser runtimes", async (testContext) => {
+    const browserHarness = await launchChromiumOrSkip(testContext);
+    const browserServer = await createBrowserServer();
+    const consoleEntries: ConsoleEntry[] = [];
+    let runtime: Awaited<ReturnType<IsolateHost["createRuntime"]>> | undefined;
+
+    try {
+      runtime = await host.createRuntime({
+        bindings: {
+          console: {
+            onEntry(entry) {
+              consoleEntries.push(entry);
+            },
+          },
+          browser: {
+            createContext: async (options) => await browserHarness.browser.newContext(options as never),
+            createPage: async (context) => await (context as BrowserContext).newPage(),
+          },
+        },
+      });
+
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        const nestedHost = createIsolateHost();
+        const childEntries = [];
+
+        const contextInstance = await browser.newContext();
+        const pageInstance = await contextInstance.newPage();
+        await pageInstance.goto(${JSON.stringify(browserServer.url)});
+        const text = await pageInstance.locator("#ready").textContent();
+
+        const child = await nestedHost.createBrowserRuntime({
+          browser,
+          bindings: {
+            console: {
+              onEntry(entry) {
+                if (entry.type === "output") {
+                  childEntries.push(entry.stdout);
+                }
+              },
+            },
+          },
+        });
+
+        await child.run(\`
+          await page.goto(${JSON.stringify(browserServer.url)});
+          console.log(await page.locator("#ready").textContent());
+        \`, {
+          filename: "/nested-browser-runtime.ts",
+        });
+
+        const diagnostics = await child.diagnostics();
+        await child.dispose();
+        await nestedHost.close();
+        await pageInstance.close();
+        await contextInstance.close();
+
+        console.log(JSON.stringify({
+          childEntries,
+          diagnostics: {
+            browserConsoleLogs: diagnostics.browserConsoleLogs,
+            networkRequests: diagnostics.networkRequests,
+            networkResponses: diagnostics.networkResponses,
+          },
+          hasBrowser: typeof browser === "object",
+          hasBrowserClose: typeof browser.close,
+          hasContextGlobal: typeof context,
+          hasPageGlobal: typeof page,
+          text,
+        }));
+      `, { executionTimeout: 20_000 });
+    } finally {
+      await runtime?.dispose({ hard: true, reason: "test cleanup" });
+      await browserHarness.context.close();
+      await browserHarness.browser.close();
+      await browserServer.close();
+    }
+
+    assert.equal(consoleEntries.length, 1);
+    const outputEntry = consoleEntries[0];
+    assert.equal(outputEntry?.type, "output");
+    const result = JSON.parse(outputEntry.stdout) as {
+      childEntries: string[];
+      diagnostics: {
+        browserConsoleLogs: number;
+        networkRequests: number;
+        networkResponses: number;
+      };
+      hasBrowser: boolean;
+      hasBrowserClose: string;
+      hasContextGlobal: string;
+      hasPageGlobal: string;
+      text: string | null;
+    };
+
+    assert.equal(result.hasBrowser, true);
+    assert.equal(result.hasBrowserClose, "undefined");
+    assert.equal(result.hasContextGlobal, "undefined");
+    assert.equal(result.hasPageGlobal, "undefined");
+    assert.equal(result.text, "ready");
+    assert.deepEqual(result.childEntries, ["ready"]);
+    assert.ok(result.diagnostics.browserConsoleLogs > 0);
+    assert.ok(result.diagnostics.networkRequests > 0);
+    assert.ok(result.diagnostics.networkResponses > 0);
+  });
 });

@@ -68,8 +68,6 @@ export interface IsolateInstance {
   returnedPromises?: Map<number, Promise<unknown>>;
   /** Async iterators returned by custom function calls (iterable from isolate) */
   returnedIterators?: Map<number, AsyncIterator<unknown>>;
-  /** Next ID for daemon-local callback registration (starts at high number to avoid conflicts) */
-  nextLocalCallbackId?: number;
 
   // Namespace pooling fields
   /** Namespace ID for pooling/reuse (if set, runtime is cached on dispose) */

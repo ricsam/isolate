@@ -2655,11 +2655,197 @@ interface PlaywrightPageMatchers {
 }
 `;
 
+const PLAYWRIGHT_DEFAULT_GLOBAL_TYPES = `
+/**
+ * The default page object.
+ */
+declare const page: IsolatePage;
+
+/**
+ * The default browser context.
+ */
+declare const context: IsolateContext;
+
+/**
+ * Browser object for creating new contexts.
+ */
+declare const browser: IsolateBrowser;
+`;
+
+const PLAYWRIGHT_BROWSER_FACTORY_GLOBAL_TYPES = `
+/**
+ * Browser object for creating new contexts.
+ */
+declare const browser: IsolateBrowser;
+`;
+
+export const SANDBOX_ISOLATE_TYPES = `
+declare module "@ricsam/isolate" {
+  export interface NestedModuleImporter {
+    path: string;
+    resolveDir: string;
+  }
+
+  export interface NestedModuleSource {
+    code: string;
+    filename: string;
+    resolveDir: string;
+    static?: boolean;
+  }
+
+  export type NestedModuleResolveResult =
+    | string
+    | NestedModuleSource
+    | null
+    | undefined
+    | Promise<string | NestedModuleSource | null | undefined>;
+
+  export interface NestedFileBindings {
+    readFile?: (path: string) => Promise<ArrayBuffer>;
+    writeFile?: (path: string, data: ArrayBuffer) => Promise<void>;
+    unlink?: (path: string) => Promise<void>;
+    readdir?: (path: string) => Promise<string[]>;
+    mkdir?: (path: string, options?: { recursive?: boolean }) => Promise<void>;
+    rmdir?: (path: string) => Promise<void>;
+    stat?: (
+      path: string,
+    ) => Promise<{ isFile: boolean; isDirectory: boolean; size: number }>;
+    rename?: (from: string, to: string) => Promise<void>;
+  }
+
+  export interface NestedBrowserBindings {
+    createContext?: (options: unknown) => Promise<unknown> | unknown;
+    createPage?: (contextHandle: unknown) => Promise<unknown> | unknown;
+  }
+
+  export interface NestedHostBindings {
+    console?: {
+      onEntry?: (entry: unknown) => void;
+    };
+    fetch?: (request: Request) => Response | Promise<Response>;
+    files?: NestedFileBindings;
+    modules?: {
+      resolve(
+        specifier: string,
+        importer: NestedModuleImporter,
+      ): NestedModuleResolveResult;
+    };
+    tools?: Record<string, (...args: any[]) => unknown>;
+    browser?: unknown;
+  }
+
+  export interface NestedRuntimeDiagnostics {
+    activeRequests: number;
+    activeResources: number;
+    pendingFiles: number;
+    pendingFetches: number;
+    pendingModules: number;
+    pendingTools: number;
+    streamCount: number;
+    lastError?: string;
+    reused?: boolean;
+    lifecycleState: "idle" | "active" | "reloading" | "disposing";
+  }
+
+  export interface NestedHostDiagnostics {
+    runtimes: number;
+    servers: number;
+    connected: boolean;
+  }
+
+  export type NestedRequestResult =
+    | { type: "response"; response: Response }
+    | { type: "websocket"; upgradeData: Record<string, unknown> };
+
+  export interface NestedScriptRuntime {
+    eval(
+      code: string,
+      options?: string | { filename?: string; executionTimeout?: number },
+    ): Promise<void>;
+    dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+    diagnostics(): Promise<NestedRuntimeDiagnostics>;
+    events: {
+      on(event: string, handler: (payload: unknown) => void): () => void;
+      emit(event: string, payload: unknown): Promise<void>;
+    };
+    tests: {
+      run(options?: { timeoutMs?: number }): Promise<unknown>;
+      hasTests(): Promise<boolean>;
+      reset(): Promise<void>;
+    };
+  }
+
+  export interface NestedAppServer {
+    handle(
+      request: Request | string,
+      options?: { requestId?: string; metadata?: Record<string, string> },
+    ): Promise<NestedRequestResult>;
+    ws: {
+      open(connectionId: string): Promise<void>;
+      message(connectionId: string, data: string | ArrayBuffer): Promise<void>;
+      close(connectionId: string, code: number, reason: string): Promise<void>;
+      error(connectionId: string, error: Error): Promise<void>;
+    };
+    reload(reason?: string): Promise<void>;
+    dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+    diagnostics(): Promise<NestedRuntimeDiagnostics>;
+  }
+
+  export interface NestedBrowserRuntime {
+    run(
+      code: string,
+      options?: { filename?: string; asTestSuite?: boolean; timeoutMs?: number },
+    ): Promise<{ tests?: unknown; value?: unknown }>;
+    diagnostics(): Promise<NestedRuntimeDiagnostics & Record<string, unknown>>;
+    dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+  }
+
+  export interface NestedCreateRuntimeOptions {
+    key?: string;
+    bindings?: NestedHostBindings;
+    features?: {
+      tests?: boolean;
+    };
+    cwd?: string;
+    executionTimeout?: number;
+    memoryLimitMB?: number;
+  }
+
+  export interface NestedCreateAppServerOptions extends NestedCreateRuntimeOptions {
+    key: string;
+    entry: string;
+    entryFilename?: string;
+  }
+
+  export interface NestedCreateBrowserRuntimeOptions extends NestedCreateRuntimeOptions {
+    browser?: unknown;
+  }
+
+  export interface NestedIsolateHost {
+    createRuntime(options?: NestedCreateRuntimeOptions): Promise<NestedScriptRuntime>;
+    createAppServer(options: NestedCreateAppServerOptions): Promise<NestedAppServer>;
+    createBrowserRuntime(
+      options?: NestedCreateBrowserRuntimeOptions,
+    ): Promise<NestedBrowserRuntime>;
+    diagnostics(): Promise<NestedHostDiagnostics>;
+    close(): Promise<void>;
+  }
+
+  export function createIsolateHost(): NestedIsolateHost;
+}
+`;
+
+export const BROWSER_FACTORY_TYPES = PLAYWRIGHT_TYPES.replace(
+  PLAYWRIGHT_DEFAULT_GLOBAL_TYPES,
+  PLAYWRIGHT_BROWSER_FACTORY_GLOBAL_TYPES,
+);
+
 /**
  * Map of package names to their type definitions.
  */
 export const TYPE_DEFINITIONS = {
   core: CORE_TYPES,
+  sandboxIsolate: SANDBOX_ISOLATE_TYPES,
   console: CONSOLE_TYPES,
   crypto: CRYPTO_TYPES,
   encoding: ENCODING_TYPES,
@@ -2669,6 +2855,7 @@ export const TYPE_DEFINITIONS = {
   testEnvironment: TEST_ENV_TYPES,
   timers: TIMERS_TYPES,
   playwright: PLAYWRIGHT_TYPES,
+  browserFactory: BROWSER_FACTORY_TYPES,
 } as const;
 
 /**

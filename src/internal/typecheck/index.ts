@@ -16,6 +16,8 @@ export {
   TEST_ENV_TYPES,
   TIMERS_TYPES,
   PLAYWRIGHT_TYPES,
+  BROWSER_FACTORY_TYPES,
+  SANDBOX_ISOLATE_TYPES,
   TYPE_DEFINITIONS,
   type TypeDefinitionKey,
 } from "./isolate-types.ts";

@@ -1,0 +1,511 @@
+import { randomUUID } from "node:crypto";
+import type { NestedHostBindings, NestedResourceKind } from "../bridge/sandbox-isolate.ts";
+import {
+  createBrowserSourceFromUnknown,
+  isDefaultBrowserDescriptor,
+  requireBrowserSource,
+  type BrowserSource,
+} from "../internal/browser-source.ts";
+import type {
+  AppServer,
+  BrowserRuntime,
+  CreateAppServerOptions,
+  CreateBrowserRuntimeOptions,
+  CreateRuntimeOptions,
+  HostBindings,
+  HostCallContext,
+  RequestResult,
+  ScriptRuntime,
+} from "../types.ts";
+
+interface NestedHostFactory {
+  createRuntime(options: CreateRuntimeOptions): Promise<ScriptRuntime>;
+  createAppServer(options: CreateAppServerOptions): Promise<AppServer>;
+  createBrowserRuntime(
+    options: CreateBrowserRuntimeOptions,
+    browserSource: BrowserSource,
+  ): Promise<BrowserRuntime>;
+  isConnected(): boolean;
+}
+
+interface NestedHostRecord {
+  runtimeIds: Set<string>;
+  serverIds: Set<string>;
+  closed: boolean;
+}
+
+interface RuntimeResourceRecord {
+  kind: "runtime";
+  hostId: string;
+  resource: ScriptRuntime;
+  subscriptions: Map<string, () => void>;
+}
+
+interface AppServerResourceRecord {
+  kind: "appServer";
+  hostId: string;
+  resource: AppServer;
+}
+
+interface BrowserRuntimeResourceRecord {
+  kind: "browserRuntime";
+  hostId: string;
+  resource: BrowserRuntime;
+}
+
+type NestedResourceRecord =
+  | RuntimeResourceRecord
+  | AppServerResourceRecord
+  | BrowserRuntimeResourceRecord;
+
+interface SerializedRequestLike {
+  url: string;
+  method?: string;
+  headers?: Array<[string, string]>;
+  body?: number[] | null;
+}
+
+function toRequest(serialized: SerializedRequestLike): Request {
+  return new Request(serialized.url, {
+    method: serialized.method ?? "GET",
+    headers: serialized.headers,
+    body: serialized.body ? new Uint8Array(serialized.body) : null,
+  });
+}
+
+function normalizeBindings(
+  bindings: HostBindings | undefined,
+  defaultBrowserSource: BrowserSource | undefined,
+): HostBindings {
+  const normalized: HostBindings = {
+    console: bindings?.console,
+    fetch: bindings?.fetch,
+    files: bindings?.files,
+    modules: bindings?.modules,
+    tools: bindings?.tools,
+  };
+
+  if (!bindings || !("browser" in bindings) || bindings.browser === undefined) {
+    return normalized;
+  }
+
+  if (isDefaultBrowserDescriptor(bindings.browser)) {
+    normalized.browser = requireBrowserSource(
+      defaultBrowserSource,
+      "Nested browser bindings",
+    );
+    return normalized;
+  }
+
+  const browserSource = createBrowserSourceFromUnknown(bindings.browser);
+  if (!browserSource) {
+    throw new Error(
+      "Nested browser bindings must use the sandbox browser handle or expose createContext()/createPage().",
+    );
+  }
+
+  normalized.browser = browserSource;
+  return normalized;
+}
+
+function normalizeRuntimeOptions(
+  options: CreateRuntimeOptions,
+  defaultBrowserSource: BrowserSource | undefined,
+): CreateRuntimeOptions {
+  return {
+    ...options,
+    bindings: normalizeBindings(options.bindings, defaultBrowserSource),
+  };
+}
+
+function normalizeAppServerOptions(
+  options: CreateAppServerOptions,
+  defaultBrowserSource: BrowserSource | undefined,
+): CreateAppServerOptions {
+  return {
+    ...options,
+    bindings: normalizeBindings(options.bindings, defaultBrowserSource),
+  };
+}
+
+function resolveBrowserSource(
+  handle: unknown,
+  defaultBrowserSource: BrowserSource | undefined,
+  operation: string,
+): BrowserSource {
+  if (handle == null) {
+    return requireBrowserSource(defaultBrowserSource, operation);
+  }
+
+  if (!isDefaultBrowserDescriptor(handle)) {
+    const browserSource = createBrowserSourceFromUnknown(handle);
+    if (!browserSource) {
+      throw new Error(
+        `${operation} expects the sandbox browser handle or a browser binding with createContext()/createPage().`,
+      );
+    }
+    return requireBrowserSource(browserSource, operation);
+  }
+
+  return requireBrowserSource(defaultBrowserSource, operation);
+}
+
+function toError(value: unknown): Error {
+  if (value instanceof Error) {
+    return value;
+  }
+
+  if (
+    value &&
+    typeof value === "object" &&
+    "message" in value &&
+    typeof (value as { message?: unknown }).message === "string"
+  ) {
+    const error = new Error((value as { message: string }).message);
+    if (
+      "name" in value &&
+      typeof (value as { name?: unknown }).name === "string"
+    ) {
+      error.name = (value as { name: string }).name;
+    }
+    return error;
+  }
+
+  return new Error(String(value));
+}
+
+export function createNestedHostBindings(
+  factory: NestedHostFactory,
+  defaultBrowserSource: BrowserSource | undefined,
+): NestedHostBindings {
+  const hosts = new Map<string, NestedHostRecord>();
+  const resources = new Map<string, NestedResourceRecord>();
+
+  const requireHost = (hostId: string): NestedHostRecord => {
+    const host = hosts.get(hostId);
+    if (!host || host.closed) {
+      throw new Error(`Nested host ${hostId} is not available.`);
+    }
+    return host;
+  };
+
+  const requireResource = (
+    resourceId: string,
+    expectedKind: NestedResourceKind,
+  ): NestedResourceRecord => {
+    const resource = resources.get(resourceId);
+    if (!resource || resource.kind !== expectedKind) {
+      throw new Error(
+        `Nested resource ${resourceId} is not available for ${expectedKind}.`,
+      );
+    }
+    return resource;
+  };
+
+  const unregisterResource = (resourceId: string): void => {
+    const record = resources.get(resourceId);
+    if (!record) {
+      return;
+    }
+
+    const host = hosts.get(record.hostId);
+    if (host) {
+      if (record.kind === "appServer") {
+        host.serverIds.delete(resourceId);
+      } else {
+        host.runtimeIds.delete(resourceId);
+      }
+    }
+
+    if (record.kind === "runtime") {
+      for (const unsubscribe of record.subscriptions.values()) {
+        unsubscribe();
+      }
+      record.subscriptions.clear();
+    }
+
+    resources.delete(resourceId);
+  };
+
+  const disposeResource = async (
+    resourceId: string,
+    options: { hard?: boolean; reason?: string },
+  ): Promise<void> => {
+    const record = resources.get(resourceId);
+    if (!record) {
+      return;
+    }
+
+    try {
+      await record.resource.dispose(options);
+    } finally {
+      unregisterResource(resourceId);
+    }
+  };
+
+  return {
+    async createHost() {
+      const hostId = randomUUID();
+      hosts.set(hostId, {
+        runtimeIds: new Set(),
+        serverIds: new Set(),
+        closed: false,
+      });
+      return hostId;
+    },
+    async closeHost(hostId) {
+      const host = requireHost(hostId);
+      host.closed = true;
+      const resourceIds = [
+        ...host.serverIds,
+        ...host.runtimeIds,
+      ];
+      await Promise.allSettled(
+        resourceIds.map(async (resourceId) => {
+          await disposeResource(resourceId, {
+            hard: true,
+            reason: "Nested isolate host closed",
+          });
+        }),
+      );
+      hosts.delete(hostId);
+    },
+    async diagnostics(hostId) {
+      const host = requireHost(hostId);
+      return {
+        runtimes: host.runtimeIds.size,
+        servers: host.serverIds.size,
+        connected: factory.isConnected(),
+      };
+    },
+    async createResource(hostId, kind, rawOptions, context) {
+      const host = requireHost(hostId);
+      switch (kind) {
+        case "runtime": {
+          const options = normalizeRuntimeOptions(
+            rawOptions as CreateRuntimeOptions,
+            defaultBrowserSource,
+          );
+          const resource = await factory.createRuntime(options);
+          const resourceId = randomUUID();
+          resources.set(resourceId, {
+            kind,
+            hostId,
+            resource,
+            subscriptions: new Map(),
+          });
+          host.runtimeIds.add(resourceId);
+          return resourceId;
+        }
+
+        case "appServer": {
+          const options = normalizeAppServerOptions(
+            rawOptions as CreateAppServerOptions,
+            defaultBrowserSource,
+          );
+          const resource = await factory.createAppServer(options);
+          const resourceId = randomUUID();
+          resources.set(resourceId, {
+            kind,
+            hostId,
+            resource,
+          });
+          host.serverIds.add(resourceId);
+          return resourceId;
+        }
+
+        case "browserRuntime": {
+          const browserOptions = rawOptions as Omit<CreateBrowserRuntimeOptions, "browser"> & {
+            browser?: unknown;
+          };
+          const browserSource = resolveBrowserSource(
+            browserOptions.browser,
+            defaultBrowserSource,
+            "createBrowserRuntime()",
+          );
+          const contextHandle = await browserSource.createContext?.(
+            undefined,
+            context,
+          );
+          const pageHandle = await browserSource.createPage?.(
+            contextHandle,
+            context,
+          );
+          const resource = await factory.createBrowserRuntime(
+            {
+              key: browserOptions.key,
+              bindings: normalizeBindings(
+                browserOptions.bindings,
+                defaultBrowserSource,
+              ),
+              features: browserOptions.features,
+              cwd: browserOptions.cwd,
+              executionTimeout: browserOptions.executionTimeout,
+              memoryLimitMB: browserOptions.memoryLimitMB,
+              browser: {
+                page: pageHandle,
+                readFile: browserSource.readFile,
+                captureConsole: browserSource.captureConsole,
+                writeFile: browserSource.writeFile,
+                createPage: browserSource.createPage
+                  ? async (targetContext: unknown) =>
+                      await browserSource.createPage!(targetContext, context)
+                  : undefined,
+                createContext: browserSource.createContext
+                  ? async (contextOptions?: unknown) =>
+                      await browserSource.createContext!(contextOptions, context)
+                  : undefined,
+                onEvent: browserSource.onEvent,
+              },
+            },
+            browserSource,
+          );
+          const resourceId = randomUUID();
+          resources.set(resourceId, {
+            kind,
+            hostId,
+            resource,
+          });
+          host.runtimeIds.add(resourceId);
+          return resourceId;
+        }
+      }
+    },
+    async callResource(kind, resourceId, method, args) {
+      const record = requireResource(resourceId, kind);
+
+      switch (kind) {
+        case "runtime": {
+          const runtimeRecord = record as RuntimeResourceRecord;
+          switch (method) {
+            case "eval":
+              await runtimeRecord.resource.eval(
+                args[0] as string,
+                (args[1] as string | { filename?: string; executionTimeout?: number } | null) ??
+                  undefined,
+              );
+              return undefined;
+            case "dispose":
+              await disposeResource(resourceId, (args[0] as { hard?: boolean; reason?: string } | null) ?? {});
+              return undefined;
+            case "diagnostics":
+              return await runtimeRecord.resource.diagnostics();
+            case "events.on": {
+              const subscriptionId = randomUUID();
+              const unsubscribe = runtimeRecord.resource.events.on(
+                args[0] as string,
+                args[1] as (payload: unknown) => void,
+              );
+              runtimeRecord.subscriptions.set(subscriptionId, unsubscribe);
+              return subscriptionId;
+            }
+            case "events.off": {
+              const subscriptionId = args[0] as string;
+              const unsubscribe = runtimeRecord.subscriptions.get(subscriptionId);
+              if (unsubscribe) {
+                unsubscribe();
+                runtimeRecord.subscriptions.delete(subscriptionId);
+              }
+              return undefined;
+            }
+            case "events.emit":
+              await runtimeRecord.resource.events.emit(
+                args[0] as string,
+                args[1],
+              );
+              return undefined;
+            case "tests.run":
+              return await runtimeRecord.resource.tests.run(
+                ((args[0] as { timeoutMs?: number } | null) ?? undefined),
+              );
+            case "tests.hasTests":
+              return await runtimeRecord.resource.tests.hasTests();
+            case "tests.reset":
+              await runtimeRecord.resource.tests.reset();
+              return undefined;
+            default:
+              throw new Error(`Unsupported nested runtime method: ${method}`);
+          }
+        }
+
+        case "appServer": {
+          const server = (record as AppServerResourceRecord).resource;
+          switch (method) {
+            case "handle": {
+              const result = await server.handle(
+                toRequest(args[0] as SerializedRequestLike),
+                ((args[1] as {
+                  requestId?: string;
+                  metadata?: Record<string, string>;
+                } | null) ?? undefined),
+              );
+              return result;
+            }
+            case "ws.open":
+              await server.ws.open(args[0] as string);
+              return undefined;
+            case "ws.message":
+              await server.ws.message(
+                args[0] as string,
+                args[1] as string | ArrayBuffer,
+              );
+              return undefined;
+            case "ws.close":
+              await server.ws.close(
+                args[0] as string,
+                args[1] as number,
+                args[2] as string,
+              );
+              return undefined;
+            case "ws.error":
+              await server.ws.error(
+                args[0] as string,
+                toError(args[1]),
+              );
+              return undefined;
+            case "reload":
+              await server.reload((args[0] as string | null) ?? undefined);
+              return undefined;
+            case "dispose":
+              await disposeResource(
+                resourceId,
+                ((args[0] as { hard?: boolean; reason?: string } | null) ?? {}),
+              );
+              return undefined;
+            case "diagnostics":
+              return await server.diagnostics();
+            default:
+              throw new Error(`Unsupported nested app server method: ${method}`);
+          }
+        }
+
+        case "browserRuntime": {
+          const runtime = (record as BrowserRuntimeResourceRecord).resource;
+          switch (method) {
+            case "run":
+              return await runtime.run(
+                args[0] as string,
+                ((args[1] as {
+                  filename?: string;
+                  asTestSuite?: boolean;
+                  timeoutMs?: number;
+                } | null) ?? undefined),
+              );
+            case "dispose":
+              await disposeResource(
+                resourceId,
+                ((args[0] as { hard?: boolean; reason?: string } | null) ?? {}),
+              );
+              return undefined;
+            case "diagnostics":
+              return await runtime.diagnostics();
+            default:
+              throw new Error(
+                `Unsupported nested browser runtime method: ${method}`,
+              );
+          }
+        }
+      }
+    },
+  };
+}

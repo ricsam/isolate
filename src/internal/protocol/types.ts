@@ -286,6 +286,8 @@ export interface TestEnvironmentOptionsProtocol {
 export interface PlaywrightOptionsProtocol {
   /** Default timeout for Playwright operations in ms */
   timeout?: number;
+  /** Whether the isolate should expose default page/context globals. */
+  hasDefaultPage?: boolean;
 }
 
 export interface CreateRuntimeRequest extends BaseMessage {
@@ -1060,6 +1062,8 @@ export interface PlaywrightFileData {
 export interface PlaywrightOptions {
   /** Handler callback for Playwright operations (required when playwright is enabled) */
   handler: (op: PlaywrightOperation) => Promise<PlaywrightResult>;
+  /** Whether the isolate should expose default page/context globals. */
+  hasDefaultPage?: boolean;
   /** Default timeout for operations in ms */
   timeout?: number;
   /** If true, browser console logs are routed through console handler (or printed to stdout if no handler) */
