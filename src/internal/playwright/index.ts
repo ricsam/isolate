@@ -741,7 +741,7 @@ export async function setupPlaywright(
     async isChecked(selector) { return this.locator(selector).isChecked(); }
     async isHidden(selector) { return this.locator(selector).isHidden(); }
     async isDisabled(selector) { return this.locator(selector).isDisabled(); }
-    async screenshot(options) { return __pw_invoke("screenshot", [options || {}], { pageId: this.#pageId }); }
+    async screenshot(options) { await __pw_invoke("screenshot", [options || {}], { pageId: this.#pageId }); }
     async setViewportSize(size) { return __pw_invoke("setViewportSize", [size], { pageId: this.#pageId }); }
     async viewportSize() { return __pw_invoke("viewportSize", [], { pageId: this.#pageId }); }
     async emulateMedia(options) { return __pw_invoke("emulateMedia", [options], { pageId: this.#pageId }); }
@@ -1043,8 +1043,7 @@ export async function setupPlaywright(
       return __pw_invoke("locatorAction", [...this._getInfo(), "setInputFiles", serializedFiles], { pageId: this.#pageId });
     }
     async screenshot(options) {
-      const base64 = await __pw_invoke("locatorAction", [...this._getInfo(), "screenshot", options || {}], { pageId: this.#pageId });
-      return base64;
+      await __pw_invoke("locatorAction", [...this._getInfo(), "screenshot", options || {}], { pageId: this.#pageId });
     }
     async dragTo(target) {
       const targetInfo = target._getInfo();

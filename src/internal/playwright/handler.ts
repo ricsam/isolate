@@ -796,13 +796,12 @@ export async function executeLocatorAction(
         if (!fileIO?.writeFile) {
           throw new Error(
             "screenshot() with path option requires a writeFile callback to be provided. " +
-            "Either provide a writeFile callback in defaultPlaywrightHandler options, or omit the path option " +
-            "and handle the returned base64 data yourself."
+            "Either provide a writeFile callback in defaultPlaywrightHandler options, or remove the path option."
           );
         }
         await fileIO.writeFile(opts.path, buffer);
       }
-      return buffer.toString('base64');
+      return undefined;
     }
     case "dragTo": {
       const targetInfo = actionArg as [string, string, string | null];
@@ -1796,13 +1795,12 @@ export function createPlaywrightHandler(
             if (!fileIO.writeFile) {
               throw new Error(
                 "screenshot() with path option requires a writeFile callback to be provided. " +
-                "Either provide a writeFile callback in defaultPlaywrightHandler options, or omit the path option " +
-                "and handle the returned base64 data yourself."
+                "Either provide a writeFile callback in defaultPlaywrightHandler options, or remove the path option."
               );
             }
             await fileIO.writeFile(screenshotOptions.path, buffer);
           }
-          return { ok: true, value: buffer.toString('base64') };
+          return { ok: true };
         }
         case "setViewportSize": {
           const [size] = op.args as [{ width: number; height: number }];

@@ -285,6 +285,73 @@ describe("browser-enabled runtimes", () => {
     }
   });
 
+  test("routes Playwright screenshots through browser.writeFile and returns undefined", async (testContext) => {
+    const browserHarness = await launchChromiumOrSkip(testContext);
+    const screenshotResults: string[] = [];
+    const writeFileCalls: Array<{ path: string; size: number }> = [];
+    let runtime: Awaited<ReturnType<IsolateHost["createRuntime"]>> | undefined;
+
+    try {
+      runtime = await host.createRuntime({
+        bindings: {
+          tools: {
+            recordScreenshotResult: async (...args: [...unknown[], HostCallContext]) => {
+              screenshotResults.push(args[0] as string);
+            },
+          },
+          browser: {
+            async createContext(options) {
+              return await browserHarness.browser.newContext(options as never);
+            },
+            async createPage(context) {
+              return await (context as BrowserContext).newPage();
+            },
+            async writeFile(filePath, data) {
+              writeFileCalls.push({ path: filePath, size: data.byteLength });
+            },
+          },
+        },
+      });
+
+      await runtime.eval(`
+        const context = await browser.newContext();
+        const page = await context.newPage();
+
+        await page.goto(
+          'data:text/html,' +
+            encodeURIComponent('<div id="ready" style="width:160px;height:90px;background:#f97316;color:white;padding:16px">ready</div>')
+        );
+
+        const pageResult = await page.screenshot({
+          path: "/tmp/page-screenshot.jpg",
+          type: "jpeg",
+          quality: 50,
+        });
+        await recordScreenshotResult(typeof pageResult);
+
+        const locatorResult = await page.locator("#ready").screenshot({
+          path: "/tmp/locator-screenshot.jpg",
+          type: "jpeg",
+          quality: 50,
+        });
+        await recordScreenshotResult(typeof locatorResult);
+
+        await context.close();
+      `, { executionTimeout: 10_000 });
+
+      assert.deepEqual(screenshotResults, ["undefined", "undefined"]);
+      assert.deepEqual(
+        writeFileCalls.map((call) => call.path),
+        ["/tmp/page-screenshot.jpg", "/tmp/locator-screenshot.jpg"],
+      );
+      assert.ok(writeFileCalls.every((call) => call.size > 0));
+    } finally {
+      await runtime?.dispose({ hard: true, reason: "test cleanup" });
+      await browserHarness.context.close();
+      await browserHarness.browser.close();
+    }
+  });
+
   test("starts Playwright waiters without blocking later isolate work", async (testContext) => {
     const browserHarness = await launchChromiumOrSkip(testContext);
     const browserServer = await createBrowserServer();

@@ -2314,7 +2314,7 @@ declare class Locator {
   /** Set input files for a file input */
   setInputFiles(files: string | string[] | { name: string; mimeType: string; buffer: ArrayBuffer | Uint8Array | string }[]): Promise<void>;
   /** Take a screenshot of the element */
-  screenshot(options?: { path?: string; type?: "png" | "jpeg"; quality?: number }): Promise<string>;
+  screenshot(options?: { path?: string; type?: "png" | "jpeg"; quality?: number }): Promise<void>;
   /** Drag to another element */
   dragTo(target: Locator): Promise<void>;
   /** Scroll element into view */
@@ -2495,7 +2495,7 @@ declare class IsolatePage {
   /** Fill an input (shorthand) */
   fill(selector: string, value: string): Promise<void>;
   /** Take a screenshot */
-  screenshot(options?: { path?: string; fullPage?: boolean; type?: "png" | "jpeg"; quality?: number }): Promise<string>;
+  screenshot(options?: { path?: string; fullPage?: boolean; type?: "png" | "jpeg"; quality?: number }): Promise<void>;
   /** Generate a PDF (Chromium only) */
   pdf(options?: { path?: string; format?: string; landscape?: boolean; margin?: { top?: string; bottom?: string; left?: string; right?: string } }): Promise<string>;
   /** Set the viewport size */

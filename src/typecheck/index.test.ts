@@ -66,6 +66,37 @@ describe("typecheck helpers", () => {
     );
   });
 
+  test("types Playwright screenshots as Promise<void>", () => {
+    const ok = typecheck({
+      code: `
+        export {};
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        const result: void = await page.screenshot({ path: "/tmp/page.jpg" });
+        const locatorResult: void = await page.locator("#ready").screenshot({ path: "/tmp/locator.jpg" });
+        void result;
+        void locatorResult;
+      `,
+      capabilities: ["browser"],
+    });
+    const mismatch = typecheck({
+      code: `
+        export {};
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        const result: string = await page.screenshot({ path: "/tmp/page.jpg" });
+        void result;
+      `,
+      capabilities: ["browser"],
+    });
+
+    assert.equal(ok.success, true);
+    assert.equal(mismatch.success, false);
+    assert.ok(
+      mismatch.errors.some((error) => /void.*string|string.*void/i.test(error.message)),
+    );
+  });
+
   test("typechecks sandbox imports for @ricsam/isolate", () => {
     const result = typecheck({
       code: `
