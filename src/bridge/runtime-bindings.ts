@@ -246,11 +246,11 @@ export function createRuntimeBindingsAdapter(
     runtimeOptions: {
       console: bindings.console?.onEntry
         ? {
-            onEntry: (entry) => {
+            onEntry: async (entry) => {
               const context = contextFactory.createHostCallContext(
                 `console:${crypto.randomUUID()}`,
               );
-              bindings.console?.onEntry?.(entry, context);
+              await bindings.console?.onEntry?.(entry, context);
             },
           }
         : undefined,
@@ -512,11 +512,11 @@ function createBrowserPlaywrightOptions(
       hasDefaultPage: false,
       console: browser.captureConsole ?? false,
       onEvent: browser.onEvent
-        ? (event) => {
+        ? async (event) => {
             const context = createHostCallContext(
               `browser:event:${event.type}:${crypto.randomUUID()}`,
             );
-            browser.onEvent?.(event, context);
+            await browser.onEvent?.(event, context);
           }
         : undefined,
     };
@@ -565,11 +565,11 @@ function createBrowserPlaywrightOptions(
     hasDefaultPage: false,
     console: browser.captureConsole ?? false,
     onEvent: browser.onEvent
-      ? (event) => {
+      ? async (event) => {
           const context = createHostCallContext(
             `browser:event:${event.type}:${crypto.randomUUID()}`,
           );
-          browser.onEvent?.(event, context);
+          await browser.onEvent?.(event, context);
         }
       : undefined,
   };
@@ -761,9 +761,16 @@ function createCustomFunctions(
     definitions.__isolateHost_drainCallbacks = {
       type: "async",
       fn: async (...args: unknown[]) => {
-        const callback = args[0];
-        if (typeof callback === "function") {
-          await callback();
+        const settleTurns =
+          typeof args[0] === "number" &&
+            Number.isFinite(args[0]) &&
+            args[0] > 0
+            ? Math.floor(args[0])
+            : 1;
+
+        for (let index = 0; index < settleTurns; index += 1) {
+          await Promise.resolve();
+          await new Promise((resolve) => setTimeout(resolve, 0));
         }
       },
     };

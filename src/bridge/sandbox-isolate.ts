@@ -119,15 +119,22 @@ function __normalizeEvalOptions(options) {
   return options ?? null;
 }
 
+async function __waitForCallbackTurn() {
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 async function __waitForNestedCallbacks() {
+  const settleTurns = 3;
+
   if (typeof __isolateHost_drainCallbacks === "function") {
-    await __isolateHost_drainCallbacks(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await __isolateHost_drainCallbacks(settleTurns);
     return;
   }
 
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let index = 0; index < settleTurns; index += 1) {
+    await __waitForCallbackTurn();
+  }
 }
 
 class NestedScriptRuntime {

@@ -520,7 +520,10 @@ const ISOLATE_MARSHAL_CODE = `
   }
 
   async function __customFn_waitForTurn() {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let index = 0; index < 3; index += 1) {
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
 
   function __customFn_registerCallback(callback) {

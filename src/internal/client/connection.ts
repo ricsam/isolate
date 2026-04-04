@@ -378,7 +378,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
               testEnvCallbacks.onEvent = {
                 callbackId: onEventCallbackId,
                 name: "testEnvironment.onEvent",
-                type: 'sync',
+                type: 'async',
               };
             }
             testEnvironmentOption = {
@@ -1113,7 +1113,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         testEnvCallbacks.onEvent = {
           callbackId: onEventCallbackId,
           name: "testEnvironment.onEvent",
-          type: 'sync',
+          type: 'async',
         };
       }
 
@@ -1646,8 +1646,8 @@ function registerEventCallback(
   handler: (data: unknown) => void
 ): number {
   const callbackId = state.nextCallbackId++;
-  state.callbacks.set(callbackId, (data: unknown) => {
-    handler(data);
+  state.callbacks.set(callbackId, async (data: unknown) => {
+    await handler(data);
     return undefined;
   });
   return callbackId;
@@ -1664,10 +1664,10 @@ function registerConsoleCallbacks(
 
   if (callbacks.onEntry) {
     const callbackId = state.nextCallbackId++;
-    state.callbacks.set(callbackId, (entry: unknown) => {
-      callbacks.onEntry!(entry as Parameters<typeof callbacks.onEntry>[0]);
+    state.callbacks.set(callbackId, async (entry: unknown) => {
+      await callbacks.onEntry!(entry as Parameters<typeof callbacks.onEntry>[0]);
     });
-    registrations.onEntry = { callbackId, name: "onEntry", type: 'sync' };
+    registrations.onEntry = { callbackId, name: "onEntry", type: 'async' };
   }
 
   return registrations;
@@ -2097,7 +2097,7 @@ function registerCustomFunctions(
     registerCallback: (fn: Function): number => {
       const returnedCallbackId = state.nextCallbackId++;
       state.callbacks.set(returnedCallbackId, async (...args: unknown[]) => {
-        const fnResult = await fn(...args);
+        const fnResult = fn(...args);
         const marshalledResult = await marshalValue(fnResult, marshalCtx);
         return addCallbackIdsToRefs(marshalledResult);
       });

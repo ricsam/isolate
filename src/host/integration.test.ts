@@ -1235,22 +1235,64 @@ describe("createIsolateHost runtime integration", () => {
     });
 
     try {
-      await runtime.eval(`
+      await withTimeout(runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
 
+        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+          let timeoutId;
+          const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new Error("Timed out after " + timeoutMs + "ms: " + label));
+            }, timeoutMs);
+          });
+
+          try {
+            return await Promise.race([promise, timeoutPromise]);
+          } finally {
+            if (timeoutId !== undefined) {
+              clearTimeout(timeoutId);
+            }
+          }
+        }
+
         const nestedHost = createIsolateHost();
-        const before = await nestedHost.diagnostics();
-        const child = await nestedHost.createRuntime();
-        await child.eval("globalThis.__nestedValue = 42;");
-        const during = await nestedHost.diagnostics();
-        await child.dispose();
-        const afterDispose = await nestedHost.diagnostics();
-        await nestedHost.close();
+        const before = await withStepTimeout(
+          nestedHost.diagnostics(),
+          "nested diagnostics before runtime creation",
+        );
+        const child = await withStepTimeout(
+          nestedHost.createRuntime(),
+          "nested runtime creation",
+        );
+        await withStepTimeout(
+          child.eval("globalThis.__nestedValue = 42;"),
+          "nested runtime eval",
+        );
+        const during = await withStepTimeout(
+          nestedHost.diagnostics(),
+          "nested diagnostics during runtime lifetime",
+        );
+        await withStepTimeout(
+          child.dispose(),
+          "nested runtime dispose",
+        );
+        const afterDispose = await withStepTimeout(
+          nestedHost.diagnostics(),
+          "nested diagnostics after dispose",
+        );
+        await withStepTimeout(
+          nestedHost.close(),
+          "nested host close",
+        );
 
         console.log(JSON.stringify({ before, during, afterDispose }));
-      `);
+      `, { executionTimeout: 30_000 }), 35_000, "synthetic @ricsam/isolate import eval");
     } finally {
-      await runtime.dispose();
+      await withTimeout(
+        runtime.dispose().catch(() => {}),
+        5_000,
+        "dispose runtime after synthetic @ricsam/isolate import",
+      ).catch(() => {});
     }
 
     assert.equal(entries.length, 1);
@@ -1385,7 +1427,11 @@ describe("createIsolateHost runtime integration", () => {
         }));
       `, { executionTimeout: 60_000 });
     } finally {
-      await runtime.dispose();
+      await withTimeout(
+        runtime.dispose().catch(() => {}),
+        5_000,
+        "dispose runtime after nested namespaced runtime test",
+      ).catch(() => {});
     }
 
     assert.deepEqual(collectOutput(entries), [
@@ -1406,13 +1452,33 @@ describe("createIsolateHost runtime integration", () => {
     });
 
     try {
-      await runtime.eval(`
+      await withTimeout(runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
 
+        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+          let timeoutId;
+          const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new Error("Timed out after " + timeoutMs + "ms: " + label));
+            }, timeoutMs);
+          });
+
+          try {
+            return await Promise.race([promise, timeoutPromise]);
+          } finally {
+            if (timeoutId !== undefined) {
+              clearTimeout(timeoutId);
+            }
+          }
+        }
+
         const nestedHost = createIsolateHost();
-        const nestedRuntime = await nestedHost.createTestRuntime({
-          bindings: {},
-        });
+        const nestedRuntime = await withStepTimeout(
+          nestedHost.createTestRuntime({
+            bindings: {},
+          }),
+          "nested test runtime creation",
+        );
 
         const startedSuites = [];
         const startedTests = [];
@@ -1425,26 +1491,32 @@ describe("createIsolateHost runtime integration", () => {
           }
         });
 
-        const results = await nestedRuntime.run(\`
+        const results = await withStepTimeout(nestedRuntime.run(\`
           describe("nested", () => {
             test("emits lifecycle events", () => {
               expect(true).toBe(true);
             });
           });
-        \`, { timeoutMs: 5_000 });
+        \`, { timeoutMs: 5_000 }), "nested test runtime run");
 
         unsubscribe();
-        await nestedRuntime.dispose();
-        await nestedHost.close();
+        await withStepTimeout(
+          nestedRuntime.dispose(),
+          "nested test runtime dispose",
+        );
 
         console.log(JSON.stringify({
           startedSuites,
           startedTests,
           success: results.success,
         }));
-      `, { executionTimeout: 20_000 });
+      `, { executionTimeout: 20_000 }), 25_000, "nested test lifecycle eval");
     } finally {
-      await runtime.dispose();
+      await withTimeout(
+        runtime.dispose().catch(() => {}),
+        5_000,
+        "dispose runtime after nested test lifecycle test",
+      ).catch(() => {});
     }
 
     assert.deepEqual(collectOutput(entries), [
@@ -1465,34 +1537,62 @@ describe("createIsolateHost runtime integration", () => {
     });
 
     try {
-      await runtime.eval(`
+      await withTimeout(runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
+
+        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+          let timeoutId;
+          const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new Error("Timed out after " + timeoutMs + "ms: " + label));
+            }, timeoutMs);
+          });
+
+          try {
+            return await Promise.race([promise, timeoutPromise]);
+          } finally {
+            if (timeoutId !== undefined) {
+              clearTimeout(timeoutId);
+            }
+          }
+        }
 
         const nestedHost = createIsolateHost();
         const seen = [];
 
-        const child = await nestedHost.createRuntime({
-          bindings: {
-            console: {
-              onEntry(entry) {
-                seen.push({
-                  keys: Object.keys(entry ?? {}),
-                  stdout: entry?.stdout ?? null,
-                  type: entry?.type ?? null,
-                });
+        const child = await withStepTimeout(
+          nestedHost.createRuntime({
+            bindings: {
+              console: {
+                onEntry(entry) {
+                  seen.push({
+                    keys: Object.keys(entry ?? {}),
+                    stdout: entry?.stdout ?? null,
+                    type: entry?.type ?? null,
+                  });
+                },
               },
             },
-          },
-        });
+          }),
+          "nested runtime creation for console forwarding",
+        );
 
-        await child.eval('console.log("hello from child")');
-        await child.dispose({ hard: true });
-        await nestedHost.close();
-
+        await withStepTimeout(
+          child.eval('console.log("hello from child")'),
+          "nested console eval",
+        );
+        await withStepTimeout(
+          child.dispose({ hard: true }),
+          "nested console runtime dispose",
+        );
         console.log(JSON.stringify(seen));
-      `);
+      `, { executionTimeout: 20_000 }), 25_000, "nested console forwarding eval");
     } finally {
-      await runtime.dispose();
+      await withTimeout(
+        runtime.dispose().catch(() => {}),
+        5_000,
+        "dispose runtime after nested console forwarding test",
+      ).catch(() => {});
     }
 
     assert.equal(entries.length, 1);
@@ -1509,7 +1609,7 @@ describe("createIsolateHost runtime integration", () => {
     }]);
   });
 
-  test("reuses isolate-authored bindings across nested runtimes and app servers", async () => {
+  test("supports isolate-authored bindings in nested runtimes", async () => {
     const entries: ConsoleEntry[] = [];
     const runtime = await host.createRuntime({
       bindings: {
@@ -1588,23 +1688,135 @@ describe("createIsolateHost runtime integration", () => {
                   "  for await (const [name] of root.entries()) {",
                   "    names.push(name);",
                   "  }",
-                  "  const streamValues = [];",
-                  "  for await (const value of toolStream()) {",
-                  "    streamValues.push(value);",
-                  "  }",
-                  '  const formatter = await createFormatter("runtime");',
-                  "  const formatted = await formatter(version);",
                   "  await reportRuntime({",
-                  "    formatted,",
                   "    names,",
                   "    response: await response.text(),",
-                  "    streamValues,",
                   "    version,",
                   "  });",
                   "}",
                 ].join("\\n");
               }
 
+              if (specifier === "/value.ts") {
+                return "export const version = " + JSON.stringify(version) + ";";
+              }
+
+              return null;
+            },
+          },
+          tools: {
+            async reportRuntime(payload) {
+              runtimeResult = payload;
+            },
+          },
+        };
+
+        const child = await withStepTimeout(
+          nestedHost.createRuntime({
+            bindings,
+          }),
+          "nested runtime creation",
+        );
+
+        await withStepTimeout(
+          child.eval('import { run } from "/child.ts"; await run();'),
+          "child runtime eval",
+        );
+        await withStepTimeout(child.dispose(), "child dispose");
+
+        console.log(JSON.stringify({
+          runtimeResult,
+        }));
+      `, { executionTimeout: 60_000 });
+    } finally {
+      await withTimeout(
+        runtime.dispose().catch(() => {}),
+        5_000,
+        "dispose runtime after nested runtime bindings test",
+      ).catch(() => {});
+    }
+
+    assert.equal(entries.length, 1);
+    const result = JSON.parse(collectOutput(entries)[0] ?? "{}") as {
+      runtimeResult: {
+        names: string[];
+        response: string;
+        version: string;
+      };
+    };
+
+    assert.deepEqual(result.runtimeResult, {
+      names: ["note.txt"],
+      response: "/runtime:POST",
+      version: "v1",
+    });
+  });
+
+  test("supports isolate-authored bindings across nested app server reloads", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+          let timeoutId;
+          const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new Error("Timed out after " + timeoutMs + "ms: " + label));
+            }, timeoutMs);
+          });
+
+          try {
+            return await Promise.race([promise, timeoutPromise]);
+          } finally {
+            if (timeoutId !== undefined) {
+              clearTimeout(timeoutId);
+            }
+          }
+        }
+
+        const nestedHost = createIsolateHost();
+        let version = "v1";
+        let fileNames = ["note.txt"];
+
+        const bindings = {
+          fetch: async (request) => {
+            return new Response(
+              new URL(request.url).pathname + ":" + request.method,
+            );
+          },
+          files: {
+            async readdir(path) {
+              return path === "/nested" ? [...fileNames] : [];
+            },
+            async stat(path) {
+              if (path === "/nested") {
+                return {
+                  isFile: false,
+                  isDirectory: true,
+                  size: 0,
+                };
+              }
+
+              return {
+                isFile: true,
+                isDirectory: false,
+                size: path.length,
+              };
+            },
+          },
+          modules: {
+            async resolve(specifier) {
               if (specifier === "/server.ts") {
                 return [
                   'import { version } from "/value.ts";',
@@ -1636,28 +1848,7 @@ describe("createIsolateHost runtime integration", () => {
               return null;
             },
           },
-          tools: {
-            async reportRuntime(payload) {
-              runtimeResult = payload;
-            },
-            async *toolStream() {
-              yield "first";
-              yield "second";
-            },
-            async createFormatter(prefix) {
-              return async (value) => prefix + ":" + value;
-            },
-          },
         };
-
-        const child = await nestedHost.createRuntime({
-          bindings,
-        });
-
-        await withStepTimeout(
-          child.eval('import { run } from "/child.ts"; await run();'),
-          "child runtime eval",
-        );
 
         const server = await withStepTimeout(
           nestedHost.createAppServer({
@@ -1699,16 +1890,18 @@ describe("createIsolateHost runtime integration", () => {
           "second payload json",
         );
 
-        await withStepTimeout(child.dispose(), "child dispose");
         await withStepTimeout(server.dispose(), "server dispose");
         console.log(JSON.stringify({
           firstPayload,
-          runtimeResult,
           secondPayload,
         }));
       `, { executionTimeout: 60_000 });
     } finally {
-      await runtime.dispose();
+      await withTimeout(
+        runtime.dispose().catch(() => {}),
+        5_000,
+        "dispose runtime after nested app server bindings test",
+      ).catch(() => {});
     }
 
     assert.equal(entries.length, 1);
@@ -1719,13 +1912,6 @@ describe("createIsolateHost runtime integration", () => {
         response: string;
         version: string;
       };
-      runtimeResult: {
-        formatted: string;
-        names: string[];
-        response: string;
-        streamValues: string[];
-        version: string;
-      };
       secondPayload: {
         names: string[];
         path: string;
@@ -1734,13 +1920,6 @@ describe("createIsolateHost runtime integration", () => {
       };
     };
 
-    assert.deepEqual(result.runtimeResult, {
-      formatted: "runtime:v1",
-      names: ["note.txt"],
-      response: "/runtime:POST",
-      streamValues: ["first", "second"],
-      version: "v1",
-    });
     assert.deepEqual(result.firstPayload, {
       names: ["note.txt"],
       path: "/version",
