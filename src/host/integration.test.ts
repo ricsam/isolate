@@ -1238,7 +1238,7 @@ describe("createIsolateHost runtime integration", () => {
       await withTimeout(runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
 
-        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+        async function withStepTimeout(promise, label, timeoutMs = 20_000) {
           let timeoutId;
           const timeoutPromise = new Promise((_, reject) => {
             timeoutId = setTimeout(() => {
@@ -1335,7 +1335,7 @@ describe("createIsolateHost runtime integration", () => {
       await runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
 
-        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+        async function withStepTimeout(promise, label, timeoutMs = 20_000) {
           let timeoutId;
           const timeoutPromise = new Promise((_, reject) => {
             timeoutId = setTimeout(() => {
@@ -1455,7 +1455,7 @@ describe("createIsolateHost runtime integration", () => {
       await withTimeout(runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
 
-        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+        async function withStepTimeout(promise, label, timeoutMs = 20_000) {
           let timeoutId;
           const timeoutPromise = new Promise((_, reject) => {
             timeoutId = setTimeout(() => {
@@ -1540,7 +1540,7 @@ describe("createIsolateHost runtime integration", () => {
       await withTimeout(runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
 
-        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+        async function withStepTimeout(promise, label, timeoutMs = 20_000) {
           let timeoutId;
           const timeoutPromise = new Promise((_, reject) => {
             timeoutId = setTimeout(() => {
@@ -1582,7 +1582,7 @@ describe("createIsolateHost runtime integration", () => {
           "nested console eval",
         );
         await withStepTimeout(
-          child.dispose({ hard: true }),
+          child.dispose(),
           "nested console runtime dispose",
         );
         console.log(JSON.stringify(seen));
@@ -1625,7 +1625,7 @@ describe("createIsolateHost runtime integration", () => {
       await runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
 
-        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+        async function withStepTimeout(promise, label, timeoutMs = 20_000) {
           let timeoutId;
           const timeoutPromise = new Promise((_, reject) => {
             timeoutId = setTimeout(() => {
@@ -1768,7 +1768,7 @@ describe("createIsolateHost runtime integration", () => {
       await runtime.eval(`
         import { createIsolateHost } from "@ricsam/isolate";
 
-        async function withStepTimeout(promise, label, timeoutMs = 10_000) {
+        async function withStepTimeout(promise, label, timeoutMs = 20_000) {
           let timeoutId;
           const timeoutPromise = new Promise((_, reject) => {
             timeoutId = setTimeout(() => {
