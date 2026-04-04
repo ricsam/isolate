@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { asyncWrapProviders as hostAsyncWrapProviders } from "node:async_hooks";
 import path from "node:path";
-import { after, before, describe, test } from "node:test";
+import { afterEach, beforeEach, describe, test } from "node:test";
 import { createModuleResolver } from "../index.ts";
 import { createTestHost, createTestId, withTimeout } from "../testing/integration-helpers.ts";
 import type { ConsoleEntry, HostCallContext, IsolateHost, ToolBindings } from "../types.ts";
@@ -26,14 +26,15 @@ describe("createIsolateHost runtime integration", () => {
   let host: IsolateHost;
   let cleanup: (() => Promise<void>) | undefined;
 
-  before(async () => {
+  beforeEach(async () => {
     const testHost = await createTestHost("host-runtime-integration");
     host = testHost.host;
     cleanup = testHost.cleanup;
   });
 
-  after(async () => {
+  afterEach(async () => {
     await cleanup?.();
+    cleanup = undefined;
   });
 
   test("evaluates code and forwards console output", async () => {

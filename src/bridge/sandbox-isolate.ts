@@ -101,50 +101,6 @@ async function __waitForNestedCallbacks() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function __isNestedResourceSettled(diagnostics) {
-  const runtimeDiagnostics =
-    diagnostics && typeof diagnostics === "object" && "runtime" in diagnostics
-      ? diagnostics.runtime
-      : diagnostics;
-  return Boolean(
-    runtimeDiagnostics &&
-      typeof runtimeDiagnostics === "object" &&
-      runtimeDiagnostics.activeRequests === 0 &&
-      runtimeDiagnostics.activeResources === 0 &&
-      runtimeDiagnostics.pendingFiles === 0 &&
-      runtimeDiagnostics.pendingFetches === 0 &&
-      runtimeDiagnostics.pendingModules === 0 &&
-      runtimeDiagnostics.pendingTools === 0 &&
-      runtimeDiagnostics.streamCount === 0 &&
-      runtimeDiagnostics.lifecycleState === "idle",
-  );
-}
-
-async function __waitForNestedResource(resource) {
-  let settledChecks = 0;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const diagnostics = await resource.diagnostics();
-    if (__isNestedResourceSettled(diagnostics)) {
-      settledChecks += 1;
-      if (settledChecks >= 4) {
-        await __waitForNestedCallbacks();
-        return;
-      }
-    } else {
-      settledChecks = 0;
-    }
-    await __waitForNestedCallbacks();
-  }
-}
-
-async function __flushNestedCallbacks() {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    await __waitForNestedCallbacks();
-    await __isolateHost_drainCallbacks(() => {});
-  }
-  await __waitForNestedCallbacks();
-}
-
 class NestedScriptRuntime {
   #resourceId;
 
@@ -159,8 +115,7 @@ class NestedScriptRuntime {
       "eval",
       [code, __normalizeEvalOptions(options)],
     );
-    await __waitForNestedResource(this);
-    await __flushNestedCallbacks();
+    await __waitForNestedCallbacks();
   }
 
   async dispose(options) {
@@ -208,8 +163,7 @@ class NestedScriptRuntime {
         "events.emit",
         [event, payload],
       );
-      await __waitForNestedResource(this);
-      await __flushNestedCallbacks();
+      await __waitForNestedCallbacks();
     },
   };
 }
@@ -237,8 +191,7 @@ class NestedAppServer {
           : null,
         ],
     );
-    await __waitForNestedResource(this);
-    await __flushNestedCallbacks();
+    await __waitForNestedCallbacks();
     return result;
   }
 
@@ -250,8 +203,7 @@ class NestedAppServer {
         "ws.open",
         [connectionId],
       );
-      await __waitForNestedResource(this);
-      await __flushNestedCallbacks();
+      await __waitForNestedCallbacks();
     },
     message: async (connectionId, data) => {
       await __isolateHost_callResource(
@@ -260,8 +212,7 @@ class NestedAppServer {
         "ws.message",
         [connectionId, data],
       );
-      await __waitForNestedResource(this);
-      await __flushNestedCallbacks();
+      await __waitForNestedCallbacks();
     },
     close: async (connectionId, code, reason) => {
       await __isolateHost_callResource(
@@ -270,8 +221,7 @@ class NestedAppServer {
         "ws.close",
         [connectionId, code, reason],
       );
-      await __waitForNestedResource(this);
-      await __flushNestedCallbacks();
+      await __waitForNestedCallbacks();
     },
     error: async (connectionId, error) => {
       await __isolateHost_callResource(
@@ -280,8 +230,7 @@ class NestedAppServer {
         "ws.error",
         [connectionId, error],
       );
-      await __waitForNestedResource(this);
-      await __flushNestedCallbacks();
+      await __waitForNestedCallbacks();
     },
   };
 
@@ -292,8 +241,7 @@ class NestedAppServer {
       "reload",
       [reason ?? null],
     );
-    await __waitForNestedResource(this);
-    await __flushNestedCallbacks();
+    await __waitForNestedCallbacks();
   }
 
   async dispose(options) {
@@ -330,8 +278,7 @@ class NestedTestRuntime {
       "run",
       [code, options ?? null],
     );
-    await __waitForNestedResource(this);
-    await __flushNestedCallbacks();
+    await __waitForNestedCallbacks();
     return result;
   }
 
