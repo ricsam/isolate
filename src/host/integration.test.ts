@@ -66,6 +66,100 @@ describe("createIsolateHost runtime integration", () => {
     ]);
   });
 
+  test("does not block eval completion on unresolved console callbacks", async () => {
+    const firstEntry = createDeferred<void>();
+    const release = createDeferred<void>();
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            if (entry.type === "output") {
+              firstEntry.resolve();
+            }
+            return release.promise as unknown as void;
+          },
+        } as { onEntry(entry: ConsoleEntry): void },
+      },
+    });
+
+    try {
+      const evalPromise = runtime.eval(`
+        console.log("hello from runtime");
+      `);
+
+      await withTimeout(firstEntry.promise, 5_000, "console callback invocation");
+      await withTimeout(evalPromise, 5_000, "console callback eval");
+    } finally {
+      release.resolve();
+      await runtime.dispose();
+    }
+  });
+
+  test("logs rejected console callback promises without blocking eval", async () => {
+    const warnings: string[] = [];
+    const errors: string[] = [];
+    const unhandledRejections: unknown[] = [];
+    const originalWarn = console.warn;
+    const originalError = console.error;
+    const handleUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    process.on("unhandledRejection", handleUnhandledRejection);
+
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            if (entry.type === "output") {
+              return Promise.reject(new Error("console callback boom")) as unknown as void;
+            }
+          },
+        } as { onEntry(entry: ConsoleEntry): void },
+      },
+    });
+
+    try {
+      await withTimeout(
+        runtime.eval(`
+          console.log("hello from runtime");
+        `),
+        5_000,
+        "console callback rejection eval",
+      );
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    } finally {
+      process.off("unhandledRejection", handleUnhandledRejection);
+      console.warn = originalWarn;
+      console.error = originalError;
+      await runtime.dispose();
+    }
+
+    assert.equal(unhandledRejections.length, 0);
+    assert.ok(
+      warnings.some((message) => (
+        message.includes("console.onEntry") &&
+        message.includes("sync-only")
+      )),
+      `expected async console misuse warning, got: ${warnings.join("\n")}`,
+    );
+    assert.ok(
+      errors.some((message) => (
+        message.includes("console.onEntry handler rejected") &&
+        message.includes("console callback boom")
+      )),
+      `expected rejected console handler log, got: ${errors.join("\n")}`,
+    );
+  });
+
   test("provides AsyncContext-backed async_hooks shims", async () => {
     const entries: ConsoleEntry[] = [];
     const resolver = createModuleResolver().mountNodeModules(
@@ -896,6 +990,72 @@ describe("createIsolateHost runtime integration", () => {
       unsubscribe();
       await runtime.dispose();
     }
+  });
+
+  test("logs rejected public test lifecycle handlers without blocking test runs", async () => {
+    const warnings: string[] = [];
+    const errors: string[] = [];
+    const unhandledRejections: unknown[] = [];
+    const originalWarn = console.warn;
+    const originalError = console.error;
+    const handleUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    process.on("unhandledRejection", handleUnhandledRejection);
+
+    const runtime = await host.createTestRuntime({
+      bindings: {},
+    });
+    const unsubscribe = runtime.test.onEvent((event) => {
+      if (event.type === "testStart") {
+        return Promise.reject(new Error("test lifecycle boom")) as unknown as void;
+      }
+    });
+
+    try {
+      const results = await withTimeout(
+        runtime.run(`
+          test("still runs", () => {
+            expect(2 + 2).toBe(4);
+          });
+        `, { timeoutMs: 5_000 }),
+        5_000,
+        "test lifecycle rejection run",
+      );
+      assert.equal(results.success, true);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    } finally {
+      unsubscribe();
+      process.off("unhandledRejection", handleUnhandledRejection);
+      console.warn = originalWarn;
+      console.error = originalError;
+      await runtime.dispose();
+    }
+
+    assert.equal(unhandledRejections.length, 0);
+    assert.ok(
+      warnings.some((message) => (
+        message.includes("[isolate-test] Test event") &&
+        message.includes("sync-only")
+      )),
+      `expected async test event misuse warning, got: ${warnings.join("\n")}`,
+    );
+    assert.ok(
+      errors.some((message) => (
+        message.includes("[isolate-test] Test event handler rejected") &&
+        message.includes("test lifecycle boom")
+      )),
+      `expected rejected test event handler log, got: ${errors.join("\n")}`,
+    );
   });
 
   test("rejects test lifecycle subscriptions after test runtime disposal", async () => {

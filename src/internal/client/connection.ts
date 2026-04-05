@@ -5,6 +5,7 @@
 import { connect as netConnect, type Socket } from "node:net";
 import path from "node:path";
 import { getRequestContext, withRequestContext } from "../../bridge/request-context.ts";
+import { invokeBestEffortEventHandler } from "../event-callback.ts";
 import {
   createFrameParser,
   buildFrame,
@@ -371,14 +372,18 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
             const testEnvCallbacks: TestEnvironmentCallbackRegistrations = {};
             if (testEnvOptions.onEvent) {
               const userOnEvent = testEnvOptions.onEvent;
-              const onEventCallbackId = registerEventCallback(st, (eventJson: unknown) => {
-                const event = JSON.parse(eventJson as string);
-                userOnEvent(event);
-              });
+              const onEventCallbackId = registerEventCallback(
+                st,
+                "testEnvironment.onEvent",
+                (eventJson: unknown) => {
+                  const event = JSON.parse(eventJson as string);
+                  userOnEvent(event);
+                },
+              );
               testEnvCallbacks.onEvent = {
                 callbackId: onEventCallbackId,
                 name: "testEnvironment.onEvent",
-                type: 'async',
+                type: "sync",
               };
             }
             testEnvironmentOption = {
@@ -1063,12 +1068,16 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       playwrightListenerCleanups.push(
         handlerMetadata.collector.onEvent((event) => {
           if (normalizedPlaywrightOptions.onEvent) {
-            normalizedPlaywrightOptions.onEvent(event);
+            invokeBestEffortEventHandler(
+              "playwright.onEvent",
+              normalizedPlaywrightOptions.onEvent,
+              event,
+            );
           }
 
           if (event.type === "browserConsoleLog") {
             if (normalizedPlaywrightOptions.console && options.console?.onEntry) {
-              options.console.onEntry({
+              invokeBestEffortEventHandler("console.onEntry", options.console.onEntry, {
                 type: "browserOutput",
                 level: event.level,
                 stdout: event.stdout,
@@ -1106,14 +1115,18 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
 
       if (testEnvOptions.onEvent) {
         const userOnEvent = testEnvOptions.onEvent;
-        const onEventCallbackId = registerEventCallback(state, (eventJson: unknown) => {
-          const event = JSON.parse(eventJson as string);
-          userOnEvent(event);
-        });
+        const onEventCallbackId = registerEventCallback(
+          state,
+          "testEnvironment.onEvent",
+          (eventJson: unknown) => {
+            const event = JSON.parse(eventJson as string);
+            userOnEvent(event);
+          },
+        );
         testEnvCallbacks.onEvent = {
           callbackId: onEventCallbackId,
           name: "testEnvironment.onEvent",
-          type: 'async',
+          type: "sync",
         };
       }
 
@@ -1643,11 +1656,12 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
  */
 function registerEventCallback(
   state: ConnectionState,
-  handler: (data: unknown) => void
+  label: string,
+  handler: (data: unknown) => void,
 ): number {
   const callbackId = state.nextCallbackId++;
-  state.callbacks.set(callbackId, async (data: unknown) => {
-    await handler(data);
+  state.callbacks.set(callbackId, (data: unknown) => {
+    invokeBestEffortEventHandler(label, handler, data);
     return undefined;
   });
   return callbackId;
@@ -1664,10 +1678,15 @@ function registerConsoleCallbacks(
 
   if (callbacks.onEntry) {
     const callbackId = state.nextCallbackId++;
-    state.callbacks.set(callbackId, async (entry: unknown) => {
-      await callbacks.onEntry!(entry as Parameters<typeof callbacks.onEntry>[0]);
+    state.callbacks.set(callbackId, (entry: unknown) => {
+      invokeBestEffortEventHandler(
+        "console.onEntry",
+        callbacks.onEntry,
+        entry as Parameters<typeof callbacks.onEntry>[0],
+      );
+      return undefined;
     });
-    registrations.onEntry = { callbackId, name: "onEntry", type: 'async' };
+    registrations.onEntry = { callbackId, name: "onEntry", type: "sync" };
   }
 
   return registrations;
@@ -2561,7 +2580,11 @@ function handleIsolateEvent(
         const eventListeners = listeners.get(message.event);
         if (eventListeners) {
           for (const cb of eventListeners) {
-            cb(message.payload);
+            invokeBestEffortEventHandler(
+              `runtime.events.on(${JSON.stringify(message.event)})`,
+              cb,
+              message.payload,
+            );
           }
         }
       }

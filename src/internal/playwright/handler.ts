@@ -4,6 +4,7 @@
  */
 
 import type { Page, Locator as PlaywrightLocator, BrowserContext, BrowserContextOptions, Response } from "playwright";
+import { invokeBestEffortEventHandler } from "../event-callback.ts";
 import type {
   CollectedData,
   PlaywrightEvent,
@@ -92,11 +93,7 @@ function createPlaywrightCollector(
 } {
   const emitEvent = (event: PlaywrightEvent): void => {
     for (const callback of registry.eventSubscribers) {
-      try {
-        callback(event);
-      } catch {
-        // Ignore subscriber errors.
-      }
+      invokeBestEffortEventHandler("playwright.onEvent", callback, event);
     }
   };
 

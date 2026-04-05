@@ -1,4 +1,5 @@
 import ivm from "@ricsam/isolated-vm";
+import { invokeBestEffortEventHandler } from "../event-callback.ts";
 import type {
   PlaywrightOperation,
 } from "../protocol/index.ts";
@@ -257,6 +258,9 @@ export async function setupPlaywright(
   if (page) {
     // Get onEvent callback if provided
     const onEvent = "onEvent" in options ? options.onEvent : undefined;
+    const emitEvent = (event: import("../protocol/index.ts").PlaywrightEvent): void => {
+      invokeBestEffortEventHandler("playwright.onEvent", onEvent, event);
+    };
     const contextId = "ctx_0";
     const pageId = "page_0";
     const requestIds = new WeakMap<import("playwright").Request, string>();
@@ -297,20 +301,18 @@ export async function setupPlaywright(
       };
       networkRequests.push(info);
 
-      if (onEvent) {
-        onEvent({
-          type: "networkRequest",
-          contextId: info.contextId,
-          pageId: info.pageId,
-          requestId: info.requestId,
-          url: info.url,
-          method: info.method,
-          headers: info.headers,
-          postData: info.postData,
-          resourceType: info.resourceType,
-          timestamp: info.timestamp,
-        });
-      }
+      emitEvent({
+        type: "networkRequest",
+        contextId: info.contextId,
+        pageId: info.pageId,
+        requestId: info.requestId,
+        url: info.url,
+        method: info.method,
+        headers: info.headers,
+        postData: info.postData,
+        resourceType: info.resourceType,
+        timestamp: info.timestamp,
+      });
     };
 
     responseHandler = (response: import("playwright").Response) => {
@@ -328,20 +330,18 @@ export async function setupPlaywright(
       };
       networkResponses.push(info);
 
-      if (onEvent) {
-        onEvent({
-          type: "networkResponse",
-          contextId: info.contextId,
-          pageId: info.pageId,
-          requestId: info.requestId,
-          url: info.url,
-          status: info.status,
-          statusText: info.statusText,
-          headers: info.headers,
-          resourceType: info.resourceType,
-          timestamp: info.timestamp,
-        });
-      }
+      emitEvent({
+        type: "networkResponse",
+        contextId: info.contextId,
+        pageId: info.pageId,
+        requestId: info.requestId,
+        url: info.url,
+        status: info.status,
+        statusText: info.statusText,
+        headers: info.headers,
+        resourceType: info.resourceType,
+        timestamp: info.timestamp,
+      });
     };
 
     requestFailedHandler = (request: import("playwright").Request) => {
@@ -357,19 +357,17 @@ export async function setupPlaywright(
       };
       requestFailures.push(info);
 
-      if (onEvent) {
-        onEvent({
-          type: "requestFailure",
-          contextId: info.contextId,
-          pageId: info.pageId,
-          requestId: info.requestId,
-          url: info.url,
-          method: info.method,
-          failureText: info.failureText,
-          resourceType: info.resourceType,
-          timestamp: info.timestamp,
-        });
-      }
+      emitEvent({
+        type: "requestFailure",
+        contextId: info.contextId,
+        pageId: info.pageId,
+        requestId: info.requestId,
+        url: info.url,
+        method: info.method,
+        failureText: info.failureText,
+        resourceType: info.resourceType,
+        timestamp: info.timestamp,
+      });
     };
 
     consoleHandler = (msg: import("playwright").ConsoleMessage) => {
@@ -384,17 +382,15 @@ export async function setupPlaywright(
       };
       browserConsoleLogs.push(entry);
 
-      if (onEvent) {
-        onEvent({
-          type: "browserConsoleLog",
-          contextId: entry.contextId,
-          pageId: entry.pageId,
-          level: entry.level,
-          stdout: entry.stdout,
-          location: entry.location,
-          timestamp: entry.timestamp,
-        });
-      }
+      emitEvent({
+        type: "browserConsoleLog",
+        contextId: entry.contextId,
+        pageId: entry.pageId,
+        level: entry.level,
+        stdout: entry.stdout,
+        location: entry.location,
+        timestamp: entry.timestamp,
+      });
 
       // Print to stdout if console option is true
       if ("console" in options && options.console) {
@@ -414,17 +410,15 @@ export async function setupPlaywright(
       };
       pageErrors.push(entry);
 
-      if (onEvent) {
-        onEvent({
-          type: "pageError",
-          contextId: entry.contextId,
-          pageId: entry.pageId,
-          name: entry.name,
-          message: entry.message,
-          stack: entry.stack,
-          timestamp: entry.timestamp,
-        });
-      }
+      emitEvent({
+        type: "pageError",
+        contextId: entry.contextId,
+        pageId: entry.pageId,
+        name: entry.name,
+        message: entry.message,
+        stack: entry.stack,
+        timestamp: entry.timestamp,
+      });
     };
 
     page.on("request", requestHandler);

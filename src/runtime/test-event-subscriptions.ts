@@ -1,3 +1,4 @@
+import { invokeBestEffortEventHandler } from "../internal/event-callback.ts";
 import type { TestEvent } from "../types.ts";
 
 interface TestEventApi {
@@ -29,11 +30,7 @@ export function createTestEventSubscriptions(
     },
     emit(event) {
       for (const handler of handlers) {
-        try {
-          handler(event);
-        } catch (error) {
-          console.error("[isolate-test] Test event handler failed.", error);
-        }
+        invokeBestEffortEventHandler("[isolate-test] Test event", handler, event);
       }
     },
     clear() {

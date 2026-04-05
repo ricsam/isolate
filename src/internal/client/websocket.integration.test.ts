@@ -12,6 +12,16 @@ function collectOutput(entries: Array<{ type: string; stdout?: string }>): strin
   ));
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 class FakeWebSocket {
   private readonly payload: Uint8Array;
   readyState = 0;
@@ -127,5 +137,50 @@ describe("outbound WebSocket client integration", () => {
 
     assert.equal(result.isArrayBuffer, true);
     assert.deepEqual(result.bytes, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  });
+
+  test("does not let pending test event callbacks block later evals", async () => {
+    const connection = await connect({
+      socket: socketPath,
+      timeout: 15_000,
+    });
+    const firstEvent = createDeferred<void>();
+    const release = createDeferred<void>();
+    const runtime = await connection.createRuntime({
+      testEnvironment: {
+        onEvent(event) {
+          if ((event as { type?: string }).type === "testStart") {
+            firstEvent.resolve();
+          }
+          return release.promise as unknown as void;
+        },
+        testTimeout: 5_000,
+      } as { onEvent(event: unknown): void; testTimeout: number },
+    });
+
+    try {
+      await runtime.eval(`
+        test("still runs", () => {
+          expect(1 + 1).toBe(2);
+        });
+      `, { filename: "/tests/non-blocking-events.test.ts" });
+
+      const runPromise = runtime.testEnvironment.runTests(5_000);
+      await withTimeout(firstEvent.promise, 5_000, "test event callback invocation");
+      const results = await withTimeout(runPromise, 5_000, "test execution");
+      assert.equal(results.success, true);
+
+      await withTimeout(
+        runtime.eval(`
+          globalThis.__afterTests = "ok";
+        `, { filename: "/tests/post-run-eval.ts" }),
+        5_000,
+        "post-test eval",
+      );
+    } finally {
+      release.resolve();
+      await runtime.dispose({ hard: true, reason: "test cleanup" });
+      await connection.close();
+    }
   });
 });

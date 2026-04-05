@@ -983,8 +983,9 @@ export type ConsoleEntry =
  */
 export interface ConsoleCallbacks {
   /**
-   * Callback invoked for each console operation.
+   * Sync-only, best-effort callback invoked for each console operation.
    * Receives a structured entry with all data needed to render the output.
+   * Returned promises are ignored.
    */
   onEntry?: (entry: ConsoleEntry) => void;
 }
@@ -1056,7 +1057,7 @@ export interface EvalOptions {
  * Test environment options for createRuntime.
  */
 export interface TestEnvironmentOptions {
-  /** Receive test lifecycle events */
+  /** Sync-only, best-effort test lifecycle notifications. Returned promises are ignored. */
   onEvent?: (event: TestEvent) => void;
   /** Timeout for individual tests (ms) */
   testTimeout?: number;
@@ -1089,7 +1090,7 @@ export interface PlaywrightOptions {
   timeout?: number;
   /** If true, browser console logs are routed through console handler (or printed to stdout if no handler) */
   console?: boolean;
-  /** Unified event callback for all playwright events */
+  /** Sync-only, best-effort Playwright event notifications. Returned promises are ignored. */
   onEvent?: (event: PlaywrightEvent) => void;
 }
 

@@ -38,6 +38,7 @@ export interface PlaywrightSessionHandler {
   getCollectedData(): CollectedData;
   getTrackedResources(): { contexts: string[]; pages: string[] };
   clearCollectedData(): void;
+  /** Sync-only, best-effort Playwright event notifications. Returned promises are ignored. */
   onEvent(callback: (event: PlaywrightEvent) => void): () => void;
 }
 

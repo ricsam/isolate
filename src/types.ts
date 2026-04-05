@@ -74,6 +74,7 @@ export interface FileBindings {
 
 interface HostBrowserBindingBase {
   captureConsole?: boolean;
+  /** Sync-only, best-effort event notifications. Returned promises are ignored. */
   onEvent?: (event: PlaywrightEvent, context: HostCallContext) => void;
 }
 
@@ -105,6 +106,7 @@ export type ToolBindings = Record<string, ToolHandler>;
 
 export interface HostBindings {
   console?: {
+    /** Sync-only, best-effort console notifications. Returned promises are ignored. */
     onEntry?: (entry: ConsoleEntry, context: HostCallContext) => void;
   };
   fetch?: (request: Request, context: HostCallContext) => Response | Promise<Response>;
@@ -190,6 +192,7 @@ export interface ScriptRuntime {
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
   diagnostics(): Promise<RuntimeResourceDiagnostics>;
   events: {
+    /** Sync-only, best-effort event notifications. Returned promises are ignored. */
     on(event: string, handler: (payload: unknown) => void): () => void;
     emit(event: string, payload: unknown): Promise<void>;
   };
@@ -203,6 +206,7 @@ export interface TestRuntime {
   diagnostics(): Promise<TestRuntimeDiagnostics>;
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
   test: {
+    /** Sync-only, best-effort test lifecycle notifications. Returned promises are ignored. */
     onEvent(handler: (event: TestEvent) => void): () => void;
   };
 }
@@ -219,9 +223,11 @@ export interface NamespacedRuntime {
   diagnostics(): Promise<TestRuntimeDiagnostics>;
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
   test: {
+    /** Sync-only, best-effort test lifecycle notifications. Returned promises are ignored. */
     onEvent(handler: (event: TestEvent) => void): () => void;
   };
   events: {
+    /** Sync-only, best-effort event notifications. Returned promises are ignored. */
     on(event: string, handler: (payload: unknown) => void): () => void;
     emit(event: string, payload: unknown): Promise<void>;
   };

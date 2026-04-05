@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { RuntimeOptions } from "../internal/client/index.ts";
+import { invokeBestEffortEventHandler } from "../internal/event-callback.ts";
 import type { ModuleLoaderCallback } from "../internal/protocol/index.ts";
 import { getRequestContext } from "./request-context.ts";
 import type { HostBindings, HostCallContext, ModuleResolveResult, ModuleResolver, ModuleSource, ToolHandler } from "../types.ts";
@@ -66,7 +67,12 @@ export function createLegacyRuntimeOptions(
       ? {
           onEntry: (entry) => {
             const context = createHostCallContext(getRuntimeId(), AbortSignal.abort(), `console:${crypto.randomUUID()}`);
-            bindings.console?.onEntry?.(entry, context);
+            invokeBestEffortEventHandler(
+              "bindings.console.onEntry",
+              bindings.console?.onEntry,
+              entry,
+              context,
+            );
           },
         }
       : undefined,

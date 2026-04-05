@@ -4,7 +4,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { createPlaywrightSessionHandler } from "../playwright.ts";
-import { createTestHost, createTestId } from "../testing/integration-helpers.ts";
+import { createTestHost, createTestId, withTimeout } from "../testing/integration-helpers.ts";
 import type {
   ConsoleEntry,
   HostCallContext,
@@ -80,6 +80,16 @@ async function closeAllContexts(browser: Browser): Promise<void> {
   for (const context of browser.contexts()) {
     await context.close().catch(() => {});
   }
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("browser-enabled runtimes", () => {
@@ -204,6 +214,66 @@ describe("browser-enabled runtimes", () => {
     } finally {
       await runtime?.dispose({ hard: true, reason: "test cleanup" });
       await reusedContext.close().catch(() => {});
+      await browserHarness.context.close();
+      await browserHarness.browser.close();
+      await browserServer.close();
+    }
+  });
+
+  test("does not block browser test runs on unresolved browser event handlers", async () => {
+    const browserHarness = await launchChromium();
+    const browserServer = await createBrowserServer();
+    const firstEvent = createDeferred<void>();
+    const release = createDeferred<void>();
+    let runtime: TestRuntime | undefined;
+
+    try {
+      runtime = await host.createTestRuntime({
+        key: createTestId("browser-event-liveness"),
+        bindings: {
+          browser: {
+            captureConsole: true,
+            async createContext(options) {
+              return await browserHarness.browser.newContext(options as never);
+            },
+            async createPage(context) {
+              return await (context as BrowserContext).newPage();
+            },
+            onEvent() {
+              firstEvent.resolve();
+              return release.promise as unknown as void;
+            },
+          },
+        },
+      });
+
+      const runPromise = runtime.run(
+        `
+          test("loads the page", async () => {
+            const ctx = await browser.newContext();
+            const page = (await ctx.pages())[0] || (await ctx.newPage());
+
+            try {
+              await page.goto(${JSON.stringify(browserServer.url)});
+              await expect(page.locator("#ready")).toContainText("ready");
+            } finally {
+              await ctx.close();
+            }
+          });
+        `,
+        {
+          filename: "/browser-event-liveness.ts",
+          timeoutMs: 10_000,
+        },
+      );
+
+      await withTimeout(firstEvent.promise, 10_000, "browser event callback invocation");
+      const result = await withTimeout(runPromise, 10_000, "browser test run");
+      assert.equal(result.passed, 1);
+      assert.equal(result.failed, 0);
+    } finally {
+      release.resolve();
+      await runtime?.dispose({ hard: true, reason: "test cleanup" });
       await browserHarness.context.close();
       await browserHarness.browser.close();
       await browserServer.close();
@@ -604,6 +674,105 @@ describe("browser-enabled runtimes", () => {
       await browserHarness.browser.close();
       await browserServer.close();
     }
+  });
+
+  test("logs rejected Playwright helper event subscribers without blocking browser runs", async () => {
+    const browserHarness = await launchChromium();
+    const browserServer = await createBrowserServer();
+    const warnings: string[] = [];
+    const errors: string[] = [];
+    const unhandledRejections: unknown[] = [];
+    const originalWarn = console.warn;
+    const originalError = console.error;
+    const handleUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    process.on("unhandledRejection", handleUnhandledRejection);
+
+    const helper = createPlaywrightSessionHandler<BrowserContext, Page>({
+      timeout: 5_000,
+      createContext: async (options) =>
+        await browserHarness.browser.newContext(options as never),
+      createPage: async (context) => await context.newPage(),
+    });
+    const unsubscribe = helper.onEvent((event) => {
+      if (event.type === "browserConsoleLog") {
+        return Promise.reject(new Error("playwright helper boom")) as unknown as void;
+      }
+    });
+    let runtime: TestRuntime | undefined;
+
+    try {
+      runtime = await host.createTestRuntime({
+        bindings: {
+          browser: {
+            handler: helper.handler,
+            captureConsole: true,
+          },
+        },
+      });
+
+      const result = await withTimeout(
+        runtime.run(
+          `
+            test("loads the page", async () => {
+              const ctx = await browser.newContext();
+              const page = await ctx.newPage();
+
+              try {
+                await page.goto(${JSON.stringify(browserServer.url)});
+                await expect(page.locator("#ready")).toContainText("ready");
+              } finally {
+                await ctx.close();
+              }
+            });
+          `,
+          {
+            filename: "/browser-helper-event-rejection.test.ts",
+            timeoutMs: 10_000,
+          },
+        ),
+        10_000,
+        "Playwright helper rejection run",
+      );
+      assert.equal(result.success, true);
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    } finally {
+      unsubscribe();
+      process.off("unhandledRejection", handleUnhandledRejection);
+      console.warn = originalWarn;
+      console.error = originalError;
+      await runtime?.dispose({ hard: true, reason: "test cleanup" });
+      await closeAllContexts(browserHarness.browser);
+      await browserHarness.browser.close();
+      await browserServer.close();
+    }
+
+    assert.equal(unhandledRejections.length, 0);
+    assert.ok(
+      warnings.some((message) => (
+        message.includes("playwright.onEvent") &&
+        message.includes("sync-only")
+      )),
+      `expected async Playwright event misuse warning, got: ${warnings.join("\n")}`,
+    );
+    assert.ok(
+      errors.some((message) => (
+        message.includes("playwright.onEvent handler rejected") &&
+        message.includes("playwright helper boom")
+      )),
+      `expected rejected Playwright event handler log, got: ${errors.join("\n")}`,
+    );
   });
 
   test("injects a browser factory into script runtimes and supports nested test runtimes", async () => {

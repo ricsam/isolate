@@ -115,6 +115,18 @@ interface InvokeClientCallbackOptions {
   timeoutLabel?: string;
 }
 
+function invokeBestEffortClientEventCallback(
+  connection: ConnectionState,
+  callbackId: number,
+  args: unknown[],
+  label: string,
+  options?: InvokeClientCallbackOptions,
+): void {
+  void invokeClientCallback(connection, callbackId, args, options).catch((error) => {
+    console.error(`[isolate-daemon] ${label} delivery failed.`, error);
+  });
+}
+
 function createAbortError(reason = "The operation was aborted"): Error {
   if (typeof DOMException !== "undefined") {
     return new DOMException(reason, "AbortError");
@@ -759,9 +771,6 @@ function softDeleteRuntime(
 
   // Reset console state
   instance.runtime.console.reset();
-
-  // Clear pending callbacks
-  instance.runtime.pendingCallbacks.length = 0;
 
   // Clear returned callback/promise/iterator registries
   instance.returnedCallbacks?.clear();
@@ -1466,14 +1475,13 @@ async function handleCreateRuntime(
               if (!conn || callbackId === undefined) {
                 return;
               }
-              const promise = invokeClientCallback(
+              invokeBestEffortClientEventCallback(
                 conn,
                 callbackId,
                 [JSON.stringify(event)],
+                "testEnvironment.onEvent",
                 { signal: getCurrentHostSignal(instance) },
-              ).catch(() => {});
-              // Push to runtime's pendingCallbacks (will be set after createRuntime)
-              instance.runtime?.pendingCallbacks?.push(promise);
+              );
             }
           : undefined,
         testTimeout: testEnvOptions?.testTimeout,
@@ -1528,35 +1536,35 @@ async function handleCreateRuntime(
             event.type === "browserConsoleLog" &&
             callbackContext.playwright.onBrowserConsoleLogCallbackId !== undefined
           ) {
-            const promise = invokeClientCallback(
+            invokeBestEffortClientEventCallback(
               conn,
               callbackContext.playwright.onBrowserConsoleLogCallbackId,
               [{ level: event.level, stdout: event.stdout, timestamp: event.timestamp }],
+              "playwright.onBrowserConsoleLog",
               { signal: getCurrentHostSignal(instance) },
-            ).catch(() => {});
-            instance.runtime?.pendingCallbacks?.push(promise);
+            );
           } else if (
             event.type === "networkRequest" &&
             callbackContext.playwright.onNetworkRequestCallbackId !== undefined
           ) {
-            const promise = invokeClientCallback(
+            invokeBestEffortClientEventCallback(
               conn,
               callbackContext.playwright.onNetworkRequestCallbackId,
               [event],
+              "playwright.onNetworkRequest",
               { signal: getCurrentHostSignal(instance) },
-            ).catch(() => {});
-            instance.runtime?.pendingCallbacks?.push(promise);
+            );
           } else if (
             event.type === "networkResponse" &&
             callbackContext.playwright.onNetworkResponseCallbackId !== undefined
           ) {
-            const promise = invokeClientCallback(
+            invokeBestEffortClientEventCallback(
               conn,
               callbackContext.playwright.onNetworkResponseCallbackId,
               [event],
+              "playwright.onNetworkResponse",
               { signal: getCurrentHostSignal(instance) },
-            ).catch(() => {});
-            instance.runtime?.pendingCallbacks?.push(promise);
+            );
           }
         },
       };
@@ -1573,8 +1581,8 @@ async function handleCreateRuntime(
           const conn = callbackContext.connection;
           const callbackId = callbackContext.consoleOnEntry;
           if (!conn || callbackId === undefined) return;
-          const promise = invokeClientCallback(conn, callbackId, [entry]).catch(() => {});
-          runtime.pendingCallbacks.push(promise);
+          // Console delivery is best-effort and must not block script completion.
+          invokeBestEffortClientEventCallback(conn, callbackId, [entry], "console.onEntry");
         },
       },
       // Fetch handler that bridges to client via IPC (with reconnection support)

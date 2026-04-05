@@ -1,12 +1,13 @@
 import type ivm from "@ricsam/isolated-vm";
 import IsolatedVM from "@ricsam/isolated-vm";
+import { invokeBestEffortEventHandler } from "../event-callback.ts";
 
 // ============================================================
 // Test Environment Options
 // ============================================================
 
 export interface TestEnvironmentOptions {
-  /** Receive test lifecycle events */
+  /** Sync-only, best-effort test lifecycle notifications. Returned promises are ignored. */
   onEvent?: (event: TestEvent) => void;
   /** Timeout for individual tests (ms) */
   testTimeout?: number;
@@ -1437,7 +1438,11 @@ export async function setupTestEnvironment(
     const eventCallbackRef = new IsolatedVM.Reference((eventJson: string) => {
       try {
         const event = JSON.parse(eventJson);
-        options.onEvent!(event);
+        invokeBestEffortEventHandler(
+          "testEnvironment.onEvent",
+          options.onEvent,
+          event,
+        );
       } catch {
         // Ignore parse errors
       }

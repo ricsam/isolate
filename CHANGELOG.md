@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.14
+
+### Patch Changes
+
+- sync-only event handlers
+
 ## 0.1.13
 
 ### Patch Changes

@@ -1,4 +1,5 @@
 import ivm from "@ricsam/isolated-vm";
+import { invokeBestEffortEventHandler } from "../event-callback.ts";
 
 /**
  * Console entry types for structured console output.
@@ -52,8 +53,9 @@ export type ConsoleEntry =
  */
 export interface ConsoleOptions {
   /**
-   * Callback invoked for each console operation.
+   * Sync-only, best-effort callback invoked for each console operation.
    * Receives a structured entry with all data needed to render the output.
+   * Returned promises are ignored.
    */
   onEntry?: (entry: ConsoleEntry) => void;
 }
@@ -92,6 +94,9 @@ export async function setupConsole(
   options?: ConsoleOptions
 ): Promise<ConsoleHandle> {
   const opts = options ?? {};
+  const emitEntry = (entry: ConsoleEntry): void => {
+    invokeBestEffortEventHandler("console.onEntry", opts.onEntry, entry);
+  };
 
   // State management
   const timers = new Map<string, number>();
@@ -107,7 +112,7 @@ export async function setupConsole(
     global.setSync(
       `__console_${level}`,
       new ivm.Callback((stdout: string) => {
-        opts.onEntry?.({
+        emitEntry({
           type: "output",
           level,
           stdout,
@@ -121,7 +126,7 @@ export async function setupConsole(
   global.setSync(
     "__console_dir",
     new ivm.Callback((stdout: string) => {
-      opts.onEntry?.({
+      emitEntry({
         type: "dir",
         stdout,
         groupDepth,
@@ -133,7 +138,7 @@ export async function setupConsole(
   global.setSync(
     "__console_table",
     new ivm.Callback((stdout: string) => {
-      opts.onEntry?.({
+      emitEntry({
         type: "table",
         stdout,
         groupDepth,
@@ -145,7 +150,7 @@ export async function setupConsole(
   global.setSync(
     "__console_trace",
     new ivm.Callback((stdout: string, stack: string) => {
-      opts.onEntry?.({
+      emitEntry({
         type: "trace",
         stdout,
         stack,
@@ -171,7 +176,7 @@ export async function setupConsole(
       if (start !== undefined) {
         const duration = performance.now() - start;
         timers.delete(l);
-        opts.onEntry?.({
+        emitEntry({
           type: "time",
           label: l,
           duration,
@@ -188,7 +193,7 @@ export async function setupConsole(
       const start = timers.get(l);
       if (start !== undefined) {
         const actualDuration = performance.now() - start;
-        opts.onEntry?.({
+        emitEntry({
           type: "timeLog",
           label: l,
           duration: actualDuration,
@@ -206,7 +211,7 @@ export async function setupConsole(
       const l = label ?? "default";
       const count = (counters.get(l) ?? 0) + 1;
       counters.set(l, count);
-      opts.onEntry?.({
+      emitEntry({
         type: "count",
         label: l,
         count,
@@ -220,7 +225,7 @@ export async function setupConsole(
     new ivm.Callback((label?: string) => {
       const l = label ?? "default";
       counters.delete(l);
-      opts.onEntry?.({
+      emitEntry({
         type: "countReset",
         label: l,
         groupDepth,
@@ -233,7 +238,7 @@ export async function setupConsole(
     "__console_group",
     new ivm.Callback((label?: string) => {
       const l = label ?? "default";
-      opts.onEntry?.({
+      emitEntry({
         type: "group",
         label: l,
         collapsed: false,
@@ -247,7 +252,7 @@ export async function setupConsole(
     "__console_groupCollapsed",
     new ivm.Callback((label?: string) => {
       const l = label ?? "default";
-      opts.onEntry?.({
+      emitEntry({
         type: "group",
         label: l,
         collapsed: true,
@@ -263,7 +268,7 @@ export async function setupConsole(
       if (groupDepth > 0) {
         groupDepth--;
       }
-      opts.onEntry?.({
+      emitEntry({
         type: "groupEnd",
         groupDepth,
       });
@@ -274,14 +279,14 @@ export async function setupConsole(
   global.setSync(
     "__console_clear",
     new ivm.Callback(() => {
-      opts.onEntry?.({ type: "clear" });
+      emitEntry({ type: "clear" });
     })
   );
 
   global.setSync(
     "__console_assert",
     new ivm.Callback((stdout: string) => {
-      opts.onEntry?.({
+      emitEntry({
         type: "assert",
         stdout,
         groupDepth,

@@ -1,5 +1,6 @@
 import ivm from "@ricsam/isolated-vm";
 import path from "node:path";
+import { invokeBestEffortEventHandler } from "../event-callback.ts";
 import { setupCore } from "../core/index.ts";
 import { setupAsyncContext } from "../async-context/index.ts";
 import { normalizeEntryFilename } from "../protocol/index.ts";
@@ -261,13 +262,6 @@ export interface RuntimeHandle {
   /** Clear module cache and source maps (used for namespace pooling/reuse) */
   clearModuleCache(): void;
 
-  /**
-   * Array of pending callback promises. Push promises here to have them
-   * awaited after each eval() call completes. Used by daemon for IPC flush.
-   * For standalone use this array stays empty (callbacks are synchronous).
-   */
-  readonly pendingCallbacks: Promise<unknown>[];
-
   /** Fetch handle - access to fetch/serve operations */
   readonly fetch: RuntimeFetchHandle;
   /** Timers handle - access to timer operations */
@@ -312,8 +306,6 @@ interface RuntimeState {
   moduleImportChain: Map<string, string[]>;
   /** Tracks which file imported a given specifier (resolvedSpecifier → importerPath) */
   specifierToImporter: Map<string, string>;
-  /** Pending callbacks to await after eval (for daemon IPC fire-and-forget pattern) */
-  pendingCallbacks: Promise<unknown>[];
   /** Per-runtime eval queue to prevent overlapping module linking/evaluation */
   evalChain: Promise<void>;
   /** Optional timeout for full eval/test executions */
@@ -421,7 +413,6 @@ async function disposeRuntimeState(
     disposeHandle(state.handles.console?.dispose.bind(state.handles.console));
     disposeHandle(state.handles.core?.dispose.bind(state.handles.core));
 
-    state.pendingCallbacks.length = 0;
     state.moduleCache.clear();
     state.moduleLoadsInFlight.clear();
     state.moduleToFilename.clear();
@@ -1794,7 +1785,6 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
     sourceMaps: new Map(),
     moduleImportChain: new Map(),
     specifierToImporter: new Map(),
-    pendingCallbacks: [],
     evalChain: Promise.resolve(),
     executionTimeout: getConfiguredExecutionTimeout(opts.executionTimeout),
     isDisposed: false,
@@ -1876,12 +1866,10 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       const consoleHandler = opts.console.onEntry;
       eventCallback = (event) => {
         // Call original callback if provided
-        if (originalCallback) {
-          originalCallback(event);
-        }
+        invokeBestEffortEventHandler("playwright.onEvent", originalCallback, event);
         // Route browser console logs through console handler as browserOutput entry
         if (event.type === "browserConsoleLog") {
-          consoleHandler({
+          invokeBestEffortEventHandler("console.onEntry", consoleHandler, {
             type: "browserOutput",
             level: event.level,
             stdout: event.stdout,
@@ -2136,8 +2124,6 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
 
   return {
     id,
-    pendingCallbacks: state.pendingCallbacks,
-
     // Module handles
     fetch: fetchHandle,
     timers: timersHandle,
@@ -2247,10 +2233,6 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
                 runRef.release();
               }
 
-              if (state.pendingCallbacks.length > 0) {
-                await Promise.all(state.pendingCallbacks);
-                state.pendingCallbacks.length = 0;
-              }
             },
           );
         } catch (err) {

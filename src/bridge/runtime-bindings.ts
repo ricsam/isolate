@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { RuntimeOptions } from "../internal/client/index.ts";
+import { invokeBestEffortEventHandler } from "../internal/event-callback.ts";
 import type { ModuleLoaderCallback } from "../internal/protocol/index.ts";
 import { createPlaywrightFactoryHandler } from "../internal/playwright/client.ts";
 import { getRequestContext } from "./request-context.ts";
@@ -246,11 +247,16 @@ export function createRuntimeBindingsAdapter(
     runtimeOptions: {
       console: bindings.console?.onEntry
         ? {
-            onEntry: async (entry) => {
+            onEntry: (entry) => {
               const context = contextFactory.createHostCallContext(
                 `console:${crypto.randomUUID()}`,
               );
-              await bindings.console?.onEntry?.(entry, context);
+              invokeBestEffortEventHandler(
+                "bindings.console.onEntry",
+                bindings.console?.onEntry,
+                entry,
+                context,
+              );
             },
           }
         : undefined,
@@ -512,11 +518,16 @@ function createBrowserPlaywrightOptions(
       hasDefaultPage: false,
       console: browser.captureConsole ?? false,
       onEvent: browser.onEvent
-        ? async (event) => {
+        ? (event) => {
             const context = createHostCallContext(
               `browser:event:${event.type}:${crypto.randomUUID()}`,
             );
-            await browser.onEvent?.(event, context);
+            invokeBestEffortEventHandler(
+              "bindings.browser.onEvent",
+              browser.onEvent,
+              event,
+              context,
+            );
           }
         : undefined,
     };
@@ -565,11 +576,16 @@ function createBrowserPlaywrightOptions(
     hasDefaultPage: false,
     console: browser.captureConsole ?? false,
     onEvent: browser.onEvent
-      ? async (event) => {
+      ? (event) => {
           const context = createHostCallContext(
             `browser:event:${event.type}:${crypto.randomUUID()}`,
           );
-          await browser.onEvent?.(event, context);
+          invokeBestEffortEventHandler(
+            "bindings.browser.onEvent",
+            browser.onEvent,
+            event,
+            context,
+          );
         }
       : undefined,
   };
