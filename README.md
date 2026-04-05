@@ -1,14 +1,18 @@
 # @ricsam/isolate
 
-`@ricsam/isolate` is a runtime-centric JavaScript sandbox built on an async-context-enabled [`@ricsam/isolated-vm`](https://github.com/ricsam/isolated-vm) engine build. It gives you a single host API for running isolated code with web-style capabilities such as `fetch`, files, streams, server handlers, nested sandboxes, module loading, and Playwright-backed browser tests.
+`@ricsam/isolate` is a runtime host for running JavaScript and TypeScript inside isolated V8 sandboxes. It gives you one host API for short-lived scripts, long-lived app servers, browser-backed tests, persistent sessions, module loading, files, `fetch`, and nested sandboxes.
 
-## Installation
+Use it when you want a higher-level sandbox than raw `isolated-vm`: the host stays in control of capabilities, while sandboxed code gets a web-style runtime surface.
+
+## Getting Started
+
+### Installation
 
 ```bash
 npm add @ricsam/isolate @ricsam/isolated-vm
 ```
 
-The `@ricsam/isolated-vm` peer includes the `createContext({ asyncContext: true })` support required by this repo. Upstream `isolated-vm` will fail fast during runtime boot with a clear AsyncContext error.
+`@ricsam/isolate` expects the async-context-enabled [`@ricsam/isolated-vm`](https://github.com/ricsam/isolated-vm) peer. Upstream `isolated-vm` does not provide the required `createContext({ asyncContext: true })` support and will fail fast during runtime boot.
 
 Install Playwright when you want browser-enabled runtimes or test runtimes:
 
@@ -16,89 +20,9 @@ Install Playwright when you want browser-enabled runtimes or test runtimes:
 npm add playwright
 ```
 
-## What You Get
+`createIsolateHost()` will auto-start a daemon when needed, so the default setup is usually enough to get going.
 
-`@ricsam/isolate` exports a small top-level API:
-
-- `createIsolateHost()` to start, connect to, and manage isolate-backed runtimes
-- `createModuleResolver()` to provide virtual modules, source trees, mounted `node_modules`, and fallback resolution
-- `createFileBindings()` to expose a rooted file API to sandboxed code
-- `getTypeProfile()`, `typecheck()`, and `formatTypecheckErrors()` for sandbox-aware TypeScript tooling
-- `@ricsam/isolate/playwright` to build handler-first Playwright sessions without importing internals
-
-The host can create three runtime styles:
-
-- `host.createRuntime()` for scripts, agents, and ad hoc execution
-- `host.createAppServer()` for `serve()`-based request handlers
-- `host.createTestRuntime()` for test suites with optional Playwright-backed browser access
-- `host.getNamespacedRuntime()` for persistent mixed script/test/browser sessions keyed by namespace
-
-Inside sandbox code, `@ricsam/isolate` is also available as a synthetic module. It exports a sandbox-only `createIsolateHost()` that lets a runtime create nested runtimes, app servers, and test runtimes without exposing daemon configuration to the sandbox.
-
-## Host Bindings
-
-Each runtime is configured through `bindings`, which describe how sandboxed code talks to the host:
-
-- `console` forwards runtime and browser console output
-- `fetch` handles outbound HTTP requests from the sandbox
-- `files` exposes a safe, root-scoped filesystem
-- `modules` resolves virtual modules, source trees, and mounted packages
-- `tools` exposes async host functions and async iterators
-- `browser` exposes a Playwright-like browser surface backed either by a stable handler or by host `createContext()` and `createPage()` callbacks
-
-Every host callback receives a `HostCallContext` with an `AbortSignal`, runtime identity, resource identity, and request metadata.
-
-`bindings.browser` is intentionally smaller than a full Playwright browser. It injects a global `browser` object with `browser.newContext()` and `browser.contexts()`, and returned contexts expose `context.newPage()` and `context.pages()`. Browser-level shutdown stays on the host side, while the sandbox can still close pages and contexts that it created.
-
-Choose exactly one browser mode per runtime:
-
-- factory-first: provide `createContext()` and optionally `createPage()`, `readFile()`, and `writeFile()`
-- handler-first: provide `handler`, usually from `createPlaywrightSessionHandler(...)`
-
-Do not mix `handler` with `createContext()` / `createPage()` / `readFile()` / `writeFile()` in the same binding.
-
-## Async Context
-
-Runtimes created by `@ricsam/isolate` enable the TC39 proposal-style `AsyncContext` global inside the sandbox. This is an experimental surface for now, and the proposal API is used to implement the `node:async_hooks` shim exported to sandboxed code.
-
-This shim is intended for async context propagation inside the sandbox. It is not a full reimplementation of Node's `async_hooks` lifecycle, resource graph, or profiling APIs.
-
-What is currently supported:
-
-- `AsyncContext.Variable`
-- `AsyncContext.Snapshot`
-- `node:async_hooks` `AsyncLocalStorage`
-- `node:async_hooks` `AsyncResource`
-- `node:async_hooks` `createHook()`
-- `node:async_hooks` `executionAsyncId()`
-- `node:async_hooks` `triggerAsyncId()`
-- `node:async_hooks` `executionAsyncResource()`
-- `node:async_hooks` `asyncWrapProviders`
-
-Hook callbacks observe sandbox-managed resources such as promises, timers, host callback bridges, and user-created `AsyncResource`s. This is still not a claim of full Node internals parity outside the sandbox runtime.
-
-```ts
-import {
-  createHook,
-  executionAsyncResource,
-} from "node:async_hooks";
-
-const hook = createHook({
-  init(asyncId, type, triggerAsyncId, resource) {
-    resource.requestTag = type + ":" + asyncId;
-  },
-  before() {
-    console.log(executionAsyncResource().requestTag ?? null);
-  },
-}).enable();
-
-setTimeout(() => {
-  console.log(executionAsyncResource().requestTag);
-  hook.disable();
-}, 0);
-```
-
-## Quick Start
+### Quick Start
 
 ```ts
 import {
@@ -159,7 +83,50 @@ try {
 }
 ```
 
-## Nested Hosts Inside The Sandbox
+That example wires together the most common capabilities:
+
+- `console` to forward sandbox output
+- `fetch` for outbound HTTP requests
+- `files` for root-scoped filesystem access
+- `modules` for virtual modules and source trees
+- `tools` for async host functions
+
+Event-style callbacks such as `console.onEntry(...)`, `runtime.test.onEvent(...)`, and Playwright `onEvent(...)` are sync-only, best-effort notifications. Returned promises are ignored after rejection logging, so schedule any async follow-up work from inside the synchronous handler.
+
+## Guides
+
+### Pick A Runtime
+
+The host can create four runtime styles:
+
+- `host.createRuntime()` for scripts, agents, and ad hoc execution
+- `host.createAppServer()` for long-lived `serve()` request handlers
+- `host.createTestRuntime()` for test suites with `describe`, `test`, hooks, and `expect`
+- `host.getNamespacedRuntime()` for persistent sessions that survive soft dispose and can be reacquired later
+
+### Configure Bindings
+
+Bindings define how sandboxed code talks to the host:
+
+- `console` forwards runtime and browser console output
+- `fetch` handles outbound HTTP requests
+- `files` exposes a safe, root-scoped filesystem
+- `modules` resolves virtual modules, source trees, mounted packages, and fallbacks
+- `tools` exposes async host functions and async iterators
+- `browser` exposes a Playwright-like browser surface
+
+Every host callback receives a `HostCallContext` with an `AbortSignal`, runtime identity, resource identity, and request metadata.
+
+When exposing browser support, choose exactly one mode per runtime:
+
+- factory-first: provide `createContext()` and optionally `createPage()`, `readFile()`, and `writeFile()`
+- handler-first: provide `handler`, usually from `createPlaywrightSessionHandler(...)`
+
+Do not mix `handler` with `createContext()` / `createPage()` / `readFile()` / `writeFile()` in the same binding.
+
+Keep bindings plain-data and host-owned. Do not leak raw `isolated-vm` handles or other engine objects into untrusted code.
+
+### Create Nested Hosts Inside The Sandbox
 
 Sandbox code can import `@ricsam/isolate` and create child runtimes against the same top-level host connection.
 
@@ -202,11 +169,9 @@ Nested hosts support:
 - `diagnostics()`
 - `close()`
 
-Child runtimes can reuse the same binding shapes as top-level runtimes. That includes isolate-authored callbacks, async iterators, module resolvers, file bindings, and browser handles.
+### Build An App Server
 
-## App Servers
-
-`createAppServer()` is the long-lived server-oriented API. It boots a runtime around an entry module that calls `serve()` and then lets the host dispatch requests into it.
+`createAppServer()` is the long-lived server API. It boots a runtime around an entry module that calls `serve()` and lets the host dispatch requests into it.
 
 ```ts
 import { createIsolateHost, createModuleResolver } from "@ricsam/isolate";
@@ -240,93 +205,9 @@ await server.dispose();
 await host.close();
 ```
 
-`server.handle()` returns either a normal HTTP response or WebSocket upgrade metadata. The `server.ws` helpers let the host continue an upgraded connection by sending open, message, close, and error events back into the runtime.
+`server.handle()` returns either an HTTP response or WebSocket upgrade metadata. For upgraded connections, `server.ws` lets the host send open, message, close, and error events back into the runtime.
 
-## Browser Bindings In Script And Server Runtimes
-
-## Namespaced Sessions
-
-`host.getNamespacedRuntime(key, options)` is the public persistent-session API. It is the supported way to reuse one underlying runtime across multiple calls while refreshing host bindings on each acquire.
-
-Use it when you want patterns like:
-
-- script calls that keep module state or globals between runs
-- Playwright browser contexts/pages that stay alive behind one stable handler
-- later `runTests(code)` calls that should see existing `browser.contexts()`
-
-Normal `session.dispose()` is a soft dispose for that namespace. The next acquire of the same key reuses the cached runtime. `host.disposeNamespace(key)` is the hard-delete path for active or pooled namespaces and invalidates any live handles in the current process.
-
-```ts
-import { chromium } from "playwright";
-import { createIsolateHost } from "@ricsam/isolate";
-import { createPlaywrightSessionHandler } from "@ricsam/isolate/playwright";
-
-const browser = await chromium.launch();
-const host = await createIsolateHost();
-const playwright = createPlaywrightSessionHandler({
-  createContext: async (options) =>
-    await browser.newContext(options ?? undefined),
-  createPage: async (context) =>
-    await context.newPage(),
-});
-
-const session = await host.getNamespacedRuntime("playwright:preview:session", {
-  bindings: {
-    browser: {
-      handler: playwright.handler,
-    },
-  },
-});
-
-await session.eval(`
-  globalThis.ctx = await browser.newContext();
-  globalThis.page = await globalThis.ctx.newPage();
-  await globalThis.page.goto("https://example.com");
-`);
-
-await session.dispose();
-
-const reused = await host.getNamespacedRuntime("playwright:preview:session", {
-  bindings: {
-    browser: {
-      handler: playwright.handler,
-    },
-  },
-});
-
-const unsubscribe = reused.test.onEvent((event) => {
-  if (event.type === "testStart") {
-    console.log("running", event.test.fullName);
-  }
-});
-
-const results = await reused.runTests(`
-  test("sees the existing browser state", async () => {
-    const contexts = await browser.contexts();
-    expect(contexts.length).toBe(1);
-    const pages = await contexts[0].pages();
-    expect(pages.length).toBe(1);
-  });
-`);
-
-console.log(results.success);
-
-unsubscribe();
-await host.disposeNamespace("playwright:preview:session");
-await browser.close();
-await host.close();
-```
-
-Lifecycle notes:
-
-- only one live handle per namespace is allowed at a time
-- `runTests(code)` resets test registration before loading and running the provided suite
-- `session.test.onEvent(...)` exposes suite/test lifecycle events for timeout and progress reporting
-- runtime globals, module state, and Playwright resources are preserved across soft dispose and reacquire
-- browser shutdown stays host-owned; page/context shutdown stays sandbox-owned
-- preview URL rewriting remains host-specific and stays outside isolate
-
-## Browser Bindings In Script And Server Runtimes
+### Add Browser Support To Script And Server Runtimes
 
 If you provide `bindings.browser`, script and app runtimes get a global `browser` factory even when they are not full Playwright browser runtimes.
 
@@ -367,7 +248,7 @@ await browser.close();
 await host.close();
 ```
 
-In these runtimes:
+Inside these runtimes:
 
 - `browser.newContext()` is available
 - `browser.contexts()` is available
@@ -377,9 +258,9 @@ In these runtimes:
 - `browser.close()` is not exposed inside the sandbox
 - `page` and `context` are never injected as implicit globals
 
-## Test Runtimes
+### Run Tests Inside The Sandbox
 
-`createTestRuntime()` enables `describe`, `test`/`it`, hooks, and `expect`. If you also provide `bindings.browser`, the same test runtime gets Playwright-style browser access and matcher support, but you are responsible for explicit page/context lifecycle inside the suite.
+`createTestRuntime()` enables `describe`, `test` / `it`, hooks, and `expect`. If you also provide `bindings.browser`, the same test runtime gets Playwright-style browser access and matcher support.
 
 ```ts
 import { chromium } from "playwright";
@@ -478,9 +359,143 @@ await child.dispose();
 await nestedHost.close();
 ```
 
-## Module Resolution
+### Reuse A Namespaced Session
 
-`createModuleResolver()` is a fluent builder. You can mix and match:
+`host.getNamespacedRuntime(key, options)` is the persistent-session API. Use it when you want one underlying runtime to survive across multiple calls while refreshing host bindings on each acquire.
+
+```ts
+import { chromium } from "playwright";
+import { createIsolateHost } from "@ricsam/isolate";
+import { createPlaywrightSessionHandler } from "@ricsam/isolate/playwright";
+
+const browser = await chromium.launch();
+const host = await createIsolateHost();
+const playwright = createPlaywrightSessionHandler({
+  createContext: async (options) =>
+    await browser.newContext(options ?? undefined),
+  createPage: async (context) =>
+    await context.newPage(),
+});
+
+const session = await host.getNamespacedRuntime("playwright:preview:session", {
+  bindings: {
+    browser: {
+      handler: playwright.handler,
+    },
+  },
+});
+
+await session.eval(`
+  globalThis.ctx = await browser.newContext();
+  globalThis.page = await globalThis.ctx.newPage();
+  await globalThis.page.goto("https://example.com");
+`);
+
+await session.dispose();
+
+const reused = await host.getNamespacedRuntime("playwright:preview:session", {
+  bindings: {
+    browser: {
+      handler: playwright.handler,
+    },
+  },
+});
+
+const unsubscribe = reused.test.onEvent((event) => {
+  if (event.type === "testStart") {
+    console.log("running", event.test.fullName);
+  }
+});
+
+const results = await reused.runTests(`
+  test("sees the existing browser state", async () => {
+    const contexts = await browser.contexts();
+    expect(contexts.length).toBe(1);
+    const pages = await contexts[0].pages();
+    expect(pages.length).toBe(1);
+  });
+`);
+
+console.log(results.success);
+
+unsubscribe();
+await host.disposeNamespace("playwright:preview:session");
+await browser.close();
+await host.close();
+```
+
+Lifecycle notes:
+
+- only one live handle per namespace is allowed at a time
+- `runTests(code)` resets test registration before loading and running the provided suite
+- `session.test.onEvent(...)` exposes suite and test lifecycle events for timeout and progress reporting
+- runtime globals, module state, and Playwright resources survive soft dispose and reacquire
+- browser shutdown stays host-owned, while page and context shutdown stay sandbox-owned
+
+### Use Async Context Inside The Sandbox
+
+Runtimes created by `@ricsam/isolate` enable the TC39 proposal-style `AsyncContext` global inside the sandbox. This experimental surface is also used to implement the `node:async_hooks` shim exposed to sandboxed code.
+
+This shim is for async context propagation inside the sandbox. It is not a full reimplementation of Node's `async_hooks` lifecycle, resource graph, or profiling APIs.
+
+Currently supported:
+
+- `AsyncContext.Variable`
+- `AsyncContext.Snapshot`
+- `node:async_hooks` `AsyncLocalStorage`
+- `node:async_hooks` `AsyncResource`
+- `node:async_hooks` `createHook()`
+- `node:async_hooks` `executionAsyncId()`
+- `node:async_hooks` `triggerAsyncId()`
+- `node:async_hooks` `executionAsyncResource()`
+- `node:async_hooks` `asyncWrapProviders`
+
+```ts
+import {
+  createHook,
+  executionAsyncResource,
+} from "node:async_hooks";
+
+const hook = createHook({
+  init(asyncId, type, triggerAsyncId, resource) {
+    resource.requestTag = type + ":" + asyncId;
+  },
+  before() {
+    console.log(executionAsyncResource().requestTag ?? null);
+  },
+}).enable();
+
+setTimeout(() => {
+  console.log(executionAsyncResource().requestTag);
+  hook.disable();
+}, 0);
+```
+
+## API
+
+### Package Entry Points
+
+- `@ricsam/isolate` exports `createIsolateHost()`, `createModuleResolver()`, `createFileBindings()`, `getTypeProfile()`, `typecheck()`, and `formatTypecheckErrors()`
+- `@ricsam/isolate/playwright` exports `createPlaywrightSessionHandler()` and related Playwright handler types
+- inside sandbox code, `@ricsam/isolate` is also available as a synthetic module that exports sandbox-only `createIsolateHost()` for nested runtimes
+
+### `createIsolateHost()`
+
+`createIsolateHost()` creates the top-level host connection. The returned host exposes:
+
+- `createRuntime(options)` for script execution
+- `createAppServer(options)` for long-lived `serve()` entrypoints
+- `createTestRuntime(options)` for tests
+- `getNamespacedRuntime(key, options)` for persistent sessions
+- `disposeNamespace(key, options?)` for hard-deleting a namespace
+- `diagnostics()` for host-level diagnostics
+- `close()` to shut everything down
+
+`CreateIsolateHostOptions` currently supports `engine: "auto"` and daemon options such as `socketPath`, `entrypoint`, `cwd`, `timeoutMs`, and `autoStart`.
+
+### `createModuleResolver()`
+
+`createModuleResolver()` returns a fluent builder. You can mix and match:
 
 - `virtual(specifier, source, options)` for inline modules
 - `virtualFile(specifier, filePath, options)` for a host file mapped to a virtual specifier
@@ -488,11 +503,11 @@ await nestedHost.close();
 - `mountNodeModules(virtualMount, hostPath)` for package resolution from a real `node_modules`
 - `fallback(loader)` for custom last-resort resolution
 
-## File Bindings
+### `createFileBindings()`
 
-`createFileBindings({ root, allowWrite })` creates a filesystem bridge that stays inside the configured root directory. Attempts to escape that root are rejected, and write operations are disabled unless `allowWrite` is set to `true`.
+`createFileBindings({ root, allowWrite })` creates a filesystem bridge that stays inside the configured root directory. Attempts to escape that root are rejected, and write operations are disabled unless `allowWrite` is `true`.
 
-## Typechecking
+### Typechecking
 
 The typecheck helpers let you validate sandbox code against supported capability profiles before executing it.
 
@@ -528,11 +543,27 @@ Built-in profiles:
 
 Capabilities can extend a profile with `fetch`, `files`, `tests`, `browser`, `tools`, `console`, `encoding`, and `timers`.
 
-- Use `browser` when sandbox code should typecheck `browser.newContext()`, `browser.contexts()`, `context.newPage()`, and `context.pages()`
-- The browser test profile does not assume implicit global `page` or `context`
-- The synthetic sandbox import `import { createIsolateHost } from "@ricsam/isolate"` is included in all type profiles
+### `@ricsam/isolate/playwright`
 
-## Daemon CLI
+`createPlaywrightSessionHandler()` builds a handler-first browser binding for namespaced sessions and other Playwright-backed runtimes.
+
+It accepts host callbacks such as:
+
+- `createContext`
+- `createPage`
+- `readFile`
+- `writeFile`
+- `evaluatePredicate`
+
+It returns:
+
+- `handler` for `bindings.browser.handler`
+- `getCollectedData()` for collected browser artifacts
+- `getTrackedResources()` for active contexts and pages
+- `clearCollectedData()` to reset collected artifacts
+- `onEvent(callback)` for sync-only, best-effort Playwright event subscriptions
+
+### `isolate-daemon`
 
 The package also exposes an `isolate-daemon` binary:
 
@@ -541,11 +572,3 @@ isolate-daemon --socket /tmp/isolate.sock
 ```
 
 By default, `createIsolateHost()` will auto-start a daemon when needed. You can also point the host at an already-running daemon with `daemon.socketPath`, or disable auto-start with `daemon.autoStart: false`.
-
-## Development
-
-```bash
-npm run build
-npm run typecheck
-npm test
-```
