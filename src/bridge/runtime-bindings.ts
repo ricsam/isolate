@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { RuntimeOptions } from "../internal/client/index.ts";
-import { invokeBestEffortEventHandler } from "../internal/event-callback.ts";
+import { invokeBestEffortEventHandlerNonReentrant } from "../internal/event-callback.ts";
 import type { ModuleLoaderCallback } from "../internal/protocol/index.ts";
 import { createPlaywrightFactoryHandler } from "../internal/playwright/client.ts";
 import { getRequestContext } from "./request-context.ts";
@@ -251,7 +251,7 @@ export function createRuntimeBindingsAdapter(
               const context = contextFactory.createHostCallContext(
                 `console:${crypto.randomUUID()}`,
               );
-              invokeBestEffortEventHandler(
+              invokeBestEffortEventHandlerNonReentrant(
                 "bindings.console.onEntry",
                 bindings.console?.onEntry,
                 entry,
@@ -522,7 +522,7 @@ function createBrowserPlaywrightOptions(
             const context = createHostCallContext(
               `browser:event:${event.type}:${crypto.randomUUID()}`,
             );
-            invokeBestEffortEventHandler(
+            invokeBestEffortEventHandlerNonReentrant(
               "bindings.browser.onEvent",
               browser.onEvent,
               event,
@@ -580,7 +580,7 @@ function createBrowserPlaywrightOptions(
           const context = createHostCallContext(
             `browser:event:${event.type}:${crypto.randomUUID()}`,
           );
-          invokeBestEffortEventHandler(
+          invokeBestEffortEventHandlerNonReentrant(
             "bindings.browser.onEvent",
             browser.onEvent,
             event,

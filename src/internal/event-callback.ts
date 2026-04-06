@@ -40,3 +40,30 @@ export function invokeBestEffortEventHandler<TArgs extends unknown[]>(
     console.error(`[isolate] ${label} handler failed.`, error);
   }
 }
+
+function shouldDeferBestEffortHandler(handler: Function): boolean {
+  return handler.constructor?.name === "AsyncFunction";
+}
+
+export function invokeBestEffortEventHandlerNonReentrant<TArgs extends unknown[]>(
+  label: string,
+  handler: ((...args: TArgs) => unknown) | undefined,
+  ...args: TArgs
+): void {
+  if (!handler) {
+    return;
+  }
+
+  if (!shouldDeferBestEffortHandler(handler)) {
+    invokeBestEffortEventHandler(label, handler, ...args);
+    return;
+  }
+
+  // Nested isolate callbacks are marshalled as async proxy functions. Deferring them
+  // to the next macrotask avoids re-entering the parent isolate while the child
+  // operation is still on the stack, and nested wrappers already drain a few turns
+  // before they resolve back into the isolate.
+  setTimeout(() => {
+    invokeBestEffortEventHandler(label, handler, ...args);
+  }, 0);
+}

@@ -6,6 +6,7 @@ import {
   requireBrowserSource,
   type BrowserSource,
 } from "../internal/browser-source.ts";
+import { invokeBestEffortEventHandlerNonReentrant } from "../internal/event-callback.ts";
 import type {
   AppServer,
   CreateAppServerOptions,
@@ -76,6 +77,15 @@ interface SerializedRequestLike {
   method?: string;
   headers?: Array<[string, string]>;
   body?: number[] | null;
+}
+
+function createNonReentrantEventHandler<TArgs extends unknown[]>(
+  label: string,
+  handler: ((...args: TArgs) => unknown) | undefined,
+): (...args: TArgs) => void {
+  return (...args: TArgs) => {
+    invokeBestEffortEventHandlerNonReentrant(label, handler, ...args);
+  };
 }
 
 function toRequest(serialized: SerializedRequestLike): Request {
@@ -383,7 +393,10 @@ export function createNestedHostBindings(
               const subscriptionId = randomUUID();
               const unsubscribe = runtimeRecord.resource.events.on(
                 args[0] as string,
-                args[1] as (payload: unknown) => void,
+                createNonReentrantEventHandler(
+                  "nestedHost.runtime.events.on",
+                  args[1] as (payload: unknown) => void,
+                ),
               );
               runtimeRecord.subscriptions.set(subscriptionId, unsubscribe);
               return subscriptionId;
@@ -482,7 +495,10 @@ export function createNestedHostBindings(
             case "test.on": {
               const subscriptionId = randomUUID();
               const unsubscribe = runtime.test.onEvent(
-                args[0] as (payload: unknown) => void,
+                createNonReentrantEventHandler(
+                  "nestedHost.testRuntime.test.on",
+                  args[0] as (payload: unknown) => void,
+                ),
               );
               runtimeRecord.subscriptions.set(subscriptionId, unsubscribe);
               return subscriptionId;
@@ -534,7 +550,10 @@ export function createNestedHostBindings(
             case "test.on": {
               const subscriptionId = randomUUID();
               const unsubscribe = runtimeRecord.resource.test.onEvent(
-                args[0] as (payload: unknown) => void,
+                createNonReentrantEventHandler(
+                  "nestedHost.namespacedRuntime.test.on",
+                  args[0] as (payload: unknown) => void,
+                ),
               );
               runtimeRecord.subscriptions.set(subscriptionId, unsubscribe);
               return subscriptionId;
@@ -553,7 +572,10 @@ export function createNestedHostBindings(
               const subscriptionId = randomUUID();
               const unsubscribe = runtimeRecord.resource.events.on(
                 args[0] as string,
-                args[1] as (payload: unknown) => void,
+                createNonReentrantEventHandler(
+                  "nestedHost.namespacedRuntime.events.on",
+                  args[1] as (payload: unknown) => void,
+                ),
               );
               runtimeRecord.subscriptions.set(subscriptionId, unsubscribe);
               return subscriptionId;
