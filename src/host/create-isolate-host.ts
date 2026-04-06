@@ -315,7 +315,7 @@ class HostImpl implements IsolateHost {
   }
 
   private async getConnection(): Promise<DaemonConnection> {
-    if (this.connection?.isConnected()) {
+    if (this.connection?.isConnected() || this.connection?.isRecovering()) {
       return this.connection;
     }
     if (this.connectionPromise) {

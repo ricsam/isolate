@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { connect } from "./index.ts";
-import { createTestHost, withTimeout } from "../../testing/integration-helpers.ts";
+import { __unstableGetNamespacedRuntimeDescriptorForTests } from "./connection.ts";
+import { createTestHost, createTestId, withTimeout } from "../../testing/integration-helpers.ts";
 import type { IsolateHost } from "../../types.ts";
 
 function collectOutput(entries: Array<{ type: string; stdout?: string }>): string[] {
@@ -180,6 +181,59 @@ describe("outbound WebSocket client integration", () => {
     } finally {
       release.resolve();
       await runtime.dispose({ hard: true, reason: "test cleanup" });
+      await connection.close();
+    }
+  });
+
+  test("rebound namespaced handles target the replacement isolate id", async () => {
+    const connection = await connect({
+      socket: socketPath,
+      timeout: 15_000,
+    });
+    const admin = await connect({
+      socket: socketPath,
+      timeout: 15_000,
+    });
+    const key = createTestId("client-namespaced-rebind");
+
+    const runtime = await connection.createNamespace(key).createRuntime({});
+    const descriptor = __unstableGetNamespacedRuntimeDescriptorForTests(connection, key);
+    assert.ok(descriptor, "expected namespaced runtime descriptor");
+    if (!descriptor) {
+      throw new Error("expected namespaced runtime descriptor");
+    }
+    const reboundDescriptor = descriptor;
+    const firstIsolateId = runtime.id;
+
+    let replacement:
+      | Awaited<ReturnType<ReturnType<typeof connection.createNamespace>["createRuntime"]>>
+      | undefined;
+    let reacquired:
+      | Awaited<ReturnType<ReturnType<typeof connection.createNamespace>["createRuntime"]>>
+      | undefined;
+
+    try {
+      await runtime.eval("globalThis.__beforeRebind = 1;");
+
+      await admin.disposeNamespace(key, {
+        reason: "simulate reconnect replacement",
+      });
+
+      replacement = await connection.createNamespace(key).createRuntime({});
+      assert.notEqual(replacement.id, firstIsolateId);
+
+      reboundDescriptor.syncIsolateId(replacement.id);
+      assert.equal(runtime.id, replacement.id);
+
+      await runtime.eval("globalThis.__afterRebind = 2;");
+      await runtime.dispose();
+
+      reacquired = await connection.createNamespace(key).createRuntime({});
+      await reacquired.eval("globalThis.__afterDispose = 3;");
+    } finally {
+      await reacquired?.dispose({ hard: true, reason: "test cleanup" }).catch(() => {});
+      await replacement?.dispose({ hard: true, reason: "test cleanup" }).catch(() => {});
+      await admin.close();
       await connection.close();
     }
   });

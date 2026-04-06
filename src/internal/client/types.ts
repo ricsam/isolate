@@ -101,6 +101,8 @@ export interface DaemonConnection {
   close(): Promise<void>;
   /** Check if connected */
   isConnected(): boolean;
+  /** Check if the connection is auto-recovering after an unexpected close */
+  isRecovering(): boolean;
 }
 
 /**

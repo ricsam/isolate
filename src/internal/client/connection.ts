@@ -126,6 +126,52 @@ const isolateWebSocketCallbacks = new Map<string, WebSocketCallback>();
 // Map: isolateId -> Map<event, Set<callback>>
 const isolateEventListeners = new Map<string, Map<string, Set<(payload: unknown) => void>>>();
 
+function moveRuntimeMapEntry<T>(
+  map: Map<string, T>,
+  previousIsolateId: string,
+  nextIsolateId: string,
+): void {
+  if (previousIsolateId === nextIsolateId) {
+    return;
+  }
+
+  const value = map.get(previousIsolateId);
+  if (value === undefined) {
+    return;
+  }
+
+  map.delete(previousIsolateId);
+  map.set(nextIsolateId, value);
+}
+
+function closeClientWebSocketsForRuntime(isolateId: string): void {
+  const sockets = isolateClientWebSockets.get(isolateId);
+  if (!sockets) {
+    return;
+  }
+
+  isolateClientWebSockets.delete(isolateId);
+  for (const ws of sockets.values()) {
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      ws.close(1012, "Runtime identity changed");
+    }
+  }
+}
+
+function syncRuntimeClientState(previousIsolateId: string, nextIsolateId: string): void {
+  if (previousIsolateId === nextIsolateId) {
+    return;
+  }
+
+  moveRuntimeMapEntry(isolateWsCallbacks, previousIsolateId, nextIsolateId);
+  moveRuntimeMapEntry(isolateWebSocketCallbacks, previousIsolateId, nextIsolateId);
+  moveRuntimeMapEntry(isolateEventListeners, previousIsolateId, nextIsolateId);
+
+  // Existing outbound client WebSockets capture the old isolate id in their event
+  // handlers, so reconnecting under a new runtime id requires dropping them.
+  closeClientWebSocketsForRuntime(previousIsolateId);
+}
+
 interface PendingRequest {
   resolve: (data: unknown) => void;
   reject: (error: Error) => void;
@@ -162,6 +208,7 @@ interface StreamUploadSession {
 interface NamespacedRuntimeDescriptor {
   isolateId: string;
   runtimeOptions: RuntimeOptions;
+  syncIsolateId(nextIsolateId: string): void;
 }
 
 interface ConnectionState {
@@ -202,6 +249,15 @@ interface ConnectionState {
   /** Monotonic ids for connection-scoped returned refs and iterator sessions */
   nextClientIteratorId: number;
   nextReturnedRefId: number;
+}
+
+const daemonConnectionStates = new WeakMap<DaemonConnection, ConnectionState>();
+
+export function __unstableGetNamespacedRuntimeDescriptorForTests(
+  connection: DaemonConnection,
+  namespaceId: string,
+): Pick<NamespacedRuntimeDescriptor, "isolateId" | "syncIsolateId"> | undefined {
+  return daemonConnectionStates.get(connection)?.namespacedRuntimes.get(namespaceId);
 }
 
 /**
@@ -416,7 +472,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
         };
 
         const result = await sendRequest<CreateRuntimeResult>(st, request);
-        descriptor.isolateId = result.isolateId;
+        descriptor.syncIsolateId(result.isolateId);
       }
 
       st.reconnecting = undefined;
@@ -426,7 +482,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
     }
   }
 
-  return {
+  const api: DaemonConnection = {
     createRuntime: (runtimeOptions) =>
       createRuntime(state, runtimeOptions),
     createNamespace: (id: string): Namespace => ({
@@ -454,7 +510,11 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
       state.socket.destroy();
     },
     isConnected: () => state.connected,
+    isRecovering: () => !!state.reconnecting,
   };
+
+  daemonConnectionStates.set(api, state);
+  return api;
 }
 
 /**
@@ -938,16 +998,21 @@ function sendMessage(socket: Socket, message: Message): void {
 /**
  * Send a request and wait for response.
  */
-function sendRequest<T>(
+async function sendRequest<T>(
   state: ConnectionState,
   message: Message,
 ): Promise<T> {
-  return new Promise((resolve, reject) => {
-    if (!state.connected) {
-      reject(new Error("Not connected"));
-      return;
+  if (!state.connected) {
+    if (state.reconnecting) {
+      await state.reconnecting.catch(() => {});
     }
 
+    if (!state.connected) {
+      throw new Error("Not connected");
+    }
+  }
+
+  return await new Promise<T>((resolve, reject) => {
     const requestId = (message as { requestId: number }).requestId;
 
     state.pendingRequests.set(requestId, {
@@ -1163,27 +1228,43 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   };
 
   const result = await sendRequest<CreateRuntimeResult>(state, request);
-  const isolateId = result.isolateId;
+  let currentIsolateId = result.isolateId;
   const reused = result.reused ?? false;
+  const getCurrentIsolateId = (): string => currentIsolateId;
+  let namespacedDescriptor: NamespacedRuntimeDescriptor | undefined;
+  const syncCurrentIsolateId = (nextIsolateId: string): void => {
+    if (currentIsolateId === nextIsolateId) {
+      return;
+    }
+
+    const previousIsolateId = currentIsolateId;
+    currentIsolateId = nextIsolateId;
+    if (namespacedDescriptor) {
+      namespacedDescriptor.isolateId = nextIsolateId;
+    }
+    syncRuntimeClientState(previousIsolateId, nextIsolateId);
+  };
 
   // Track namespaced runtimes for auto-reconnection
   if (namespaceId != null) {
-    state.namespacedRuntimes.set(namespaceId, {
-      isolateId,
+    namespacedDescriptor = {
+      isolateId: currentIsolateId,
       runtimeOptions: runtimeOptionsForReconnect as RuntimeOptions,
-    });
+      syncIsolateId: syncCurrentIsolateId,
+    };
+    state.namespacedRuntimes.set(namespaceId, namespacedDescriptor);
   }
 
   // WebSocket command callbacks - store in module-level Map for WS_COMMAND message handling
   const wsCommandCallbacks: Set<(cmd: WebSocketCommand) => void> = new Set();
-  isolateWsCallbacks.set(isolateId, wsCommandCallbacks);
+  isolateWsCallbacks.set(getCurrentIsolateId(), wsCommandCallbacks);
   if (options.onWebSocketCommand) {
     wsCommandCallbacks.add(options.onWebSocketCommand);
   }
 
   // Store WebSocket callback if provided (for outbound connections from isolate)
   if (options.webSocket) {
-    isolateWebSocketCallbacks.set(isolateId, options.webSocket);
+    isolateWebSocketCallbacks.set(getCurrentIsolateId(), options.webSocket);
   }
 
   // Create fetch handle
@@ -1202,7 +1283,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const request: DispatchRequestRequest = {
         type: MessageType.DISPATCH_REQUEST,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
         request: serializableRequest,
         context: opts?.requestId || opts?.metadata
           ? {
@@ -1231,7 +1312,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         abortSent = true;
         const abortMessage: DispatchRequestAbort = {
           type: MessageType.DISPATCH_REQUEST_ABORT,
-          isolateId,
+          isolateId: getCurrentIsolateId(),
           targetRequestId: reqId,
         };
         if (state.connected) {
@@ -1298,7 +1379,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: FetchGetUpgradeRequestRequest = {
         type: MessageType.FETCH_GET_UPGRADE_REQUEST,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       return sendRequest<UpgradeRequest | null>(state, req);
     },
@@ -1308,7 +1389,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: WsOpenRequest = {
         type: MessageType.WS_OPEN,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
         connectionId,
       };
       await sendRequest(state, req);
@@ -1320,7 +1401,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: WsMessageRequest = {
         type: MessageType.WS_MESSAGE,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
         connectionId,
         data,
       };
@@ -1332,7 +1413,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: WsCloseRequest = {
         type: MessageType.WS_CLOSE,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
         connectionId,
         code,
         reason,
@@ -1345,7 +1426,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: FetchWsErrorRequest = {
         type: MessageType.FETCH_WS_ERROR,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
         connectionId,
         error: error.message,
       };
@@ -1364,7 +1445,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: FetchHasServeHandlerRequest = {
         type: MessageType.FETCH_HAS_SERVE_HANDLER,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       return sendRequest<boolean>(state, req);
     },
@@ -1374,7 +1455,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: FetchHasActiveConnectionsRequest = {
         type: MessageType.FETCH_HAS_ACTIVE_CONNECTIONS,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       return sendRequest<boolean>(state, req);
     },
@@ -1387,7 +1468,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: TimersClearAllRequest = {
         type: MessageType.TIMERS_CLEAR_ALL,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       await sendRequest(state, req);
     },
@@ -1400,7 +1481,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: ConsoleResetRequest = {
         type: MessageType.CONSOLE_RESET,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       await sendRequest(state, req);
     },
@@ -1410,7 +1491,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: ConsoleGetTimersRequest = {
         type: MessageType.CONSOLE_GET_TIMERS,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       const result = await sendRequest<Record<string, number>>(state, req);
       return new Map(Object.entries(result));
@@ -1421,7 +1502,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: ConsoleGetCountersRequest = {
         type: MessageType.CONSOLE_GET_COUNTERS,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       const result = await sendRequest<Record<string, number>>(state, req);
       return new Map(Object.entries(result));
@@ -1432,7 +1513,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: ConsoleGetGroupDepthRequest = {
         type: MessageType.CONSOLE_GET_GROUP_DEPTH,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       return sendRequest<number>(state, req);
     },
@@ -1452,7 +1533,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: RunTestsRequest = {
         type: MessageType.RUN_TESTS,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
         timeout,
       };
       try {
@@ -1469,7 +1550,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
           const retryReq: RunTestsRequest = {
             type: MessageType.RUN_TESTS,
             requestId: retryReqId,
-            isolateId,
+            isolateId: getCurrentIsolateId(),
             timeout,
           };
           return sendRequest<RunTestsResult>(state, retryReq);
@@ -1486,7 +1567,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: HasTestsRequest = {
         type: MessageType.HAS_TESTS,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       return sendRequest<boolean>(state, req);
     },
@@ -1499,7 +1580,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: GetTestCountRequest = {
         type: MessageType.GET_TEST_COUNT,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       return sendRequest<number>(state, req);
     },
@@ -1512,7 +1593,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: ResetTestEnvRequest = {
         type: MessageType.RESET_TEST_ENV,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
       };
       await sendRequest(state, req);
     },
@@ -1542,7 +1623,9 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
   };
 
   return {
-    id: isolateId,
+    get id() {
+      return getCurrentIsolateId();
+    },
     reused,
 
     // Module handles
@@ -1564,7 +1647,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: EvalRequest = {
         type: MessageType.EVAL,
         requestId: reqId,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
         code,
         filename: options?.filename,
         executionTimeout: options?.executionTimeout,
@@ -1574,10 +1657,10 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
     },
 
     on(event: string, callback: (payload: unknown) => void): () => void {
-      let listeners = isolateEventListeners.get(isolateId);
+      let listeners = isolateEventListeners.get(getCurrentIsolateId());
       if (!listeners) {
         listeners = new Map();
-        isolateEventListeners.set(isolateId, listeners);
+        isolateEventListeners.set(getCurrentIsolateId(), listeners);
       }
       let eventListeners = listeners.get(event);
       if (!eventListeners) {
@@ -1590,7 +1673,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
         if (eventListeners!.size === 0) {
           listeners!.delete(event);
           if (listeners!.size === 0) {
-            isolateEventListeners.delete(isolateId);
+            isolateEventListeners.delete(getCurrentIsolateId());
           }
         }
       };
@@ -1599,31 +1682,33 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
     emit(event: string, payload: unknown): void {
       sendMessage(state.socket, {
         type: MessageType.CLIENT_EVENT,
-        isolateId,
+        isolateId: getCurrentIsolateId(),
         event,
         payload,
       } as ClientEventMessage);
     },
 
     dispose: async (options?: DisposeRuntimeOptions) => {
+      const disposeIsolateId = getCurrentIsolateId();
+
       // Clean up page listeners
       for (const cleanup of playwrightListenerCleanups) {
         cleanup();
       }
       // Clean up WebSocket callbacks
-      isolateWsCallbacks.delete(isolateId);
-      isolateWebSocketCallbacks.delete(isolateId);
-      isolateEventListeners.delete(isolateId);
+      isolateWsCallbacks.delete(disposeIsolateId);
+      isolateWebSocketCallbacks.delete(disposeIsolateId);
+      isolateEventListeners.delete(disposeIsolateId);
 
       // Clean up client WebSockets (close all open connections)
-      const clientSockets = isolateClientWebSockets.get(isolateId);
+      const clientSockets = isolateClientWebSockets.get(disposeIsolateId);
       if (clientSockets) {
         for (const ws of clientSockets.values()) {
           if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
             ws.close(1000, "Isolate disposed");
           }
         }
-        isolateClientWebSockets.delete(isolateId);
+        isolateClientWebSockets.delete(disposeIsolateId);
       }
 
       // Remove from namespaced tracking (no auto-reconnect after explicit dispose)
@@ -1635,7 +1720,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
       const req: DisposeRuntimeRequest = {
         type: MessageType.DISPOSE_RUNTIME,
         requestId: reqId,
-        isolateId,
+        isolateId: disposeIsolateId,
         hard: options?.hard === true ? true : undefined,
         reason: typeof options?.reason === "string" && options.reason.length > 0 ? options.reason : undefined,
       };

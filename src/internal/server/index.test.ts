@@ -119,6 +119,7 @@ function createConnection(runtimes: FakeRuntime[]): DaemonConnection {
     disposeNamespace: async () => {},
     close: async () => {},
     isConnected: () => true,
+    isRecovering: () => false,
   };
 }
 

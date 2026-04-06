@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.15
+
+### Patch Changes
+
+- fix reconnection
+
 ## 0.1.14
 
 ### Patch Changes
