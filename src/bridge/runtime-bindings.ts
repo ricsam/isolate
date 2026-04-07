@@ -46,6 +46,38 @@ interface AsyncIteratorMarkedHandler {
   __isolateCallbackKind?: "asyncGenerator";
 }
 
+interface ProxyBackedHandler {
+  __isolateCallbackProxy?: unknown;
+}
+
+function copyIsolateCallbackMetadata<T extends (...args: unknown[]) => unknown>(
+  source: ToolHandler,
+  target: T,
+): T {
+  if ((source as ProxyBackedHandler).__isolateCallbackProxy === true) {
+    Object.defineProperty(target, "__isolateCallbackProxy", {
+      configurable: true,
+      enumerable: false,
+      value: true,
+      writable: false,
+    });
+  }
+
+  if (
+    (source as AsyncIteratorMarkedHandler).__isolateCallbackKind ===
+    "asyncGenerator"
+  ) {
+    Object.defineProperty(target, "__isolateCallbackKind", {
+      configurable: true,
+      enumerable: false,
+      value: "asyncGenerator",
+      writable: false,
+    });
+  }
+
+  return target;
+}
+
 function createAbortError(reason?: unknown): Error {
   if (reason instanceof Error) {
     return reason;
@@ -605,9 +637,9 @@ function createCustomFunctions(
   if (tools) {
     for (const [name, handler] of Object.entries(tools)) {
       if (isAsyncGeneratorFunction(handler)) {
-        definitions[name] = {
-          type: "asyncIterator",
-          fn: (...args: unknown[]) => {
+        const fn = copyIsolateCallbackMetadata(
+          handler,
+          (...args: unknown[]) => {
             diagnostics.pendingTools += 1;
             diagnostics.activeResources += 1;
             const context = createHostCallContext(
@@ -648,13 +680,17 @@ function createCustomFunctions(
               }
             })();
           },
+        );
+        definitions[name] = {
+          type: "asyncIterator",
+          fn,
         };
         continue;
       }
 
-      definitions[name] = {
-        type: "async",
-        fn: async (...args: unknown[]) => {
+      const fn = copyIsolateCallbackMetadata(
+        handler,
+        async (...args: unknown[]) => {
           diagnostics.pendingTools += 1;
           diagnostics.activeResources += 1;
           try {
@@ -667,6 +703,11 @@ function createCustomFunctions(
             diagnostics.activeResources -= 1;
           }
         },
+      );
+
+      definitions[name] = {
+        type: "async",
+        fn,
       };
     }
   }

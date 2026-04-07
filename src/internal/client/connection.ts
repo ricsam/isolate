@@ -2221,7 +2221,7 @@ function registerCustomFunctions(
 
   const unmarshalCtx: UnmarshalContext = {};
   unmarshalCtx.getCallback = (callbackId: number) => {
-    return async (...args: unknown[]) => {
+    const callback = async (...args: unknown[]) => {
       const marshalledArgs = await marshalValue(args, marshalCtx);
       const result = await invokeDaemonCallback(
         state,
@@ -2230,6 +2230,13 @@ function registerCustomFunctions(
       );
       return unmarshalValue(result, unmarshalCtx);
     };
+    Object.defineProperty(callback, "__isolateCallbackProxy", {
+      configurable: true,
+      enumerable: false,
+      value: true,
+      writable: false,
+    });
+    return callback;
   };
   unmarshalCtx.createPromiseProxy = (
     promiseId: number,

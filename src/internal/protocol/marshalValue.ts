@@ -169,6 +169,13 @@ function markCallbackKind<T extends Function>(
   callback: T,
   callbackKind: CallbackRef["callbackKind"],
 ): T {
+  Object.defineProperty(callback, "__isolateCallbackProxy", {
+    configurable: true,
+    enumerable: false,
+    value: true,
+    writable: false,
+  });
+
   if (callbackKind !== "asyncGenerator") {
     return callback;
   }

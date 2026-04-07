@@ -301,6 +301,9 @@ interface RuntimeState {
   customFnInvokeRef?: ivm.Reference<
     (name: string, argsJson: string) => Promise<string>
   >;
+  customFnInvokeLocalCallbackRef?: ivm.Reference<
+    (callbackId: number, argsJson: string) => Promise<string>
+  >;
   sourceMaps: Map<string, SourceMap>;
   /** Tracks the import chain for each module (resolved path → list of ancestor paths) */
   moduleImportChain: Map<string, string[]>;
@@ -390,6 +393,16 @@ async function disposeRuntimeState(
         // Ignore cleanup errors during disposal.
       } finally {
         state.customFnInvokeRef = undefined;
+      }
+    }
+
+    if (state.customFnInvokeLocalCallbackRef) {
+      try {
+        state.customFnInvokeLocalCallbackRef.release();
+      } catch {
+        // Ignore cleanup errors during disposal.
+      } finally {
+        state.customFnInvokeLocalCallbackRef = undefined;
       }
     }
 
@@ -1028,7 +1041,10 @@ async function setupCustomFunctions(
   context: ivm.Context,
   customFunctions: CustomFunctions,
   marshalOptions?: CustomFunctionsMarshalOptions,
-): Promise<ivm.Reference<(name: string, argsJson: string) => Promise<string>>> {
+): Promise<{
+  invokeCallbackRef: ivm.Reference<(name: string, argsJson: string) => Promise<string>>;
+  invokeIsolateCallbackRef: ivm.Reference<(callbackId: number, argsJson: string) => Promise<string>>;
+}> {
   const global = context.global;
   const isolateUnmarshalContext: UnmarshalContext = {};
 
@@ -1126,7 +1142,7 @@ async function setupCustomFunctions(
   };
 
   isolateUnmarshalContext.getCallback = (callbackId: number) => {
-    return async (...args: unknown[]) => {
+    const callback = async (...args: unknown[]) => {
       let marshalledArgs: unknown;
       if (marshalOptions) {
         const ctx = marshalOptions.createMarshalContext();
@@ -1156,6 +1172,13 @@ async function setupCustomFunctions(
       error.name = result.error?.name ?? "Error";
       throw error;
     };
+    Object.defineProperty(callback, "__isolateCallbackProxy", {
+      configurable: true,
+      enumerable: false,
+      value: true,
+      writable: false,
+    });
+    return callback;
   };
 
   isolateUnmarshalContext.createPromiseProxy = (
@@ -1295,6 +1318,8 @@ async function setupCustomFunctions(
   // Create wrapper functions for each custom function
   for (const name of Object.keys(customFunctions)) {
     const def = customFunctions[name]!;
+    const waitsForProxySettling =
+      (def.fn as { __isolateCallbackProxy?: unknown }).__isolateCallbackProxy === true;
 
     if (def.type === "async") {
       context.evalSync(`
@@ -1308,7 +1333,9 @@ async function setupCustomFunctions(
             );
             const result = JSON.parse(resultJson);
             if (result.ok) {
-              await __customFn_waitForTurn();
+              if (${waitsForProxySettling ? "true" : "false"}) {
+                await __customFn_waitForTurn();
+              }
               return __unmarshalFromHost(result.value);
             }
             const error = new Error(result.error.message);
@@ -1397,7 +1424,10 @@ async function setupCustomFunctions(
     }
   }
 
-  return invokeCallbackRef;
+  return {
+    invokeCallbackRef,
+    invokeIsolateCallbackRef,
+  };
 }
 
 /**
@@ -1830,11 +1860,13 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
       opts.customFunctionsMarshalOptions ??
       createLocalCustomFunctionsMarshalOptions();
 
-    state.customFnInvokeRef = await setupCustomFunctions(
+    const customFunctionRefs = await setupCustomFunctions(
       context,
       opts.customFunctions as CustomFunctions<Record<string, unknown[]>>,
       customMarshalOptions,
     );
+    state.customFnInvokeRef = customFunctionRefs.invokeCallbackRef;
+    state.customFnInvokeLocalCallbackRef = customFunctionRefs.invokeIsolateCallbackRef;
   }
 
   // Setup test environment (if enabled)
