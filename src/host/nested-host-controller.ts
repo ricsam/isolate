@@ -17,6 +17,7 @@ import type {
   HostCallContext,
   NamespacedRuntime,
   RequestResult,
+  RuntimeResourceDiagnostics,
   ScriptRuntime,
   TestRuntime,
 } from "../types.ts";
@@ -183,6 +184,41 @@ function toError(value: unknown): Error {
   }
 
   return new Error(String(value));
+}
+
+const NESTED_RUNTIME_FLUSH_CODE = `
+  for (let index = 0; index < 3; index += 1) {
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+`;
+
+function hasPendingNestedRuntimeWork(
+  diagnostics: RuntimeResourceDiagnostics,
+): boolean {
+  return diagnostics.runtime.activeResources > 0 ||
+    diagnostics.runtime.pendingFiles > 0 ||
+    diagnostics.runtime.pendingFetches > 0 ||
+    diagnostics.runtime.pendingModules > 0 ||
+    diagnostics.runtime.pendingTools > 0;
+}
+
+async function flushNestedRuntime(
+  runtime: ScriptRuntime | NamespacedRuntime,
+): Promise<void> {
+  let diagnostics = await runtime.diagnostics();
+
+  for (let index = 0; index < 3; index += 1) {
+    if (!hasPendingNestedRuntimeWork(diagnostics)) {
+      return;
+    }
+
+    await runtime.eval(
+      NESTED_RUNTIME_FLUSH_CODE,
+      { filename: "/__isolate_internal_nested_flush__.mjs" },
+    );
+    diagnostics = await runtime.diagnostics();
+  }
 }
 
 export function createNestedHostBindings(
@@ -383,6 +419,7 @@ export function createNestedHostBindings(
                 (args[1] as string | { filename?: string; executionTimeout?: number } | null) ??
                   undefined,
               );
+              await flushNestedRuntime(runtimeRecord.resource);
               return undefined;
             case "dispose":
               await disposeResource(resourceId, (args[0] as { hard?: boolean; reason?: string } | null) ?? {});
@@ -530,6 +567,7 @@ export function createNestedHostBindings(
                   executionTimeout?: number;
                 } | null) ?? undefined),
               );
+              await flushNestedRuntime(runtimeRecord.resource);
               return undefined;
             case "runTests":
               return await runtimeRecord.resource.runTests(
