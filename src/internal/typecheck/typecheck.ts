@@ -86,7 +86,7 @@ export interface LibraryTypes {
 export interface TypecheckOptions {
   /**
    * Which isolate global types to include.
-   * @default ["core", "fetch", "fs"]
+   * @default ["core", "crypto", "fetch", "fs"]
    */
   include?: Array<
     | "core"
@@ -94,6 +94,7 @@ export interface TypecheckOptions {
     | "fetch"
     | "fs"
     | "console"
+    | "crypto"
     | "encoding"
     | "timers"
     | "testEnvironment"
@@ -193,7 +194,7 @@ export function typecheckIsolateCode(
   code: string,
   options?: TypecheckOptions
 ): TypecheckResult {
-  const include = options?.include ?? ["core", "fetch", "fs"];
+  const include = options?.include ?? ["core", "crypto", "fetch", "fs"];
   const libraryTypes = options?.libraryTypes ?? {};
   // Create a project with in-memory file system
   const project = new Project({

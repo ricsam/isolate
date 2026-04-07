@@ -1823,8 +1823,15 @@ declare global {
      * @returns Promise resolving to a CryptoKey
      */
     importKey(
-      format: "raw" | "pkcs8" | "spki" | "jwk",
-      keyData: BufferSource | JsonWebKey,
+      format: "jwk",
+      keyData: JsonWebKey,
+      algorithm: AlgorithmIdentifier,
+      extractable: boolean,
+      keyUsages: KeyUsage[]
+    ): Promise<CryptoKey>;
+    importKey(
+      format: "raw" | "pkcs8" | "spki",
+      keyData: BufferSource,
       algorithm: AlgorithmIdentifier,
       extractable: boolean,
       keyUsages: KeyUsage[]
@@ -1838,9 +1845,13 @@ declare global {
      * @returns Promise resolving to ArrayBuffer or JsonWebKey
      */
     exportKey(
-      format: "raw" | "pkcs8" | "spki" | "jwk",
+      format: "jwk",
       key: CryptoKey
-    ): Promise<ArrayBuffer | JsonWebKey>;
+    ): Promise<JsonWebKey>;
+    exportKey(
+      format: "raw" | "pkcs8" | "spki",
+      key: CryptoKey
+    ): Promise<ArrayBuffer>;
 
     /**
      * Derive bits from a key.

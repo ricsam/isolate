@@ -11,10 +11,13 @@ describe("typecheck helpers", () => {
 
     assert.equal(profile.profile, "browser-test");
     assert.ok(profile.capabilities.includes("browser"));
+    assert.ok(profile.capabilities.includes("crypto"));
     assert.ok(profile.capabilities.includes("tests"));
     assert.ok(profile.capabilities.includes("files"));
+    assert.ok(profile.include.includes("crypto"));
     assert.ok(profile.include.includes("playwright"));
     assert.ok(profile.include.includes("testEnvironment"));
+    assert.ok(profile.files.some((file) => file.name === "isolate-crypto.d.ts"));
     assert.ok(profile.files.some((file) => file.name === "isolate-playwright.d.ts"));
   });
 
@@ -111,6 +114,45 @@ describe("typecheck helpers", () => {
       profile: "backend",
     });
 
+    assert.equal(result.success, true);
+  });
+
+  test("includes crypto in built-in profiles and crypto code typechecks", () => {
+    const profile = getTypeProfile({
+      profile: "backend",
+    });
+    const result = typecheck({
+      code: `
+        export {};
+        const pair = await crypto.subtle.generateKey(
+          {
+            name: "RSA-OAEP",
+            modulusLength: 2048,
+            publicExponent: new Uint8Array([1, 0, 1]),
+            hash: "SHA-256",
+          },
+          true,
+          ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        );
+
+        if ("publicKey" in pair) {
+          const spki = await crypto.subtle.exportKey("spki", pair.publicKey);
+          const importedPublicKey = await crypto.subtle.importKey(
+            "spki",
+            spki,
+            { name: "RSA-OAEP", hash: "SHA-256" },
+            true,
+            ["encrypt", "wrapKey"],
+          );
+          void importedPublicKey;
+        }
+      `,
+      profile: "backend",
+    });
+
+    assert.ok(profile.capabilities.includes("crypto"));
+    assert.ok(profile.include.includes("crypto"));
+    assert.ok(profile.files.some((file) => file.name === "isolate-crypto.d.ts"));
     assert.equal(result.success, true);
   });
 });

@@ -541,7 +541,7 @@ Built-in profiles:
 - `agent`
 - `browser-test`
 
-Capabilities can extend a profile with `fetch`, `files`, `tests`, `browser`, `tools`, `console`, `encoding`, and `timers`.
+Capabilities can extend a profile with `fetch`, `files`, `tests`, `browser`, `tools`, `console`, `crypto`, `encoding`, and `timers`.
 
 ### `@ricsam/isolate/playwright`
 

@@ -7,6 +7,7 @@ type IncludedType =
   | "fetch"
   | "fs"
   | "console"
+  | "crypto"
   | "encoding"
   | "timers"
   | "testEnvironment"
@@ -19,14 +20,15 @@ const CAPABILITY_MAP: Record<TypeCapability, IncludedType[]> = {
   browser: ["playwright"],
   tools: [],
   console: ["console"],
+  crypto: ["crypto"],
   encoding: ["encoding"],
   timers: ["timers"],
 };
 
 const PROFILE_DEFAULTS: Record<TypeProfileName, TypeCapability[]> = {
-  backend: ["console", "encoding", "fetch", "files", "timers"],
-  agent: ["console", "encoding", "fetch", "files", "timers"],
-  "browser-test": ["console", "encoding", "fetch", "tests", "browser", "timers"],
+  backend: ["console", "crypto", "encoding", "fetch", "files", "timers"],
+  agent: ["console", "crypto", "encoding", "fetch", "files", "timers"],
+  "browser-test": ["console", "crypto", "encoding", "fetch", "tests", "browser", "timers"],
 };
 
 function unique<T>(values: T[]): T[] {

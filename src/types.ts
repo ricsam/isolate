@@ -291,6 +291,7 @@ export type TypeCapability =
   | "browser"
   | "tools"
   | "console"
+  | "crypto"
   | "encoding"
   | "timers";
 
@@ -303,6 +304,7 @@ export interface TypeProfile {
     | "fetch"
     | "fs"
     | "console"
+    | "crypto"
     | "encoding"
     | "timers"
     | "testEnvironment"
