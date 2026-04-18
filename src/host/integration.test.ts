@@ -66,6 +66,44 @@ describe("createIsolateHost runtime integration", () => {
     ]);
   });
 
+  test("waits for top-level await in imported modules that use host-backed crypto promises", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+        modules: createModuleResolver().virtual(
+          "/keys.ts",
+          `
+            const keyPair = await crypto.subtle.generateKey(
+              { name: "ECDSA", namedCurve: "P-256" },
+              true,
+              ["sign", "verify"],
+            );
+            const publicJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+
+            export const publicKey = publicJwk.x;
+          `,
+        ),
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import * as keys from "/keys.ts";
+
+        console.log(typeof keys.publicKey, keys.publicKey.length > 0);
+      `);
+    } finally {
+      await runtime.dispose();
+    }
+
+    assert.deepEqual(collectOutput(entries), ["string true"]);
+  });
+
   test("does not block eval completion on unresolved console callbacks", async () => {
     const firstEntry = createDeferred<void>();
     const release = createDeferred<void>();

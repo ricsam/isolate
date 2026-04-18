@@ -633,6 +633,12 @@ export async function setupCrypto(
     return new Uint8Array(result.data).buffer;
   }
 
+  function callHostSubtle(ref, args) {
+    // Keep top-level await inside V8's module evaluation path by blocking the
+    // isolate until the host-backed WebCrypto promise settles.
+    return ref.applySyncPromise(undefined, args);
+  }
+
   globalThis.CryptoKey = CryptoKey;
 
   globalThis.crypto = {
@@ -678,13 +684,13 @@ export async function setupCrypto(
             ? JSON.stringify(keyData)
             : JSON.stringify(toByteArray(keyData));
 
-          return createCryptoKeyResult(await __crypto_subtle_importKey_ref.apply(undefined, [
+          return createCryptoKeyResult(callHostSubtle(__crypto_subtle_importKey_ref, [
             format,
             keyDataJson,
             JSON.stringify(normalizedAlgo),
             extractable,
             JSON.stringify(keyUsages),
-          ], { result: { promise: true, copy: true } }));
+          ]));
         } catch (err) {
           throw __decodeError(err);
         }
@@ -693,11 +699,11 @@ export async function setupCrypto(
       async generateKey(algorithm, extractable, keyUsages) {
         try {
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const serializedKey = await __crypto_subtle_generateKey_ref.apply(undefined, [
+          const serializedKey = callHostSubtle(__crypto_subtle_generateKey_ref, [
             JSON.stringify(normalizedAlgo),
             extractable,
             JSON.stringify(keyUsages),
-          ], { result: { promise: true, copy: true } });
+          ]);
           return createCryptoKeyResult(serializedKey);
         } catch (err) {
           throw __decodeError(err);
@@ -710,10 +716,10 @@ export async function setupCrypto(
             throw new TypeError("Key must be a CryptoKey");
           }
 
-          const serializedResult = await __crypto_subtle_exportKey_ref.apply(undefined, [
+          const serializedResult = callHostSubtle(__crypto_subtle_exportKey_ref, [
             format,
             getKeyId(key),
-          ], { result: { promise: true, copy: true } });
+          ]);
           return decodeExportedKey(serializedResult);
         } catch (err) {
           throw __decodeError(err);
@@ -727,11 +733,11 @@ export async function setupCrypto(
           }
 
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const bytesJson = await __crypto_subtle_encrypt_ref.apply(undefined, [
+          const bytesJson = callHostSubtle(__crypto_subtle_encrypt_ref, [
             JSON.stringify(normalizedAlgo),
             getKeyId(key),
             JSON.stringify(toByteArray(data)),
-          ], { result: { promise: true, copy: true } });
+          ]);
           return decodeByteResult(bytesJson);
         } catch (err) {
           throw __decodeError(err);
@@ -745,11 +751,11 @@ export async function setupCrypto(
           }
 
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const bytesJson = await __crypto_subtle_decrypt_ref.apply(undefined, [
+          const bytesJson = callHostSubtle(__crypto_subtle_decrypt_ref, [
             JSON.stringify(normalizedAlgo),
             getKeyId(key),
             JSON.stringify(toByteArray(data)),
-          ], { result: { promise: true, copy: true } });
+          ]);
           return decodeByteResult(bytesJson);
         } catch (err) {
           throw __decodeError(err);
@@ -763,12 +769,12 @@ export async function setupCrypto(
           }
 
           const normalizedWrapAlgo = normalizeAlgorithm(wrapAlgorithm);
-          const bytesJson = await __crypto_subtle_wrapKey_ref.apply(undefined, [
+          const bytesJson = callHostSubtle(__crypto_subtle_wrapKey_ref, [
             format,
             getKeyId(key),
             getKeyId(wrappingKey),
             JSON.stringify(normalizedWrapAlgo),
-          ], { result: { promise: true, copy: true } });
+          ]);
           return decodeByteResult(bytesJson);
         } catch (err) {
           throw __decodeError(err);
@@ -783,7 +789,7 @@ export async function setupCrypto(
 
           const normalizedUnwrapAlgo = normalizeAlgorithm(unwrapAlgorithm);
           const normalizedUnwrappedKeyAlgo = normalizeAlgorithm(unwrappedKeyAlgorithm);
-          const serializedKey = await __crypto_subtle_unwrapKey_ref.apply(undefined, [
+          const serializedKey = callHostSubtle(__crypto_subtle_unwrapKey_ref, [
             format,
             JSON.stringify(toByteArray(wrappedKey)),
             getKeyId(unwrappingKey),
@@ -791,7 +797,7 @@ export async function setupCrypto(
             JSON.stringify(normalizedUnwrappedKeyAlgo),
             extractable,
             JSON.stringify(keyUsages),
-          ], { result: { promise: true, copy: true } });
+          ]);
           return createCryptoKeyResult(serializedKey);
         } catch (err) {
           throw __decodeError(err);
@@ -805,11 +811,11 @@ export async function setupCrypto(
           }
 
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const signatureBytesJson = await __crypto_subtle_sign_ref.apply(undefined, [
+          const signatureBytesJson = callHostSubtle(__crypto_subtle_sign_ref, [
             JSON.stringify(normalizedAlgo),
             getKeyId(key),
             JSON.stringify(toByteArray(data)),
-          ], { result: { promise: true, copy: true } });
+          ]);
           return decodeByteResult(signatureBytesJson);
         } catch (err) {
           throw __decodeError(err);
@@ -823,12 +829,12 @@ export async function setupCrypto(
           }
 
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          return await __crypto_subtle_verify_ref.apply(undefined, [
+          return callHostSubtle(__crypto_subtle_verify_ref, [
             JSON.stringify(normalizedAlgo),
             getKeyId(key),
             JSON.stringify(toByteArray(signature)),
             JSON.stringify(toByteArray(data)),
-          ], { result: { promise: true, copy: true } });
+          ]);
         } catch (err) {
           throw __decodeError(err);
         }
@@ -837,10 +843,10 @@ export async function setupCrypto(
       async digest(algorithm, data) {
         try {
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const hashBytesJson = await __crypto_subtle_digest_ref.apply(undefined, [
+          const hashBytesJson = callHostSubtle(__crypto_subtle_digest_ref, [
             JSON.stringify(normalizedAlgo),
             JSON.stringify(toByteArray(data)),
-          ], { result: { promise: true, copy: true } });
+          ]);
           return decodeByteResult(hashBytesJson);
         } catch (err) {
           throw __decodeError(err);
@@ -854,11 +860,11 @@ export async function setupCrypto(
           }
 
           const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const bitsBytesJson = await __crypto_subtle_deriveBits_ref.apply(undefined, [
+          const bitsBytesJson = callHostSubtle(__crypto_subtle_deriveBits_ref, [
             JSON.stringify(normalizedAlgo),
             getKeyId(baseKey),
             length,
-          ], { result: { promise: true, copy: true } });
+          ]);
           return decodeByteResult(bitsBytesJson);
         } catch (err) {
           throw __decodeError(err);
@@ -873,13 +879,13 @@ export async function setupCrypto(
 
           const normalizedAlgo = normalizeAlgorithm(algorithm);
           const normalizedDerivedAlgo = normalizeAlgorithm(derivedKeyAlgorithm);
-          const serializedKey = await __crypto_subtle_deriveKey_ref.apply(undefined, [
+          const serializedKey = callHostSubtle(__crypto_subtle_deriveKey_ref, [
             JSON.stringify(normalizedAlgo),
             getKeyId(baseKey),
             JSON.stringify(normalizedDerivedAlgo),
             extractable,
             JSON.stringify(keyUsages),
-          ], { result: { promise: true, copy: true } });
+          ]);
           return createCryptoKeyResult(serializedKey);
         } catch (err) {
           throw __decodeError(err);
