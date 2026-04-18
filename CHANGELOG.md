@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.19
+
+### Patch Changes
+
+- Fix ECDH CryptoKey serialization in crypto bridge
+
 ## 0.1.18
 
 ### Patch Changes
