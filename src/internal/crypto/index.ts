@@ -35,6 +35,11 @@ interface SerializedExportedKey {
   data: unknown;
 }
 
+interface SerializedCryptoKeyReference {
+  __cryptoKeyRef: number;
+  __cryptoKeyToken: string;
+}
+
 // Host-side key storage for crypto.subtle
 const cryptoKeysByContext = new WeakMap<ivm.Context, Map<number, HostCryptoKey>>();
 let nextKeyId = 1;
@@ -57,13 +62,38 @@ function isSerializedByteArrayObject(value: unknown): value is Record<string, nu
   return keys.length > 0 && keys.every((key) => /^\d+$/.test(key));
 }
 
-function deserializeAlgorithm(value: unknown): unknown {
+function isSerializedCryptoKeyReference(
+  value: unknown,
+  keyReferenceToken: string,
+): value is SerializedCryptoKeyReference {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  return (
+    keys.length === 2 &&
+    Number.isSafeInteger(record.__cryptoKeyRef) &&
+    record.__cryptoKeyToken === keyReferenceToken
+  );
+}
+
+function deserializeAlgorithm(
+  value: unknown,
+  keyMap: Map<number, HostCryptoKey>,
+  keyReferenceToken: string,
+): unknown {
   if (Array.isArray(value)) {
-    return value.map((entry) => deserializeAlgorithm(entry));
+    return value.map((entry) => deserializeAlgorithm(entry, keyMap, keyReferenceToken));
   }
 
   if (!value || typeof value !== "object") {
     return value;
+  }
+
+  if (isSerializedCryptoKeyReference(value, keyReferenceToken)) {
+    return getKeyOrThrow(keyMap, value.__cryptoKeyRef);
   }
 
   if (isSerializedByteArrayObject(value)) {
@@ -77,7 +107,7 @@ function deserializeAlgorithm(value: unknown): unknown {
 
   const result: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    result[key] = deserializeAlgorithm(entry);
+    result[key] = deserializeAlgorithm(entry, keyMap, keyReferenceToken);
   }
   return result;
 }
@@ -216,6 +246,9 @@ export async function setupCrypto(
 
   // Get key map for this context
   const keyMap = getKeyMapForContext(context);
+  const keyReferenceToken = crypto.randomUUID();
+  const deserializeHostAlgorithm = (algorithmJson: string): unknown =>
+    deserializeAlgorithm(JSON.parse(algorithmJson), keyMap, keyReferenceToken);
 
   const importKeyRef = new ivm.Reference(
     async (
@@ -227,7 +260,7 @@ export async function setupCrypto(
     ) => {
       try {
         const keyData = JSON.parse(keyDataJson) as number[] | crypto.webcrypto.JsonWebKey;
-        const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
+        const algorithm = deserializeHostAlgorithm(algorithmJson);
         const keyUsages = JSON.parse(keyUsagesJson) as HostKeyUsage[];
         const importData =
           format === "jwk" ? keyData : new Uint8Array(keyData as number[]);
@@ -253,7 +286,7 @@ export async function setupCrypto(
       keyUsagesJson: string,
     ) => {
       try {
-        const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
+        const algorithm = deserializeHostAlgorithm(algorithmJson);
         const keyUsages = JSON.parse(keyUsagesJson) as HostKeyUsage[];
         const generatedKey = (await crypto.webcrypto.subtle.generateKey(
           algorithm as never,
@@ -287,7 +320,7 @@ export async function setupCrypto(
   const encryptRef = new ivm.Reference(
     async (algorithmJson: string, keyId: number, dataJson: string) => {
       try {
-        const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
+        const algorithm = deserializeHostAlgorithm(algorithmJson);
         const data = new Uint8Array(JSON.parse(dataJson) as number[]);
         const cryptoKey = getKeyOrThrow(keyMap, keyId);
         const encrypted = await crypto.webcrypto.subtle.encrypt(
@@ -306,7 +339,7 @@ export async function setupCrypto(
   const decryptRef = new ivm.Reference(
     async (algorithmJson: string, keyId: number, dataJson: string) => {
       try {
-        const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
+        const algorithm = deserializeHostAlgorithm(algorithmJson);
         const data = new Uint8Array(JSON.parse(dataJson) as number[]);
         const cryptoKey = getKeyOrThrow(keyMap, keyId);
         const decrypted = await crypto.webcrypto.subtle.decrypt(
@@ -332,7 +365,7 @@ export async function setupCrypto(
       try {
         const cryptoKey = getKeyOrThrow(keyMap, keyId);
         const wrappingKey = getKeyOrThrow(keyMap, wrappingKeyId);
-        const wrapAlgorithm = deserializeAlgorithm(JSON.parse(wrapAlgorithmJson));
+        const wrapAlgorithm = deserializeHostAlgorithm(wrapAlgorithmJson);
         const wrappedKey = await crypto.webcrypto.subtle.wrapKey(
           format as never,
           cryptoKey,
@@ -360,10 +393,8 @@ export async function setupCrypto(
       try {
         const wrappedKey = new Uint8Array(JSON.parse(wrappedKeyJson) as number[]);
         const unwrappingKey = getKeyOrThrow(keyMap, unwrappingKeyId);
-        const unwrapAlgorithm = deserializeAlgorithm(JSON.parse(unwrapAlgorithmJson));
-        const unwrappedKeyAlgorithm = deserializeAlgorithm(
-          JSON.parse(unwrappedKeyAlgorithmJson),
-        );
+        const unwrapAlgorithm = deserializeHostAlgorithm(unwrapAlgorithmJson);
+        const unwrappedKeyAlgorithm = deserializeHostAlgorithm(unwrappedKeyAlgorithmJson);
         const keyUsages = JSON.parse(keyUsagesJson) as HostKeyUsage[];
         const unwrappedKey = await crypto.webcrypto.subtle.unwrapKey(
           format as never,
@@ -385,7 +416,7 @@ export async function setupCrypto(
   const signRef = new ivm.Reference(
     async (algorithmJson: string, keyId: number, dataJson: string) => {
       try {
-        const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
+        const algorithm = deserializeHostAlgorithm(algorithmJson);
         const data = new Uint8Array(JSON.parse(dataJson) as number[]);
         const cryptoKey = getKeyOrThrow(keyMap, keyId);
         const signature = await crypto.webcrypto.subtle.sign(
@@ -409,7 +440,7 @@ export async function setupCrypto(
       dataJson: string,
     ) => {
       try {
-        const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
+        const algorithm = deserializeHostAlgorithm(algorithmJson);
         const signature = new Uint8Array(JSON.parse(signatureJson) as number[]);
         const data = new Uint8Array(JSON.parse(dataJson) as number[]);
         const cryptoKey = getKeyOrThrow(keyMap, keyId);
@@ -429,7 +460,7 @@ export async function setupCrypto(
   const digestRef = new ivm.Reference(
     async (algorithmJson: string, dataJson: string) => {
       try {
-        const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
+        const algorithm = deserializeHostAlgorithm(algorithmJson);
         const data = new Uint8Array(JSON.parse(dataJson) as number[]);
         const hash = await crypto.webcrypto.subtle.digest(algorithm as never, data);
         return serializeBytes(hash);
@@ -443,7 +474,7 @@ export async function setupCrypto(
   const deriveBitsRef = new ivm.Reference(
     async (algorithmJson: string, keyId: number, length: number) => {
       try {
-        const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
+        const algorithm = deserializeHostAlgorithm(algorithmJson);
         const cryptoKey = getKeyOrThrow(keyMap, keyId);
         const bits = await crypto.webcrypto.subtle.deriveBits(
           algorithm as never,
@@ -467,10 +498,8 @@ export async function setupCrypto(
       keyUsagesJson: string,
     ) => {
       try {
-        const algorithm = deserializeAlgorithm(JSON.parse(algorithmJson));
-        const derivedKeyAlgorithm = deserializeAlgorithm(
-          JSON.parse(derivedKeyAlgorithmJson),
-        );
+        const algorithm = deserializeHostAlgorithm(algorithmJson);
+        const derivedKeyAlgorithm = deserializeHostAlgorithm(derivedKeyAlgorithmJson);
         const keyUsages = JSON.parse(keyUsagesJson) as HostKeyUsage[];
         const baseKey = getKeyOrThrow(keyMap, baseKeyId);
         const derivedKey = await crypto.webcrypto.subtle.deriveKey(
@@ -491,6 +520,9 @@ export async function setupCrypto(
   // Inject the crypto object into the isolate
   const cryptoCode = `
 (function() {
+  const cryptoKeyReferenceToken = ${JSON.stringify(keyReferenceToken)};
+  const jsonStringify = JSON.stringify.bind(JSON);
+
   if (typeof DOMException === "undefined") {
     globalThis.DOMException = class DOMException extends Error {
       constructor(message, name) {
@@ -620,6 +652,52 @@ export async function setupCrypto(
     return algorithm;
   }
 
+  function serializeByteArrayObject(bytes) {
+    const result = {};
+    for (let index = 0; index < bytes.length; index += 1) {
+      result[index] = bytes[index];
+    }
+    return result;
+  }
+
+  function serializeAlgorithmValue(value) {
+    if (value instanceof CryptoKey) {
+      const keyId = getKeyId(value);
+      if (typeof keyId !== "number") {
+        throw new TypeError("Key must be a CryptoKey");
+      }
+      return { __cryptoKeyRef: keyId, __cryptoKeyToken: cryptoKeyReferenceToken };
+    }
+
+    if (value instanceof ArrayBuffer) {
+      return serializeByteArrayObject(new Uint8Array(value));
+    }
+
+    if (ArrayBuffer.isView(value)) {
+      return serializeByteArrayObject(
+        new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+      );
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((entry) => serializeAlgorithmValue(entry));
+    }
+
+    if (value && typeof value === "object") {
+      const result = {};
+      for (const [key, entry] of Object.entries(value)) {
+        result[key] = serializeAlgorithmValue(entry);
+      }
+      return result;
+    }
+
+    return value;
+  }
+
+  function serializeAlgorithm(algorithm) {
+    return jsonStringify(serializeAlgorithmValue(normalizeAlgorithm(algorithm)));
+  }
+
   function decodeByteResult(bytesJson) {
     const bytes = JSON.parse(bytesJson);
     return new Uint8Array(bytes).buffer;
@@ -679,7 +757,6 @@ export async function setupCrypto(
     subtle: {
       async importKey(format, keyData, algorithm, extractable, keyUsages) {
         try {
-          const normalizedAlgo = normalizeAlgorithm(algorithm);
           const keyDataJson = format === "jwk"
             ? JSON.stringify(keyData)
             : JSON.stringify(toByteArray(keyData));
@@ -687,7 +764,7 @@ export async function setupCrypto(
           return createCryptoKeyResult(callHostSubtle(__crypto_subtle_importKey_ref, [
             format,
             keyDataJson,
-            JSON.stringify(normalizedAlgo),
+            serializeAlgorithm(algorithm),
             extractable,
             JSON.stringify(keyUsages),
           ]));
@@ -698,9 +775,8 @@ export async function setupCrypto(
 
       async generateKey(algorithm, extractable, keyUsages) {
         try {
-          const normalizedAlgo = normalizeAlgorithm(algorithm);
           const serializedKey = callHostSubtle(__crypto_subtle_generateKey_ref, [
-            JSON.stringify(normalizedAlgo),
+            serializeAlgorithm(algorithm),
             extractable,
             JSON.stringify(keyUsages),
           ]);
@@ -732,9 +808,8 @@ export async function setupCrypto(
             throw new TypeError("Key must be a CryptoKey");
           }
 
-          const normalizedAlgo = normalizeAlgorithm(algorithm);
           const bytesJson = callHostSubtle(__crypto_subtle_encrypt_ref, [
-            JSON.stringify(normalizedAlgo),
+            serializeAlgorithm(algorithm),
             getKeyId(key),
             JSON.stringify(toByteArray(data)),
           ]);
@@ -750,9 +825,8 @@ export async function setupCrypto(
             throw new TypeError("Key must be a CryptoKey");
           }
 
-          const normalizedAlgo = normalizeAlgorithm(algorithm);
           const bytesJson = callHostSubtle(__crypto_subtle_decrypt_ref, [
-            JSON.stringify(normalizedAlgo),
+            serializeAlgorithm(algorithm),
             getKeyId(key),
             JSON.stringify(toByteArray(data)),
           ]);
@@ -768,12 +842,11 @@ export async function setupCrypto(
             throw new TypeError("Key must be a CryptoKey");
           }
 
-          const normalizedWrapAlgo = normalizeAlgorithm(wrapAlgorithm);
           const bytesJson = callHostSubtle(__crypto_subtle_wrapKey_ref, [
             format,
             getKeyId(key),
             getKeyId(wrappingKey),
-            JSON.stringify(normalizedWrapAlgo),
+            serializeAlgorithm(wrapAlgorithm),
           ]);
           return decodeByteResult(bytesJson);
         } catch (err) {
@@ -787,14 +860,12 @@ export async function setupCrypto(
             throw new TypeError("Key must be a CryptoKey");
           }
 
-          const normalizedUnwrapAlgo = normalizeAlgorithm(unwrapAlgorithm);
-          const normalizedUnwrappedKeyAlgo = normalizeAlgorithm(unwrappedKeyAlgorithm);
           const serializedKey = callHostSubtle(__crypto_subtle_unwrapKey_ref, [
             format,
             JSON.stringify(toByteArray(wrappedKey)),
             getKeyId(unwrappingKey),
-            JSON.stringify(normalizedUnwrapAlgo),
-            JSON.stringify(normalizedUnwrappedKeyAlgo),
+            serializeAlgorithm(unwrapAlgorithm),
+            serializeAlgorithm(unwrappedKeyAlgorithm),
             extractable,
             JSON.stringify(keyUsages),
           ]);
@@ -810,9 +881,8 @@ export async function setupCrypto(
             throw new TypeError("Key must be a CryptoKey");
           }
 
-          const normalizedAlgo = normalizeAlgorithm(algorithm);
           const signatureBytesJson = callHostSubtle(__crypto_subtle_sign_ref, [
-            JSON.stringify(normalizedAlgo),
+            serializeAlgorithm(algorithm),
             getKeyId(key),
             JSON.stringify(toByteArray(data)),
           ]);
@@ -828,9 +898,8 @@ export async function setupCrypto(
             throw new TypeError("Key must be a CryptoKey");
           }
 
-          const normalizedAlgo = normalizeAlgorithm(algorithm);
           return callHostSubtle(__crypto_subtle_verify_ref, [
-            JSON.stringify(normalizedAlgo),
+            serializeAlgorithm(algorithm),
             getKeyId(key),
             JSON.stringify(toByteArray(signature)),
             JSON.stringify(toByteArray(data)),
@@ -842,9 +911,8 @@ export async function setupCrypto(
 
       async digest(algorithm, data) {
         try {
-          const normalizedAlgo = normalizeAlgorithm(algorithm);
           const hashBytesJson = callHostSubtle(__crypto_subtle_digest_ref, [
-            JSON.stringify(normalizedAlgo),
+            serializeAlgorithm(algorithm),
             JSON.stringify(toByteArray(data)),
           ]);
           return decodeByteResult(hashBytesJson);
@@ -859,9 +927,8 @@ export async function setupCrypto(
             throw new TypeError("Key must be a CryptoKey");
           }
 
-          const normalizedAlgo = normalizeAlgorithm(algorithm);
           const bitsBytesJson = callHostSubtle(__crypto_subtle_deriveBits_ref, [
-            JSON.stringify(normalizedAlgo),
+            serializeAlgorithm(algorithm),
             getKeyId(baseKey),
             length,
           ]);
@@ -877,12 +944,10 @@ export async function setupCrypto(
             throw new TypeError("Key must be a CryptoKey");
           }
 
-          const normalizedAlgo = normalizeAlgorithm(algorithm);
-          const normalizedDerivedAlgo = normalizeAlgorithm(derivedKeyAlgorithm);
           const serializedKey = callHostSubtle(__crypto_subtle_deriveKey_ref, [
-            JSON.stringify(normalizedAlgo),
+            serializeAlgorithm(algorithm),
             getKeyId(baseKey),
-            JSON.stringify(normalizedDerivedAlgo),
+            serializeAlgorithm(derivedKeyAlgorithm),
             extractable,
             JSON.stringify(keyUsages),
           ]);

@@ -264,6 +264,87 @@ test("setupCrypto supports AES-KW wrapKey and unwrapKey", async () => {
   assert.deepEqual(result.unwrappedUsages, ["encrypt", "decrypt"]);
 });
 
+test("setupCrypto bridges CryptoKey values nested in ECDH derivation algorithms", async () => {
+  const result = await withCryptoContext((context) =>
+    evalJson<{
+      directBitsLength: number;
+      importedBitsLength: number;
+      decrypted: number[];
+      derivedKeyType: string;
+      derivedKeyUsages: string[];
+    }>(
+      context,
+      `(async () => {
+        const receiver = await crypto.subtle.generateKey(
+          { name: "ECDH", namedCurve: "P-256" },
+          true,
+          ["deriveBits", "deriveKey"],
+        );
+        const sender = await crypto.subtle.generateKey(
+          { name: "ECDH", namedCurve: "P-256" },
+          true,
+          ["deriveBits", "deriveKey"],
+        );
+
+        const directBits = await crypto.subtle.deriveBits(
+          { name: "ECDH", public: receiver.publicKey },
+          sender.privateKey,
+          256,
+        );
+
+        const receiverRaw = await crypto.subtle.exportKey("raw", receiver.publicKey);
+        const importedReceiverPublic = await crypto.subtle.importKey(
+          "raw",
+          receiverRaw,
+          { name: "ECDH", namedCurve: "P-256" },
+          false,
+          [],
+        );
+        const importedBits = await crypto.subtle.deriveBits(
+          { name: "ECDH", public: importedReceiverPublic },
+          sender.privateKey,
+          256,
+        );
+
+        const derivedKey = await crypto.subtle.deriveKey(
+          { name: "ECDH", public: receiver.publicKey },
+          sender.privateKey,
+          { name: "AES-GCM", length: 256 },
+          true,
+          ["encrypt", "decrypt"],
+        );
+
+        const plaintext = new Uint8Array([13, 21, 34, 55]);
+        const iv = new Uint8Array([9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2]);
+        const ciphertext = await crypto.subtle.encrypt(
+          { name: "AES-GCM", iv },
+          derivedKey,
+          plaintext,
+        );
+        const decrypted = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv },
+          derivedKey,
+          ciphertext,
+        );
+
+        return JSON.stringify({
+          directBitsLength: new Uint8Array(directBits).length,
+          importedBitsLength: new Uint8Array(importedBits).length,
+          decrypted: Array.from(new Uint8Array(decrypted)),
+          derivedKeyType: derivedKey.type,
+          derivedKeyUsages: derivedKey.usages,
+        });
+      })()`,
+    ),
+  );
+
+  assert.equal(result.directBitsLength, 32);
+  assert.equal(result.importedBitsLength, 32);
+  assert.deepEqual(result.decrypted, [13, 21, 34, 55]);
+  assert.equal(result.derivedKeyType, "secret");
+  assert.deepEqual(result.derivedKeyUsages, ["encrypt", "decrypt"]);
+});
+
 test("setupCrypto supports RSA-OAEP key pairs and asymmetric import/export", async () => {
   const result = await withCryptoContext((context) =>
     evalJson<{
