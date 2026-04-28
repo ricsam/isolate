@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { asyncWrapProviders as hostAsyncWrapProviders } from "node:async_hooks";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { createModuleResolver } from "../index.ts";
+import { createFileBindings, createModuleResolver } from "../index.ts";
 import { createTestHost, createTestId, withTimeout } from "../testing/integration-helpers.ts";
 import type { ConsoleEntry, HostCallContext, IsolateHost, ToolBindings } from "../types.ts";
 
@@ -2090,6 +2092,221 @@ describe("createIsolateHost runtime integration", () => {
       response: "/runtime:POST",
       version: "v1",
     });
+  });
+
+  test("allows nested file bindings to remap a parent subdirectory as child root", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "isolate-nested-fs-"));
+    await fs.mkdir(path.join(tempRoot, "inner1"), { recursive: true });
+    await fs.writeFile(
+      path.join(tempRoot, "inner1", "seed.txt"),
+      "from host root",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempRoot, "outside.txt"),
+      "outside host root",
+      "utf8",
+    );
+
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+        files: createFileBindings({
+          root: tempRoot,
+          allowWrite: true,
+        }),
+      },
+    });
+    let writtenText = "";
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        function splitPath(filePath) {
+          const parts = String(filePath ?? "/")
+            .split("/")
+            .filter((part) => part.length > 0 && part !== ".");
+          if (parts.includes("..")) {
+            throw new Error("Path traversal is not allowed");
+          }
+          return parts;
+        }
+
+        async function getChildRoot() {
+          return await getDirectory("/inner1");
+        }
+
+        async function getDirectoryAt(dirPath, options = {}) {
+          let directory = await getChildRoot();
+          for (const segment of splitPath(dirPath)) {
+            directory = await directory.getDirectoryHandle(segment, {
+              create: options.create === true,
+            });
+          }
+          return directory;
+        }
+
+        async function getParentDirectory(filePath, options = {}) {
+          const parts = splitPath(filePath);
+          const name = parts.pop();
+          if (!name) {
+            throw new Error("Expected a file path");
+          }
+
+          let directory = await getChildRoot();
+          for (const segment of parts) {
+            directory = await directory.getDirectoryHandle(segment, {
+              create: options.create === true,
+            });
+          }
+          return { directory, name };
+        }
+
+        async function getFileAt(filePath, options = {}) {
+          const parent = await getParentDirectory(filePath, options);
+          return await parent.directory.getFileHandle(parent.name, {
+            create: options.create === true,
+          });
+        }
+
+        const nestedHost = createIsolateHost();
+        const child = await nestedHost.createRuntime({
+          bindings: {
+            console: {
+              onEntry(entry) {
+                if (entry.type === "output") {
+                  console.log(entry.stdout);
+                }
+              },
+            },
+            files: {
+              async readFile(filePath) {
+                const fileHandle = await getFileAt(filePath);
+                return await (await fileHandle.getFile()).arrayBuffer();
+              },
+              async writeFile(filePath, data) {
+                const fileHandle = await getFileAt(filePath, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(data);
+                await writable.close();
+              },
+              async readdir(dirPath) {
+                const directory = await getDirectoryAt(dirPath);
+                const names = [];
+                for await (const [name] of directory.entries()) {
+                  names.push(name);
+                }
+                return names.sort();
+              },
+              async mkdir(dirPath, options) {
+                if (dirPath === "/" || dirPath === "") {
+                  return;
+                }
+                if (options?.recursive) {
+                  await getDirectoryAt(dirPath, { create: true });
+                  return;
+                }
+
+                const parent = await getParentDirectory(dirPath);
+                await parent.directory.getDirectoryHandle(parent.name, {
+                  create: true,
+                });
+              },
+              async stat(filePath) {
+                if (filePath === "/" || filePath === "") {
+                  return { isFile: false, isDirectory: true, size: 0 };
+                }
+
+                try {
+                  await getDirectoryAt(filePath);
+                  return { isFile: false, isDirectory: true, size: 0 };
+                } catch {
+                  const fileHandle = await getFileAt(filePath);
+                  const file = await fileHandle.getFile();
+                  return {
+                    isFile: true,
+                    isDirectory: false,
+                    size: file.size,
+                    lastModified: file.lastModified,
+                  };
+                }
+              },
+            },
+          },
+        });
+
+        await child.eval(\`
+          const root = await getDirectory("/");
+          const beforeNames = [];
+          for await (const [name] of root.entries()) {
+            beforeNames.push(name);
+          }
+
+          const seed = await root.getFileHandle("seed.txt");
+          const seedText = await (await seed.getFile()).text();
+
+          const created = await root.getDirectoryHandle("created", {
+            create: true,
+          });
+          const childFile = await created.getFileHandle("child.txt", {
+            create: true,
+          });
+          const writable = await childFile.createWritable();
+          await writable.write("from nested child");
+          await writable.close();
+
+          let escapeText = null;
+          try {
+            const outside = await root.getFileHandle("../outside.txt");
+            escapeText = await (await outside.getFile()).text();
+          } catch (error) {
+            escapeText = null;
+          }
+
+          console.log(JSON.stringify({
+            beforeNames: beforeNames.sort(),
+            createdPath: await root.resolve(childFile),
+            escapeBlocked: escapeText !== "outside host root",
+            seedText,
+          }));
+        \`);
+
+        await child.dispose();
+        await nestedHost.close();
+      `, { executionTimeout: 60_000 });
+    } finally {
+      await withTimeout(
+        runtime.dispose().catch(() => {}),
+        5_000,
+        "dispose runtime after nested file remapping test",
+      ).catch(() => {});
+      writtenText = await fs.readFile(
+        path.join(tempRoot, "inner1", "created", "child.txt"),
+        "utf8",
+      ).catch(() => "");
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+
+    const result = JSON.parse(collectOutput(entries)[0] ?? "{}") as {
+      beforeNames: string[];
+      createdPath: string[];
+      escapeBlocked: boolean;
+      seedText: string;
+    };
+
+    assert.deepEqual(result, {
+      beforeNames: ["seed.txt"],
+      createdPath: ["created", "child.txt"],
+      escapeBlocked: true,
+      seedText: "from host root",
+    });
+    assert.equal(writtenText, "from nested child");
   });
 
   test("supports isolate-authored bindings across nested app server reloads", async () => {

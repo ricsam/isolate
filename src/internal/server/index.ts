@@ -22,6 +22,11 @@ function isDisposedRuntimeError(error: unknown): boolean {
   );
 }
 
+function isMissingServeHandlerError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /No serve\(\) handler registered/i.test(message);
+}
+
 type RuntimeRetirementAction = "reload" | "close";
 
 interface RuntimeRetirementRecord {
@@ -147,6 +152,10 @@ export class IsolateServer {
   }
 
   async reload(reason?: string): Promise<void> {
+    await this.reloadRuntime(reason);
+  }
+
+  private async reloadRuntime(reason?: string, expectedRuntime?: RemoteRuntime): Promise<boolean> {
     const startOptions = this.lastStartOptions;
     if (!startOptions) {
       throw new Error("Server not configured. Call start() first.");
@@ -154,8 +163,19 @@ export class IsolateServer {
 
     const lifecycleReason = formatLifecycleReason("IsolateServer.reload", reason);
     this.closed = false;
-    await this.withLifecycleLock(async () => {
+    return await this.withLifecycleLock(async () => {
       const previousRuntime = this.runtime;
+      if (expectedRuntime && previousRuntime?.id !== expectedRuntime.id) {
+        this.log("reload skipped", {
+          namespaceId: this.namespaceId,
+          expectedRuntimeId: expectedRuntime.id,
+          runtimeId: previousRuntime?.id ?? null,
+          reason: lifecycleReason,
+          activeRequests: this.activeRequestCount,
+        });
+        return false;
+      }
+
       this.log("reload requested", {
         namespaceId: this.namespaceId,
         runtimeId: previousRuntime?.id ?? null,
@@ -201,6 +221,8 @@ export class IsolateServer {
         reason: lifecycleReason,
         activeRequests: this.activeRequestCount,
       });
+
+      return true;
     });
   }
 
@@ -277,6 +299,7 @@ export class IsolateServer {
         `import ${JSON.stringify(options.entry)};`,
         options.entryFilename ?? "/isolate_server_entry.js"
       );
+      await this.assertServeHandlerRegistered(runtime);
       return runtime;
     } catch (error) {
       await this.disposeRuntime(runtime);
@@ -290,6 +313,7 @@ export class IsolateServer {
           `import ${JSON.stringify(options.entry)};`,
           options.entryFilename ?? "/isolate_server_entry.js"
         );
+        await this.assertServeHandlerRegistered(retryRuntime);
         return retryRuntime;
       } catch (retryError) {
         await this.disposeRuntime(retryRuntime);
@@ -309,6 +333,14 @@ export class IsolateServer {
         throw error;
       }
     }
+  }
+
+  private async assertServeHandlerRegistered(runtime: RemoteRuntime): Promise<void> {
+    if (await runtime.fetch.hasServeHandler()) {
+      return;
+    }
+
+    throw new Error("No serve() handler registered");
   }
 
   private async ensureStarted(): Promise<void> {
@@ -395,21 +427,29 @@ export class IsolateServer {
       try {
         return await runtime.fetch.dispatchRequest(request, options);
       } catch (error) {
-        if (!isLinkerConflictError(error) && !isDisposedRuntimeError(error)) {
+        const linkerConflict = isLinkerConflictError(error);
+        const disposedRuntime = isDisposedRuntimeError(error);
+        const missingServeHandler = isMissingServeHandlerError(error);
+
+        if (!linkerConflict && !disposedRuntime && !missingServeHandler) {
           throw error;
         }
 
         const requestSummary = summarizeRequest(request);
-        if (isLinkerConflictError(error)) {
-          await this.reload(`request-linker-conflict: ${requestSummary}`);
+        if (linkerConflict) {
+          await this.reloadRuntime(`request-linker-conflict: ${requestSummary}`, runtime);
+        } else if (missingServeHandler && this.runtime?.id === runtime.id) {
+          await this.reloadRuntime(`request-missing-serve-handler: ${requestSummary}`, runtime);
         } else if (this.runtime?.id === runtime.id) {
           this.runtime = null;
         }
 
         const retryRuntime = await this.getActiveRuntime();
         this.log(
-          isLinkerConflictError(error)
+          linkerConflict
             ? "request recovered after linker conflict"
+            : missingServeHandler
+              ? "request recovered after missing serve handler"
             : "request recovered after disposed runtime",
           {
             namespaceId: this.namespaceId,

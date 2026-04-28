@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.21
+
+### Patch Changes
+
+- Recover app servers after daemon reconnects leave a runtime without a registered `serve()` handler.
+
 ## 0.1.20
 
 ### Patch Changes
