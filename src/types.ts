@@ -116,6 +116,77 @@ export interface HostBindings {
   browser?: HostBrowserBindings;
 }
 
+/**
+ * Controls whether nested runtimes inherit the parent runtime's fetch binding.
+ *
+ * - `"inherit"` copies the parent fetch binding into nested resources that do
+ *   not provide their own fetch binding, preserving the host's URL policy,
+ *   logging, rate limits, and accounting.
+ * - `"disabled"` leaves fetch unbound unless the nested resource explicitly
+ *   provides a fetch binding. Unbound fetch calls reject instead of falling
+ *   back to native host fetch.
+ */
+export type NestedHostFetchPolicy = "inherit" | "disabled";
+
+/**
+ * Policy for exposing the synthetic `@ricsam/isolate` nested host API inside a
+ * runtime.
+ *
+ * This policy is enforced by the parent host, not by sandbox code. Resource
+ * limits are tracked at the root nested resource group and include recursive
+ * descendants, so a child cannot reset its quotas by creating grandchildren.
+ * Namespaced runtime keys are also scoped inside that resource group before
+ * they reach the shared host.
+ */
+export interface NestedHostPolicy {
+  /**
+   * Fetch inheritance mode for nested resources.
+   *
+   * Defaults to `"disabled"`, which means nested resources do not receive the
+   * parent's fetch binding unless the host opts in with `"inherit"`.
+   */
+  fetch?: NestedHostFetchPolicy;
+  /**
+   * Maximum number of live nested resources in the resource group.
+   *
+   * This includes runtimes, test runtimes, namespaced runtimes, app servers,
+   * and all recursive descendants.
+   */
+  maxTotalResources?: number;
+  /**
+   * Maximum number of live nested runtime resources.
+   *
+   * Script runtimes, test runtimes, and namespaced runtimes count toward this
+   * quota. App servers are counted separately by `maxAppServers`.
+   */
+  maxRuntimes?: number;
+  /** Maximum number of live nested app servers. */
+  maxAppServers?: number;
+  /**
+   * Maximum memory limit, in MB, that a nested runtime or app server may
+   * request.
+   *
+   * If omitted by the nested caller, the child receives this limit. Requests
+   * above the limit are rejected before the child resource is created.
+   */
+  maxMemoryLimitMB?: number;
+  /**
+   * Maximum default execution timeout, in milliseconds, for nested runtimes and
+   * app servers.
+   *
+   * If omitted by the nested caller, the child receives this timeout. Requests
+   * above the limit are rejected before the child resource is created.
+   */
+  maxExecutionTimeoutMs?: number;
+  /**
+   * Optional lifetime cap, in milliseconds, for each nested app server.
+   *
+   * When set, the parent host disposes the app server after this duration even
+   * if sandbox code keeps a reference to it.
+   */
+  maxAppServerLifetimeMs?: number;
+}
+
 export interface RuntimeDiagnostics {
   activeRequests: number;
   activeResources: number;
@@ -239,6 +310,14 @@ export interface CreateRuntimeOptions {
   cwd?: string;
   executionTimeout?: number;
   memoryLimitMB?: number;
+  /**
+   * Expose the brokered nested host API to code running in this runtime.
+   *
+   * Pass `false` to disable `@ricsam/isolate` in the sandbox, or pass a policy
+   * to allow nested runtimes and app servers within explicit fetch, quota, and
+   * namespace boundaries.
+   */
+  nestedHost?: false | NestedHostPolicy;
 }
 
 export interface CreateNamespacedRuntimeOptions {
@@ -246,6 +325,15 @@ export interface CreateNamespacedRuntimeOptions {
   cwd?: string;
   executionTimeout?: number;
   memoryLimitMB?: number;
+  /**
+   * Expose the brokered nested host API to code running in this namespaced
+   * runtime.
+   *
+   * Pass `false` to disable `@ricsam/isolate` in the sandbox, or pass a policy
+   * to allow nested runtimes and app servers within explicit fetch, quota, and
+   * namespace boundaries.
+   */
+  nestedHost?: false | NestedHostPolicy;
 }
 
 export interface CreateTestRuntimeOptions extends CreateRuntimeOptions {}

@@ -48,6 +48,7 @@ export interface NestedHostBindings {
     args: unknown[],
     context: HostCallContext,
   ): Promise<unknown>;
+  disposeAll?(reason?: string): Promise<void>;
 }
 
 export const SANDBOX_ISOLATE_MODULE_SOURCE = `

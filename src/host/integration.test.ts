@@ -1420,6 +1420,148 @@ describe("createIsolateHost runtime integration", () => {
     );
   });
 
+  test("rejects sandbox fetch when no host fetch binding is provided", async () => {
+    const runtime = await host.createRuntime({
+      bindings: {},
+    });
+
+    try {
+      await assert.rejects(
+        () => runtime.eval('await fetch("https://example.test/")'),
+        /fetch is disabled: no host fetch binding was provided|Fetch callback not available/,
+      );
+    } finally {
+      await runtime.dispose().catch(() => {});
+    }
+  });
+
+  test("inherits parent fetch policy for nested runtimes when enabled", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+        fetch: async (request) => {
+          return new Response(`parent:${new URL(request.url).pathname}`);
+        },
+      },
+      nestedHost: {
+        fetch: "inherit",
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        const nestedHost = createIsolateHost();
+        const child = await nestedHost.createRuntime({
+          bindings: {
+            console: {
+              onEntry(entry) {
+                console.log(entry.stdout);
+              },
+            },
+          },
+        });
+        await child.eval(\`
+          const response = await fetch("https://example.test/child");
+          console.log(await response.text());
+        \`);
+        await child.dispose();
+        await nestedHost.close();
+      `, { executionTimeout: 30_000 });
+    } finally {
+      await runtime.dispose().catch(() => {});
+    }
+
+    assert.deepEqual(collectOutput(entries), ["parent:/child"]);
+  });
+
+  test("enforces nested runtime quotas and memory limits", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+      },
+      nestedHost: {
+        maxTotalResources: 1,
+        maxRuntimes: 1,
+        maxMemoryLimitMB: 32,
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+        const nestedHost = createIsolateHost();
+        const first = await nestedHost.createRuntime();
+
+        let quotaMessage = "";
+        try {
+          await nestedHost.createRuntime();
+        } catch (error) {
+          quotaMessage = error.message;
+        }
+
+        await first.dispose();
+
+        let memoryMessage = "";
+        try {
+          await nestedHost.createRuntime({ memoryLimitMB: 33 });
+        } catch (error) {
+          memoryMessage = error.message;
+        }
+
+        await nestedHost.close();
+        console.log(JSON.stringify({ quotaMessage, memoryMessage }));
+      `, { executionTimeout: 30_000 });
+    } finally {
+      await runtime.dispose().catch(() => {});
+    }
+
+    const result = JSON.parse(collectOutput(entries)[0] ?? "{}") as {
+      quotaMessage: string;
+      memoryMessage: string;
+    };
+    assert.match(result.quotaMessage, /Nested host resource quota exceeded|Nested runtime quota exceeded/);
+    assert.match(result.memoryMessage, /memoryLimitMB 33 exceeds quota 32/);
+  });
+
+  test("nested hosts cannot dispose namespaces they did not create", async () => {
+    const key = createTestId("owned-namespace");
+    const victim = await host.getNamespacedRuntime(key, {
+      bindings: {},
+    });
+    const runtime = await host.createRuntime({
+      bindings: {},
+    });
+
+    try {
+      await victim.eval("globalThis.__value = 1;");
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+        const nestedHost = createIsolateHost();
+        await nestedHost.disposeNamespace(${JSON.stringify(key)}, {
+          reason: "should not affect parent namespace",
+        });
+        await nestedHost.close();
+      `, { executionTimeout: 30_000 });
+      await victim.eval("globalThis.__value += 1;");
+    } finally {
+      await runtime.dispose().catch(() => {});
+      await victim.dispose().catch(() => {});
+      await host.disposeNamespace(key).catch(() => {});
+    }
+  });
+
   test("imports the synthetic @ricsam/isolate module without a user module resolver", async () => {
     const entries: ConsoleEntry[] = [];
     const runtime = await host.createRuntime({

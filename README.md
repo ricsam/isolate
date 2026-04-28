@@ -117,6 +117,21 @@ Bindings define how sandboxed code talks to the host:
 
 Every host callback receives a `HostCallContext` with an `AbortSignal`, runtime identity, resource identity, and request metadata.
 
+`fetch` is disabled unless you provide a host binding. If sandbox code calls `fetch(...)` without a `bindings.fetch` callback, the runtime rejects the request instead of falling back to the Node.js process `fetch`. To allow outbound network access, pass an explicit policy-enforcing callback:
+
+```ts
+const runtime = await host.createRuntime({
+  bindings: {
+    fetch: async (request, context) => {
+      // Validate, log, rate-limit, meter, or rewrite here.
+      return await fetch(request, {
+        signal: context.signal,
+      });
+    },
+  },
+});
+```
+
 When exposing browser support, choose exactly one mode per runtime:
 
 - factory-first: provide `createContext()` and optionally `createPage()`, `readFile()`, and `writeFile()`
@@ -128,7 +143,7 @@ Keep bindings plain-data and host-owned. Do not leak raw `isolated-vm` handles o
 
 ### Create Nested Hosts Inside The Sandbox
 
-Sandbox code can import `@ricsam/isolate` and create child runtimes against the same top-level host connection.
+Sandbox code can import `@ricsam/isolate` and create child runtimes against the same top-level host connection when the parent runtime opts in with `nestedHost`.
 
 ```ts
 const runtime = await host.createRuntime({
@@ -140,6 +155,16 @@ const runtime = await host.createRuntime({
         }
       },
     },
+    fetch: async (request) => await fetch(request),
+  },
+  nestedHost: {
+    fetch: "inherit",
+    maxTotalResources: 8,
+    maxRuntimes: 6,
+    maxAppServers: 2,
+    maxMemoryLimitMB: 128,
+    maxExecutionTimeoutMs: 30_000,
+    maxAppServerLifetimeMs: 10 * 60_000,
   },
 });
 
@@ -166,8 +191,24 @@ Nested hosts support:
 - `createRuntime()`
 - `createAppServer()`
 - `createTestRuntime()`
+- `getNamespacedRuntime()`
+- `disposeNamespace()`
 - `diagnostics()`
 - `close()`
+
+Nested resources are brokered by the parent host. The parent `nestedHost` policy controls whether child runtimes inherit the parent fetch binding, how many nested resources can exist across the whole descendant tree, and the maximum memory and execution timeout each child may request. Namespace keys created from inside a nested host are internally scoped so sandbox code can dispose only namespaces it created through that nested host.
+
+The available policy fields are:
+
+- `fetch: "inherit" | "disabled"` - defaults to `"disabled"`
+- `maxTotalResources` - total nested runtimes, test runtimes, namespaced runtimes, and app servers
+- `maxRuntimes` - nested script, test, and namespaced runtimes
+- `maxAppServers` - nested app servers
+- `maxMemoryLimitMB` - maximum per-child memory limit
+- `maxExecutionTimeoutMs` - maximum per-child execution timeout
+- `maxAppServerLifetimeMs` - optional hard lifetime for nested app servers
+
+If `nestedHost` is omitted, nested hosts use conservative defaults and do not inherit `fetch`. Pass `nestedHost: false` to disable the synthetic sandbox `@ricsam/isolate` module entirely for a runtime.
 
 ### Build An App Server
 
@@ -475,7 +516,7 @@ setTimeout(() => {
 
 ### Package Entry Points
 
-- `@ricsam/isolate` exports `createIsolateHost()`, `createModuleResolver()`, `createFileBindings()`, `getTypeProfile()`, `typecheck()`, and `formatTypecheckErrors()`
+- `@ricsam/isolate` exports `createIsolateHost()`, `createModuleResolver()`, `createFileBindings()`, `getTypeProfile()`, `typecheck()`, `formatTypecheckErrors()`, and public types such as `HostBindings`, `NestedHostPolicy`, and runtime handles
 - `@ricsam/isolate/playwright` exports `createPlaywrightSessionHandler()` and related Playwright handler types
 - inside sandbox code, `@ricsam/isolate` is also available as a synthetic module that exports sandbox-only `createIsolateHost()` for nested runtimes
 
@@ -492,6 +533,14 @@ setTimeout(() => {
 - `close()` to shut everything down
 
 `CreateIsolateHostOptions` currently supports `engine: "auto"` and daemon options such as `socketPath`, `entrypoint`, `cwd`, `timeoutMs`, and `autoStart`.
+
+Runtime creation options support:
+
+- `bindings` for host-owned capabilities
+- `cwd` for path resolution
+- `executionTimeout` for eval/test execution limits
+- `memoryLimitMB` for isolate memory limits
+- `nestedHost` for controlling sandbox-created child runtimes, or `false` to disable nested host access
 
 ### `createModuleResolver()`
 

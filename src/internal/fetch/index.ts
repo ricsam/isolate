@@ -2005,13 +2005,10 @@ function setupFetchFunction(
         signal: hostController.signal,
       };
 
-      // Call user's onFetch handler or default fetch
-      const onFetch = options?.onFetch ?? ((url: string, init: FetchRequestInit) => fetch(url, {
-        method: init.method,
-        headers: init.headers,
-        body: init.body,
-        signal: init.signal,
-      }));
+      const onFetch = options?.onFetch;
+      if (!onFetch) {
+        throw new TypeError("fetch is disabled: no host fetch binding was provided.");
+      }
 
       try {
         // Race the fetch with abort signal detection

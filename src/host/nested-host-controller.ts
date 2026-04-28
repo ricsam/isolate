@@ -16,6 +16,7 @@ import type {
   HostBindings,
   HostCallContext,
   NamespacedRuntime,
+  NestedHostPolicy,
   RequestResult,
   RuntimeResourceDiagnostics,
   ScriptRuntime,
@@ -23,15 +24,49 @@ import type {
 } from "../types.ts";
 
 interface NestedHostFactory {
-  createRuntime(options: CreateRuntimeOptions): Promise<ScriptRuntime>;
-  createAppServer(options: CreateAppServerOptions): Promise<AppServer>;
-  createTestRuntime(options: CreateTestRuntimeOptions): Promise<TestRuntime>;
+  createRuntime(
+    options: CreateRuntimeOptions,
+    context: NestedHostControllerContext,
+  ): Promise<ScriptRuntime>;
+  createAppServer(
+    options: CreateAppServerOptions,
+    context: NestedHostControllerContext,
+  ): Promise<AppServer>;
+  createTestRuntime(
+    options: CreateTestRuntimeOptions,
+    context: NestedHostControllerContext,
+  ): Promise<TestRuntime>;
   getNamespacedRuntime(
     key: string,
     options: CreateNamespacedRuntimeOptions,
+    context: NestedHostControllerContext,
   ): Promise<NamespacedRuntime>;
   disposeNamespace(key: string, options?: { reason?: string }): Promise<void>;
   isConnected(): boolean;
+}
+
+interface ResolvedNestedHostPolicy {
+  fetch: "inherit" | "disabled";
+  maxTotalResources: number;
+  maxRuntimes: number;
+  maxAppServers: number;
+  maxMemoryLimitMB: number;
+  maxExecutionTimeoutMs: number;
+  maxAppServerLifetimeMs?: number;
+}
+
+export interface NestedHostResourceGroup {
+  id: string;
+  namespacePrefix: string;
+  policy: ResolvedNestedHostPolicy;
+  totalResources: number;
+  runtimeResources: number;
+  appServerResources: number;
+  namespaceKeys: Map<string, string>;
+}
+
+export interface NestedHostControllerContext {
+  group: NestedHostResourceGroup;
 }
 
 interface NestedHostRecord {
@@ -45,12 +80,15 @@ interface RuntimeResourceRecord {
   hostId: string;
   resource: ScriptRuntime;
   subscriptions: Map<string, () => void>;
+  releaseQuota: () => void;
 }
 
 interface AppServerResourceRecord {
   kind: "appServer";
   hostId: string;
   resource: AppServer;
+  lifetimeTimer?: ReturnType<typeof setTimeout>;
+  releaseQuota: () => void;
 }
 
 interface TestRuntimeResourceRecord {
@@ -58,6 +96,7 @@ interface TestRuntimeResourceRecord {
   hostId: string;
   resource: TestRuntime;
   subscriptions: Map<string, () => void>;
+  releaseQuota: () => void;
 }
 
 interface NamespacedRuntimeResourceRecord {
@@ -65,6 +104,7 @@ interface NamespacedRuntimeResourceRecord {
   hostId: string;
   resource: NamespacedRuntime;
   subscriptions: Map<string, () => void>;
+  releaseQuota: () => void;
 }
 
 type NestedResourceRecord =
@@ -72,6 +112,76 @@ type NestedResourceRecord =
   | AppServerResourceRecord
   | TestRuntimeResourceRecord
   | NamespacedRuntimeResourceRecord;
+
+const DEFAULT_NESTED_TOTAL_RESOURCES = 8;
+const DEFAULT_NESTED_RUNTIMES = 6;
+const DEFAULT_NESTED_APP_SERVERS = 2;
+const DEFAULT_NESTED_MEMORY_LIMIT_MB = 128;
+const DEFAULT_NESTED_EXECUTION_TIMEOUT_MS = 30_000;
+
+function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("Nested host quota values must be positive numbers.");
+  }
+  return Math.floor(value);
+}
+
+function clampToParentLimit(
+  value: number | undefined,
+  parentLimit: number | undefined,
+  fallback: number,
+): number {
+  const normalized = normalizePositiveInteger(value, parentLimit ?? fallback);
+  return parentLimit === undefined ? normalized : Math.min(normalized, parentLimit);
+}
+
+export function createNestedHostResourceGroup(
+  policy: NestedHostPolicy | undefined,
+  parentLimits?: { memoryLimitMB?: number; executionTimeout?: number },
+): NestedHostResourceGroup {
+  const maxMemoryLimitMB = clampToParentLimit(
+    policy?.maxMemoryLimitMB,
+    parentLimits?.memoryLimitMB,
+    DEFAULT_NESTED_MEMORY_LIMIT_MB,
+  );
+  const maxExecutionTimeoutMs = clampToParentLimit(
+    policy?.maxExecutionTimeoutMs,
+    parentLimits?.executionTimeout,
+    DEFAULT_NESTED_EXECUTION_TIMEOUT_MS,
+  );
+
+  return {
+    id: randomUUID(),
+    namespacePrefix: `nested:${randomUUID()}`,
+    policy: {
+      fetch: policy?.fetch ?? "disabled",
+      maxTotalResources: normalizePositiveInteger(
+        policy?.maxTotalResources,
+        DEFAULT_NESTED_TOTAL_RESOURCES,
+      ),
+      maxRuntimes: normalizePositiveInteger(
+        policy?.maxRuntimes,
+        DEFAULT_NESTED_RUNTIMES,
+      ),
+      maxAppServers: normalizePositiveInteger(
+        policy?.maxAppServers,
+        DEFAULT_NESTED_APP_SERVERS,
+      ),
+      maxMemoryLimitMB,
+      maxExecutionTimeoutMs,
+      maxAppServerLifetimeMs: policy?.maxAppServerLifetimeMs === undefined
+        ? undefined
+        : normalizePositiveInteger(policy.maxAppServerLifetimeMs, DEFAULT_NESTED_EXECUTION_TIMEOUT_MS),
+    },
+    totalResources: 0,
+    runtimeResources: 0,
+    appServerResources: 0,
+    namespaceKeys: new Map(),
+  };
+}
 
 interface SerializedRequestLike {
   url: string;
@@ -100,10 +210,14 @@ function toRequest(serialized: SerializedRequestLike): Request {
 function normalizeBindings(
   bindings: HostBindings | undefined,
   defaultBrowserSource: BrowserSource | undefined,
+  inheritedBindings: HostBindings,
+  policy: ResolvedNestedHostPolicy,
 ): HostBindings {
   const normalized: HostBindings = {
     console: bindings?.console,
-    fetch: bindings?.fetch,
+    fetch: bindings?.fetch ?? (
+      policy.fetch === "inherit" ? inheritedBindings.fetch : undefined
+    ),
     files: bindings?.files,
     modules: bindings?.modules,
     tools: bindings?.tools,
@@ -135,30 +249,86 @@ function normalizeBindings(
 function normalizeRuntimeOptions(
   options: CreateRuntimeOptions,
   defaultBrowserSource: BrowserSource | undefined,
+  inheritedBindings: HostBindings,
+  group: NestedHostResourceGroup,
 ): CreateRuntimeOptions {
+  const memoryLimitMB = options.memoryLimitMB ?? group.policy.maxMemoryLimitMB;
+  const executionTimeout = options.executionTimeout ?? group.policy.maxExecutionTimeoutMs;
+  if (memoryLimitMB > group.policy.maxMemoryLimitMB) {
+    throw new Error(
+      `Nested runtime memoryLimitMB ${memoryLimitMB} exceeds quota ${group.policy.maxMemoryLimitMB}.`,
+    );
+  }
+  if (executionTimeout > group.policy.maxExecutionTimeoutMs) {
+    throw new Error(
+      `Nested runtime executionTimeout ${executionTimeout} exceeds quota ${group.policy.maxExecutionTimeoutMs}.`,
+    );
+  }
+
   return {
     ...options,
-    bindings: normalizeBindings(options.bindings, defaultBrowserSource),
+    memoryLimitMB,
+    executionTimeout,
+    nestedHost: options.nestedHost === false ? false : group.policy,
+    bindings: normalizeBindings(
+      options.bindings,
+      defaultBrowserSource,
+      inheritedBindings,
+      group.policy,
+    ),
   };
 }
 
 function normalizeAppServerOptions(
   options: CreateAppServerOptions,
   defaultBrowserSource: BrowserSource | undefined,
+  inheritedBindings: HostBindings,
+  group: NestedHostResourceGroup,
 ): CreateAppServerOptions {
   return {
-    ...options,
-    bindings: normalizeBindings(options.bindings, defaultBrowserSource),
+    ...normalizeRuntimeOptions(
+      options,
+      defaultBrowserSource,
+      inheritedBindings,
+      group,
+    ),
+    key: options.key,
+    entry: options.entry,
+    entryFilename: options.entryFilename,
+    webSockets: options.webSockets,
   };
 }
 
 function normalizeNamespacedRuntimeOptions(
   options: CreateNamespacedRuntimeOptions,
   defaultBrowserSource: BrowserSource | undefined,
+  inheritedBindings: HostBindings,
+  group: NestedHostResourceGroup,
 ): CreateNamespacedRuntimeOptions {
+  const memoryLimitMB = options.memoryLimitMB ?? group.policy.maxMemoryLimitMB;
+  const executionTimeout = options.executionTimeout ?? group.policy.maxExecutionTimeoutMs;
+  if (memoryLimitMB > group.policy.maxMemoryLimitMB) {
+    throw new Error(
+      `Nested runtime memoryLimitMB ${memoryLimitMB} exceeds quota ${group.policy.maxMemoryLimitMB}.`,
+    );
+  }
+  if (executionTimeout > group.policy.maxExecutionTimeoutMs) {
+    throw new Error(
+      `Nested runtime executionTimeout ${executionTimeout} exceeds quota ${group.policy.maxExecutionTimeoutMs}.`,
+    );
+  }
+
   return {
     ...options,
-    bindings: normalizeBindings(options.bindings, defaultBrowserSource),
+    memoryLimitMB,
+    executionTimeout,
+    nestedHost: options.nestedHost === false ? false : group.policy,
+    bindings: normalizeBindings(
+      options.bindings,
+      defaultBrowserSource,
+      inheritedBindings,
+      group.policy,
+    ),
   };
 }
 
@@ -221,9 +391,78 @@ async function flushNestedRuntime(
   }
 }
 
+function countsAsRuntime(kind: NestedResourceKind): boolean {
+  return kind !== "appServer";
+}
+
+function reserveNestedResource(
+  group: NestedHostResourceGroup,
+  kind: NestedResourceKind,
+): () => void {
+  const nextTotal = group.totalResources + 1;
+  if (nextTotal > group.policy.maxTotalResources) {
+    throw new Error(
+      `Nested host resource quota exceeded: ${nextTotal}/${group.policy.maxTotalResources}.`,
+    );
+  }
+
+  if (countsAsRuntime(kind)) {
+    const nextRuntimes = group.runtimeResources + 1;
+    if (nextRuntimes > group.policy.maxRuntimes) {
+      throw new Error(
+        `Nested runtime quota exceeded: ${nextRuntimes}/${group.policy.maxRuntimes}.`,
+      );
+    }
+    group.runtimeResources = nextRuntimes;
+  } else {
+    const nextServers = group.appServerResources + 1;
+    if (nextServers > group.policy.maxAppServers) {
+      throw new Error(
+        `Nested app server quota exceeded: ${nextServers}/${group.policy.maxAppServers}.`,
+      );
+    }
+    group.appServerResources = nextServers;
+  }
+
+  group.totalResources = nextTotal;
+
+  let released = false;
+  return () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    group.totalResources = Math.max(0, group.totalResources - 1);
+    if (countsAsRuntime(kind)) {
+      group.runtimeResources = Math.max(0, group.runtimeResources - 1);
+    } else {
+      group.appServerResources = Math.max(0, group.appServerResources - 1);
+    }
+  };
+}
+
+function getScopedNamespaceKey(
+  group: NestedHostResourceGroup,
+  hostId: string,
+  key: string,
+): string {
+  const mapKey = `${hostId}\0${key}`;
+  const existing = group.namespaceKeys.get(mapKey);
+  if (existing) {
+    return existing;
+  }
+
+  const encodedKey = Buffer.from(key, "utf8").toString("base64url");
+  const scopedKey = `${group.namespacePrefix}:${randomUUID()}:${encodedKey}`;
+  group.namespaceKeys.set(mapKey, scopedKey);
+  return scopedKey;
+}
+
 export function createNestedHostBindings(
   factory: NestedHostFactory,
   defaultBrowserSource: BrowserSource | undefined,
+  inheritedBindings: HostBindings,
+  group: NestedHostResourceGroup,
 ): NestedHostBindings {
   const hosts = new Map<string, NestedHostRecord>();
   const resources = new Map<string, NestedResourceRecord>();
@@ -275,6 +514,10 @@ export function createNestedHostBindings(
       record.subscriptions.clear();
     }
 
+    if (record.kind === "appServer" && record.lifetimeTimer) {
+      clearTimeout(record.lifetimeTimer);
+    }
+    record.releaseQuota();
     resources.delete(resourceId);
   };
 
@@ -331,78 +574,122 @@ export function createNestedHostBindings(
     },
     async createResource(hostId, kind, rawOptions) {
       const host = requireHost(hostId);
+      const controllerContext: NestedHostControllerContext = { group };
+      const releaseQuota = reserveNestedResource(group, kind);
       switch (kind) {
         case "runtime": {
-          const options = normalizeRuntimeOptions(
-            rawOptions as CreateRuntimeOptions,
-            defaultBrowserSource,
-          );
-          const resource = await factory.createRuntime(options);
-          const resourceId = randomUUID();
-          resources.set(resourceId, {
-            kind,
-            hostId,
-            resource,
-            subscriptions: new Map(),
-          });
-          host.runtimeIds.add(resourceId);
-          return resourceId;
+          try {
+            const options = normalizeRuntimeOptions(
+              rawOptions as CreateRuntimeOptions,
+              defaultBrowserSource,
+              inheritedBindings,
+              group,
+            );
+            const resource = await factory.createRuntime(options, controllerContext);
+            const resourceId = randomUUID();
+            resources.set(resourceId, {
+              kind,
+              hostId,
+              resource,
+              subscriptions: new Map(),
+              releaseQuota,
+            });
+            host.runtimeIds.add(resourceId);
+            return resourceId;
+          } catch (error) {
+            releaseQuota();
+            throw error;
+          }
         }
 
         case "appServer": {
-          const options = normalizeAppServerOptions(
-            rawOptions as CreateAppServerOptions,
-            defaultBrowserSource,
-          );
-          const resource = await factory.createAppServer(options);
-          const resourceId = randomUUID();
-          resources.set(resourceId, {
-            kind,
-            hostId,
-            resource,
-          });
-          host.serverIds.add(resourceId);
-          return resourceId;
+          try {
+            const options = normalizeAppServerOptions(
+              rawOptions as CreateAppServerOptions,
+              defaultBrowserSource,
+              inheritedBindings,
+              group,
+            );
+            const resource = await factory.createAppServer(options, controllerContext);
+            const resourceId = randomUUID();
+            const record: AppServerResourceRecord = {
+              kind,
+              hostId,
+              resource,
+              releaseQuota,
+            };
+            if (group.policy.maxAppServerLifetimeMs !== undefined) {
+              record.lifetimeTimer = setTimeout(() => {
+                void disposeResource(resourceId, {
+                  hard: true,
+                  reason: "Nested app server lifetime exceeded",
+                });
+              }, group.policy.maxAppServerLifetimeMs);
+            }
+            resources.set(resourceId, record);
+            host.serverIds.add(resourceId);
+            return resourceId;
+          } catch (error) {
+            releaseQuota();
+            throw error;
+          }
         }
 
         case "testRuntime": {
-          const options = normalizeRuntimeOptions(
-            rawOptions as CreateTestRuntimeOptions,
-            defaultBrowserSource,
-          );
-          const resource = await factory.createTestRuntime(options);
-          const resourceId = randomUUID();
-          resources.set(resourceId, {
-            kind,
-            hostId,
-            resource,
-            subscriptions: new Map(),
-          });
-          host.runtimeIds.add(resourceId);
-          return resourceId;
+          try {
+            const options = normalizeRuntimeOptions(
+              rawOptions as CreateTestRuntimeOptions,
+              defaultBrowserSource,
+              inheritedBindings,
+              group,
+            );
+            const resource = await factory.createTestRuntime(options, controllerContext);
+            const resourceId = randomUUID();
+            resources.set(resourceId, {
+              kind,
+              hostId,
+              resource,
+              subscriptions: new Map(),
+              releaseQuota,
+            });
+            host.runtimeIds.add(resourceId);
+            return resourceId;
+          } catch (error) {
+            releaseQuota();
+            throw error;
+          }
         }
 
         case "namespacedRuntime": {
-          const namespacedOptions = rawOptions as {
-            key: string;
-            options: CreateNamespacedRuntimeOptions;
-          };
-          const resource = await factory.getNamespacedRuntime(
-            namespacedOptions.key,
-            normalizeNamespacedRuntimeOptions(
-              namespacedOptions.options,
-              defaultBrowserSource,
-            ),
-          );
-          const resourceId = randomUUID();
-          resources.set(resourceId, {
-            kind,
-            hostId,
-            resource,
-            subscriptions: new Map(),
-          });
-          host.runtimeIds.add(resourceId);
-          return resourceId;
+          try {
+            const namespacedOptions = rawOptions as {
+              key: string;
+              options: CreateNamespacedRuntimeOptions;
+            };
+            const resource = await factory.getNamespacedRuntime(
+              getScopedNamespaceKey(group, hostId, namespacedOptions.key),
+              normalizeNamespacedRuntimeOptions(
+                namespacedOptions.options,
+                defaultBrowserSource,
+                inheritedBindings,
+                group,
+              ),
+              controllerContext,
+            );
+            const resourceId = randomUUID();
+            resources.set(resourceId, {
+              kind,
+              hostId,
+              resource,
+              subscriptions: new Map(),
+              releaseQuota,
+            });
+            host.runtimeIds.add(resourceId);
+            return resourceId;
+          } catch (error) {
+            releaseQuota();
+            throw error;
+          }
         }
       }
     },
@@ -644,7 +931,23 @@ export function createNestedHostBindings(
     },
     async disposeNamespace(hostId, key, options) {
       requireHost(hostId);
-      await factory.disposeNamespace(key, options);
+      const scopedKey = group.namespaceKeys.get(`${hostId}\0${key}`);
+      if (!scopedKey) {
+        return;
+      }
+      await factory.disposeNamespace(scopedKey, options);
+    },
+    async disposeAll(reason) {
+      const resourceIds = [...resources.keys()];
+      await Promise.allSettled(
+        resourceIds.map(async (resourceId) => {
+          await disposeResource(resourceId, {
+            hard: true,
+            reason: reason ?? "Nested isolate parent disposed",
+          });
+        }),
+      );
+      hosts.clear();
     },
   };
 }

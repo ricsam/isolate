@@ -27,6 +27,8 @@ export type {
   ModuleResolverSourceLoader,
   ModuleSource,
   PlaywrightEvent,
+  NestedHostFetchPolicy,
+  NestedHostPolicy,
   RequestResult,
   RuntimeResourceDiagnostics,
   RunResults,

@@ -13,7 +13,11 @@ import { createScriptRuntimeAdapter } from "../runtime/script-runtime.ts";
 import { createTestRuntimeAdapter } from "../runtime/test-runtime.ts";
 import { createTestEventSubscriptions } from "../runtime/test-event-subscriptions.ts";
 import { createAppServerAdapter } from "../server/app-server.ts";
-import { createNestedHostBindings } from "./nested-host-controller.ts";
+import {
+  createNestedHostBindings,
+  createNestedHostResourceGroup,
+  type NestedHostControllerContext,
+} from "./nested-host-controller.ts";
 import type {
   AppServer,
   CreateAppServerOptions,
@@ -21,8 +25,10 @@ import type {
   CreateNamespacedRuntimeOptions,
   CreateRuntimeOptions,
   CreateTestRuntimeOptions,
+  HostBindings,
   IsolateHost,
   NamespacedRuntime,
+  NestedHostPolicy,
   ScriptRuntime,
   TestRuntime,
 } from "../types.ts";
@@ -162,6 +168,7 @@ class HostImpl implements IsolateHost {
 
   private async createRuntimeInternal(
     options: CreateRuntimeOptions,
+    nestedContext?: NestedHostControllerContext,
   ): Promise<ScriptRuntime> {
     const diagnostics = createRuntimeDiagnostics();
     let runtimeId = options.key ?? "runtime";
@@ -171,7 +178,16 @@ class HostImpl implements IsolateHost {
       () => runtimeId,
       diagnostics,
       {
-        nestedHost: this.createNestedBindings(browserSource),
+        nestedHost: this.createNestedBindings(
+          browserSource,
+          options.bindings,
+          options.nestedHost,
+          {
+            memoryLimitMB: options.memoryLimitMB,
+            executionTimeout: options.executionTimeout,
+          },
+          nestedContext,
+        ),
       },
     );
     const runtime = await this.createRemoteRuntime(
@@ -194,6 +210,7 @@ class HostImpl implements IsolateHost {
 
   private async createTestRuntimeInternal(
     options: CreateTestRuntimeOptions,
+    nestedContext?: NestedHostControllerContext,
   ): Promise<TestRuntime> {
     const testRuntime = await createTestRuntimeAdapter(
       async (runtimeOptions) => await this.createRemoteRuntime(runtimeOptions, options.key),
@@ -201,6 +218,13 @@ class HostImpl implements IsolateHost {
       {
         nestedHost: this.createNestedBindings(
           createBrowserSourceFromBindings(options.bindings.browser),
+          options.bindings,
+          options.nestedHost,
+          {
+            memoryLimitMB: options.memoryLimitMB,
+            executionTimeout: options.executionTimeout,
+          },
+          nestedContext,
         ),
       },
     );
@@ -211,6 +235,7 @@ class HostImpl implements IsolateHost {
   private async createNamespacedRuntimeInternal(
     key: string,
     options: CreateNamespacedRuntimeOptions,
+    nestedContext?: NestedHostControllerContext,
   ): Promise<NamespacedRuntime> {
     if (this.pendingNamespacedKeys.has(key) || this.namespacedRuntimes.has(key)) {
       throw createNamedError(
@@ -229,7 +254,16 @@ class HostImpl implements IsolateHost {
       () => runtimeId,
       diagnostics,
       {
-        nestedHost: this.createNestedBindings(browserSource),
+        nestedHost: this.createNestedBindings(
+          browserSource,
+          options.bindings,
+          options.nestedHost,
+          {
+            memoryLimitMB: options.memoryLimitMB,
+            executionTimeout: options.executionTimeout,
+          },
+          nestedContext,
+        ),
       },
     );
 
@@ -272,6 +306,7 @@ class HostImpl implements IsolateHost {
 
   private async createAppServerInternal(
     options: CreateAppServerOptions,
+    nestedContext?: NestedHostControllerContext,
   ): Promise<AppServer> {
     const server = await createAppServerAdapter(
       () => this.getConnection(),
@@ -279,6 +314,13 @@ class HostImpl implements IsolateHost {
       {
         nestedHost: this.createNestedBindings(
           createBrowserSourceFromBindings(options.bindings.browser),
+          options.bindings,
+          options.nestedHost,
+          {
+            memoryLimitMB: options.memoryLimitMB,
+            executionTimeout: options.executionTimeout,
+          },
+          nestedContext,
         ),
       },
     );
@@ -288,21 +330,33 @@ class HostImpl implements IsolateHost {
 
   private createNestedBindings(
     defaultBrowserSource: BrowserSource | undefined,
+    inheritedBindings: HostBindings,
+    policy: false | NestedHostPolicy | undefined,
+    parentLimits: { memoryLimitMB?: number; executionTimeout?: number },
+    nestedContext?: NestedHostControllerContext,
   ) {
+    if (policy === false) {
+      return undefined;
+    }
+    const group = nestedContext?.group ??
+      createNestedHostResourceGroup(policy, parentLimits);
     return createNestedHostBindings(
       {
-        createRuntime: async (options) => await this.createRuntimeInternal(options),
-        createAppServer: async (options) =>
-          await this.createAppServerInternal(options),
-        createTestRuntime: async (options) =>
-          await this.createTestRuntimeInternal(options),
-        getNamespacedRuntime: async (key, options) =>
-          await this.createNamespacedRuntimeInternal(key, options),
+        createRuntime: async (options, context) =>
+          await this.createRuntimeInternal(options, context),
+        createAppServer: async (options, context) =>
+          await this.createAppServerInternal(options, context),
+        createTestRuntime: async (options, context) =>
+          await this.createTestRuntimeInternal(options, context),
+        getNamespacedRuntime: async (key, options, context) =>
+          await this.createNamespacedRuntimeInternal(key, options, context),
         disposeNamespace: async (key, options) =>
           await this.disposeNamespace(key, options),
         isConnected: () => this.connection?.isConnected() ?? false,
       },
       defaultBrowserSource,
+      inheritedBindings,
+      group,
     );
   }
 

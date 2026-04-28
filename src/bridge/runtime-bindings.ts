@@ -444,7 +444,14 @@ export function createRuntimeBindingsAdapter(
       customFunctions,
       playwright: browserPlaywright,
     },
-    abort: contextFactory.abort,
+    abort: (reason?: unknown) => {
+      contextFactory.abort(reason);
+      if (options?.nestedHost?.disposeAll) {
+        void options.nestedHost.disposeAll(
+          reason instanceof Error ? reason.message : String(reason ?? "Runtime disposed"),
+        );
+      }
+    },
     reset: contextFactory.reset,
   };
 }

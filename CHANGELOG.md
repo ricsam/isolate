@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.20
+
+### Patch Changes
+
+- improve nested sandboxing
+
 ## 0.1.19
 
 ### Patch Changes
