@@ -26,8 +26,8 @@ import type { MutableRuntimeDiagnostics } from "./diagnostics.ts";
 
 export interface RuntimeBindingsAdapter {
   runtimeOptions: RuntimeOptions;
-  abort(reason?: unknown): void;
-  reset(reason?: unknown): void;
+  abort(reason?: unknown): Promise<void>;
+  reset(reason?: unknown): Promise<void>;
 }
 
 export interface RuntimeBindingsAdapterOptions {
@@ -444,15 +444,22 @@ export function createRuntimeBindingsAdapter(
       customFunctions,
       playwright: browserPlaywright,
     },
-    abort: (reason?: unknown) => {
+    abort: async (reason?: unknown) => {
       contextFactory.abort(reason);
       if (options?.nestedHost?.disposeAll) {
-        void options.nestedHost.disposeAll(
+        await options.nestedHost.disposeAll(
           reason instanceof Error ? reason.message : String(reason ?? "Runtime disposed"),
         );
       }
     },
-    reset: contextFactory.reset,
+    reset: async (reason?: unknown) => {
+      contextFactory.reset(reason);
+      if (options?.nestedHost?.disposeAll) {
+        await options.nestedHost.disposeAll(
+          reason instanceof Error ? reason.message : String(reason ?? "Runtime reset"),
+        );
+      }
+    },
   };
 }
 
@@ -727,6 +734,7 @@ function createCustomFunctions(
       "__isolateHost_createResource",
       "__isolateHost_disposeNamespace",
       "__isolateHost_callResource",
+      "__isolateHost_abortResourceCall",
       "__isolateHost_drainCallbacks",
     ];
     for (const name of reservedNames) {
@@ -820,6 +828,20 @@ function createCustomFunctions(
           Array.isArray(methodArgs) ? methodArgs : [],
           context,
         );
+      },
+    };
+    definitions.__isolateHost_abortResourceCall = {
+      type: "async",
+      fn: async (...args: unknown[]) => {
+        const operationId = args[0] as string;
+        const reason =
+          typeof args[1] === "string" && args[1].length > 0
+            ? args[1]
+            : undefined;
+        const context = createHostCallContext(
+          `nestedHost:abortResourceCall:${crypto.randomUUID()}`,
+        );
+        await nestedHost.abortResourceCall(operationId, reason, context);
       },
     };
     definitions.__isolateHost_drainCallbacks = {

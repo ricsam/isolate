@@ -9,11 +9,19 @@ import type {
   RunResults,
   TestRuntimeDiagnostics,
 } from "../types.ts";
+import {
+  disposeWithUnresponsiveFallback,
+  getErrorMessage,
+  isAbortError,
+  isTerminalExecutionError,
+  runAbortableOperation,
+  type UnresponsiveDisposeHandler,
+} from "./abort.ts";
 
 type RuntimeState = "active" | "disposed" | "invalidated";
 
 export interface NamespacedRuntimeAdapter extends NamespacedRuntime {
-  invalidate(reason?: string): void;
+  invalidate(reason?: string): Promise<void>;
 }
 
 function createStateError(state: RuntimeState, reason?: string): Error {
@@ -37,7 +45,8 @@ export function createNamespacedRuntimeAdapter(
   diagnostics: MutableRuntimeDiagnostics,
   options: {
     hasBrowser?: boolean;
-    abortBindings?: (reason?: string) => void;
+    abortBindings?: (reason?: string) => void | Promise<void>;
+    onUnresponsiveDispose?: UnresponsiveDisposeHandler;
     onRelease?: () => void;
     testEvents: TestEventSubscriptions;
   },
@@ -68,17 +77,47 @@ export function createNamespacedRuntimeAdapter(
   };
   options.testEvents.setEnsureUsable(ensureActive);
 
+  const hardDispose = async (reason: string): Promise<void> => {
+    if (state === "disposed" || state === "invalidated") {
+      release();
+      return;
+    }
+    state = "disposed";
+    await options?.abortBindings?.(reason);
+    try {
+      await disposeWithUnresponsiveFallback(
+        () => runtime.dispose({ hard: true, reason }),
+        reason,
+        options.onUnresponsiveDispose,
+      );
+    } catch (error) {
+      if (!isBenignDisposeError(error)) {
+        throw error;
+      }
+    } finally {
+      release();
+    }
+  };
+
   return {
     async eval(code, evalOptions) {
       ensureActive();
       diagnostics.lifecycleState = "active";
       try {
-        await runtime.eval(code, {
-          filename: evalOptions?.filename,
-          executionTimeout: evalOptions?.executionTimeout,
+        await runAbortableOperation(async () => {
+          await runtime.eval(code, {
+            filename: evalOptions?.filename,
+            executionTimeout: evalOptions?.executionTimeout,
+          });
+        }, {
+          signal: evalOptions?.signal,
+          disposeOnAbort: hardDispose,
         });
       } catch (error) {
-        diagnostics.lastError = error instanceof Error ? error.message : String(error);
+        diagnostics.lastError = getErrorMessage(error);
+        if (!isAbortError(error) && isTerminalExecutionError(error)) {
+          await hardDispose(diagnostics.lastError).catch(() => {});
+        }
         throw error;
       } finally {
         diagnostics.lifecycleState = "idle";
@@ -88,15 +127,23 @@ export function createNamespacedRuntimeAdapter(
       ensureActive();
       diagnostics.lifecycleState = "active";
       try {
-        await runtime.testEnvironment.reset();
-        await runtime.eval(code, {
-          filename: runOptions?.filename,
-          executionTimeout: runOptions?.timeoutMs,
+        return await runAbortableOperation(async () => {
+          await runtime.testEnvironment.reset();
+          await runtime.eval(code, {
+            filename: runOptions?.filename,
+            executionTimeout: runOptions?.timeoutMs,
+          });
+          lastRun = await runtime.testEnvironment.runTests(runOptions?.timeoutMs);
+          return lastRun;
+        }, {
+          signal: runOptions?.signal,
+          disposeOnAbort: hardDispose,
         });
-        lastRun = await runtime.testEnvironment.runTests(runOptions?.timeoutMs);
-        return lastRun;
       } catch (error) {
-        diagnostics.lastError = error instanceof Error ? error.message : String(error);
+        diagnostics.lastError = getErrorMessage(error);
+        if (!isAbortError(error) && isTerminalExecutionError(error)) {
+          await hardDispose(diagnostics.lastError).catch(() => {});
+        }
         throw error;
       } finally {
         diagnostics.lifecycleState = "idle";
@@ -136,11 +183,11 @@ export function createNamespacedRuntimeAdapter(
       state = "disposed";
       diagnostics.lifecycleState = "disposing";
       try {
-        options?.abortBindings?.(disposeOptions?.reason);
+        await options?.abortBindings?.(disposeOptions?.reason);
         await runtime.dispose(disposeOptions);
       } catch (error) {
         if (!isBenignDisposeError(error)) {
-          diagnostics.lastError = error instanceof Error ? error.message : String(error);
+          diagnostics.lastError = getErrorMessage(error);
           throw error;
         }
       } finally {
@@ -148,7 +195,7 @@ export function createNamespacedRuntimeAdapter(
         release();
       }
     },
-    invalidate(reason) {
+    async invalidate(reason) {
       if (state === "disposed" || state === "invalidated") {
         release();
         return;
@@ -156,7 +203,7 @@ export function createNamespacedRuntimeAdapter(
       state = "invalidated";
       invalidationReason = reason;
       diagnostics.lifecycleState = "idle";
-      options?.abortBindings?.(reason);
+      await options?.abortBindings?.(reason);
       release();
     },
     test: options.testEvents.api,

@@ -104,6 +104,63 @@ The host can create four runtime styles:
 - `host.createTestRuntime()` for test suites with `describe`, `test`, hooks, and `expect`
 - `host.getNamespacedRuntime()` for persistent sessions that survive soft dispose and can be reacquired later
 
+### Cancel Running Work
+
+`eval()`, `run()`, `runTests()`, and app-server `handle()` accept web-style `AbortSignal` options.
+
+If the signal is already aborted before the call starts, the call rejects with `AbortError` and does not start or dispose the runtime. If a signal aborts while `eval()`, `run()`, or `runTests()` is in flight, the runtime is hard-disposed and the handle becomes unusable. This is intentionally a hard cancellation path so CPU-bound code such as `while (true) {}` cannot keep running.
+
+```ts
+const runtime = await host.createRuntime({});
+const controller = new AbortController();
+
+const running = runtime.eval(
+  `while (true) {}`,
+  { signal: controller.signal },
+);
+
+controller.abort();
+
+await running.catch((error) => {
+  if (error.name !== "AbortError") {
+    throw error;
+  }
+});
+
+// The runtime was terminated by the abort.
+await runtime.eval(`1 + 1`).catch((error) => {
+  console.log(error.message);
+});
+```
+
+Hard runtime termination cascades through nested hosts. If a parent runtime is aborted, times out, is hard-disposed, or is disposed during execution, child runtimes, nested app servers, test runtimes, and namespaced runtimes created through the sandbox `@ricsam/isolate` module are also disposed.
+
+Signals created inside sandbox code can cancel nested work live:
+
+```ts
+await runtime.eval(`
+  import { createIsolateHost } from "@ricsam/isolate";
+
+  const nestedHost = createIsolateHost();
+  const child = await nestedHost.createRuntime();
+  const controller = new AbortController();
+
+  const running = child.eval("await new Promise(() => {})", {
+    signal: controller.signal,
+  });
+
+  controller.abort();
+
+  try {
+    await running;
+  } catch (error) {
+    console.log(error.name); // AbortError
+  }
+`);
+```
+
+For app servers, `handle(request, { signal })` is request-scoped. Aborting the request signal cancels that one request and is visible as `request.signal.aborted` inside the sandbox; it does not dispose the server runtime unless the owning runtime is otherwise terminated. Inside a sandbox app server, pass `request.signal` to a nested app server `handle()` call to forward the same request cancellation.
+
 ### Configure Bindings
 
 Bindings define how sandboxed code talks to the host:
@@ -246,7 +303,7 @@ await server.dispose();
 await host.close();
 ```
 
-`server.handle()` returns either an HTTP response or WebSocket upgrade metadata. For upgraded connections, `server.ws` lets the host send open, message, close, and error events back into the runtime.
+`server.handle()` returns either an HTTP response or WebSocket upgrade metadata. Pass `handle(request, { signal })` to forward request cancellation into the sandbox as `request.signal`. For upgraded connections, `server.ws` lets the host send open, message, close, and error events back into the runtime.
 
 ### Add Browser Support To Script And Server Runtimes
 
@@ -541,6 +598,16 @@ Runtime creation options support:
 - `executionTimeout` for eval/test execution limits
 - `memoryLimitMB` for isolate memory limits
 - `nestedHost` for controlling sandbox-created child runtimes, or `false` to disable nested host access
+
+Execution methods support:
+
+- `runtime.eval(code, { filename?, executionTimeout?, signal? })`
+- `testRuntime.run(code, { filename?, timeoutMs?, signal? })`
+- `namespacedRuntime.eval(code, { filename?, executionTimeout?, signal? })`
+- `namespacedRuntime.runTests(code, { filename?, timeoutMs?, signal? })`
+- `appServer.handle(request, { requestId?, metadata?, signal? })`
+
+When `signal` aborts an in-flight script or test execution, the runtime is hard-disposed and nested resources are terminated recursively. Pre-aborted signals reject with `AbortError` before starting execution.
 
 ### `createModuleResolver()`
 

@@ -114,7 +114,7 @@ class HostImpl implements IsolateHost {
     this.pendingNamespacedKeys.delete(key);
     const runtime = this.namespacedRuntimes.get(key);
     if (runtime) {
-      runtime.invalidate(
+      await runtime.invalidate(
         options?.reason
           ? `Namespace "${key}" was disposed: ${options.reason}`
           : `Namespace "${key}" was disposed.`,
@@ -138,7 +138,7 @@ class HostImpl implements IsolateHost {
 
   async close(): Promise<void> {
     for (const [key, runtime] of this.namespacedRuntimes) {
-      runtime.invalidate(`Host closed while namespace "${key}" was active.`);
+      await runtime.invalidate(`Host closed while namespace "${key}" was active.`);
     }
     this.namespacedRuntimes.clear();
     this.pendingNamespacedKeys.clear();
@@ -164,6 +164,36 @@ class HostImpl implements IsolateHost {
         process.kill("SIGTERM");
       });
     }
+  }
+
+  private async forceCloseDaemon(): Promise<void> {
+    this.namespacedRuntimes.clear();
+    this.pendingNamespacedKeys.clear();
+
+    if (this.connection) {
+      await this.connection.close().catch(() => {});
+    }
+    this.connection = null;
+    this.connectionPromise = null;
+
+    if (!this.daemonProcess) {
+      return;
+    }
+
+    const process = this.daemonProcess;
+    this.daemonProcess = null;
+    process.stdout?.removeAllListeners("data");
+    process.stderr?.removeAllListeners("data");
+    process.stdout?.destroy();
+    process.stderr?.destroy();
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, 1000);
+      process.once("exit", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      process.kill("SIGKILL");
+    });
   }
 
   private async createRuntimeInternal(
@@ -203,6 +233,9 @@ class HostImpl implements IsolateHost {
     const adapter = createScriptRuntimeAdapter(runtime, diagnostics, {
       hasBrowser: Boolean(options.bindings.browser),
       onBeforeDispose: (reason) => bindingsAdapter.abort(reason),
+      onUnresponsiveDispose: async () => {
+        await this.forceCloseDaemon();
+      },
     });
     this.runtimes.add(adapter);
     return adapter;
@@ -226,6 +259,11 @@ class HostImpl implements IsolateHost {
           },
           nestedContext,
         ),
+      },
+      {
+        onUnresponsiveDispose: async () => {
+          await this.forceCloseDaemon();
+        },
       },
     );
     this.runtimes.add(testRuntime);
@@ -286,6 +324,9 @@ class HostImpl implements IsolateHost {
       adapter = createNamespacedRuntimeAdapter(runtime, diagnostics, {
         hasBrowser: Boolean(options.bindings.browser),
         abortBindings: (reason) => bindingsAdapter.abort(reason),
+        onUnresponsiveDispose: async () => {
+          await this.forceCloseDaemon();
+        },
         testEvents,
         onRelease: () => {
           if (this.namespacedRuntimes.get(key) === adapter) {

@@ -14,6 +14,14 @@ import type {
   RunResults,
   TestRuntime,
 } from "../types.ts";
+import {
+  disposeWithUnresponsiveFallback,
+  getErrorMessage,
+  isAbortError,
+  isTerminalExecutionError,
+  runAbortableOperation,
+  type UnresponsiveDisposeHandler,
+} from "./abort.ts";
 
 function createDisposedTestRuntimeError(): Error {
   return new Error("Test runtime has already been disposed.");
@@ -23,6 +31,9 @@ export async function createTestRuntimeAdapter(
   createRuntime: (options: RuntimeOptions) => Promise<RemoteRuntime>,
   options: CreateTestRuntimeOptions,
   adapterOptions?: RuntimeBindingsAdapterOptions,
+  lifecycleOptions?: {
+    onUnresponsiveDispose?: UnresponsiveDisposeHandler;
+  },
 ): Promise<TestRuntime> {
   const diagnostics = createRuntimeDiagnostics();
   const testEvents = createTestEventSubscriptions();
@@ -53,20 +64,49 @@ export async function createTestRuntimeAdapter(
   };
   testEvents.setEnsureUsable(ensureActive);
 
+  const hardDispose = async (reason: string): Promise<void> => {
+    if (isDisposed) {
+      return;
+    }
+    isDisposed = true;
+    await bindingsAdapter.abort(reason);
+    try {
+      await disposeWithUnresponsiveFallback(
+        () => runtime.dispose({ hard: true, reason }),
+        reason,
+        lifecycleOptions?.onUnresponsiveDispose,
+      );
+    } catch (error) {
+      if (!isBenignDisposeError(error)) {
+        throw error;
+      }
+    } finally {
+      testEvents.clear();
+    }
+  };
+
   return {
     async run(code, runOptions) {
       ensureActive();
       diagnostics.lifecycleState = "active";
       try {
-        await runtime.testEnvironment.reset();
-        await runtime.eval(code, {
-          filename: runOptions?.filename,
-          executionTimeout: runOptions?.timeoutMs,
+        return await runAbortableOperation(async () => {
+          await runtime.testEnvironment.reset();
+          await runtime.eval(code, {
+            filename: runOptions?.filename,
+            executionTimeout: runOptions?.timeoutMs,
+          });
+          lastRun = await runtime.testEnvironment.runTests(runOptions?.timeoutMs);
+          return lastRun;
+        }, {
+          signal: runOptions?.signal,
+          disposeOnAbort: hardDispose,
         });
-        lastRun = await runtime.testEnvironment.runTests(runOptions?.timeoutMs);
-        return lastRun;
       } catch (error) {
-        diagnostics.lastError = error instanceof Error ? error.message : String(error);
+        diagnostics.lastError = getErrorMessage(error);
+        if (!isAbortError(error) && isTerminalExecutionError(error)) {
+          await hardDispose(diagnostics.lastError).catch(() => {});
+        }
         throw error;
       } finally {
         diagnostics.lifecycleState = "idle";
@@ -105,11 +145,11 @@ export async function createTestRuntimeAdapter(
       isDisposed = true;
       diagnostics.lifecycleState = "disposing";
       try {
-        bindingsAdapter.abort(disposeOptions?.reason);
+        await bindingsAdapter.abort(disposeOptions?.reason);
         await runtime.dispose(disposeOptions);
       } catch (error) {
         if (!isBenignDisposeError(error)) {
-          diagnostics.lastError = error instanceof Error ? error.message : String(error);
+          diagnostics.lastError = getErrorMessage(error);
           throw error;
         }
       } finally {

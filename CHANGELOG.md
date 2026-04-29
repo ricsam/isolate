@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.23
+
+### Patch Changes
+
+- add AbortController
+
 ## 0.1.22
 
 ### Patch Changes

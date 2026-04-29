@@ -172,6 +172,97 @@ describe("AppServer integration", () => {
     }
   });
 
+  test("forwards request abort signals through nested app server handles", async () => {
+    const server = await host.createAppServer({
+      key: createTestId("server-nested-abort"),
+      entry: "/outer.ts",
+      nestedHost: {},
+      bindings: {
+        modules: createModuleResolver().virtual(
+          "/outer.ts",
+          `
+            import { createIsolateHost } from "@ricsam/isolate";
+
+            const nestedHost = createIsolateHost();
+            let innerPromise;
+
+            function getInner() {
+              innerPromise ??= nestedHost.createAppServer({
+                key: "inner",
+                entry: "/inner.ts",
+                bindings: {
+                  modules: {
+                    resolve(specifier) {
+                      if (specifier !== "/inner.ts") {
+                        return null;
+                      }
+
+                      return \`
+                        serve({
+                          fetch(request) {
+                            return new Promise((resolve) => {
+                              request.signal.addEventListener("abort", () => {
+                                resolve(Response.json({
+                                  source: "inner-abort",
+                                  aborted: request.signal.aborted,
+                                }));
+                              }, { once: true });
+
+                              setTimeout(() => {
+                                resolve(Response.json({
+                                  source: "inner-timeout",
+                                  aborted: request.signal.aborted,
+                                }));
+                              }, 300);
+                            });
+                          },
+                        });
+                      \`;
+                    },
+                  },
+                },
+              });
+              return innerPromise;
+            }
+
+            serve({
+              async fetch(request) {
+                const inner = await getInner();
+                const result = await inner.handle(
+                  new Request("http://inner/abort", {
+                    signal: request.signal,
+                  }),
+                );
+                if (result.type !== "response") {
+                  return new Response("unexpected websocket", { status: 500 });
+                }
+                return result.response;
+              },
+            });
+          `,
+        ),
+      },
+    });
+
+    try {
+      const controller = new AbortController();
+      const responsePromise = server.handle(
+        new Request("http://localhost/nested-abort"),
+        { signal: controller.signal },
+      );
+
+      await delay(25);
+      controller.abort();
+
+      const response = expectResponse(await withTimeout(responsePromise, 10_000, "nested abort response"));
+      const payload = await response.json() as { source: string; aborted: boolean };
+      assert.equal(payload.source, "inner-abort");
+      assert.equal(payload.aborted, true);
+    } finally {
+      await server.dispose({ hard: true, reason: "test cleanup" });
+    }
+  });
+
   test("keeps request handling healthy after repeated stream cancellations", { timeout: 120_000 }, async () => {
     const server = await host.createAppServer({
       key: createTestId("server-stream-cancel"),

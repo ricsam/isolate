@@ -190,6 +190,11 @@ interface SerializedRequestLike {
   body?: number[] | null;
 }
 
+type AbortableNestedOptions = {
+  __isolateAbortOperationId?: string;
+  signal?: AbortSignal;
+};
+
 function createNonReentrantEventHandler<TArgs extends unknown[]>(
   label: string,
   handler: ((...args: TArgs) => unknown) | undefined,
@@ -356,6 +361,73 @@ function toError(value: unknown): Error {
   return new Error(String(value));
 }
 
+function createAbortError(reason?: unknown): Error {
+  if (reason instanceof Error) {
+    const error = new Error(reason.message);
+    error.name = "AbortError";
+    (error as Error & { cause?: unknown }).cause = reason;
+    return error;
+  }
+
+  const error = new Error(
+    typeof reason === "string" && reason.length > 0
+      ? reason
+      : "The operation was aborted.",
+  );
+  error.name = "AbortError";
+  return error;
+}
+
+function composeAbortSignals(
+  signals: Array<AbortSignal | undefined>,
+): { signal?: AbortSignal; cleanup: () => void } {
+  const activeSignals = signals.filter(
+    (signal): signal is AbortSignal => signal !== undefined,
+  );
+
+  if (activeSignals.length === 0) {
+    return { cleanup() {} };
+  }
+
+  const aborted = activeSignals.find((signal) => signal.aborted);
+  if (aborted) {
+    return {
+      signal: AbortSignal.abort(aborted.reason ?? createAbortError()),
+      cleanup() {},
+    };
+  }
+
+  if (activeSignals.length === 1) {
+    return {
+      signal: activeSignals[0],
+      cleanup() {},
+    };
+  }
+
+  const controller = new AbortController();
+  const cleanup = () => {
+    for (const signal of activeSignals) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  };
+  const onAbort = (event: Event) => {
+    cleanup();
+    const signal = event.target as AbortSignal | null;
+    controller.abort(signal?.reason ?? createAbortError());
+  };
+
+  for (const signal of activeSignals) {
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+
+  controller.signal.addEventListener("abort", cleanup, { once: true });
+
+  return {
+    signal: controller.signal,
+    cleanup,
+  };
+}
+
 const NESTED_RUNTIME_FLUSH_CODE = `
   for (let index = 0; index < 3; index += 1) {
     await Promise.resolve();
@@ -466,6 +538,8 @@ export function createNestedHostBindings(
 ): NestedHostBindings {
   const hosts = new Map<string, NestedHostRecord>();
   const resources = new Map<string, NestedResourceRecord>();
+  const operationAbortControllers = new Map<string, AbortController>();
+  const earlyAbortedOperations = new Map<string, string | undefined>();
 
   const requireHost = (hostId: string): NestedHostRecord => {
     const host = hosts.get(hostId);
@@ -535,6 +609,53 @@ export function createNestedHostBindings(
     } finally {
       unregisterResource(resourceId);
     }
+  };
+
+  const createOperationSignal = (
+    options: AbortableNestedOptions | null | undefined,
+    context: HostCallContext,
+  ): { signal?: AbortSignal; cleanup: () => void } => {
+    const operationId = options?.__isolateAbortOperationId;
+    let operationController: AbortController | undefined;
+
+    if (operationId) {
+      operationController = new AbortController();
+      operationAbortControllers.set(operationId, operationController);
+      if (earlyAbortedOperations.has(operationId)) {
+        operationController.abort(
+          createAbortError(earlyAbortedOperations.get(operationId)),
+        );
+        earlyAbortedOperations.delete(operationId);
+      }
+    }
+
+    const composed = composeAbortSignals([
+      context.signal,
+      operationController?.signal,
+    ]);
+
+    return {
+      signal: composed.signal,
+      cleanup() {
+        composed.cleanup();
+        if (operationId) {
+          operationAbortControllers.delete(operationId);
+          earlyAbortedOperations.delete(operationId);
+        }
+      },
+    };
+  };
+
+  const stripAbortOperation = <T extends object>(
+    options: (T & AbortableNestedOptions) | null | undefined,
+  ): T | undefined => {
+    if (!options) {
+      return undefined;
+    }
+    const normalized = { ...options };
+    delete (normalized as AbortableNestedOptions).__isolateAbortOperationId;
+    delete (normalized as AbortableNestedOptions).signal;
+    return Object.keys(normalized).length > 0 ? normalized as T : undefined;
   };
 
   return {
@@ -693,21 +814,38 @@ export function createNestedHostBindings(
         }
       }
     },
-    async callResource(kind, resourceId, method, args) {
+    async callResource(kind, resourceId, method, args, context) {
       const record = requireResource(resourceId, kind);
 
       switch (kind) {
         case "runtime": {
           const runtimeRecord = record as RuntimeResourceRecord;
           switch (method) {
-            case "eval":
-              await runtimeRecord.resource.eval(
-                args[0] as string,
-                (args[1] as string | { filename?: string; executionTimeout?: number } | null) ??
-                  undefined,
-              );
-              await flushNestedRuntime(runtimeRecord.resource);
+            case "eval": {
+              const rawOptions =
+                (args[1] as ({
+                  filename?: string;
+                  executionTimeout?: number;
+                } & AbortableNestedOptions) | null) ?? undefined;
+              const operation = createOperationSignal(rawOptions, context);
+              const evalOptions = {
+                ...(stripAbortOperation<{
+                  filename?: string;
+                  executionTimeout?: number;
+                }>(rawOptions) ?? {}),
+                signal: operation.signal,
+              };
+              try {
+                await runtimeRecord.resource.eval(
+                  args[0] as string,
+                  Object.keys(evalOptions).length > 0 ? evalOptions : undefined,
+                );
+                await flushNestedRuntime(runtimeRecord.resource);
+              } finally {
+                operation.cleanup();
+              }
               return undefined;
+            }
             case "dispose":
               await disposeResource(resourceId, (args[0] as { hard?: boolean; reason?: string } | null) ?? {});
               return undefined;
@@ -749,14 +887,27 @@ export function createNestedHostBindings(
           const server = (record as AppServerResourceRecord).resource;
           switch (method) {
             case "handle": {
-              const result = await server.handle(
-                toRequest(args[0] as SerializedRequestLike),
-                ((args[1] as {
+              const rawOptions =
+                (args[1] as ({
                   requestId?: string;
                   metadata?: Record<string, string>;
-                } | null) ?? undefined),
-              );
-              return result;
+                } & AbortableNestedOptions) | null) ?? undefined;
+              const operation = createOperationSignal(rawOptions, context);
+              const handleOptions = {
+                ...(stripAbortOperation<{
+                  requestId?: string;
+                  metadata?: Record<string, string>;
+                }>(rawOptions) ?? {}),
+                signal: operation.signal,
+              };
+              try {
+                return await server.handle(
+                  toRequest(args[0] as SerializedRequestLike),
+                  Object.keys(handleOptions).length > 0 ? handleOptions : undefined,
+                );
+              } finally {
+                operation.cleanup();
+              }
             }
             case "ws.open":
               await server.ws.open(args[0] as string);
@@ -800,14 +951,29 @@ export function createNestedHostBindings(
           const runtimeRecord = record as TestRuntimeResourceRecord;
           const runtime = runtimeRecord.resource;
           switch (method) {
-            case "run":
-              return await runtime.run(
-                args[0] as string,
-                ((args[1] as {
+            case "run": {
+              const rawOptions =
+                (args[1] as ({
                   filename?: string;
                   timeoutMs?: number;
-                } | null) ?? undefined),
-              );
+                } & AbortableNestedOptions) | null) ?? undefined;
+              const operation = createOperationSignal(rawOptions, context);
+              const runOptions = {
+                ...(stripAbortOperation<{
+                  filename?: string;
+                  timeoutMs?: number;
+                }>(rawOptions) ?? {}),
+                signal: operation.signal,
+              };
+              try {
+                return await runtime.run(
+                  args[0] as string,
+                  Object.keys(runOptions).length > 0 ? runOptions : undefined,
+                );
+              } finally {
+                operation.cleanup();
+              }
+            }
             case "dispose":
               await disposeResource(
                 resourceId,
@@ -846,24 +1012,54 @@ export function createNestedHostBindings(
         case "namespacedRuntime": {
           const runtimeRecord = record as NamespacedRuntimeResourceRecord;
           switch (method) {
-            case "eval":
-              await runtimeRecord.resource.eval(
-                args[0] as string,
-                ((args[1] as {
+            case "eval": {
+              const rawOptions =
+                (args[1] as ({
                   filename?: string;
                   executionTimeout?: number;
-                } | null) ?? undefined),
-              );
-              await flushNestedRuntime(runtimeRecord.resource);
+                } & AbortableNestedOptions) | null) ?? undefined;
+              const operation = createOperationSignal(rawOptions, context);
+              const evalOptions = {
+                ...(stripAbortOperation<{
+                  filename?: string;
+                  executionTimeout?: number;
+                }>(rawOptions) ?? {}),
+                signal: operation.signal,
+              };
+              try {
+                await runtimeRecord.resource.eval(
+                  args[0] as string,
+                  Object.keys(evalOptions).length > 0 ? evalOptions : undefined,
+                );
+                await flushNestedRuntime(runtimeRecord.resource);
+              } finally {
+                operation.cleanup();
+              }
               return undefined;
-            case "runTests":
-              return await runtimeRecord.resource.runTests(
-                args[0] as string,
-                ((args[1] as {
+            }
+            case "runTests": {
+              const rawOptions =
+                (args[1] as ({
                   filename?: string;
                   timeoutMs?: number;
-                } | null) ?? undefined),
-              );
+                } & AbortableNestedOptions) | null) ?? undefined;
+              const operation = createOperationSignal(rawOptions, context);
+              const runOptions = {
+                ...(stripAbortOperation<{
+                  filename?: string;
+                  timeoutMs?: number;
+                }>(rawOptions) ?? {}),
+                signal: operation.signal,
+              };
+              try {
+                return await runtimeRecord.resource.runTests(
+                  args[0] as string,
+                  Object.keys(runOptions).length > 0 ? runOptions : undefined,
+                );
+              } finally {
+                operation.cleanup();
+              }
+            }
             case "dispose":
               await disposeResource(
                 resourceId,
@@ -937,6 +1133,17 @@ export function createNestedHostBindings(
       }
       await factory.disposeNamespace(scopedKey, options);
     },
+    async abortResourceCall(operationId, reason) {
+      const controller = operationAbortControllers.get(operationId);
+      if (controller) {
+        if (!controller.signal.aborted) {
+          controller.abort(createAbortError(reason));
+        }
+        return;
+      }
+
+      earlyAbortedOperations.set(operationId, reason);
+    },
     async disposeAll(reason) {
       const resourceIds = [...resources.keys()];
       await Promise.allSettled(
@@ -948,6 +1155,8 @@ export function createNestedHostBindings(
         }),
       );
       hosts.clear();
+      operationAbortControllers.clear();
+      earlyAbortedOperations.clear();
     },
   };
 }

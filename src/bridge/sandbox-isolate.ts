@@ -48,6 +48,11 @@ export interface NestedHostBindings {
     args: unknown[],
     context: HostCallContext,
   ): Promise<unknown>;
+  abortResourceCall(
+    operationId: string,
+    reason: string | undefined,
+    context: HostCallContext,
+  ): Promise<void>;
   disposeAll?(reason?: string): Promise<void>;
 }
 
@@ -120,6 +125,70 @@ function __normalizeEvalOptions(options) {
   return options ?? null;
 }
 
+let __abortOperationIndex = 0;
+
+function __createAbortError(reason) {
+  if (reason instanceof Error) {
+    const error = new Error(reason.message);
+    error.name = "AbortError";
+    error.cause = reason;
+    return error;
+  }
+  const error = new Error(
+    typeof reason === "string" && reason.length > 0
+      ? reason
+      : "The operation was aborted.",
+  );
+  error.name = "AbortError";
+  return error;
+}
+
+function __abortReasonMessage(reason) {
+  if (reason instanceof Error) {
+    return reason.message;
+  }
+  return typeof reason === "string" ? reason : undefined;
+}
+
+function __prepareAbortableOptions(options, fallbackSignal) {
+  const normalized = options ? { ...options } : {};
+  const signal = normalized.signal ?? fallbackSignal;
+  delete normalized.signal;
+
+  if (!signal) {
+    return {
+      options: Object.keys(normalized).length > 0 ? normalized : null,
+      cleanup() {},
+    };
+  }
+
+  if (signal.aborted) {
+    throw __createAbortError(signal.reason);
+  }
+
+  const operationId = "nested-abort:" + (++__abortOperationIndex) + ":" + Math.random().toString(36).slice(2);
+  normalized.__isolateAbortOperationId = operationId;
+
+  const onAbort = () => {
+    void __isolateHost_abortResourceCall(
+      operationId,
+      __abortReasonMessage(signal.reason),
+    ).catch(() => {});
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+
+  return {
+    options: normalized,
+    cleanup() {
+      signal.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
+function __requestSignal(requestLike) {
+  return requestLike instanceof Request ? requestLike.signal : undefined;
+}
+
 async function __waitForCallbackTurn() {
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -146,12 +215,17 @@ class NestedScriptRuntime {
   }
 
   async eval(code, options) {
-    await __isolateHost_callResource(
-      "runtime",
-      this.#resourceId,
-      "eval",
-      [code, __normalizeEvalOptions(options)],
-    );
+    const abortable = __prepareAbortableOptions(__normalizeEvalOptions(options));
+    try {
+      await __isolateHost_callResource(
+        "runtime",
+        this.#resourceId,
+        "eval",
+        [code, abortable.options],
+      );
+    } finally {
+      abortable.cleanup();
+    }
     await __waitForNestedCallbacks();
   }
 
@@ -214,20 +288,30 @@ class NestedAppServer {
 
   async handle(request, options) {
     const serializedRequest = await __serializeRequest(request);
-    const result = await __isolateHost_callResource(
-      "appServer",
-      this.#resourceId,
-      "handle",
-      [
-        serializedRequest,
-        options
-          ? {
-              requestId: options.requestId,
-              metadata: options.metadata,
-            }
-          : null,
-        ],
+    const abortable = __prepareAbortableOptions(
+      options
+        ? {
+            requestId: options.requestId,
+            metadata: options.metadata,
+            signal: options.signal,
+          }
+        : null,
+      __requestSignal(request),
     );
+    let result;
+    try {
+      result = await __isolateHost_callResource(
+        "appServer",
+        this.#resourceId,
+        "handle",
+        [
+          serializedRequest,
+          abortable.options,
+        ],
+      );
+    } finally {
+      abortable.cleanup();
+    }
     await __waitForNestedCallbacks();
     return result;
   }
@@ -309,12 +393,18 @@ class NestedTestRuntime {
   }
 
   async run(code, options) {
-    const result = await __isolateHost_callResource(
-      "testRuntime",
-      this.#resourceId,
-      "run",
-      [code, options ?? null],
-    );
+    const abortable = __prepareAbortableOptions(options ?? null);
+    let result;
+    try {
+      result = await __isolateHost_callResource(
+        "testRuntime",
+        this.#resourceId,
+        "run",
+        [code, abortable.options],
+      );
+    } finally {
+      abortable.cleanup();
+    }
     await __waitForNestedCallbacks();
     return result;
   }
@@ -368,22 +458,33 @@ class NestedNamespacedRuntime {
   }
 
   async eval(code, options) {
-    await __isolateHost_callResource(
-      "namespacedRuntime",
-      this.#resourceId,
-      "eval",
-      [code, __normalizeEvalOptions(options)],
-    );
+    const abortable = __prepareAbortableOptions(__normalizeEvalOptions(options));
+    try {
+      await __isolateHost_callResource(
+        "namespacedRuntime",
+        this.#resourceId,
+        "eval",
+        [code, abortable.options],
+      );
+    } finally {
+      abortable.cleanup();
+    }
     await __waitForNestedCallbacks();
   }
 
   async runTests(code, options) {
-    const result = await __isolateHost_callResource(
-      "namespacedRuntime",
-      this.#resourceId,
-      "runTests",
-      [code, options ?? null],
-    );
+    const abortable = __prepareAbortableOptions(options ?? null);
+    let result;
+    try {
+      result = await __isolateHost_callResource(
+        "namespacedRuntime",
+        this.#resourceId,
+        "runTests",
+        [code, abortable.options],
+      );
+    } finally {
+      abortable.cleanup();
+    }
     await __waitForNestedCallbacks();
     return result;
   }

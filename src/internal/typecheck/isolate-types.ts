@@ -2816,7 +2816,7 @@ declare module "@ricsam/isolate" {
   export interface NestedScriptRuntime {
     eval(
       code: string,
-      options?: string | { filename?: string; executionTimeout?: number },
+      options?: string | { filename?: string; executionTimeout?: number; signal?: AbortSignal },
     ): Promise<void>;
     dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
     diagnostics(): Promise<NestedRuntimeResourceDiagnostics>;
@@ -2829,7 +2829,7 @@ declare module "@ricsam/isolate" {
   export interface NestedAppServer {
     handle(
       request: Request | string,
-      options?: { requestId?: string; metadata?: Record<string, string> },
+      options?: { requestId?: string; signal?: AbortSignal; metadata?: Record<string, string> },
     ): Promise<NestedRequestResult>;
     ws: {
       open(connectionId: string): Promise<void>;
@@ -2845,7 +2845,7 @@ declare module "@ricsam/isolate" {
   export interface NestedTestRuntime {
     run(
       code: string,
-      options?: { filename?: string; timeoutMs?: number },
+      options?: { filename?: string; timeoutMs?: number; signal?: AbortSignal },
     ): Promise<unknown>;
     diagnostics(): Promise<NestedTestRuntimeDiagnostics>;
     dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
@@ -2857,11 +2857,11 @@ declare module "@ricsam/isolate" {
   export interface NestedNamespacedRuntime {
     eval(
       code: string,
-      options?: { filename?: string; executionTimeout?: number },
+      options?: { filename?: string; executionTimeout?: number; signal?: AbortSignal },
     ): Promise<void>;
     runTests(
       code: string,
-      options?: { filename?: string; timeoutMs?: number },
+      options?: { filename?: string; timeoutMs?: number; signal?: AbortSignal },
     ): Promise<unknown>;
     diagnostics(): Promise<NestedTestRuntimeDiagnostics>;
     dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;

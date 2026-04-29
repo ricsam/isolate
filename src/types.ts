@@ -255,10 +255,22 @@ export interface AppServer {
   diagnostics(): Promise<RuntimeResourceDiagnostics>;
 }
 
+export type ScriptRuntimeEvalOptions = {
+  filename?: string;
+  executionTimeout?: number;
+  signal?: AbortSignal;
+};
+
+export type TestRuntimeRunOptions = {
+  filename?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+};
+
 export interface ScriptRuntime {
   eval(
     code: string,
-    options?: string | { filename?: string; executionTimeout?: number },
+    options?: string | ScriptRuntimeEvalOptions,
   ): Promise<void>;
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
   diagnostics(): Promise<RuntimeResourceDiagnostics>;
@@ -272,7 +284,7 @@ export interface ScriptRuntime {
 export interface TestRuntime {
   run(
     code: string,
-    options?: { filename?: string; timeoutMs?: number },
+    options?: TestRuntimeRunOptions,
   ): Promise<RunResults>;
   diagnostics(): Promise<TestRuntimeDiagnostics>;
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
@@ -285,11 +297,11 @@ export interface TestRuntime {
 export interface NamespacedRuntime {
   eval(
     code: string,
-    options?: { filename?: string; executionTimeout?: number },
+    options?: ScriptRuntimeEvalOptions,
   ): Promise<void>;
   runTests(
     code: string,
-    options?: { filename?: string; timeoutMs?: number },
+    options?: TestRuntimeRunOptions,
   ): Promise<RunResults>;
   diagnostics(): Promise<TestRuntimeDiagnostics>;
   dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;

@@ -105,7 +105,7 @@ export async function createAppServerAdapter(
     reload: async (reason) => {
       diagnostics.lifecycleState = "reloading";
       try {
-        bindingsAdapter.reset(reason ? `AppServer.reload(${reason})` : "AppServer.reload()");
+        await bindingsAdapter.reset(reason ? `AppServer.reload(${reason})` : "AppServer.reload()");
         await server.reload(reason);
         runtimeId = server.getRuntime()?.id ?? options.key;
       } finally {
@@ -119,16 +119,16 @@ export async function createAppServerAdapter(
           const hardDisposeReason = disposeOptions?.reason
             ? `AppServer.dispose(hard): ${disposeOptions.reason}`
             : "AppServer.dispose(hard)";
-          bindingsAdapter.reset(hardDisposeReason);
+          await bindingsAdapter.reset(hardDisposeReason);
           await server.reload(hardDisposeReason);
-          bindingsAdapter.abort(hardDisposeReason);
+          await bindingsAdapter.abort(hardDisposeReason);
           await server.close(hardDisposeReason);
           return;
         }
         const disposeReason = disposeOptions?.reason
           ? `AppServer.dispose(): ${disposeOptions.reason}`
           : "AppServer.dispose()";
-        bindingsAdapter.abort(disposeReason);
+        await bindingsAdapter.abort(disposeReason);
         await server.close(disposeReason);
       } finally {
         diagnostics.lifecycleState = "idle";

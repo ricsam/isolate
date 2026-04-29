@@ -68,6 +68,104 @@ describe("createIsolateHost runtime integration", () => {
     ]);
   });
 
+  test("aborts script evals with hard runtime disposal", async () => {
+    const preAborted = await host.createRuntime({
+      bindings: {},
+    });
+
+    try {
+      await assert.rejects(
+        () => preAborted.eval("globalThis.started = true;", {
+          signal: AbortSignal.abort("pre-aborted"),
+        }),
+        (error) =>
+          error instanceof Error &&
+          error.name === "AbortError" &&
+          error.message === "pre-aborted",
+      );
+      await preAborted.eval("globalThis.started = true;");
+    } finally {
+      await preAborted.dispose().catch(() => {});
+    }
+
+    const runtime = await host.createRuntime({
+      bindings: {},
+    });
+    const controller = new AbortController();
+
+    const evalPromise = runtime.eval("while (true) {}", {
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 25);
+
+    await assert.rejects(
+      () => withTimeout(evalPromise, 5_000, "abort infinite eval"),
+      (error) => error instanceof Error && error.name === "AbortError",
+    );
+    await assert.rejects(
+      () => runtime.eval("globalThis.afterAbort = true;"),
+      /disposed/i,
+    );
+    await runtime.dispose().catch(() => {});
+  });
+
+  test("aborts test runtime runs with hard runtime disposal", async () => {
+    const runtime = await host.createTestRuntime({
+      bindings: {},
+    });
+    const controller = new AbortController();
+
+    const runPromise = runtime.run("await new Promise(() => {});", {
+      signal: controller.signal,
+      timeoutMs: 30_000,
+    });
+    setTimeout(() => controller.abort(), 25);
+
+    await assert.rejects(
+      () => withTimeout(runPromise, 5_000, "abort infinite test run"),
+      (error) => error instanceof Error && error.name === "AbortError",
+    );
+    await assert.rejects(
+      () => runtime.diagnostics(),
+      /disposed/i,
+    );
+    await runtime.dispose().catch(() => {});
+  });
+
+  test("aborts namespaced runtime evals without reusing the runtime", async () => {
+    const key = createTestId("namespaced-abort");
+    const runtime = await host.getNamespacedRuntime(key, {
+      bindings: {},
+    });
+    const controller = new AbortController();
+
+    const evalPromise = runtime.eval("await new Promise(() => {});", {
+      signal: controller.signal,
+      executionTimeout: 30_000,
+    });
+    setTimeout(() => controller.abort(), 25);
+
+    await assert.rejects(
+      () => withTimeout(evalPromise, 5_000, "abort namespaced eval"),
+      (error) => error instanceof Error && error.name === "AbortError",
+    );
+    await assert.rejects(
+      () => runtime.eval("globalThis.afterAbort = true;"),
+      /disposed/i,
+    );
+
+    const replacement = await host.getNamespacedRuntime(key, {
+      bindings: {},
+    });
+
+    try {
+      const diagnostics = await replacement.diagnostics();
+      assert.equal(diagnostics.runtime.reused, false);
+    } finally {
+      await replacement.dispose({ hard: true }).catch(() => {});
+    }
+  });
+
   test("waits for top-level await in imported modules that use host-backed crypto promises", async () => {
     const entries: ConsoleEntry[] = [];
     const runtime = await host.createRuntime({
@@ -1481,6 +1579,61 @@ describe("createIsolateHost runtime integration", () => {
     }
 
     assert.deepEqual(collectOutput(entries), ["parent:/child"]);
+  });
+
+  test("propagates AbortSignal from isolate code to nested runtime evals", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+      },
+      nestedHost: {},
+    });
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        const nestedHost = createIsolateHost();
+        const child = await nestedHost.createRuntime();
+        const controller = new AbortController();
+        const evalPromise = child.eval("await new Promise(() => {});", {
+          signal: controller.signal,
+        });
+        setTimeout(() => controller.abort(), 25);
+
+        let abortName = null;
+        let disposedMessage = null;
+        try {
+          await evalPromise;
+        } catch (error) {
+          abortName = error.name;
+        }
+
+        try {
+          await child.eval("globalThis.afterAbort = true;");
+        } catch (error) {
+          disposedMessage = error.message;
+        }
+
+        await child.dispose().catch(() => {});
+        await nestedHost.close();
+        console.log(JSON.stringify({ abortName, disposedMessage }));
+      `, { executionTimeout: 30_000 });
+    } finally {
+      await runtime.dispose().catch(() => {});
+    }
+
+    const payload = JSON.parse(collectOutput(entries)[0] ?? "{}") as {
+      abortName?: string;
+      disposedMessage?: string;
+    };
+    assert.equal(payload.abortName, "AbortError");
+    assert.match(payload.disposedMessage ?? "", /disposed/i);
   });
 
   test("enforces nested runtime quotas and memory limits", async () => {
