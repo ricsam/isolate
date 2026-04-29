@@ -4,6 +4,48 @@ import { defaultModuleLoader } from "../internal/module-loader/index.ts";
 import { normalizeExplicitModuleResult } from "../bridge/legacy-adapters.ts";
 import type { HostCallContext, ModuleResolveResult, ModuleResolver, ModuleResolverFallback, ModuleResolverSourceLoader, ModuleSource } from "../types.ts";
 
+function normalizePathSeparators(input: string): string {
+  return input.replaceAll("\\", "/");
+}
+
+function trimTrailingSlashes(input: string): string {
+  const trimmed = input.replace(/\/+$/, "");
+  return trimmed === "" && input.startsWith("/") ? "/" : trimmed;
+}
+
+function matchSourceTreePath(prefix: string, specifier: string): string | null {
+  const normalizedPrefix = trimTrailingSlashes(normalizePathSeparators(prefix));
+  const normalizedSpecifier = normalizePathSeparators(specifier);
+
+  let rawRelativePath: string | null = null;
+  if (normalizedPrefix === "/") {
+    if (normalizedSpecifier.startsWith("/")) {
+      rawRelativePath = normalizedSpecifier.slice(1);
+    }
+  } else if (normalizedSpecifier === normalizedPrefix) {
+    rawRelativePath = "";
+  } else if (normalizedSpecifier.startsWith(`${normalizedPrefix}/`)) {
+    rawRelativePath = normalizedSpecifier.slice(normalizedPrefix.length + 1);
+  }
+
+  if (rawRelativePath == null) {
+    return null;
+  }
+
+  if (rawRelativePath === "") {
+    return "";
+  }
+
+  const relativePath = path.posix.normalize(rawRelativePath);
+  if (relativePath === "." || relativePath === "") {
+    return "";
+  }
+  if (relativePath === ".." || relativePath.startsWith("../") || path.posix.isAbsolute(relativePath)) {
+    throw new Error(`Access denied: module specifier escapes source tree "${prefix}": ${specifier}`);
+  }
+  return relativePath;
+}
+
 class ModuleResolverBuilder implements ModuleResolver {
   private readonly nodeModuleMappings: Array<{ from: string; to: string }> = [];
   private readonly virtualEntries = new Map<string, { source: ModuleResolveResult | (() => ModuleResolveResult); options?: Partial<ModuleSource> }>();
@@ -74,10 +116,10 @@ class ModuleResolverBuilder implements ModuleResolver {
     }
 
     for (const sourceTree of this.sourceTrees) {
-      if (!specifier.startsWith(sourceTree.prefix)) {
+      const relativePath = matchSourceTreePath(sourceTree.prefix, specifier);
+      if (relativePath == null) {
         continue;
       }
-      const relativePath = specifier.slice(sourceTree.prefix.length);
       const normalized = await normalizeExplicitModuleResult(specifier, sourceTree.loader(relativePath, context), importer.resolveDir);
       if (normalized) {
         return normalized;

@@ -22,6 +22,43 @@ export interface MappingConfig {
   to: string;
 }
 
+function normalizeVirtualSeparators(input: string): string {
+  return input.replaceAll("\\", "/");
+}
+
+function normalizeSafeVirtualRelativePath(relativePath: string): string | null {
+  const withoutLeadingSlashes = normalizeVirtualSeparators(relativePath).replace(/^\/+/, "");
+  if (withoutLeadingSlashes === "") {
+    return "";
+  }
+
+  const normalized = path.posix.normalize(withoutLeadingSlashes);
+  if (normalized === "." || normalized === "") {
+    return "";
+  }
+  if (normalized === ".." || normalized.startsWith("../") || path.posix.isAbsolute(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function isPathInsideOrEqual(root: string, target: string): boolean {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  const relative = path.relative(resolvedRoot, resolvedTarget);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function joinInsideHostBase(hostBase: string, relativePath: string): string | null {
+  const normalizedRelativePath = normalizeSafeVirtualRelativePath(relativePath);
+  if (normalizedRelativePath == null) {
+    return null;
+  }
+
+  const hostPath = normalizedRelativePath === "" ? hostBase : path.join(hostBase, normalizedRelativePath);
+  return isPathInsideOrEqual(hostBase, hostPath) ? hostPath : null;
+}
+
 /**
  * Parse {from, to} pairs into structured PathMapping objects.
  *
@@ -78,16 +115,17 @@ export function parseMappings(configs: MappingConfig[]): PathMapping[] {
  * Returns null if no mapping matches.
  */
 export function virtualToHost(virtualPath: string, mappings: PathMapping[]): string | null {
+  const normalizedVirtualPath = normalizeVirtualSeparators(virtualPath);
   for (const mapping of mappings) {
     if (mapping.isGlob) {
       // Prefix matching: virtual path must start with the virtual mount
-      if (virtualPath === mapping.virtualMount || virtualPath.startsWith(mapping.virtualMount + "/")) {
-        const relativePart = virtualPath.slice(mapping.virtualMount.length);
-        return mapping.hostBase + relativePart;
+      if (normalizedVirtualPath === mapping.virtualMount || normalizedVirtualPath.startsWith(mapping.virtualMount + "/")) {
+        const relativePart = normalizedVirtualPath.slice(mapping.virtualMount.length);
+        return joinInsideHostBase(mapping.hostBase, relativePart);
       }
     } else {
       // Direct file mapping
-      if (virtualPath === mapping.virtualMount) {
+      if (normalizedVirtualPath === mapping.virtualMount) {
         return mapping.hostBase;
       }
     }
@@ -102,12 +140,17 @@ export function virtualToHost(virtualPath: string, mappings: PathMapping[]): str
 export function hostToVirtual(hostPath: string, mappings: PathMapping[]): string | null {
   for (const mapping of mappings) {
     if (mapping.isGlob) {
-      if (hostPath === mapping.hostBase || hostPath.startsWith(mapping.hostBase + "/")) {
-        const relativePart = hostPath.slice(mapping.hostBase.length);
-        return mapping.virtualMount + relativePart;
+      if (!isPathInsideOrEqual(mapping.hostBase, hostPath)) {
+        continue;
       }
+
+      const relativePart = path.relative(path.resolve(mapping.hostBase), path.resolve(hostPath));
+      if (relativePart === "") {
+        return mapping.virtualMount;
+      }
+      return `${mapping.virtualMount}/${relativePart.replaceAll(path.sep, "/")}`;
     } else {
-      if (hostPath === mapping.hostBase) {
+      if (path.resolve(hostPath) === path.resolve(mapping.hostBase)) {
         return mapping.virtualMount;
       }
     }

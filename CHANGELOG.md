@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.22
+
+### Patch Changes
+
+- fix path traversal escape issue
+
 ## 0.1.21
 
 ### Patch Changes

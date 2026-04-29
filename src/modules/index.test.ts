@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
+import { parseMappings, virtualToHost } from "../internal/module-loader/mappings.ts";
 import { createModuleResolver } from "./index.ts";
 import type { HostCallContext } from "../types.ts";
 
@@ -60,6 +61,82 @@ describe("createModuleResolver", () => {
     assert.match(sourceTreeResult.code, /"utils\/math\.ts"/);
     assert.equal(fallbackResult.filename, "fallback-entry.ts");
     assert.match(fallbackResult.code, /"\.\/local\.ts"/);
+  });
+
+  test("normalizes source tree paths without allowing escapes", async () => {
+    const loadedPaths: string[] = [];
+    const resolver = createModuleResolver().sourceTree("@/shared/", (relativePath) => {
+      loadedPaths.push(relativePath);
+      return {
+        code: `export default ${JSON.stringify(relativePath)};`,
+        filename: "tree-entry.ts",
+        resolveDir: "/shared",
+      };
+    });
+
+    const result = await resolver.resolve(
+      "@/shared/dir/../contract.ts",
+      { path: "/backend/main.ts", resolveDir: "/backend" },
+      TEST_CONTEXT,
+    );
+
+    assert.deepEqual(loadedPaths, ["contract.ts"]);
+    assert.match(result.code, /"contract\.ts"/);
+
+    await assert.rejects(
+      resolver.resolve(
+        "@/shared/../../app/server/isolate/security",
+        { path: "/backend/main.ts", resolveDir: "/backend" },
+        TEST_CONTEXT,
+      ),
+      /Access denied/,
+    );
+    assert.deepEqual(loadedPaths, ["contract.ts"]);
+  });
+
+  test("matches source tree prefixes on path boundaries", async () => {
+    const loadedPaths: string[] = [];
+    const resolver = createModuleResolver()
+      .sourceTree("@/shared", (relativePath) => {
+        loadedPaths.push(relativePath);
+        return {
+          code: `export default ${JSON.stringify(relativePath)};`,
+          filename: "tree-entry.ts",
+          resolveDir: "/shared",
+        };
+      })
+      .fallback((specifier) => ({
+        code: `export default ${JSON.stringify(specifier)};`,
+        filename: "fallback-entry.ts",
+        resolveDir: "/fallback",
+      }));
+
+    const result = await resolver.resolve(
+      "@/sharedness/file.ts",
+      { path: "/backend/main.ts", resolveDir: "/backend" },
+      TEST_CONTEXT,
+    );
+
+    assert.deepEqual(loadedPaths, []);
+    assert.equal(result.filename, "fallback-entry.ts");
+    assert.match(result.code, /"@\/sharedness\/file\.ts"/);
+  });
+
+  test("keeps glob virtual-to-host mappings inside their host root", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolate-mapping-traversal-"));
+    const sharedRoot = path.join(tempRoot, "shared");
+    const mappings = parseMappings([{ from: path.join(sharedRoot, "*"), to: "/shared" }]);
+
+    try {
+      assert.equal(
+        virtualToHost("/shared/dir/../contract.ts", mappings),
+        path.join(sharedRoot, "contract.ts"),
+      );
+      assert.equal(virtualToHost("/shared/../../app/server/isolate/security", mappings), null);
+      assert.equal(virtualToHost("/shared\\..\\..\\app\\server\\isolate\\security", mappings), null);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   test("lets virtual modules override mounted node_modules packages", async () => {
