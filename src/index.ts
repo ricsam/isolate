@@ -5,6 +5,7 @@ export { getTypeProfile, typecheck, formatTypecheckErrors } from "./typecheck/in
 
 export type {
   AppServer,
+  BrowserProfileMode,
   BrowserDiagnostics,
   ConsoleEntry,
   CreateAppServerOptions,
@@ -17,6 +18,7 @@ export type {
   HostBrowserBindings,
   HostBrowserFactoryBindings,
   HostBrowserHandlerBindings,
+  HostBrowserProfileOptions,
   HostCallContext,
   IsolateHost,
   ModuleImporter,

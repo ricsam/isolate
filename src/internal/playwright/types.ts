@@ -77,6 +77,45 @@ export interface RequestFailureInfo {
   timestamp: number;
 }
 
+export type PlaywrightBrowserProfileMode = "storageState" | "persistent";
+
+export interface PlaywrightBrowserProfileRequestOptions {
+  id: string;
+  mode?: PlaywrightBrowserProfileMode;
+  reset?: boolean;
+  autosave?: boolean;
+  indexedDB?: boolean;
+}
+
+export type PlaywrightBrowserProfileRequest =
+  | string
+  | PlaywrightBrowserProfileRequestOptions;
+
+export interface PlaywrightProfileStore {
+  readFile?: (filePath: string) => Promise<Buffer> | Buffer;
+  writeFile?: (filePath: string, data: Buffer) => Promise<void> | void;
+  unlink?: (filePath: string) => Promise<void> | void;
+  readdir?: (dirPath: string) => Promise<string[]> | string[];
+  mkdir?: (
+    dirPath: string,
+    options?: { recursive?: boolean },
+  ) => Promise<void> | void;
+  rmdir?: (dirPath: string) => Promise<void> | void;
+  stat?: (
+    filePath: string,
+  ) =>
+    | Promise<{ isFile: boolean; isDirectory: boolean; size: number }>
+    | { isFile: boolean; isDirectory: boolean; size: number };
+}
+
+export interface PlaywrightProfilePersistenceOptions {
+  root?: string;
+  defaultMode?: PlaywrightBrowserProfileMode;
+  autosave?: boolean;
+  indexedDB?: boolean;
+  store?: PlaywrightProfileStore;
+}
+
 /**
  * Callback type for handling playwright operations.
  * Used for remote execution where the page lives on the client.
@@ -108,6 +147,10 @@ export interface DefaultPlaywrightHandlerOptions {
   createPage?: (context: import("playwright").BrowserContext) => Promise<import("playwright").Page> | import("playwright").Page;
   /** Callback to create new contexts when browser.newContext() is called */
   createContext?: (options?: import("playwright").BrowserContextOptions) => Promise<import("playwright").BrowserContext> | import("playwright").BrowserContext;
+  /** Callback to create persistent browser contexts with a host-owned temporary user data directory */
+  createPersistentContext?: (userDataDir: string, options?: import("playwright").BrowserContextOptions) => Promise<import("playwright").BrowserContext> | import("playwright").BrowserContext;
+  /** Virtual-filesystem backed browser profile persistence options */
+  profiles?: boolean | PlaywrightProfilePersistenceOptions;
   /** Callback to evaluate a predicate function inside the isolate (used by waitForURL/Request/Response with function predicates) */
   evaluatePredicate?: (predicateId: number, data: unknown) => boolean;
 }
@@ -191,6 +234,15 @@ export interface PlaywrightSetupOptions {
    * @returns The new BrowserContext object
    */
   createContext?: (options?: import("playwright").BrowserContextOptions) => Promise<import("playwright").BrowserContext> | import("playwright").BrowserContext;
+  /**
+   * Callback invoked when browser.newContext({ profile: { mode: "persistent" } })
+   * is called from within the isolate.
+   */
+  createPersistentContext?: (userDataDir: string, options?: import("playwright").BrowserContextOptions) => Promise<import("playwright").BrowserContext> | import("playwright").BrowserContext;
+  /**
+   * Virtual-filesystem backed browser profile persistence options.
+   */
+  profiles?: boolean | PlaywrightProfilePersistenceOptions;
 }
 
 export interface PlaywrightHandle {

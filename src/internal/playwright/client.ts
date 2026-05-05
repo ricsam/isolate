@@ -17,6 +17,11 @@ export type {
   PlaywrightHandlerMetadata,
   PlaywrightSetupOptions,
   PlaywrightHandle,
+  PlaywrightBrowserProfileMode,
+  PlaywrightBrowserProfileRequest,
+  PlaywrightBrowserProfileRequestOptions,
+  PlaywrightProfilePersistenceOptions,
+  PlaywrightProfileStore,
   PlaywrightCallback,
 } from "./types.ts";
 

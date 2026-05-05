@@ -10,6 +10,7 @@ function verifyPublicPlaywrightTypes(
 ): HostBrowserBindings {
   const helper = createPlaywrightSessionHandler<BrowserContext, Page>({
     createContext: async () => context,
+    createPersistentContext: async (_userDataDir) => context,
     createPage: async (ctx) => {
       const typedContext: BrowserContext = ctx;
       void typedContext;
@@ -21,6 +22,12 @@ function verifyPublicPlaywrightTypes(
       buffer: Buffer.from("hello"),
     }),
     writeFile: async () => {},
+    profiles: {
+      store: {
+        readFile: async () => Buffer.from("{}"),
+        writeFile: async () => {},
+      },
+    },
     timeout: 1_000,
   });
 

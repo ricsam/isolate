@@ -2247,6 +2247,95 @@ describe("createIsolateHost runtime integration", () => {
     });
   });
 
+  test("supports sandbox module resolver helper in nested runtimes", async () => {
+    const entries: ConsoleEntry[] = [];
+    const runtime = await host.createRuntime({
+      bindings: {
+        console: {
+          onEntry(entry) {
+            entries.push(entry);
+          },
+        },
+      },
+    });
+
+    try {
+      await runtime.eval(`
+        import { createIsolateHost, createModuleResolver } from "@ricsam/isolate";
+
+        const nestedHost = createIsolateHost();
+        const seen = [];
+        const resolver = createModuleResolver()
+          .virtual("/main.ts", [
+            'import { label } from "./shared.ts";',
+            'import { value } from "/virtual/config.ts";',
+            'import { fallbackValue } from "fallback:module";',
+            'import { treeValue } from "/lib/tree.ts";',
+            "",
+            "export async function run() {",
+            "  await report({",
+            "    fallbackValue,",
+            "    label,",
+            "    treeValue,",
+            "    value,",
+            "  });",
+            "}",
+          ].join("\\n"))
+          .virtual("/shared.ts", 'export const label = "relative";')
+          .virtual("/virtual/config.ts", {
+            code: 'export const value = "virtual";',
+            filename: "config.ts",
+            resolveDir: "/virtual",
+          })
+          .sourceTree("/lib", (relativePath) => {
+            if (relativePath === "tree.ts") {
+              return "export const treeValue = " + JSON.stringify("tree:" + relativePath) + ";";
+            }
+            return null;
+          })
+          .fallback((specifier) => {
+            if (specifier === "fallback:module") {
+              return {
+                code: 'export const fallbackValue = "fallback";',
+                filename: "fallback.ts",
+                resolveDir: "/",
+              };
+            }
+            return null;
+          });
+
+        const child = await nestedHost.createRuntime({
+          bindings: {
+            modules: resolver,
+            tools: {
+              report(payload) {
+                seen.push(payload);
+              },
+            },
+          },
+        });
+
+        await child.eval('import { run } from "/main.ts"; await run();');
+        await child.dispose();
+        await nestedHost.close();
+        console.log(JSON.stringify(seen[0]));
+      `, { executionTimeout: 60_000 });
+    } finally {
+      await withTimeout(
+        runtime.dispose().catch(() => {}),
+        5_000,
+        "dispose runtime after nested module resolver helper test",
+      ).catch(() => {});
+    }
+
+    assert.deepEqual(JSON.parse(collectOutput(entries)[0] ?? "{}"), {
+      fallbackValue: "fallback",
+      label: "relative",
+      treeValue: "tree:tree.ts",
+      value: "virtual",
+    });
+  });
+
   test("allows nested file bindings to remap a parent subdirectory as child root", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "isolate-nested-fs-"));
     await fs.mkdir(path.join(tempRoot, "inner1"), { recursive: true });

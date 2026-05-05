@@ -2,6 +2,7 @@ import {
   createPlaywrightFactoryHandler,
   getPlaywrightHandlerMetadata,
   type PlaywrightCallback,
+  type PlaywrightProfilePersistenceOptions,
 } from "./internal/playwright/client.ts";
 import type {
   CollectedData,
@@ -22,6 +23,10 @@ export interface CreatePlaywrightSessionHandlerOptions<
   createContext?: (
     options?: TContextOptions,
   ) => Promise<TContext> | TContext;
+  createPersistentContext?: (
+    userDataDir: string,
+    options?: TContextOptions,
+  ) => Promise<TContext> | TContext;
   createPage?: (context: TContext) => Promise<TPage> | TPage;
   readFile?: (
     filePath: string,
@@ -30,6 +35,7 @@ export interface CreatePlaywrightSessionHandlerOptions<
     filePath: string,
     data: Buffer,
   ) => Promise<void> | void;
+  profiles?: boolean | PlaywrightProfilePersistenceOptions;
   evaluatePredicate?: (predicateId: number, data: unknown) => boolean;
 }
 
@@ -55,9 +61,14 @@ export type {
   NetworkRequestInfo,
   NetworkResponseInfo,
   PageErrorInfo,
+  PlaywrightBrowserProfileMode,
+  PlaywrightBrowserProfileRequest,
+  PlaywrightBrowserProfileRequestOptions,
   PlaywrightCollector,
   PlaywrightHandlerMetadata,
   PlaywrightHandle,
+  PlaywrightProfilePersistenceOptions,
+  PlaywrightProfileStore,
   RequestFailureInfo,
 } from "./internal/playwright/client.ts";
 
@@ -90,9 +101,11 @@ export function createPlaywrightSessionHandler<
   const handler = createPlaywrightFactoryHandler({
     timeout: options.timeout,
     createContext: options.createContext,
+    createPersistentContext: options.createPersistentContext,
     createPage: options.createPage,
     readFile: options.readFile,
     writeFile: options.writeFile,
+    profiles: options.profiles,
     evaluatePredicate: options.evaluatePredicate,
   } as Parameters<typeof createPlaywrightFactoryHandler>[0]);
   const metadata = getPlaywrightHandlerMetadata(handler);

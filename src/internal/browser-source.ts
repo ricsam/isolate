@@ -1,11 +1,14 @@
 import type {
+  FileBindings,
   HostBrowserBindings,
 } from "../types.ts";
 
 export const ISOLATE_BROWSER_DESCRIPTOR_PROPERTY = "__isolateBrowserBinding";
 export const ISOLATE_BROWSER_DESCRIPTOR_VALUE = "default";
 
-export type BrowserSource = HostBrowserBindings;
+export type BrowserSource = HostBrowserBindings & {
+  __profileFiles?: FileBindings;
+};
 
 export function isBrowserBindingLike(value: unknown): value is HostBrowserBindings {
   if (!value || typeof value !== "object") {
@@ -16,6 +19,7 @@ export function isBrowserBindingLike(value: unknown): value is HostBrowserBindin
   return (
     typeof candidate.handler === "function" ||
     typeof candidate.createContext === "function" ||
+    typeof candidate.createPersistentContext === "function" ||
     typeof candidate.createPage === "function"
   );
 }
@@ -31,6 +35,7 @@ export function isDefaultBrowserDescriptor(value: unknown): boolean {
 
 export function createBrowserSourceFromBindings(
   browser: HostBrowserBindings | undefined,
+  profileFiles?: FileBindings,
 ): BrowserSource | undefined {
   if (!browser) {
     return undefined;
@@ -46,11 +51,14 @@ export function createBrowserSourceFromBindings(
 
   return {
     createContext: browser.createContext,
+    createPersistentContext: browser.createPersistentContext,
     createPage: browser.createPage,
     captureConsole: browser.captureConsole,
     onEvent: browser.onEvent,
     readFile: browser.readFile,
     writeFile: browser.writeFile,
+    profiles: browser.profiles,
+    __profileFiles: browser.profiles ? profileFiles : undefined,
   };
 }
 
@@ -61,7 +69,10 @@ export function createBrowserSourceFromUnknown(
     return undefined;
   }
 
-  return createBrowserSourceFromBindings(browser);
+  return createBrowserSourceFromBindings(
+    browser,
+    (browser as BrowserSource).__profileFiles,
+  );
 }
 
 export function requireBrowserSource(

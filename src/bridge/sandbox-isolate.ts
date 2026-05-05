@@ -97,6 +97,233 @@ function __normalizeNamespacedRuntimeOptions(key, options) {
   };
 }
 
+function __moduleNormalizePathSeparators(input) {
+  return String(input ?? "").split("\\\\").join("/");
+}
+
+function __moduleTrimTrailingSlashes(input) {
+  const trimmed = String(input).replace(/\\/+$/g, "");
+  return trimmed === "" && String(input).startsWith("/") ? "/" : trimmed;
+}
+
+function __moduleNormalizePath(input) {
+  const normalized = __moduleNormalizePathSeparators(input);
+  const absolute = normalized.startsWith("/");
+  const parts = [];
+
+  for (const part of normalized.split("/")) {
+    if (!part || part === ".") {
+      continue;
+    }
+
+    if (part === "..") {
+      if (parts.length > 0 && parts[parts.length - 1] !== "..") {
+        parts.pop();
+      } else if (!absolute) {
+        parts.push(part);
+      }
+      continue;
+    }
+
+    parts.push(part);
+  }
+
+  const joined = parts.join("/");
+  if (absolute) {
+    return joined ? "/" + joined : "/";
+  }
+  return joined || ".";
+}
+
+function __moduleBasename(input) {
+  const normalized = __moduleTrimTrailingSlashes(__moduleNormalizePathSeparators(input));
+  if (!normalized || normalized === "/") {
+    return "";
+  }
+  const index = normalized.lastIndexOf("/");
+  return index >= 0 ? normalized.slice(index + 1) : normalized;
+}
+
+function __moduleDirname(input) {
+  const normalized = __moduleTrimTrailingSlashes(__moduleNormalizePathSeparators(input));
+  if (!normalized || normalized === "/") {
+    return "/";
+  }
+  const index = normalized.lastIndexOf("/");
+  if (index < 0) {
+    return ".";
+  }
+  if (index === 0) {
+    return "/";
+  }
+  return normalized.slice(0, index);
+}
+
+function __moduleResolveSpecifier(specifier, importer) {
+  const normalizedSpecifier = __moduleNormalizePathSeparators(specifier);
+  if (!normalizedSpecifier.startsWith(".")) {
+    return normalizedSpecifier;
+  }
+  const base = importer?.resolveDir ?? "/";
+  return __moduleNormalizePath(
+    __moduleTrimTrailingSlashes(base) + "/" + normalizedSpecifier,
+  );
+}
+
+function __moduleMatchSourceTreePath(prefix, specifier) {
+  const normalizedPrefix = __moduleTrimTrailingSlashes(
+    __moduleNormalizePathSeparators(prefix),
+  );
+  const normalizedSpecifier = __moduleNormalizePathSeparators(specifier);
+
+  let rawRelativePath = null;
+  if (normalizedPrefix === "/") {
+    if (normalizedSpecifier.startsWith("/")) {
+      rawRelativePath = normalizedSpecifier.slice(1);
+    }
+  } else if (normalizedSpecifier === normalizedPrefix) {
+    rawRelativePath = "";
+  } else if (normalizedSpecifier.startsWith(normalizedPrefix + "/")) {
+    rawRelativePath = normalizedSpecifier.slice(normalizedPrefix.length + 1);
+  }
+
+  if (rawRelativePath == null) {
+    return null;
+  }
+
+  if (rawRelativePath === "") {
+    return "";
+  }
+
+  const relativePath = __moduleNormalizePath(rawRelativePath);
+  if (relativePath === "." || relativePath === "") {
+    return "";
+  }
+  if (
+    relativePath === ".." ||
+    relativePath.startsWith("../") ||
+    relativePath.startsWith("/")
+  ) {
+    throw new Error(
+      'Access denied: module specifier escapes source tree "' +
+        prefix +
+        '": ' +
+        specifier,
+    );
+  }
+  return relativePath;
+}
+
+async function __normalizeModuleResolveResult(specifier, result, fallbackResolveDir) {
+  const resolved = await result;
+  if (resolved == null) {
+    return null;
+  }
+
+  if (typeof resolved === "string") {
+    return {
+      code: resolved,
+      filename: __moduleBasename(specifier) || "__virtual_module__.js",
+      resolveDir: String(specifier).startsWith("/")
+        ? __moduleDirname(specifier)
+        : fallbackResolveDir ?? "/",
+    };
+  }
+
+  return {
+    static: resolved.static,
+    filename: resolved.filename,
+    resolveDir: resolved.resolveDir,
+    code: resolved.code,
+  };
+}
+
+async function __normalizeVirtualModuleResult(specifier, source, options, fallbackResolveDir) {
+  const raw = typeof source === "function" ? await source() : await source;
+  const normalized = await __normalizeModuleResolveResult(
+    specifier,
+    raw,
+    fallbackResolveDir,
+  );
+  if (!normalized) {
+    return null;
+  }
+  return options ? { ...normalized, ...options } : normalized;
+}
+
+function __createNestedModuleResolverBuilder() {
+  const virtualEntries = new Map();
+  const sourceTrees = [];
+  let fallbackLoader;
+
+  const resolver = {
+    virtual(specifier, source, options) {
+      virtualEntries.set(specifier, { source, options });
+      return resolver;
+    },
+
+    sourceTree(prefix, loader) {
+      sourceTrees.push({ prefix, loader });
+      return resolver;
+    },
+
+    fallback(loader) {
+      fallbackLoader = loader;
+      return resolver;
+    },
+
+    async resolve(specifier, importer) {
+      const resolvedSpecifier = __moduleResolveSpecifier(specifier, importer);
+      const explicit = virtualEntries.get(resolvedSpecifier);
+      if (explicit) {
+        const normalized = await __normalizeVirtualModuleResult(
+          resolvedSpecifier,
+          explicit.source,
+          explicit.options,
+          importer?.resolveDir,
+        );
+        if (!normalized) {
+          throw new Error("Virtual module " + resolvedSpecifier + " returned no source.");
+        }
+        return normalized;
+      }
+
+      for (const sourceTree of sourceTrees) {
+        const relativePath = __moduleMatchSourceTreePath(
+          sourceTree.prefix,
+          resolvedSpecifier,
+        );
+        if (relativePath == null) {
+          continue;
+        }
+        const normalized = await __normalizeModuleResolveResult(
+          resolvedSpecifier,
+          sourceTree.loader(relativePath, importer),
+          importer?.resolveDir,
+        );
+        if (normalized) {
+          return normalized;
+        }
+      }
+
+      if (fallbackLoader) {
+        const normalized = await __normalizeModuleResolveResult(
+          resolvedSpecifier,
+          fallbackLoader(resolvedSpecifier, importer),
+          importer?.resolveDir,
+        );
+        if (normalized) {
+          return normalized;
+        }
+      }
+
+      throw new Error("Unable to resolve module: " + specifier);
+    },
+  };
+
+  return resolver;
+}
+
 async function __serializeRequest(requestLike) {
   const request = requestLike instanceof Request
     ? requestLike
@@ -621,5 +848,9 @@ export function createIsolateHost() {
       await __waitForNestedCallbacks();
     },
   };
+}
+
+export function createModuleResolver() {
+  return __createNestedModuleResolverBuilder();
 }
 `;

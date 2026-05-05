@@ -202,7 +202,10 @@ class HostImpl implements IsolateHost {
   ): Promise<ScriptRuntime> {
     const diagnostics = createRuntimeDiagnostics();
     let runtimeId = options.key ?? "runtime";
-    const browserSource = createBrowserSourceFromBindings(options.bindings.browser);
+    const browserSource = createBrowserSourceFromBindings(
+      options.bindings.browser,
+      options.bindings.files,
+    );
     const bindingsAdapter = createRuntimeBindingsAdapter(
       options.bindings,
       () => runtimeId,
@@ -250,7 +253,10 @@ class HostImpl implements IsolateHost {
       options,
       {
         nestedHost: this.createNestedBindings(
-          createBrowserSourceFromBindings(options.bindings.browser),
+          createBrowserSourceFromBindings(
+            options.bindings.browser,
+            options.bindings.files,
+          ),
           options.bindings,
           options.nestedHost,
           {
@@ -286,7 +292,10 @@ class HostImpl implements IsolateHost {
     const diagnostics = createRuntimeDiagnostics();
     const testEvents = createTestEventSubscriptions();
     let runtimeId = key;
-    const browserSource = createBrowserSourceFromBindings(options.bindings.browser);
+    const browserSource = createBrowserSourceFromBindings(
+      options.bindings.browser,
+      options.bindings.files,
+    );
     const bindingsAdapter = createRuntimeBindingsAdapter(
       options.bindings,
       () => runtimeId,
@@ -354,7 +363,10 @@ class HostImpl implements IsolateHost {
       options,
       {
         nestedHost: this.createNestedBindings(
-          createBrowserSourceFromBindings(options.bindings.browser),
+          createBrowserSourceFromBindings(
+            options.bindings.browser,
+            options.bindings.files,
+          ),
           options.bindings,
           options.nestedHost,
           {

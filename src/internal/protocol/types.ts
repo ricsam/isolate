@@ -193,6 +193,7 @@ export interface PlaywrightOperation {
     | "waitForResponseFinish"
     | "waitForResponsePredicateFinish"
     | "clearCookies"
+    | "storageState"
     // Page-level operations
     | "screenshot"
     | "setViewportSize"

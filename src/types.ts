@@ -78,20 +78,57 @@ interface HostBrowserBindingBase {
   onEvent?: (event: PlaywrightEvent, context: HostCallContext) => void;
 }
 
+export type BrowserProfileMode = "storageState" | "persistent";
+
+export interface HostBrowserProfileOptions {
+  /**
+   * Virtual filesystem root used for isolate-owned browser profile data.
+   *
+   * Defaults to `/.browser-profiles`.
+   */
+  root?: string;
+  /**
+   * Default persistence mode for `browser.newContext({ profile })`.
+   *
+   * Defaults to `"storageState"`.
+   */
+  defaultMode?: BrowserProfileMode;
+  /**
+   * Save profile data when the context is closed.
+   *
+   * Defaults to `true`.
+   */
+  autosave?: boolean;
+  /**
+   * Include IndexedDB when saving storage-state profiles.
+   *
+   * Defaults to `false`.
+   */
+  indexedDB?: boolean;
+}
+
 export interface HostBrowserFactoryBindings extends HostBrowserBindingBase {
   createContext?: (options: unknown, context: HostCallContext) => Promise<any> | any;
+  createPersistentContext?: (
+    userDataDir: string,
+    options: unknown,
+    context: HostCallContext,
+  ) => Promise<any> | any;
   createPage?: (contextHandle: any, context: HostCallContext) => Promise<any> | any;
   readFile?: (path: string, context: HostCallContext) => Promise<Buffer> | Buffer;
   writeFile?: (path: string, data: Buffer, context: HostCallContext) => Promise<void> | void;
+  profiles?: boolean | HostBrowserProfileOptions;
   handler?: never;
 }
 
 export interface HostBrowserHandlerBindings extends HostBrowserBindingBase {
   handler: PlaywrightSessionHandlerCallback;
   createContext?: never;
+  createPersistentContext?: never;
   createPage?: never;
   readFile?: never;
   writeFile?: never;
+  profiles?: never;
 }
 
 export type HostBrowserBindings =

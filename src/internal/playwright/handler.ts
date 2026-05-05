@@ -3,6 +3,9 @@
  * Used by both index.ts (with isolated-vm) and client.ts (without isolated-vm)
  */
 
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { Page, Locator as PlaywrightLocator, BrowserContext, BrowserContextOptions, Response } from "playwright";
 import { invokeBestEffortEventHandler } from "../event-callback.ts";
 import type {
@@ -18,10 +21,14 @@ import {
   type DefaultPlaywrightHandlerMetadata,
   type DefaultPlaywrightHandlerOptions,
   type InstrumentedPlaywrightHandler,
+  type PlaywrightBrowserProfileMode,
+  type PlaywrightBrowserProfileRequest,
   type PlaywrightCallback,
   PLAYWRIGHT_HANDLER_META,
   type PlaywrightCollector,
   type PlaywrightHandlerMetadata,
+  type PlaywrightProfilePersistenceOptions,
+  type PlaywrightProfileStore,
   type PlaywrightSetupOptions,
 } from "./types.ts";
 
@@ -35,6 +42,10 @@ type WriteFileCallback = NonNullable<PlaywrightSetupOptions['writeFile']>;
 export interface FileIOCallbacks {
   readFile?: ReadFileCallback;
   writeFile?: WriteFileCallback;
+}
+
+interface BrowserContextOptionsWithProfile extends BrowserContextOptions {
+  profile?: PlaywrightBrowserProfileRequest;
 }
 
 interface CollectorContextRecord {
@@ -51,6 +62,30 @@ interface SerializedInputFilePayload {
   name: string;
   mimeType: string;
   buffer: string;
+}
+
+interface ResolvedProfilePersistenceOptions {
+  root: string;
+  defaultMode: PlaywrightBrowserProfileMode;
+  autosave: boolean;
+  indexedDB: boolean;
+  store?: PlaywrightProfileStore;
+}
+
+interface PreparedProfileContext {
+  contextOptions: BrowserContextOptions;
+  session?: ContextProfileSession;
+}
+
+interface ContextProfileSession {
+  id: string;
+  lockKey: string;
+  mode: PlaywrightBrowserProfileMode;
+  autosave: boolean;
+  indexedDB: boolean;
+  storageStatePath: string;
+  persistentVirtualPath: string;
+  persistentHostPath?: string;
 }
 
 type NormalizedSetInputFilesArg =
@@ -177,6 +212,17 @@ function createPlaywrightCollector(
     const record = registry.contexts.get(contextId);
     if (!record) {
       return;
+    }
+
+    const profileSession = registry.profileSessions.get(contextId);
+    if (profileSession) {
+      if (!registry.closingProfileContextIds.has(contextId)) {
+        registry.profileSessions.delete(contextId);
+        registry.openProfileIds.delete(profileSession.lockKey);
+        if (profileSession.persistentHostPath) {
+          void fs.rm(profileSession.persistentHostPath, { recursive: true, force: true });
+        }
+      }
     }
 
     for (const pageId of [...record.pageIds]) {
@@ -410,6 +456,430 @@ function normalizeSetInputFilesArg(actionArg: unknown): NormalizedSetInputFilesA
     return { mode: "inline", files: inlineFiles };
   }
   return { mode: "paths", paths };
+}
+
+const DEFAULT_PROFILE_ROOT = "/.browser-profiles";
+const STORAGE_STATE_FILE = "storage-state.json";
+const PERSISTENT_PROFILE_DIR = "user-data";
+
+function normalizeProfilePersistenceOptions(
+  profiles: DefaultPlaywrightHandlerOptions["profiles"],
+): ResolvedProfilePersistenceOptions | undefined {
+  if (!profiles) {
+    return undefined;
+  }
+
+  if (profiles === true) {
+    return {
+      root: DEFAULT_PROFILE_ROOT,
+      defaultMode: "storageState",
+      autosave: true,
+      indexedDB: false,
+    };
+  }
+
+  return {
+    root: profiles.root ?? DEFAULT_PROFILE_ROOT,
+    defaultMode: profiles.defaultMode ?? "storageState",
+    autosave: profiles.autosave ?? true,
+    indexedDB: profiles.indexedDB ?? false,
+    store: profiles.store,
+  };
+}
+
+function normalizeVirtualPath(pathValue: string): string {
+  const normalized = pathValue.replace(/\\/g, "/");
+  const absolute = normalized.startsWith("/");
+  const parts: string[] = [];
+
+  for (const part of normalized.split("/")) {
+    if (!part || part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      if (parts.length > 0) {
+        parts.pop();
+      }
+      continue;
+    }
+    parts.push(part);
+  }
+
+  const joined = parts.join("/");
+  return absolute ? `/${joined}` : joined;
+}
+
+function joinVirtualPath(...parts: string[]): string {
+  const joined = parts
+    .filter((part) => part !== "")
+    .join("/")
+    .replace(/\/+/g, "/");
+  return normalizeVirtualPath(joined.startsWith("/") ? joined : `/${joined}`);
+}
+
+function normalizeProfileId(profileId: string): string {
+  if (typeof profileId !== "string" || profileId.trim() === "") {
+    throw new Error("Browser profile id must be a non-empty string.");
+  }
+  if (profileId.includes("\0") || profileId.includes("\\") || profileId.startsWith("/")) {
+    throw new Error(`Invalid browser profile id: ${profileId}`);
+  }
+  const segments = profileId.split("/");
+  if (
+    segments.some((segment) =>
+      !segment ||
+      segment === "." ||
+      segment === ".." ||
+      !/^[A-Za-z0-9._-]+$/.test(segment)
+    )
+  ) {
+    throw new Error(`Invalid browser profile id: ${profileId}`);
+  }
+  return segments.join("/");
+}
+
+function normalizeProfileRequest(
+  request: PlaywrightBrowserProfileRequest | undefined,
+): {
+  id: string;
+  mode?: PlaywrightBrowserProfileMode;
+  reset?: boolean;
+  autosave?: boolean;
+  indexedDB?: boolean;
+} | undefined {
+  if (request === undefined) {
+    return undefined;
+  }
+  if (typeof request === "string") {
+    return { id: normalizeProfileId(request) };
+  }
+  if (!request || typeof request !== "object") {
+    throw new Error("browser.newContext({ profile }) expects a string or profile options object.");
+  }
+  return {
+    id: normalizeProfileId(request.id),
+    mode: request.mode,
+    reset: request.reset,
+    autosave: request.autosave,
+    indexedDB: request.indexedDB,
+  };
+}
+
+function isNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /not found|enoent|no such file|entry not found|file not found|directory not found/i.test(message);
+}
+
+function bufferFromUnknown(data: unknown): Buffer {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data);
+  }
+  if (ArrayBuffer.isView(data)) {
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  }
+  return Buffer.from(data as never);
+}
+
+async function readOptionalJsonFile(
+  store: PlaywrightProfileStore | undefined,
+  filePath: string,
+): Promise<unknown | undefined> {
+  if (!store?.readFile) {
+    return undefined;
+  }
+  try {
+    const buffer = bufferFromUnknown(await store.readFile(filePath));
+    if (buffer.length === 0) {
+      return undefined;
+    }
+    return JSON.parse(buffer.toString("utf-8"));
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function writeJsonFile(
+  store: PlaywrightProfileStore | undefined,
+  filePath: string,
+  value: unknown,
+): Promise<void> {
+  if (!store?.writeFile) {
+    throw new Error(
+      "storageState({ path }) and browser profiles require a virtual filesystem writeFile callback.",
+    );
+  }
+  if (store.mkdir) {
+    await store.mkdir(path.posix.dirname(filePath), { recursive: true });
+  }
+  await store.writeFile(
+    filePath,
+    Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf-8"),
+  );
+}
+
+function requireProfileStore(
+  profiles: ResolvedProfilePersistenceOptions | undefined,
+): PlaywrightProfileStore {
+  if (!profiles?.store) {
+    throw new Error(
+      "browser.newContext({ profile }) requires browser profile persistence to be configured with a virtual filesystem store.",
+    );
+  }
+  return profiles.store;
+}
+
+function requirePersistentProfileStore(store: PlaywrightProfileStore): void {
+  const missing = [
+    "readFile",
+    "writeFile",
+    "unlink",
+    "readdir",
+    "mkdir",
+    "rmdir",
+    "stat",
+  ].filter((key) => typeof store[key as keyof PlaywrightProfileStore] !== "function");
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Persistent browser profiles require virtual filesystem callbacks: ${missing.join(", ")}.`,
+    );
+  }
+}
+
+async function materializeVirtualDirectory(
+  store: PlaywrightProfileStore,
+  virtualDir: string,
+  hostDir: string,
+): Promise<void> {
+  await fs.mkdir(hostDir, { recursive: true });
+  if (!store.readdir || !store.stat || !store.readFile) {
+    return;
+  }
+
+  let entries: string[];
+  try {
+    entries = await store.readdir(virtualDir);
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return;
+    }
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const virtualPath = joinVirtualPath(virtualDir, entry);
+    const hostPath = path.join(hostDir, entry);
+    const stat = await store.stat(virtualPath);
+    if (stat.isDirectory) {
+      await materializeVirtualDirectory(store, virtualPath, hostPath);
+      continue;
+    }
+    if (stat.isFile) {
+      await fs.mkdir(path.dirname(hostPath), { recursive: true });
+      await fs.writeFile(hostPath, bufferFromUnknown(await store.readFile(virtualPath)));
+    }
+  }
+}
+
+async function removeVirtualDirectoryContents(
+  store: PlaywrightProfileStore,
+  virtualDir: string,
+): Promise<void> {
+  if (!store.readdir || !store.stat || !store.unlink || !store.rmdir) {
+    return;
+  }
+
+  let entries: string[];
+  try {
+    entries = await store.readdir(virtualDir);
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return;
+    }
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const virtualPath = joinVirtualPath(virtualDir, entry);
+    const stat = await store.stat(virtualPath);
+    if (stat.isDirectory) {
+      await removeVirtualDirectoryContents(store, virtualPath);
+      await store.rmdir(virtualPath);
+      continue;
+    }
+    if (stat.isFile) {
+      await store.unlink(virtualPath);
+    }
+  }
+}
+
+async function syncHostDirectoryToVirtualStore(
+  store: PlaywrightProfileStore,
+  hostDir: string,
+  virtualDir: string,
+): Promise<void> {
+  if (!store.writeFile) {
+    throw new Error("Persistent browser profiles require a virtual filesystem writeFile callback.");
+  }
+  if (store.mkdir) {
+    await store.mkdir(virtualDir, { recursive: true });
+  }
+
+  const entries = await fs.readdir(hostDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const hostPath = path.join(hostDir, entry.name);
+    const virtualPath = joinVirtualPath(virtualDir, entry.name);
+    if (entry.isDirectory()) {
+      await syncHostDirectoryToVirtualStore(store, hostPath, virtualPath);
+      continue;
+    }
+    if (entry.isFile()) {
+      await store.writeFile(virtualPath, await fs.readFile(hostPath));
+    }
+  }
+}
+
+async function prepareProfileContext(
+  rawOptions: BrowserContextOptionsWithProfile | undefined,
+  profiles: ResolvedProfilePersistenceOptions | undefined,
+  openProfileIds: Set<string>,
+): Promise<PreparedProfileContext> {
+  const { profile, ...contextOptions } = rawOptions ?? {};
+  const storageState = (contextOptions as { storageState?: unknown }).storageState;
+  const store = profiles?.store;
+
+  if (typeof storageState === "string") {
+    const storedState = await readOptionalJsonFile(store, storageState);
+    if (storedState === undefined) {
+      throw new Error(
+        `browser.newContext({ storageState: ${JSON.stringify(storageState)} }) could not read storage state from the virtual filesystem.`,
+      );
+    }
+    (contextOptions as { storageState?: unknown }).storageState = storedState;
+  }
+
+  const profileRequest = normalizeProfileRequest(profile);
+  if (!profileRequest) {
+    return { contextOptions };
+  }
+
+  const storeForProfile = requireProfileStore(profiles);
+  const mode = profileRequest.mode ?? profiles?.defaultMode ?? "storageState";
+  const lockKey = profileRequest.id;
+  if (openProfileIds.has(lockKey)) {
+    throw new Error(`Browser profile "${profileRequest.id}" is already open.`);
+  }
+  openProfileIds.add(lockKey);
+
+  const basePath = joinVirtualPath(profiles?.root ?? DEFAULT_PROFILE_ROOT, profileRequest.id);
+  const storageStatePath = joinVirtualPath(basePath, STORAGE_STATE_FILE);
+  const persistentVirtualPath = joinVirtualPath(basePath, PERSISTENT_PROFILE_DIR);
+  const session: ContextProfileSession = {
+    id: profileRequest.id,
+    lockKey,
+    mode,
+    autosave: profileRequest.autosave ?? profiles?.autosave ?? true,
+    indexedDB: profileRequest.indexedDB ?? profiles?.indexedDB ?? false,
+    storageStatePath,
+    persistentVirtualPath,
+  };
+
+  try {
+    if (mode === "storageState" && !profileRequest.reset) {
+      const storedState = await readOptionalJsonFile(storeForProfile, storageStatePath);
+      if (storedState !== undefined && (contextOptions as { storageState?: unknown }).storageState === undefined) {
+        (contextOptions as { storageState?: unknown }).storageState = storedState;
+      }
+    } else if (mode === "persistent") {
+      requirePersistentProfileStore(storeForProfile);
+      const hostPath = await fs.mkdtemp(path.join(os.tmpdir(), "isolate-browser-profile-"));
+      session.persistentHostPath = hostPath;
+      if (!profileRequest.reset) {
+        await materializeVirtualDirectory(storeForProfile, persistentVirtualPath, hostPath);
+      }
+    } else if (mode !== "storageState") {
+      throw new Error(`Unsupported browser profile mode: ${mode}`);
+    }
+  } catch (error) {
+    openProfileIds.delete(lockKey);
+    if (session.persistentHostPath) {
+      await fs.rm(session.persistentHostPath, { recursive: true, force: true }).catch(() => {});
+    }
+    throw error;
+  }
+
+  return { contextOptions, session };
+}
+
+async function saveStorageStateProfile(
+  context: BrowserContext,
+  store: PlaywrightProfileStore | undefined,
+  session: ContextProfileSession,
+): Promise<void> {
+  const state = await context.storageState({ indexedDB: session.indexedDB });
+  await writeJsonFile(store, session.storageStatePath, state);
+}
+
+async function writeStorageStatePath(
+  fileIO: FileIOCallbacks,
+  store: PlaywrightProfileStore | undefined,
+  filePath: string,
+  state: unknown,
+): Promise<void> {
+  if (store?.writeFile) {
+    await writeJsonFile(store, filePath, state);
+    return;
+  }
+  if (!fileIO.writeFile) {
+    throw new Error(
+      "storageState({ path }) requires browser profile persistence or a writeFile callback.",
+    );
+  }
+  await fileIO.writeFile(
+    filePath,
+    Buffer.from(`${JSON.stringify(state, null, 2)}\n`, "utf-8"),
+  );
+}
+
+async function savePersistentProfile(
+  store: PlaywrightProfileStore | undefined,
+  session: ContextProfileSession,
+): Promise<void> {
+  if (!session.persistentHostPath) {
+    return;
+  }
+  const requiredStore = store;
+  if (!requiredStore) {
+    throw new Error("Persistent browser profiles require a virtual filesystem store.");
+  }
+  requirePersistentProfileStore(requiredStore);
+  await removeVirtualDirectoryContents(requiredStore, session.persistentVirtualPath);
+  await syncHostDirectoryToVirtualStore(
+    requiredStore,
+    session.persistentHostPath,
+    session.persistentVirtualPath,
+  );
+}
+
+async function cleanupProfileSession(
+  registry: PlaywrightRegistry,
+  contextId: string,
+  session: ContextProfileSession | undefined,
+): Promise<void> {
+  if (!session) {
+    return;
+  }
+  registry.profileSessions.delete(contextId);
+  registry.openProfileIds.delete(session.lockKey);
+  if (session.persistentHostPath) {
+    await fs.rm(session.persistentHostPath, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 // ============================================================================
@@ -1243,6 +1713,9 @@ export interface PlaywrightRegistry {
   contextListenerCleanups: Map<string, () => void>;
   eventSubscribers: Set<(event: PlaywrightEvent) => void>;
   collectedData: CollectedData;
+  openProfileIds: Set<string>;
+  profileSessions: Map<string, ContextProfileSession>;
+  closingProfileContextIds: Set<string>;
 }
 
 /**
@@ -1259,6 +1732,7 @@ export function createPlaywrightHandler(
     readFile: options?.readFile,
     writeFile: options?.writeFile,
   };
+  const profileOptions = normalizeProfilePersistenceOptions(options?.profiles);
 
   // Registry for tracking multiple pages and contexts
   const registry: PlaywrightRegistry = {
@@ -1283,6 +1757,9 @@ export function createPlaywrightHandler(
       networkResponses: [],
       requestFailures: [],
     },
+    openProfileIds: new Set<string>(),
+    profileSessions: new Map<string, ContextProfileSession>(),
+    closingProfileContextIds: new Set<string>(),
   };
   const collector = createPlaywrightCollector(registry);
 
@@ -1310,13 +1787,58 @@ export function createPlaywrightHandler(
         }
 
         case "newContext": {
+          const [rawContextOptions] = op.args as [BrowserContextOptionsWithProfile?];
+          const prepared = await prepareProfileContext(
+            rawContextOptions,
+            profileOptions,
+            registry.openProfileIds,
+          );
+
+          if (prepared.session?.mode === "persistent") {
+            if (!options?.createPersistentContext) {
+              await cleanupProfileSession(registry, "", prepared.session);
+              return {
+                ok: false,
+                error: {
+                  name: "Error",
+                  message:
+                    "createPersistentContext callback not provided. Configure createPersistentContext in browser bindings to enable persistent browser profiles.",
+                },
+              };
+            }
+            try {
+              const persistentContext = await options.createPersistentContext(
+                prepared.session.persistentHostPath!,
+                prepared.contextOptions,
+              );
+              const contextId = collector.registerContext(persistentContext);
+              registry.profileSessions.set(contextId, prepared.session);
+              return { ok: true, value: { contextId } };
+            } catch (error) {
+              await cleanupProfileSession(registry, "", prepared.session);
+              throw error;
+            }
+          }
+
           if (!options?.createContext) {
+            if (prepared.session) {
+              await cleanupProfileSession(registry, "", prepared.session);
+            }
             return { ok: false, error: { name: "Error", message: "createContext callback not provided. Configure createContext in playwright options to enable browser.newContext()." } };
           }
-          const [contextOptions] = op.args as [BrowserContextOptions?];
-          const newContext = await options.createContext(contextOptions);
-          const contextId = collector.registerContext(newContext);
-          return { ok: true, value: { contextId } };
+          try {
+            const newContext = await options.createContext(prepared.contextOptions);
+            const contextId = collector.registerContext(newContext);
+            if (prepared.session) {
+              registry.profileSessions.set(contextId, prepared.session);
+            }
+            return { ok: true, value: { contextId } };
+          } catch (error) {
+            if (prepared.session) {
+              await cleanupProfileSession(registry, "", prepared.session);
+            }
+            throw error;
+          }
         }
 
         case "newPage": {
@@ -1339,9 +1861,85 @@ export function createPlaywrightHandler(
           if (!context) {
             return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
           }
-          await context.context.close();
-          collector.unregisterContext(contextId);
+          const session = registry.profileSessions.get(contextId);
+          try {
+            if (session) {
+              registry.closingProfileContextIds.add(contextId);
+            }
+            if (session?.mode === "storageState" && session.autosave) {
+              await saveStorageStateProfile(context.context, profileOptions?.store, session);
+            }
+            await context.context.close();
+            if (session?.mode === "persistent" && session.autosave) {
+              await savePersistentProfile(profileOptions?.store, session);
+            }
+          } finally {
+            collector.unregisterContext(contextId);
+            registry.closingProfileContextIds.delete(contextId);
+            await cleanupProfileSession(registry, contextId, session);
+          }
           return { ok: true };
+        }
+
+        case "clearCookies": {
+          const contextId = op.contextId ?? "ctx_0";
+          const context = registry.contexts.get(contextId);
+          if (!context) {
+            return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
+          }
+          await context.context.clearCookies();
+          return { ok: true };
+        }
+
+        case "addCookies": {
+          const contextId = op.contextId ?? "ctx_0";
+          const context = registry.contexts.get(contextId);
+          if (!context) {
+            return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
+          }
+          const [cookies] = op.args as [Array<{
+            name: string;
+            value: string;
+            domain?: string;
+            path?: string;
+            expires?: number;
+            httpOnly?: boolean;
+            secure?: boolean;
+            sameSite?: 'Strict' | 'Lax' | 'None';
+          }>];
+          await context.context.addCookies(cookies);
+          return { ok: true };
+        }
+
+        case "cookies": {
+          const contextId = op.contextId ?? "ctx_0";
+          const context = registry.contexts.get(contextId);
+          if (!context) {
+            return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
+          }
+          const [urls] = op.args as [string[]?];
+          return { ok: true, value: await context.context.cookies(urls) };
+        }
+
+        case "storageState": {
+          const contextId = op.contextId ?? "ctx_0";
+          const context = registry.contexts.get(contextId);
+          if (!context) {
+            return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
+          }
+          const [storageStateOptions] = op.args as [{ path?: string; indexedDB?: boolean }?];
+          const state = await context.context.storageState({
+            indexedDB: storageStateOptions?.indexedDB,
+          });
+          if (storageStateOptions?.path) {
+            await writeStorageStatePath(
+              fileIO,
+              profileOptions?.store,
+              storageStateOptions.path,
+              state,
+            );
+          }
+          return { ok: true, value: state };
         }
       }
 
@@ -1351,10 +1949,6 @@ export function createPlaywrightHandler(
       if (!targetPage) {
         return { ok: false, error: { name: "Error", message: `Page ${pageId} not found` } };
       }
-
-      // Resolve context from contextId for context-specific operations
-      const contextId = op.contextId ?? "ctx_0";
-      const targetContext = registry.contexts.get(contextId)?.context;
 
       switch (op.type) {
         case "goto": {
@@ -1766,12 +2360,6 @@ export function createPlaywrightHandler(
             registry.pendingRequests.set(currentListenerId, nextPromise);
           }
         }
-        case "clearCookies": {
-          // Use contextId for cookie operations
-          const ctx = targetContext ?? targetPage.context();
-          await ctx.clearCookies();
-          return { ok: true };
-        }
         case "screenshot": {
           const [screenshotOptions] = op.args as [{
             path?: string;
@@ -1920,29 +2508,6 @@ export function createPlaywrightHandler(
           const [mediaOptions] = op.args as [{ media?: 'screen' | 'print' | null; colorScheme?: 'light' | 'dark' | 'no-preference' | null; reducedMotion?: 'reduce' | 'no-preference' | null; forcedColors?: 'active' | 'none' | null }?];
           await targetPage.emulateMedia(mediaOptions);
           return { ok: true };
-        }
-        case "addCookies": {
-          const [cookies] = op.args as [Array<{
-            name: string;
-            value: string;
-            domain?: string;
-            path?: string;
-            expires?: number;
-            httpOnly?: boolean;
-            secure?: boolean;
-            sameSite?: 'Strict' | 'Lax' | 'None';
-          }>];
-          // Use contextId for cookie operations
-          const ctx = targetContext ?? targetPage.context();
-          await ctx.addCookies(cookies);
-          return { ok: true };
-        }
-        case "cookies": {
-          const [urls] = op.args as [string[]?];
-          // Use contextId for cookie operations
-          const ctx = targetContext ?? targetPage.context();
-          const cookies = await ctx.cookies(urls);
-          return { ok: true, value: cookies };
         }
         case "setExtraHTTPHeaders": {
           const [headers] = op.args as [Record<string, string>];

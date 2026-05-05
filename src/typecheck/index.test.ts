@@ -49,9 +49,16 @@ describe("typecheck helpers", () => {
     const ok = typecheck({
       code: `
         export {};
-        const context = await browser.newContext();
+        const context = await browser.newContext({
+          profile: { id: "auth/session", mode: "storageState", indexedDB: true },
+        });
         const page = await context.newPage();
         await page.goto("/");
+        const state = await context.storageState({ path: "/auth.json", indexedDB: true });
+        const restored = await browser.newContext({ storageState: state });
+        const fromPath = await browser.newContext({ storageState: "/auth.json" });
+        await restored.close();
+        await fromPath.close();
       `,
       capabilities: ["browser"],
     });
@@ -104,11 +111,39 @@ describe("typecheck helpers", () => {
     const result = typecheck({
       code: `
         export {};
-        import { createIsolateHost } from "@ricsam/isolate";
+        import {
+          createIsolateHost,
+          createModuleResolver,
+          type CreateRuntimeOptions,
+          type HostBindings,
+          type IsolateHost,
+          type ModuleResolver,
+          type ModuleSource,
+          type RunResults,
+          type ScriptRuntime,
+        } from "@ricsam/isolate";
 
-        const host = createIsolateHost();
-        const runtime = await host.createRuntime();
+        const resolver: ModuleResolver = createModuleResolver()
+          .virtual("/entry.ts", "export const ok = true;")
+          .sourceTree("/shared", (relativePath): ModuleSource | null => (
+            relativePath === "value.ts"
+              ? {
+                  code: "export const value = 1;",
+                  filename: "value.ts",
+                  resolveDir: "/shared",
+                }
+              : null
+          ))
+          .fallback(() => null);
+        const bindings: HostBindings = { modules: resolver };
+        const options: CreateRuntimeOptions = { bindings };
+        const host: IsolateHost = createIsolateHost();
+        const runtime: ScriptRuntime = await host.createRuntime(options);
         await runtime.eval("globalThis.ok = true;");
+        const testRuntime = await host.createTestRuntime();
+        const results: RunResults = await testRuntime.run("test('ok', () => expect(true).toBe(true));");
+        void results.success;
+        await testRuntime.dispose();
         await runtime.dispose();
       `,
       profile: "backend",

@@ -15,6 +15,7 @@ import type {
   CreateNamespacedRuntimeOptions,
   CreateRuntimeOptions,
   CreateTestRuntimeOptions,
+  FileBindings,
   HostBindings,
   HostCallContext,
   ModuleResolveResult,
@@ -272,6 +273,7 @@ export function createRuntimeBindingsAdapter(
   );
   const browserPlaywright = createBrowserPlaywrightOptions(
     bindings.browser,
+    bindings.files,
     contextFactory.createHostCallContext,
   );
 
@@ -534,8 +536,84 @@ export async function normalizeExplicitModuleResult(
   return normalizeModuleResolveResult(specifier, result, fallbackResolveDir);
 }
 
+function createBrowserProfileStore(
+  files: FileBindings | undefined,
+  createHostCallContext: (
+    resourceId: string,
+    baseSignal?: AbortSignal,
+  ) => HostCallContext,
+) {
+  if (!files) {
+    return undefined;
+  }
+
+  return {
+    readFile: files.readFile
+      ? async (filePath: string) => {
+          const context = createHostCallContext(
+            `browser:profile:readFile:${crypto.randomUUID()}`,
+          );
+          return Buffer.from(await files.readFile!(filePath, context));
+        }
+      : undefined,
+    writeFile: files.writeFile
+      ? async (filePath: string, data: Buffer) => {
+          const context = createHostCallContext(
+            `browser:profile:writeFile:${crypto.randomUUID()}`,
+          );
+          await files.writeFile!(
+            filePath,
+            new Uint8Array(data).buffer,
+            context,
+          );
+        }
+      : undefined,
+    unlink: files.unlink
+      ? async (filePath: string) => {
+          const context = createHostCallContext(
+            `browser:profile:unlink:${crypto.randomUUID()}`,
+          );
+          await files.unlink!(filePath, context);
+        }
+      : undefined,
+    readdir: files.readdir
+      ? async (dirPath: string) => {
+          const context = createHostCallContext(
+            `browser:profile:readdir:${crypto.randomUUID()}`,
+          );
+          return await files.readdir!(dirPath, context);
+        }
+      : undefined,
+    mkdir: files.mkdir
+      ? async (dirPath: string, options?: { recursive?: boolean }) => {
+          const context = createHostCallContext(
+            `browser:profile:mkdir:${crypto.randomUUID()}`,
+          );
+          await files.mkdir!(dirPath, options, context);
+        }
+      : undefined,
+    rmdir: files.rmdir
+      ? async (dirPath: string) => {
+          const context = createHostCallContext(
+            `browser:profile:rmdir:${crypto.randomUUID()}`,
+          );
+          await files.rmdir!(dirPath, context);
+        }
+      : undefined,
+    stat: files.stat
+      ? async (filePath: string) => {
+          const context = createHostCallContext(
+            `browser:profile:stat:${crypto.randomUUID()}`,
+          );
+          return await files.stat!(filePath, context);
+        }
+      : undefined,
+  };
+}
+
 function createBrowserPlaywrightOptions(
   browser: HostBindings["browser"] | undefined,
+  files: HostBindings["files"] | undefined,
   createHostCallContext: (
     resourceId: string,
     baseSignal?: AbortSignal,
@@ -548,9 +626,11 @@ function createBrowserPlaywrightOptions(
   const hasHandler = typeof browser.handler === "function";
   const hasFactoryBindings =
     typeof browser.createContext === "function" ||
+    typeof browser.createPersistentContext === "function" ||
     typeof browser.createPage === "function" ||
     typeof browser.readFile === "function" ||
-    typeof browser.writeFile === "function";
+    typeof browser.writeFile === "function" ||
+    browser.profiles !== undefined;
 
   if (hasHandler && hasFactoryBindings) {
     throw new Error(
@@ -579,6 +659,16 @@ function createBrowserPlaywrightOptions(
     };
   }
 
+  const profileFiles =
+    (browser as HostBindings["browser"] & { __profileFiles?: FileBindings })
+      .__profileFiles ?? files;
+  const profileStore = browser.profiles
+    ? createBrowserProfileStore(profileFiles, createHostCallContext)
+    : undefined;
+  if (browser.profiles && !profileStore) {
+    throw new Error("bindings.browser.profiles requires bindings.files to provide the virtual profile store.");
+  }
+
   return {
     handler: createPlaywrightFactoryHandler({
       createContext: browser.createContext
@@ -587,6 +677,18 @@ function createBrowserPlaywrightOptions(
               `browser:createContext:${crypto.randomUUID()}`,
             );
             return await browser.createContext!(options, context);
+          }
+        : undefined,
+      createPersistentContext: browser.createPersistentContext
+        ? async (userDataDir, options) => {
+            const context = createHostCallContext(
+              `browser:createPersistentContext:${crypto.randomUUID()}`,
+            );
+            return await browser.createPersistentContext!(
+              userDataDir,
+              options,
+              context,
+            );
           }
         : undefined,
       createPage: browser.createPage
@@ -616,6 +718,12 @@ function createBrowserPlaywrightOptions(
               `browser:writeFile:${crypto.randomUUID()}`,
             );
             await browser.writeFile!(filePath, data, context);
+          }
+        : undefined,
+      profiles: browser.profiles
+        ? {
+            ...(browser.profiles === true ? {} : browser.profiles),
+            store: profileStore,
           }
         : undefined,
     }),

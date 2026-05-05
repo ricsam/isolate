@@ -2455,6 +2455,39 @@ interface Cookie {
   sameSite?: "Strict" | "Lax" | "None";
 }
 
+interface StorageState {
+  cookies: Cookie[];
+  origins: Array<{
+    origin: string;
+    localStorage: Array<{ name: string; value: string }>;
+    indexedDB?: unknown[];
+  }>;
+}
+
+type BrowserProfileMode = "storageState" | "persistent";
+
+type BrowserProfile =
+  | string
+  | {
+      id: string;
+      mode?: BrowserProfileMode;
+      reset?: boolean;
+      autosave?: boolean;
+      indexedDB?: boolean;
+    };
+
+interface IsolateBrowserContextOptions {
+  viewport?: { width: number; height: number } | null;
+  userAgent?: string;
+  locale?: string;
+  timezoneId?: string;
+  geolocation?: { latitude: number; longitude: number; accuracy?: number };
+  permissions?: string[];
+  colorScheme?: "light" | "dark" | "no-preference";
+  storageState?: string | StorageState;
+  profile?: BrowserProfile;
+}
+
 /**
  * IsolatePage - represents a browser page in the isolate.
  */
@@ -2555,6 +2588,8 @@ declare class IsolateContext {
   addCookies(cookies: Cookie[]): Promise<void>;
   /** Get cookies */
   cookies(urls?: string | string[]): Promise<Cookie[]>;
+  /** Capture storage state, optionally writing JSON to the virtual filesystem */
+  storageState(options?: { path?: string; indexedDB?: boolean }): Promise<StorageState>;
 }
 
 /**
@@ -2562,15 +2597,7 @@ declare class IsolateContext {
  */
 interface IsolateBrowser {
   /** Create a new browser context (requires createContext callback) */
-  newContext(options?: {
-    viewport?: { width: number; height: number } | null;
-    userAgent?: string;
-    locale?: string;
-    timezoneId?: string;
-    geolocation?: { latitude: number; longitude: number; accuracy?: number };
-    permissions?: string[];
-    colorScheme?: "light" | "dark" | "no-preference";
-  }): Promise<IsolateContext>;
+  newContext(options?: IsolateBrowserContextOptions): Promise<IsolateContext>;
   /** Get tracked browser contexts */
   contexts(): Promise<IsolateContext[]>;
 }
@@ -2681,6 +2708,36 @@ declare module "@ricsam/isolate" {
     | undefined
     | Promise<string | NestedModuleSource | null | undefined>;
 
+  export type NestedModuleResolverSourceLoader = (
+    relativePath: string,
+    importer: NestedModuleImporter,
+  ) => NestedModuleResolveResult;
+
+  export type NestedModuleResolverFallback = (
+    specifier: string,
+    importer: NestedModuleImporter,
+  ) => NestedModuleResolveResult;
+
+  export interface NestedModuleResolverLike {
+    resolve(
+      specifier: string,
+      importer: NestedModuleImporter,
+    ): NestedModuleResolveResult;
+  }
+
+  export interface NestedModuleResolver extends NestedModuleResolverLike {
+    virtual(
+      specifier: string,
+      source: NestedModuleResolveResult | (() => NestedModuleResolveResult),
+      options?: Partial<NestedModuleSource>,
+    ): NestedModuleResolver;
+    sourceTree(
+      prefix: string,
+      loader: NestedModuleResolverSourceLoader,
+    ): NestedModuleResolver;
+    fallback(loader: NestedModuleResolverFallback): NestedModuleResolver;
+  }
+
   export interface NestedFileBindings {
     readFile?: (path: string) => Promise<ArrayBuffer>;
     writeFile?: (path: string, data: ArrayBuffer) => Promise<void>;
@@ -2705,12 +2762,7 @@ declare module "@ricsam/isolate" {
     };
     fetch?: (request: Request) => Response | Promise<Response>;
     files?: NestedFileBindings;
-    modules?: {
-      resolve(
-        specifier: string,
-        importer: NestedModuleImporter,
-      ): NestedModuleResolveResult;
-    };
+    modules?: NestedModuleResolverLike;
     tools?: Record<string, (...args: any[]) => unknown>;
     browser?: unknown;
   }
@@ -2753,7 +2805,7 @@ declare module "@ricsam/isolate" {
   export interface NestedTestDiagnostics {
     enabled: true;
     registeredTests: number;
-    lastRun?: unknown;
+    lastRun?: NestedRunResults;
   }
 
   export interface NestedSuiteInfo {
@@ -2791,13 +2843,25 @@ declare module "@ricsam/isolate" {
     error?: NestedTestError;
   }
 
+  export interface NestedRunResults {
+    passed: number;
+    failed: number;
+    skipped: number;
+    todo: number;
+    total: number;
+    duration: number;
+    success: boolean;
+    suites: NestedSuiteResult[];
+    tests: NestedTestResult[];
+  }
+
   export type NestedTestEvent =
     | { type: "runStart"; testCount: number; suiteCount: number }
     | { type: "suiteStart"; suite: NestedSuiteInfo }
     | { type: "suiteEnd"; suite: NestedSuiteResult }
     | { type: "testStart"; test: NestedTestInfo }
     | { type: "testEnd"; test: NestedTestResult }
-    | { type: "runEnd"; results: unknown };
+    | { type: "runEnd"; results: NestedRunResults };
 
   export interface NestedTestRuntimeDiagnostics extends NestedRuntimeResourceDiagnostics {
     test: NestedTestDiagnostics;
@@ -2816,9 +2880,9 @@ declare module "@ricsam/isolate" {
   export interface NestedScriptRuntime {
     eval(
       code: string,
-      options?: string | { filename?: string; executionTimeout?: number; signal?: AbortSignal },
+      options?: string | NestedScriptRuntimeEvalOptions,
     ): Promise<void>;
-    dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+    dispose(options?: NestedDisposeOptions): Promise<void>;
     diagnostics(): Promise<NestedRuntimeResourceDiagnostics>;
     events: {
       on(event: string, handler: (payload: unknown) => void): () => void;
@@ -2838,17 +2902,17 @@ declare module "@ricsam/isolate" {
       error(connectionId: string, error: Error): Promise<void>;
     };
     reload(reason?: string): Promise<void>;
-    dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+    dispose(options?: NestedDisposeOptions): Promise<void>;
     diagnostics(): Promise<NestedRuntimeResourceDiagnostics>;
   }
 
   export interface NestedTestRuntime {
     run(
       code: string,
-      options?: { filename?: string; timeoutMs?: number; signal?: AbortSignal },
-    ): Promise<unknown>;
+      options?: NestedTestRuntimeRunOptions,
+    ): Promise<NestedRunResults>;
     diagnostics(): Promise<NestedTestRuntimeDiagnostics>;
-    dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+    dispose(options?: NestedDisposeOptions): Promise<void>;
     test: {
       onEvent(handler: (event: NestedTestEvent) => void): () => void;
     };
@@ -2857,14 +2921,14 @@ declare module "@ricsam/isolate" {
   export interface NestedNamespacedRuntime {
     eval(
       code: string,
-      options?: { filename?: string; executionTimeout?: number; signal?: AbortSignal },
+      options?: NestedScriptRuntimeEvalOptions,
     ): Promise<void>;
     runTests(
       code: string,
-      options?: { filename?: string; timeoutMs?: number; signal?: AbortSignal },
-    ): Promise<unknown>;
+      options?: NestedTestRuntimeRunOptions,
+    ): Promise<NestedRunResults>;
     diagnostics(): Promise<NestedTestRuntimeDiagnostics>;
-    dispose(options?: { hard?: boolean; reason?: string }): Promise<void>;
+    dispose(options?: NestedDisposeOptions): Promise<void>;
     test: {
       onEvent(handler: (event: NestedTestEvent) => void): () => void;
     };
@@ -2872,6 +2936,23 @@ declare module "@ricsam/isolate" {
       on(event: string, handler: (payload: unknown) => void): () => void;
       emit(event: string, payload: unknown): Promise<void>;
     };
+  }
+
+  export interface NestedScriptRuntimeEvalOptions {
+    filename?: string;
+    executionTimeout?: number;
+    signal?: AbortSignal;
+  }
+
+  export interface NestedTestRuntimeRunOptions {
+    filename?: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  }
+
+  export interface NestedDisposeOptions {
+    hard?: boolean;
+    reason?: string;
   }
 
   export interface NestedCreateRuntimeOptions {
@@ -2915,7 +2996,43 @@ declare module "@ricsam/isolate" {
     close(): Promise<void>;
   }
 
+  export type ModuleImporter = NestedModuleImporter;
+  export type ModuleSource = NestedModuleSource;
+  export type ModuleResolveResult = NestedModuleResolveResult;
+  export type ModuleResolverSourceLoader = NestedModuleResolverSourceLoader;
+  export type ModuleResolverFallback = NestedModuleResolverFallback;
+  export type ModuleResolver = NestedModuleResolver;
+  export type FileBindings = NestedFileBindings;
+  export type HostBindings = NestedHostBindings;
+  export type RuntimeDiagnostics = NestedRuntimeDiagnostics;
+  export type BrowserDiagnostics = NestedBrowserDiagnostics;
+  export type RuntimeResourceDiagnostics = NestedRuntimeResourceDiagnostics;
+  export type TestDiagnostics = NestedTestDiagnostics;
+  export type SuiteInfo = NestedSuiteInfo;
+  export type SuiteResult = NestedSuiteResult;
+  export type TestInfo = NestedTestInfo;
+  export type TestError = NestedTestError;
+  export type TestResult = NestedTestResult;
+  export type RunResults = NestedRunResults;
+  export type TestEvent = NestedTestEvent;
+  export type TestRuntimeDiagnostics = NestedTestRuntimeDiagnostics;
+  export type RequestResult = NestedRequestResult;
+  export type ScriptRuntime = NestedScriptRuntime;
+  export type AppServer = NestedAppServer;
+  export type TestRuntime = NestedTestRuntime;
+  export type NamespacedRuntime = NestedNamespacedRuntime;
+  export type CreateRuntimeOptions = NestedCreateRuntimeOptions;
+  export type CreateAppServerOptions = NestedCreateAppServerOptions;
+  export type CreateTestRuntimeOptions = NestedCreateTestRuntimeOptions;
+  export type CreateNamespacedRuntimeOptions = NestedCreateNamespacedRuntimeOptions;
+  export type ScriptRuntimeEvalOptions = NestedScriptRuntimeEvalOptions;
+  export type TestRuntimeRunOptions = NestedTestRuntimeRunOptions;
+  export type IsolateHost = NestedIsolateHost;
+  export type ToolHandler = (...args: any[]) => unknown;
+  export type ToolBindings = Record<string, ToolHandler>;
+
   export function createIsolateHost(): NestedIsolateHost;
+  export function createModuleResolver(): ModuleResolver;
 }
 `;
 

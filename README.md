@@ -253,6 +253,8 @@ Nested hosts support:
 - `diagnostics()`
 - `close()`
 
+The synthetic sandbox module also exports `createModuleResolver()` for isolate-authored module bindings. It supports pure in-sandbox `virtual()`, `sourceTree()`, and `fallback()` resolution. Host-backed helpers such as `createFileBindings()`, `virtualFile()`, and `mountNodeModules()` are intentionally not exposed inside sandbox code.
+
 Nested resources are brokered by the parent host. The parent `nestedHost` policy controls whether child runtimes inherit the parent fetch binding, how many nested resources can exist across the whole descendant tree, and the maximum memory and execution timeout each child may request. Namespace keys created from inside a nested host are internally scoped so sandbox code can dispose only namespaces it created through that nested host.
 
 The available policy fields are:
@@ -355,6 +357,86 @@ Inside these runtimes:
 - `page.close()` and `context.close()` are available
 - `browser.close()` is not exposed inside the sandbox
 - `page` and `context` are never injected as implicit globals
+
+### Persist Browser Profiles
+
+Browser profiles are isolate-owned virtual filesystem data. Enable them by providing `bindings.files` and `bindings.browser.profiles`; sandbox code then uses profile IDs instead of host paths.
+
+```ts
+import { chromium } from "playwright";
+import {
+  createFileBindings,
+  createIsolateHost,
+} from "@ricsam/isolate";
+
+const browser = await chromium.launch();
+const host = await createIsolateHost();
+
+const runtime = await host.createRuntime({
+  bindings: {
+    files: createFileBindings({
+      root: "./session-data",
+      allowWrite: true,
+    }),
+    browser: {
+      profiles: true,
+      createContext: async (options) =>
+        await browser.newContext(options ?? undefined),
+      createPage: async (contextInstance) =>
+        await contextInstance.newPage(),
+    },
+  },
+});
+
+await runtime.eval(`
+  const ctx = await browser.newContext({ profile: "auth/main" });
+  const page = await ctx.newPage();
+  await page.goto("https://example.com");
+  await ctx.storageState({ path: "/snapshots/auth.json" });
+  await ctx.close();
+
+  const restored = await browser.newContext({
+    storageState: "/snapshots/auth.json",
+  });
+  await restored.close();
+`);
+
+await runtime.dispose();
+await browser.close();
+await host.close();
+```
+
+For full browser profile directories, provide `createPersistentContext()` and request a persistent profile. The host receives a temporary real `userDataDir`; `@ricsam/isolate` materializes the virtual profile into it before launch and syncs it back on `context.close()`.
+
+```ts
+const runtime = await host.createRuntime({
+  bindings: {
+    files: createFileBindings({
+      root: "./session-data",
+      allowWrite: true,
+    }),
+    browser: {
+      profiles: { defaultMode: "persistent" },
+      createPersistentContext: async (userDataDir, options) =>
+        await chromium.launchPersistentContext(userDataDir, {
+          ...(options ?? {}),
+          headless: true,
+        }),
+      createPage: async (contextInstance) =>
+        await contextInstance.newPage(),
+    },
+  },
+});
+
+await runtime.eval(`
+  const ctx = await browser.newContext({ profile: "chrome/main" });
+  const page = await ctx.newPage();
+  await page.goto("https://example.com");
+  await ctx.close();
+`);
+```
+
+Profile IDs are validated relative paths such as `auth/main`. Concurrent opens for the same profile are rejected. Nested isolates that reuse `bindings: { browser }` inherit the same profile store without receiving a raw host path.
 
 ### Run Tests Inside The Sandbox
 
@@ -575,7 +657,7 @@ setTimeout(() => {
 
 - `@ricsam/isolate` exports `createIsolateHost()`, `createModuleResolver()`, `createFileBindings()`, `getTypeProfile()`, `typecheck()`, `formatTypecheckErrors()`, and public types such as `HostBindings`, `NestedHostPolicy`, and runtime handles
 - `@ricsam/isolate/playwright` exports `createPlaywrightSessionHandler()` and related Playwright handler types
-- inside sandbox code, `@ricsam/isolate` is also available as a synthetic module that exports sandbox-only `createIsolateHost()` for nested runtimes
+- inside sandbox code, `@ricsam/isolate` is also available as a synthetic module that exports sandbox-only `createIsolateHost()`, `createModuleResolver()`, and nested-safe type aliases for runtime handles and bindings
 
 ### `createIsolateHost()`
 
@@ -666,9 +748,11 @@ Capabilities can extend a profile with `fetch`, `files`, `tests`, `browser`, `to
 It accepts host callbacks such as:
 
 - `createContext`
+- `createPersistentContext`
 - `createPage`
 - `readFile`
 - `writeFile`
+- `profiles`
 - `evaluatePredicate`
 
 It returns:

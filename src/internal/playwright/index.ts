@@ -229,6 +229,8 @@ export async function setupPlaywright(
   // Get lifecycle callbacks
   const createPage = "createPage" in options ? options.createPage : undefined;
   const createContext = "createContext" in options ? options.createContext : undefined;
+  const createPersistentContext = "createPersistentContext" in options ? options.createPersistentContext : undefined;
+  const profiles = "profiles" in options ? options.profiles : undefined;
   const readFile = "readFile" in options ? options.readFile : undefined;
   const writeFile = "writeFile" in options ? options.writeFile : undefined;
 
@@ -516,6 +518,8 @@ export async function setupPlaywright(
       writeFile,
       createPage,
       createContext,
+      createPersistentContext,
+      profiles,
       evaluatePredicate: evaluatePredicateFn,
     });
   } else {
@@ -804,6 +808,7 @@ export async function setupPlaywright(
     async clearCookies() { return __pw_invoke("clearCookies", [], { contextId: this.#contextId }); }
     async addCookies(cookies) { return __pw_invoke("addCookies", [cookies], { contextId: this.#contextId }); }
     async cookies(urls) { return __pw_invoke("cookies", [urls], { contextId: this.#contextId }); }
+    async storageState(options) { return __pw_invoke("storageState", [options || {}], { contextId: this.#contextId }); }
     async pages() {
       const pageIds = await __pw_invoke("pages", [], { contextId: this.#contextId });
       return pageIds.map((pageId) => new IsolatePage(pageId, this.#contextId));

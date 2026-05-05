@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { createFileBindings } from "../index.ts";
 import { createPlaywrightSessionHandler } from "../playwright.ts";
 import { createTestHost, createTestId, withTimeout } from "../testing/integration-helpers.ts";
 import type {
@@ -911,5 +914,171 @@ describe("browser-enabled runtimes", () => {
     assert.ok(result.diagnostics!.browserConsoleLogs > 0);
     assert.ok(result.diagnostics!.networkRequests > 0);
     assert.ok(result.diagnostics!.networkResponses > 0);
+  });
+
+  test("persists storage-state profiles in the virtual filesystem across root and nested isolates", async () => {
+    const browserHarness = await launchChromium();
+    const browserServer = await createBrowserServer();
+    const profileRoot = await fs.mkdtemp(path.join(os.tmpdir(), "isolate-browser-profiles-"));
+    const consoleEntries: ConsoleEntry[] = [];
+    let runtime: Awaited<ReturnType<IsolateHost["createRuntime"]>> | undefined;
+
+    try {
+      runtime = await host.createRuntime({
+        bindings: {
+          console: {
+            onEntry(entry) {
+              consoleEntries.push(entry);
+            },
+          },
+          files: createFileBindings({ root: profileRoot, allowWrite: true }),
+          browser: {
+            profiles: true,
+            createContext: async (options) =>
+              await browserHarness.browser.newContext(options as never),
+            createPage: async (context) =>
+              await (context as BrowserContext).newPage(),
+          },
+        },
+      });
+
+      await runtime.eval(`
+        import { createIsolateHost } from "@ricsam/isolate";
+
+        const firstContext = await browser.newContext({ profile: "auth/session" });
+        const firstPage = await firstContext.newPage();
+        await firstPage.goto(${JSON.stringify(browserServer.url)});
+        await firstPage.evaluate(() => {
+          localStorage.setItem("token", "root-token");
+        });
+        await firstContext.storageState({ path: "/snapshots/auth.json" });
+        await firstContext.close();
+
+        const restoredContext = await browser.newContext({ profile: "auth/session" });
+        const restoredPage = await restoredContext.newPage();
+        await restoredPage.goto(${JSON.stringify(browserServer.url)});
+        const restoredToken = await restoredPage.evaluate(() => localStorage.getItem("token"));
+        await restoredContext.close();
+
+        const explicitStateContext = await browser.newContext({
+          storageState: "/snapshots/auth.json",
+        });
+        const explicitStatePage = await explicitStateContext.newPage();
+        await explicitStatePage.goto(${JSON.stringify(browserServer.url)});
+        const explicitStateToken = await explicitStatePage.evaluate(() => localStorage.getItem("token"));
+        await explicitStateContext.close();
+
+        const nestedHost = createIsolateHost();
+        let nestedToken;
+        const child = await nestedHost.createRuntime({
+          bindings: {
+            browser,
+            tools: {
+              reportNestedToken(value) {
+                nestedToken = value;
+              },
+            },
+          },
+        });
+        await child.eval(\`
+          const nestedContext = await browser.newContext({ profile: "auth/session" });
+          const nestedPage = await nestedContext.newPage();
+          await nestedPage.goto(${JSON.stringify(browserServer.url)});
+          await reportNestedToken(await nestedPage.evaluate(() => localStorage.getItem("token")));
+          await nestedContext.close();
+        \`);
+        await child.dispose();
+        await nestedHost.close();
+
+        const lockedContext = await browser.newContext({ profile: "auth/locked" });
+        let lockError = "";
+        try {
+          await browser.newContext({ profile: "auth/locked" });
+        } catch (error) {
+          lockError = error instanceof Error ? error.message : String(error);
+        }
+        await lockedContext.close();
+
+        console.log(JSON.stringify({
+          explicitStateToken,
+          lockError,
+          nestedToken,
+          restoredToken,
+        }));
+      `, { executionTimeout: 30_000 });
+    } finally {
+      await runtime?.dispose({ hard: true, reason: "test cleanup" }).catch(() => {});
+      await closeAllContexts(browserHarness.browser);
+      await browserHarness.browser.close();
+      await browserServer.close();
+      await fs.rm(profileRoot, { recursive: true, force: true });
+    }
+
+    const output = consoleEntries.find((entry) => entry.type === "output");
+    assert.ok(output);
+    assert.deepEqual(JSON.parse(output.stdout), {
+      explicitStateToken: "root-token",
+      lockError: 'Browser profile "auth/locked" is already open.',
+      nestedToken: "root-token",
+      restoredToken: "root-token",
+    });
+  });
+
+  test("syncs persistent browser profiles through the virtual filesystem", async () => {
+    const browserServer = await createBrowserServer();
+    const profileRoot = await fs.mkdtemp(path.join(os.tmpdir(), "isolate-persistent-profiles-"));
+    const consoleEntries: ConsoleEntry[] = [];
+    let runtime: Awaited<ReturnType<IsolateHost["createRuntime"]>> | undefined;
+
+    try {
+      runtime = await host.createRuntime({
+        bindings: {
+          console: {
+            onEntry(entry) {
+              consoleEntries.push(entry);
+            },
+          },
+          files: createFileBindings({ root: profileRoot, allowWrite: true }),
+          browser: {
+            profiles: { defaultMode: "persistent" },
+            createPersistentContext: async (userDataDir, options) =>
+              await chromium.launchPersistentContext(userDataDir, {
+                ...(options as Parameters<typeof chromium.launchPersistentContext>[1]),
+                headless: true,
+              }),
+            createPage: async (context) =>
+              await (context as BrowserContext).newPage(),
+          },
+        },
+      });
+
+      await runtime.eval(`
+        const firstContext = await browser.newContext({ profile: "chrome-auth" });
+        const firstPage = await firstContext.newPage();
+        await firstPage.goto(${JSON.stringify(browserServer.url)});
+        await firstPage.evaluate(() => {
+          localStorage.setItem("persistent-token", "profile-token");
+        });
+        await firstContext.close();
+
+        const restoredContext = await browser.newContext({ profile: "chrome-auth" });
+        const restoredPage = await restoredContext.newPage();
+        await restoredPage.goto(${JSON.stringify(browserServer.url)});
+        const restoredToken = await restoredPage.evaluate(() => localStorage.getItem("persistent-token"));
+        await restoredContext.close();
+
+        console.log(JSON.stringify({ restoredToken }));
+      `, { executionTimeout: 60_000 });
+    } finally {
+      await runtime?.dispose({ hard: true, reason: "test cleanup" }).catch(() => {});
+      await browserServer.close();
+      await fs.rm(profileRoot, { recursive: true, force: true });
+    }
+
+    const output = consoleEntries.find((entry) => entry.type === "output");
+    assert.ok(output);
+    assert.deepEqual(JSON.parse(output.stdout), {
+      restoredToken: "profile-token",
+    });
   });
 });
