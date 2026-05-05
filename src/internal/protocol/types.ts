@@ -227,7 +227,14 @@ export interface PlaywrightOperation {
     | "pages"
     | "newContext"
     | "newPage"
-    | "closeContext";
+    | "closeContext"
+    // CDP operations
+    | "newCDPSession"
+    | "cdpSend"
+    | "cdpDetach"
+    | "cdpSubscribe"
+    | "cdpUnsubscribe"
+    | "cdpPollEvents";
   args: unknown[];
   /** Target page ID (undefined = default page "page_0") */
   pageId?: string;

@@ -354,6 +354,8 @@ Inside these runtimes:
 - `browser.contexts()` is available
 - `context.newPage()` is available
 - `context.pages()` is available
+- `context.newCDPSession(page)` is available for Chromium-backed contexts
+- `page.target().createCDPSession()` is available as a Puppeteer-style CDP shim
 - `page.close()` and `context.close()` are available
 - `browser.close()` is not exposed inside the sandbox
 - `page` and `context` are never injected as implicit globals

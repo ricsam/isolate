@@ -76,6 +76,48 @@ describe("typecheck helpers", () => {
     );
   });
 
+  test("typechecks isolate CDP sessions through Playwright and Puppeteer-style entrypoints", () => {
+    const ok = typecheck({
+      code: `
+        export {};
+        const context = await browser.newContext();
+        const page = await context.newPage();
+
+        const playwrightSession = await page.context().newCDPSession(page);
+        playwrightSession.on("Runtime.consoleAPICalled", (payload) => {
+          void payload.args;
+        });
+        playwrightSession.once("Runtime.executionContextCreated", (payload) => {
+          void payload;
+        });
+        const result = await playwrightSession.send<{ result: { value: number } }>(
+          "Runtime.evaluate",
+          { expression: "1 + 2", returnByValue: true },
+        );
+        const value: number = result.result.value;
+        void value;
+        await playwrightSession.detach();
+
+        const target = page.target();
+        const puppeteerSession = await target.createCDPSession();
+        const targetType: "page" = target.type();
+        const targetUrl: string = await target.url();
+        const targetPage = await target.page();
+        const targetContext = target.browserContext();
+        puppeteerSession.addListener("Runtime.consoleAPICalled", () => {});
+        puppeteerSession.removeListener("Runtime.consoleAPICalled", () => {});
+        puppeteerSession.off("Runtime.consoleAPICalled", () => {});
+        void targetType;
+        void targetUrl;
+        void targetPage;
+        void targetContext;
+      `,
+      capabilities: ["browser"],
+    });
+
+    assert.equal(ok.success, true);
+  });
+
   test("types Playwright screenshots as Promise<void>", () => {
     const ok = typecheck({
       code: `

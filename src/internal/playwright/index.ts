@@ -539,6 +539,243 @@ export async function setupPlaywright(
   // IsolatePage class and browser globals
   context.evalSync(`
 (function() {
+  function reportAsyncListenerError(error) {
+    setTimeout(() => {
+      throw error;
+    }, 0);
+  }
+
+  function isCdpSessionClosedError(error) {
+    const message = error && typeof error === "object" && "message" in error
+      ? String(error.message)
+      : String(error);
+    return /CDP session .* not found|CDP session is detached|Target page, context or browser has been closed|Session closed|detached/i.test(message);
+  }
+
+  class IsolateCDPSession {
+    #cdpSessionId;
+    #listeners = new Map();
+    #pendingSubscriptions = [];
+    #subscriptionErrors = [];
+    #polling = false;
+    #detached = false;
+
+    constructor(cdpSessionId) {
+      this.#cdpSessionId = cdpSessionId;
+    }
+
+    #queueSubscription(promise) {
+      let tracked;
+      tracked = Promise.resolve(promise)
+        .catch((error) => {
+          this.#subscriptionErrors.push(error);
+        })
+        .finally(() => {
+          const index = this.#pendingSubscriptions.indexOf(tracked);
+          if (index >= 0) {
+            this.#pendingSubscriptions.splice(index, 1);
+          }
+        });
+      this.#pendingSubscriptions.push(tracked);
+    }
+
+    async #flushSubscriptions() {
+      while (this.#pendingSubscriptions.length > 0) {
+        await Promise.all([...this.#pendingSubscriptions]);
+      }
+      if (this.#subscriptionErrors.length > 0) {
+        throw this.#subscriptionErrors.shift();
+      }
+    }
+
+    #hasListeners() {
+      for (const listeners of this.#listeners.values()) {
+        if (listeners.length > 0) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    #startPolling() {
+      if (this.#polling || this.#detached || !this.#hasListeners()) {
+        return;
+      }
+      this.#polling = true;
+      void this.#pollLoop();
+    }
+
+    async #pollLoop() {
+      try {
+        while (!this.#detached && this.#hasListeners()) {
+          await this.#flushSubscriptions();
+          if (this.#detached || !this.#hasListeners()) {
+            break;
+          }
+          const events = await __pw_invoke("cdpPollEvents", [this.#cdpSessionId, 1000]);
+          for (const event of events || []) {
+            this.#dispatch(event);
+          }
+        }
+      } catch (error) {
+        if (isCdpSessionClosedError(error)) {
+          this.#detached = true;
+          this.#listeners.clear();
+          return;
+        }
+        if (!this.#detached) {
+          reportAsyncListenerError(error);
+        }
+      } finally {
+        this.#polling = false;
+        if (!this.#detached && this.#hasListeners()) {
+          this.#startPolling();
+        }
+      }
+    }
+
+    #dispatch(event) {
+      const namedListeners = this.#listeners.get(event.method) || [];
+      const genericListeners = this.#listeners.get("event") || [];
+      const deliveries = [
+        ...namedListeners.map((entry) => ({
+          entry,
+          eventName: event.method,
+          payload: event.params,
+        })),
+        ...genericListeners.map((entry) => ({
+          entry,
+          eventName: "event",
+          payload: { method: event.method, params: event.params },
+        })),
+      ];
+
+      for (const delivery of deliveries) {
+        try {
+          delivery.entry.listener(delivery.payload);
+        } catch (error) {
+          reportAsyncListenerError(error);
+        }
+        if (delivery.entry.once) {
+          this.off(delivery.eventName, delivery.entry.listener);
+        }
+      }
+    }
+
+    #addListener(eventName, listener, once) {
+      if (this.#detached) {
+        throw new Error("CDP session is detached");
+      }
+      if (typeof eventName !== "string" || eventName.length === 0) {
+        throw new Error("CDP event name must be a non-empty string");
+      }
+      if (typeof listener !== "function") {
+        throw new Error("CDP event listener must be a function");
+      }
+
+      const listeners = this.#listeners.get(eventName) || [];
+      const hadListeners = listeners.length > 0;
+      listeners.push({ listener, once });
+      this.#listeners.set(eventName, listeners);
+
+      if (!hadListeners && eventName !== "event") {
+        this.#queueSubscription(__pw_invoke("cdpSubscribe", [this.#cdpSessionId, eventName]));
+      }
+      this.#startPolling();
+      return this;
+    }
+
+    on(eventName, listener) {
+      return this.#addListener(eventName, listener, false);
+    }
+
+    addListener(eventName, listener) {
+      return this.on(eventName, listener);
+    }
+
+    once(eventName, listener) {
+      return this.#addListener(eventName, listener, true);
+    }
+
+    off(eventName, listener) {
+      const listeners = this.#listeners.get(eventName);
+      if (!listeners) {
+        return this;
+      }
+      const next = listeners.filter((entry) => entry.listener !== listener);
+      if (next.length > 0) {
+        this.#listeners.set(eventName, next);
+      } else {
+        this.#listeners.delete(eventName);
+        if (eventName !== "event" && !this.#detached) {
+          this.#queueSubscription(__pw_invoke("cdpUnsubscribe", [this.#cdpSessionId, eventName]));
+        }
+      }
+      return this;
+    }
+
+    removeListener(eventName, listener) {
+      return this.off(eventName, listener);
+    }
+
+    async send(method, params) {
+      if (this.#detached) {
+        throw new Error("CDP session is detached");
+      }
+      await this.#flushSubscriptions();
+      const args = arguments.length > 1
+        ? [this.#cdpSessionId, method, params]
+        : [this.#cdpSessionId, method];
+      return __pw_invoke("cdpSend", args);
+    }
+
+    async detach() {
+      if (this.#detached) {
+        throw new Error("CDP session is detached");
+      }
+      await this.#flushSubscriptions();
+      try {
+        await __pw_invoke("cdpDetach", [this.#cdpSessionId]);
+      } finally {
+        this.#detached = true;
+        this.#listeners.clear();
+      }
+    }
+  }
+  globalThis.IsolateCDPSession = IsolateCDPSession;
+
+  class IsolateTarget {
+    #pageId; #contextId;
+    constructor(pageId, contextId) {
+      this.#pageId = pageId;
+      this.#contextId = contextId;
+    }
+
+    async createCDPSession() {
+      const result = await __pw_invoke("newCDPSession", [this.#pageId], {
+        contextId: this.#contextId,
+      });
+      return new IsolateCDPSession(result.cdpSessionId);
+    }
+
+    type() {
+      return "page";
+    }
+
+    async url() {
+      return __pw_invoke("url", [], { pageId: this.#pageId });
+    }
+
+    async page() {
+      return new IsolatePage(this.#pageId, this.#contextId);
+    }
+
+    browserContext() {
+      return new IsolateContext(this.#contextId);
+    }
+  }
+  globalThis.IsolateTarget = IsolateTarget;
+
   // IsolatePage class - represents a page with a specific pageId
   class IsolatePage {
     #pageId; #contextId;
@@ -727,6 +964,9 @@ export async function setupPlaywright(
       const contextId = this.#contextId;
       return new IsolateContext(contextId);
     }
+    target() {
+      return new IsolateTarget(this.#pageId, this.#contextId);
+    }
     async click(selector) { return this.locator(selector).click(); }
     async fill(selector, value) { return this.locator(selector).fill(value); }
     async textContent(selector) { return this.locator(selector).textContent(); }
@@ -809,6 +1049,16 @@ export async function setupPlaywright(
     async addCookies(cookies) { return __pw_invoke("addCookies", [cookies], { contextId: this.#contextId }); }
     async cookies(urls) { return __pw_invoke("cookies", [urls], { contextId: this.#contextId }); }
     async storageState(options) { return __pw_invoke("storageState", [options || {}], { contextId: this.#contextId }); }
+    async newCDPSession(page) {
+      if (!page || page.__isPage !== true) {
+        throw new Error("context.newCDPSession(page) requires an isolate page.");
+      }
+      if (page.__contextId !== this.#contextId) {
+        throw new Error("context.newCDPSession(page) requires a page from the same context.");
+      }
+      const result = await __pw_invoke("newCDPSession", [page.__pageId], { contextId: this.#contextId });
+      return new IsolateCDPSession(result.cdpSessionId);
+    }
     async pages() {
       const pageIds = await __pw_invoke("pages", [], { contextId: this.#contextId });
       return pageIds.map((pageId) => new IsolatePage(pageId, this.#contextId));

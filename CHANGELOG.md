@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.24
+
+### Patch Changes
+
+- add persistent sessions + add cdp api
+
 ## 0.1.23
 
 ### Patch Changes

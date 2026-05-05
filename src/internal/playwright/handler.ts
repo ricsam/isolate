@@ -6,7 +6,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Page, Locator as PlaywrightLocator, BrowserContext, BrowserContextOptions, Response } from "playwright";
+import type { Page, Locator as PlaywrightLocator, BrowserContext, BrowserContextOptions, CDPSession, Response } from "playwright";
 import { invokeBestEffortEventHandler } from "../event-callback.ts";
 import type {
   CollectedData,
@@ -56,6 +56,25 @@ interface CollectorContextRecord {
 interface CollectorPageRecord {
   page: Page;
   contextId: string;
+}
+
+interface CdpQueuedEvent {
+  method: string;
+  params?: unknown;
+}
+
+interface CdpPendingPoll {
+  resolve: (events: CdpQueuedEvent[]) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
+interface CdpSessionRecord {
+  session: CDPSession;
+  pageId: string;
+  contextId: string;
+  eventQueue: CdpQueuedEvent[];
+  subscriptions: Map<string, (params: unknown) => void>;
+  pendingPoll?: CdpPendingPoll;
 }
 
 interface SerializedInputFilePayload {
@@ -201,6 +220,7 @@ function createPlaywrightCollector(
       return;
     }
 
+    cleanupCdpSessionsForPage(registry, pageId, true);
     registry.pageListenerCleanups.get(pageId)?.();
     registry.pageListenerCleanups.delete(pageId);
     registry.pageIdsByObject.delete(record.page);
@@ -228,6 +248,7 @@ function createPlaywrightCollector(
     for (const pageId of [...record.pageIds]) {
       unregisterPage(pageId);
     }
+    cleanupCdpSessionsForContext(registry, contextId, true);
 
     registry.contextListenerCleanups.get(contextId)?.();
     registry.contextListenerCleanups.delete(contextId);
@@ -879,6 +900,87 @@ async function cleanupProfileSession(
   registry.openProfileIds.delete(session.lockKey);
   if (session.persistentHostPath) {
     await fs.rm(session.persistentHostPath, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+function drainCdpEvents(record: CdpSessionRecord): CdpQueuedEvent[] {
+  return record.eventQueue.splice(0);
+}
+
+function resolveCdpPoll(record: CdpSessionRecord): void {
+  if (!record.pendingPoll || record.eventQueue.length === 0) {
+    return;
+  }
+  const pending = record.pendingPoll;
+  record.pendingPoll = undefined;
+  clearTimeout(pending.timeout);
+  pending.resolve(drainCdpEvents(record));
+}
+
+function queueCdpEvent(record: CdpSessionRecord, event: CdpQueuedEvent): void {
+  record.eventQueue.push(event);
+  resolveCdpPoll(record);
+}
+
+function removeCdpSubscription(
+  record: CdpSessionRecord,
+  eventName: string,
+): void {
+  const listener = record.subscriptions.get(eventName);
+  if (!listener) {
+    return;
+  }
+  record.subscriptions.delete(eventName);
+  record.session.off(eventName as never, listener as never);
+}
+
+function cleanupCdpSession(
+  registry: PlaywrightRegistry,
+  sessionId: string,
+  detach: boolean,
+): void {
+  const record = registry.cdpSessions.get(sessionId);
+  if (!record) {
+    return;
+  }
+
+  registry.cdpSessions.delete(sessionId);
+  for (const eventName of [...record.subscriptions.keys()]) {
+    removeCdpSubscription(record, eventName);
+  }
+  if (record.pendingPoll) {
+    const pending = record.pendingPoll;
+    record.pendingPoll = undefined;
+    clearTimeout(pending.timeout);
+    pending.resolve([]);
+  }
+
+  if (detach) {
+    void record.session.detach().catch(() => {});
+  }
+}
+
+function cleanupCdpSessionsForPage(
+  registry: PlaywrightRegistry,
+  pageId: string,
+  detach: boolean,
+): void {
+  for (const [sessionId, record] of [...registry.cdpSessions]) {
+    if (record.pageId === pageId) {
+      cleanupCdpSession(registry, sessionId, detach);
+    }
+  }
+}
+
+function cleanupCdpSessionsForContext(
+  registry: PlaywrightRegistry,
+  contextId: string,
+  detach: boolean,
+): void {
+  for (const [sessionId, record] of [...registry.cdpSessions]) {
+    if (record.contextId === contextId) {
+      cleanupCdpSession(registry, sessionId, detach);
+    }
   }
 }
 
@@ -1705,8 +1807,10 @@ export interface PlaywrightRegistry {
   nextPageId: number;
   nextContextId: number;
   nextRequestId: number;
+  nextCdpSessionId: number;
   pendingResponses: Map<string, Promise<Response>>;
   pendingRequests: Map<string, Promise<import("playwright").Request>>;
+  cdpSessions: Map<string, CdpSessionRecord>;
   nextListenerId: number;
   requestIds: WeakMap<object, string>;
   pageListenerCleanups: Map<string, () => void>;
@@ -1743,8 +1847,10 @@ export function createPlaywrightHandler(
     nextPageId: 1,
     nextContextId: 1,
     nextRequestId: 1,
+    nextCdpSessionId: 1,
     pendingResponses: new Map(),
     pendingRequests: new Map(),
+    cdpSessions: new Map(),
     nextListenerId: 0,
     requestIds: new WeakMap<object, string>(),
     pageListenerCleanups: new Map<string, () => void>(),
@@ -1940,6 +2046,122 @@ export function createPlaywrightHandler(
             );
           }
           return { ok: true, value: state };
+        }
+
+        case "newCDPSession": {
+          const contextId = op.contextId ?? "ctx_0";
+          const context = registry.contexts.get(contextId);
+          if (!context) {
+            return { ok: false, error: { name: "Error", message: `Context ${contextId} not found` } };
+          }
+
+          const [targetPageIdArg] = op.args as [string?];
+          const targetPageId = targetPageIdArg ?? op.pageId ?? "page_0";
+          const pageRecord = registry.pages.get(targetPageId);
+          if (!pageRecord) {
+            return { ok: false, error: { name: "Error", message: `Page ${targetPageId} not found` } };
+          }
+          if (pageRecord.contextId !== contextId) {
+            return {
+              ok: false,
+              error: {
+                name: "Error",
+                message: `Page ${targetPageId} does not belong to context ${contextId}`,
+              },
+            };
+          }
+
+          const session = await context.context.newCDPSession(pageRecord.page);
+          const cdpSessionId = `cdp_${registry.nextCdpSessionId++}`;
+          registry.cdpSessions.set(cdpSessionId, {
+            session,
+            pageId: targetPageId,
+            contextId,
+            eventQueue: [],
+            subscriptions: new Map(),
+          });
+          return { ok: true, value: { cdpSessionId } };
+        }
+
+        case "cdpSend": {
+          const [cdpSessionId, method, params] = op.args as [string, string, unknown?];
+          const record = registry.cdpSessions.get(cdpSessionId);
+          if (!record) {
+            return { ok: false, error: { name: "Error", message: `CDP session ${cdpSessionId} not found` } };
+          }
+          const result = op.args.length > 2
+            ? await record.session.send(method as never, params as never)
+            : await record.session.send(method as never);
+          return { ok: true, value: result };
+        }
+
+        case "cdpDetach": {
+          const [cdpSessionId] = op.args as [string];
+          const record = registry.cdpSessions.get(cdpSessionId);
+          if (!record) {
+            return { ok: false, error: { name: "Error", message: `CDP session ${cdpSessionId} not found` } };
+          }
+          try {
+            await record.session.detach();
+            return { ok: true };
+          } finally {
+            cleanupCdpSession(registry, cdpSessionId, false);
+          }
+        }
+
+        case "cdpSubscribe": {
+          const [cdpSessionId, eventName] = op.args as [string, string];
+          const record = registry.cdpSessions.get(cdpSessionId);
+          if (!record) {
+            return { ok: false, error: { name: "Error", message: `CDP session ${cdpSessionId} not found` } };
+          }
+          if (typeof eventName !== "string" || eventName.length === 0) {
+            return { ok: false, error: { name: "Error", message: "CDP event name must be a non-empty string" } };
+          }
+          if (!record.subscriptions.has(eventName)) {
+            const listener = (params: unknown) => {
+              queueCdpEvent(record, { method: eventName, params });
+            };
+            record.subscriptions.set(eventName, listener);
+            record.session.on(eventName as never, listener as never);
+          }
+          return { ok: true };
+        }
+
+        case "cdpUnsubscribe": {
+          const [cdpSessionId, eventName] = op.args as [string, string];
+          const record = registry.cdpSessions.get(cdpSessionId);
+          if (!record) {
+            return { ok: false, error: { name: "Error", message: `CDP session ${cdpSessionId} not found` } };
+          }
+          removeCdpSubscription(record, eventName);
+          return { ok: true };
+        }
+
+        case "cdpPollEvents": {
+          const [cdpSessionId, rawTimeoutMs] = op.args as [string, number?];
+          const record = registry.cdpSessions.get(cdpSessionId);
+          if (!record) {
+            return { ok: false, error: { name: "Error", message: `CDP session ${cdpSessionId} not found` } };
+          }
+          if (record.eventQueue.length > 0) {
+            return { ok: true, value: drainCdpEvents(record) };
+          }
+          if (record.pendingPoll) {
+            return { ok: false, error: { name: "Error", message: `CDP session ${cdpSessionId} already has an active event poll` } };
+          }
+
+          const timeoutMs = Math.max(0, Math.min(rawTimeoutMs ?? 1000, 5000));
+          const events = await new Promise<CdpQueuedEvent[]>((resolve) => {
+            const timeout = setTimeout(() => {
+              if (record.pendingPoll?.resolve === resolve) {
+                record.pendingPoll = undefined;
+              }
+              resolve([]);
+            }, timeoutMs);
+            record.pendingPoll = { resolve, timeout };
+          });
+          return { ok: true, value: events };
         }
       }
 

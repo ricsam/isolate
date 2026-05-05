@@ -426,6 +426,150 @@ describe("browser-enabled runtimes", () => {
     }
   });
 
+  test("supports page-target CDP sessions inside isolate browser instances", async () => {
+    const browserHarness = await launchChromium();
+    const results: unknown[] = [];
+    let runtime: Awaited<ReturnType<IsolateHost["createRuntime"]>> | undefined;
+
+    try {
+      runtime = await host.createRuntime({
+        bindings: {
+          tools: {
+            recordCdpResult: async (...args: [...unknown[], HostCallContext]) => {
+              results.push(args[0]);
+            },
+          },
+          browser: {
+            async createContext(options) {
+              return await browserHarness.browser.newContext(options as never);
+            },
+            async createPage(context) {
+              return await (context as BrowserContext).newPage();
+            },
+          },
+        },
+      });
+
+      await runtime.eval(`
+        const context = await browser.newContext();
+        const page = await context.newPage();
+
+        try {
+          await page.goto("data:text/html,<title>cdp</title><div>ready</div>");
+
+          const session = await page.context().newCDPSession(page);
+          const cdpEvents = [];
+          session.on("Runtime.consoleAPICalled", (payload) => {
+            cdpEvents.push(payload);
+          });
+
+          await session.send("Runtime.enable");
+          const evalResult = await session.send("Runtime.evaluate", {
+            expression: "1 + 2",
+            returnByValue: true,
+          });
+
+          await page.evaluate(() => console.log("cdp-event", 42));
+          for (let i = 0; i < 50 && cdpEvents.length === 0; i++) {
+            await page.waitForTimeout(50);
+          }
+
+          const target = page.target();
+          const targetSession = await target.createCDPSession();
+          const targetEvalResult = await targetSession.send("Runtime.evaluate", {
+            expression: "document.title",
+            returnByValue: true,
+          });
+          const targetPage = await target.page();
+          const targetContext = target.browserContext();
+          const targetContextPages = await targetContext.pages();
+          const targetUrl = await target.url();
+
+          await targetSession.detach();
+          await session.detach();
+
+          let detachedError = "";
+          try {
+            await session.send("Runtime.evaluate", { expression: "1" });
+          } catch (error) {
+            detachedError = error.message;
+          }
+
+          const consoleEvent = cdpEvents.find((event) =>
+            event.args?.some((arg) => arg.value === "cdp-event")
+          );
+
+          await recordCdpResult({
+            detachedError,
+            eventArgs: consoleEvent?.args?.map((arg) => arg.value) || [],
+            eventCount: cdpEvents.length,
+            evalValue: evalResult.result.value,
+            targetEvalValue: targetEvalResult.result.value,
+            targetPageUrl: await targetPage.url(),
+            targetType: target.type(),
+            targetUrl,
+            targetContextPages: targetContextPages.length,
+          });
+        } finally {
+          await context.close();
+        }
+
+        const cleanupContext = await browser.newContext();
+        const cleanupPage = await cleanupContext.newPage();
+        const cleanupSession = await cleanupContext.newCDPSession(cleanupPage);
+        await cleanupContext.close();
+
+        let cleanupError = "";
+        try {
+          await cleanupSession.send("Runtime.evaluate", { expression: "1" });
+        } catch (error) {
+          cleanupError = error.message;
+        }
+        await recordCdpResult({ cleanupError });
+
+        const listenerCleanupContext = await browser.newContext();
+        const listenerCleanupPage = await listenerCleanupContext.newPage();
+        const listenerCleanupSession = await listenerCleanupContext.newCDPSession(listenerCleanupPage);
+        listenerCleanupSession.on("Runtime.consoleAPICalled", () => {});
+        await listenerCleanupSession.send("Runtime.enable");
+        await listenerCleanupContext.close();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await recordCdpResult({ listenerCleanup: true });
+      `, { executionTimeout: 20_000 });
+
+      assert.equal(results.length, 3);
+      const cdpResult = results[0] as {
+        detachedError: string;
+        eventArgs: unknown[];
+        eventCount: number;
+        evalValue: number;
+        targetContextPages: number;
+        targetEvalValue: string;
+        targetPageUrl: string;
+        targetType: string;
+        targetUrl: string;
+      };
+      assert.equal(cdpResult.evalValue, 3);
+      assert.equal(cdpResult.targetEvalValue, "cdp");
+      assert.equal(cdpResult.targetType, "page");
+      assert.ok(cdpResult.targetUrl.startsWith("data:text/html"));
+      assert.equal(cdpResult.targetPageUrl, cdpResult.targetUrl);
+      assert.equal(cdpResult.targetContextPages, 1);
+      assert.ok(cdpResult.eventCount > 0);
+      assert.deepEqual(cdpResult.eventArgs, ["cdp-event", 42]);
+      assert.match(cdpResult.detachedError, /detached/i);
+
+      const cleanupResult = results[1] as { cleanupError: string };
+      assert.match(cleanupResult.cleanupError, /not found|closed|detached/i);
+
+      assert.deepEqual(results[2], { listenerCleanup: true });
+    } finally {
+      await runtime?.dispose({ hard: true, reason: "test cleanup" });
+      await closeAllContexts(browserHarness.browser);
+      await browserHarness.browser.close();
+    }
+  });
+
   test("starts Playwright waiters without blocking later isolate work", async () => {
     const browserHarness = await launchChromium();
     const browserServer = await createBrowserServer();

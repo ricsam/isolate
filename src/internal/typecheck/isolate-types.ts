@@ -2442,6 +2442,38 @@ interface FrameInfo {
 }
 
 /**
+ * Chrome DevTools Protocol session event payload.
+ */
+interface CDPEventPayload {
+  method: string;
+  params?: unknown;
+}
+
+/**
+ * Chrome DevTools Protocol session.
+ */
+interface CDPSession {
+  send<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
+  detach(): Promise<void>;
+  on(eventName: string, listener: (payload: any) => void): this;
+  addListener(eventName: string, listener: (payload: any) => void): this;
+  once(eventName: string, listener: (payload: any) => void): this;
+  off(eventName: string, listener: (payload: any) => void): this;
+  removeListener(eventName: string, listener: (payload: any) => void): this;
+}
+
+/**
+ * Puppeteer-style target shim for page-level CDP access.
+ */
+interface IsolateTarget {
+  createCDPSession(): Promise<CDPSession>;
+  type(): "page";
+  url(): Promise<string>;
+  page(): Promise<IsolatePage>;
+  browserContext(): IsolateContext;
+}
+
+/**
  * Cookie data.
  */
 interface Cookie {
@@ -2564,6 +2596,8 @@ declare class IsolatePage {
   mainFrame(): Promise<FrameInfo>;
   /** Get the browser context for this page */
   context(): IsolateContext;
+  /** Get the Puppeteer-style target shim for this page */
+  target(): IsolateTarget;
   /** Keyboard API */
   readonly keyboard: Keyboard;
   /** Mouse API */
@@ -2590,6 +2624,8 @@ declare class IsolateContext {
   cookies(urls?: string | string[]): Promise<Cookie[]>;
   /** Capture storage state, optionally writing JSON to the virtual filesystem */
   storageState(options?: { path?: string; indexedDB?: boolean }): Promise<StorageState>;
+  /** Create a Chrome DevTools Protocol session for a page in this context */
+  newCDPSession(page: IsolatePage): Promise<CDPSession>;
 }
 
 /**
