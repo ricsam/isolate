@@ -122,6 +122,7 @@ describe("AppServer integration", () => {
   });
 
   test("forwards host abort signals to request.signal inside the isolate", async () => {
+    const requestReady = createDeferred<void>();
     const server = await host.createAppServer({
       key: createTestId("server-abort"),
       entry: "/server.ts",
@@ -139,6 +140,8 @@ describe("AppServer integration", () => {
                     }));
                   }, { once: true });
 
+                  void markRequestReady();
+
                   setTimeout(() => {
                     resolve(Response.json({
                       source: "timeout",
@@ -150,6 +153,11 @@ describe("AppServer integration", () => {
             });
           `,
         ),
+        tools: {
+          markRequestReady: () => {
+            requestReady.resolve();
+          },
+        },
       },
     });
 
@@ -160,7 +168,7 @@ describe("AppServer integration", () => {
         { signal: controller.signal },
       );
 
-      await delay(25);
+      await withTimeout(requestReady.promise, 5_000, "request abort listener ready");
       controller.abort();
 
       const response = expectResponse(await withTimeout(responsePromise, 10_000, "abort response"));
@@ -173,6 +181,7 @@ describe("AppServer integration", () => {
   });
 
   test("forwards request abort signals through nested app server handles", async () => {
+    const innerRequestReady = createDeferred<void>();
     const server = await host.createAppServer({
       key: createTestId("server-nested-abort"),
       entry: "/outer.ts",
@@ -208,6 +217,8 @@ describe("AppServer integration", () => {
                                 }));
                               }, { once: true });
 
+                              void markInnerRequestReady();
+
                               setTimeout(() => {
                                 resolve(Response.json({
                                   source: "inner-timeout",
@@ -219,6 +230,9 @@ describe("AppServer integration", () => {
                         });
                       \`;
                     },
+                  },
+                  tools: {
+                    markInnerRequestReady,
                   },
                 },
               });
@@ -241,6 +255,11 @@ describe("AppServer integration", () => {
             });
           `,
         ),
+        tools: {
+          markInnerRequestReady: () => {
+            innerRequestReady.resolve();
+          },
+        },
       },
     });
 
@@ -251,7 +270,7 @@ describe("AppServer integration", () => {
         { signal: controller.signal },
       );
 
-      await delay(25);
+      await withTimeout(innerRequestReady.promise, 5_000, "nested request abort listener ready");
       controller.abort();
 
       const response = expectResponse(await withTimeout(responsePromise, 10_000, "nested abort response"));
