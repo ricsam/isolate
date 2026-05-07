@@ -440,8 +440,8 @@ export class IsolateServer {
           await this.reloadRuntime(`request-linker-conflict: ${requestSummary}`, runtime);
         } else if (missingServeHandler && this.runtime?.id === runtime.id) {
           await this.reloadRuntime(`request-missing-serve-handler: ${requestSummary}`, runtime);
-        } else if (this.runtime?.id === runtime.id) {
-          this.runtime = null;
+        } else if (disposedRuntime && this.runtime?.id === runtime.id) {
+          await this.reloadRuntime(`request-disposed-runtime: ${requestSummary}`, runtime);
         }
 
         const retryRuntime = await this.getActiveRuntime();

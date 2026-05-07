@@ -214,6 +214,39 @@ describe("IsolateServer", () => {
     ]);
   });
 
+  test("hard-disposes and replaces an app server runtime after an isolate disposal error", async () => {
+    const disposedRuntime = new FakeRuntime("runtime-1", {
+      responseText: "stale",
+      dispatchError: new Error("Isolated is disposed"),
+    });
+    const replacementRuntime = new FakeRuntime("runtime-2", {
+      responseText: "fresh",
+    });
+    const connection = createConnection([disposedRuntime, replacementRuntime]);
+
+    const server = new IsolateServer({
+      namespaceId: "project/main/published/slug/app",
+      getConnection: async () => connection,
+    });
+
+    await server.start({
+      entry: "/server.ts",
+      runtimeOptions: {},
+    });
+
+    const response = await server.fetch.dispatchRequest(new Request("http://localhost/api/item"));
+
+    assert.equal(await response.text(), "fresh");
+    assert.equal(disposedRuntime.dispatchCalls, 1);
+    assert.equal(replacementRuntime.dispatchCalls, 1);
+    assert.deepEqual(disposedRuntime.disposeCalls, [
+      {
+        hard: true,
+        reason: "IsolateServer.reload(request-disposed-runtime: GET http://localhost/api/item)",
+      },
+    ]);
+  });
+
   test("coalesces concurrent missing serve handler recovery onto one reload", async () => {
     const staleRuntime = new FakeRuntime("runtime-1", {
       responseText: "stale",

@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.25
+
+### Patch Changes
+
+- Hard-dispose app server runtimes before retrying after an underlying isolate disposal error.
+
 ## 0.1.24
 
 ### Patch Changes
