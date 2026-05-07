@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.26
+
+### Patch Changes
+
+- fix missing file error
+
 ## 0.1.25
 
 ### Patch Changes

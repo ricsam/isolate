@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { createModuleResolver } from "../index.ts";
+import { createFileBindings, createModuleResolver } from "../index.ts";
 import { createTestHost, createTestId, expectResponse, withTimeout } from "../testing/integration-helpers.ts";
 import type { IsolateHost } from "../types.ts";
 
@@ -543,6 +546,67 @@ describe("AppServer integration", () => {
       assert.equal(await slowResponse.text(), "slow.txt");
     } finally {
       await server.dispose({ hard: true, reason: "test cleanup" });
+    }
+  });
+
+  test("serves large files from OPFS-backed handles", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "isolate-large-file-"));
+    const dataDir = path.join(root, "data");
+    await fs.mkdir(dataDir, { recursive: true });
+
+    const expected = new Uint8Array(7 * 1024 * 1024);
+    for (let i = 0; i < expected.length; i += 1) {
+      expected[i] = i % 251;
+    }
+    await fs.writeFile(path.join(dataDir, "asset.bin"), expected);
+
+    const server = await host.createAppServer({
+      key: createTestId("server-large-opfs-file"),
+      entry: "/server.ts",
+      bindings: {
+        files: createFileBindings({ root, allowWrite: true }),
+        modules: createModuleResolver().virtual(
+          "/server.ts",
+          `
+            serve({
+              async fetch() {
+                const root = await getDirectory("/data");
+                const fileHandle = await root.getFileHandle("asset.bin");
+                const file = await fileHandle.getFile();
+                return new Response(file.stream(), {
+                  headers: {
+                    "content-length": String(file.size),
+                    "content-type": file.type || "application/octet-stream",
+                  },
+                });
+              },
+            });
+          `,
+        ),
+      },
+    });
+
+    try {
+      const response = expectResponse(await withTimeout(
+        server.handle(new Request("http://localhost/asset.bin")),
+        15_000,
+        "large OPFS file response",
+      ));
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-length"), String(expected.length));
+
+      const actual = new Uint8Array(await withTimeout(
+        response.arrayBuffer(),
+        15_000,
+        "large OPFS file body",
+      ));
+      assert.equal(actual.length, expected.length);
+      assert.equal(actual[0], expected[0]);
+      assert.equal(actual[Math.floor(actual.length / 2)], expected[Math.floor(expected.length / 2)]);
+      assert.equal(actual[actual.length - 1], expected[expected.length - 1]);
+    } finally {
+      await server.dispose({ hard: true, reason: "test cleanup" }).catch(() => {});
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 });

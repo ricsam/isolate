@@ -504,13 +504,13 @@ function setupFileSystemFileHandle(
 
     try {
       const fileData = await state.handler.readFile(state.path);
-      return JSON.stringify({
+      return new ivm.ExternalCopy({
         name: state.name,
-        data: Array.from(fileData.data),
+        data: fileData.data,
         size: fileData.size,
         lastModified: fileData.lastModified,
         type: fileData.type,
-      });
+      }).copyInto();
     } catch (err) {
       if (err instanceof Error) {
         throw new Error(err.message);
@@ -603,14 +603,14 @@ function setupFileSystemFileHandle(
 
     async getFile() {
       try {
-        const metadataJson = await __FileSystemFileHandle_getFile_ref.apply(
+        const metadata = await __FileSystemFileHandle_getFile_ref.apply(
           undefined,
           [this._getInstanceId()],
           { result: { promise: true, copy: true } }
         );
-        const metadata = JSON.parse(metadataJson);
-        // Create File object from metadata and content
-        const content = new Uint8Array(metadata.data);
+        const content = metadata.data instanceof Uint8Array
+          ? metadata.data
+          : new Uint8Array(metadata.data);
         return new File([content], metadata.name, {
           type: metadata.type,
           lastModified: metadata.lastModified
