@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.1.27
+
+### Patch Changes
+
+- 766ec89: Republish the validated AbortSignal APIs for runtime evaluation, tests, and request handling.
+
 ## 0.1.26
 
 ### Patch Changes
