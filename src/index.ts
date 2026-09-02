@@ -28,6 +28,7 @@ export type {
   ModuleResolverFallback,
   ModuleResolverSourceLoader,
   ModuleSource,
+  RemoteModuleResolverOptions,
   PlaywrightEvent,
   NestedHostFetchPolicy,
   NestedHostPolicy,

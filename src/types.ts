@@ -49,8 +49,26 @@ export type ModuleResolverFallback = (
   context: HostCallContext,
 ) => ModuleResolveResult;
 
+export interface RemoteModuleResolverOptions {
+  /** HTTP implementation used to download modules. Defaults to globalThis.fetch. */
+  fetch?: typeof globalThis.fetch;
+  /**
+   * Remote hosts that may serve modules. Defaults to esm.sh and jsr.io.
+   * A predicate can enforce a custom URL policy (for example, private mirrors).
+   */
+  allowedHosts?: readonly string[] | ((url: URL) => boolean);
+  /** Permit plain HTTP. Disabled by default; intended for trusted local mirrors and tests. */
+  allowHttp?: boolean;
+  /** Maximum response body size per module. Defaults to 10 MiB. */
+  maxModuleBytes?: number;
+  /** Maximum modules followed while building one remote dependency graph. Defaults to 256. */
+  maxModules?: number;
+}
+
 export interface ModuleResolver {
   mountNodeModules(virtualMount: string, hostPath: string): ModuleResolver;
+  /** Enable Deno-style jsr:, npm:, and HTTP(S) imports. */
+  remote(options?: RemoteModuleResolverOptions): ModuleResolver;
   virtual(specifier: string, source: ModuleResolveResult | (() => ModuleResolveResult), options?: Partial<ModuleSource>): ModuleResolver;
   virtualFile(specifier: string, filePath: string, options?: Partial<ModuleSource>): ModuleResolver;
   sourceTree(prefix: string, loader: ModuleResolverSourceLoader): ModuleResolver;

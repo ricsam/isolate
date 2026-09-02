@@ -2,7 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { defaultModuleLoader } from "../internal/module-loader/index.ts";
 import { normalizeExplicitModuleResult } from "../bridge/legacy-adapters.ts";
-import type { HostCallContext, ModuleResolveResult, ModuleResolver, ModuleResolverFallback, ModuleResolverSourceLoader, ModuleSource } from "../types.ts";
+import { createRemoteModuleBundler } from "./remote.ts";
+import type {
+  HostCallContext,
+  ModuleResolveResult,
+  ModuleResolver,
+  ModuleResolverFallback,
+  ModuleResolverSourceLoader,
+  ModuleSource,
+  RemoteModuleResolverOptions,
+} from "../types.ts";
 
 function normalizePathSeparators(input: string): string {
   return input.replaceAll("\\", "/");
@@ -53,10 +62,16 @@ class ModuleResolverBuilder implements ModuleResolver {
   private readonly sourceTrees: Array<{ prefix: string; loader: ModuleResolverSourceLoader }> = [];
   private fallbackLoader?: ModuleResolverFallback;
   private nodeModulesLoader?: ReturnType<typeof defaultModuleLoader>;
+  private remoteModuleBundler?: ReturnType<typeof createRemoteModuleBundler>;
 
   mountNodeModules(virtualMount: string, hostPath: string): ModuleResolver {
     this.nodeModuleMappings.push({ from: hostPath, to: virtualMount });
     this.nodeModulesLoader = undefined;
+    return this;
+  }
+
+  remote(options: RemoteModuleResolverOptions = {}): ModuleResolver {
+    this.remoteModuleBundler = createRemoteModuleBundler(options);
     return this;
   }
 
@@ -124,6 +139,10 @@ class ModuleResolverBuilder implements ModuleResolver {
       if (normalized) {
         return normalized;
       }
+    }
+
+    if (this.remoteModuleBundler?.canResolve(specifier)) {
+      return this.remoteModuleBundler.resolve(specifier, context);
     }
 
     if (this.nodeModuleMappings.length > 0) {

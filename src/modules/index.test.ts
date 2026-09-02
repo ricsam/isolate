@@ -414,6 +414,88 @@ describe("createModuleResolver", () => {
     }
   });
 
+  test("bundles Deno-style HTTP modules and transitive imports", async () => {
+    const requests: string[] = [];
+    const sources = new Map([
+      [
+        "https://modules.test/mod.ts",
+        'export { value } from "./value.ts";\nexport { label } from "/label.js";\n',
+      ],
+      ["https://modules.test/value.ts", "export const value: number = 42;\n"],
+      ["https://modules.test/label.js", 'export const label = "remote";\n'],
+    ]);
+    const resolver = createModuleResolver().remote({
+      allowedHosts: ["modules.test"],
+      fetch: (async (input) => {
+        const url = String(input);
+        requests.push(url);
+        const source = sources.get(url);
+        return source === undefined
+          ? new Response("not found", { status: 404, statusText: "Not Found" })
+          : new Response(source, {
+              headers: { "content-type": url.endsWith(".ts") ? "text/typescript" : "application/javascript" },
+            });
+      }) as typeof fetch,
+    });
+
+    const result = await resolver.resolve(
+      "https://modules.test/mod.ts",
+      { path: "/app/main.ts", resolveDir: "/app" },
+      { ...TEST_CONTEXT, signal: new AbortController().signal },
+    );
+
+    assert.equal(result.filename, "remote-module.js");
+    assert.equal(result.resolveDir, "/remote-modules");
+    assert.match(result.code, /42/);
+    assert.match(result.code, /remote/);
+    assert.doesNotMatch(result.code, /\.\/value\.ts/);
+    assert.deepEqual(requests.sort(), [...sources.keys()].sort());
+  });
+
+  test("maps jsr and npm specifiers through esm.sh", async () => {
+    const requests: string[] = [];
+    const resolver = createModuleResolver().remote({
+      fetch: (async (input) => {
+        const url = String(input);
+        requests.push(url);
+        return new Response("export const value = 1;", {
+          headers: { "content-type": "application/javascript" },
+        });
+      }) as typeof fetch,
+    });
+
+    await resolver.resolve(
+      "jsr:@std/uuid@1.0.6",
+      { path: "/app/main.ts", resolveDir: "/app" },
+      { ...TEST_CONTEXT, signal: new AbortController().signal },
+    );
+    await resolver.resolve(
+      "npm:lodash-es@4.17.21",
+      { path: "/app/main.ts", resolveDir: "/app" },
+      { ...TEST_CONTEXT, signal: new AbortController().signal },
+    );
+
+    assert.deepEqual(requests, [
+      "https://esm.sh/jsr/@std/uuid@1.0.6",
+      "https://esm.sh/lodash-es@4.17.21",
+    ]);
+  });
+
+  test("rejects untrusted remote module hosts by default", async () => {
+    const resolver = createModuleResolver().remote({
+      fetch: (async () => new Response("export {};")) as typeof fetch,
+    });
+
+    await assert.rejects(
+      resolver.resolve(
+        "https://example.com/mod.js",
+        { path: "/app/main.ts", resolveDir: "/app" },
+        { ...TEST_CONTEXT, signal: new AbortController().signal },
+      ),
+      /Remote module host is not allowed: example\.com/,
+    );
+  });
+
   test("rethrows node_modules loader errors when fallback returns null", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolate-loader-errors-"));
     const nodeModulesPath = path.join(tempRoot, "node_modules");

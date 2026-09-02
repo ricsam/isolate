@@ -701,7 +701,20 @@ When `signal` aborts an in-flight script or test execution, the runtime is hard-
 - `virtualFile(specifier, filePath, options)` for a host file mapped to a virtual specifier
 - `sourceTree(prefix, loader)` for lazy source loading under a virtual path
 - `mountNodeModules(virtualMount, hostPath)` for package resolution from a real `node_modules`
+- `remote(options)` for Deno-style `jsr:`, `npm:`, and full HTTPS imports (trusted hosts default to `esm.sh` and `jsr.io`)
 - `fallback(loader)` for custom last-resort resolution
+
+Remote modules are fetched on the host, bundled with their transitive imports, and passed into the isolate as JavaScript. Enable them explicitly on a resolver:
+
+```ts
+const modules = createModuleResolver().remote();
+
+// Sandbox code can now use imports such as:
+// import { v4 } from "jsr:@std/uuid@1.0.6";
+// import ky from "https://esm.sh/ky@1.7.5";
+```
+
+Use `remote({ allowedHosts })` to trust additional registries or mirrors. Plain HTTP remains disabled unless `allowHttp: true` is set explicitly.
 
 ### `createFileBindings()`
 
