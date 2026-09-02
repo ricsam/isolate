@@ -1,5 +1,11 @@
 # @ricsam/isolate
 
+## 0.2.0
+
+### Minor Changes
+
+- 2d6322e: Add opt-in Deno-style `jsr:`, `npm:`, and HTTPS module imports to module resolvers.
+
 ## 0.1.27
 
 ### Patch Changes
