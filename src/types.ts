@@ -76,8 +76,57 @@ export interface ModuleResolver {
   resolve(specifier: string, importer: ModuleImporter, context: HostCallContext): Promise<ModuleSource>;
 }
 
+export interface FileStat {
+  isFile: boolean;
+  isDirectory: boolean;
+  size: number;
+  /**
+   * Last modification time in milliseconds since the epoch. Exposed as
+   * `File.lastModified` for lazy, disk-backed files.
+   */
+  lastModified?: number;
+  /**
+   * Opaque snapshot version of the file contents, for example
+   * `dev:ino:size:mtime`, an ETag, or an object version id.
+   *
+   * Lazy files pin the version reported when they were opened and pass it to
+   * `readFileStream()`, which must reject when the file no longer matches.
+   */
+  version?: string;
+}
+
+export interface FileReadStreamOptions {
+  /** First byte offset to read (inclusive). */
+  start: number;
+  /** Byte offset to stop at (exclusive). */
+  end: number;
+  /** The `version` that `stat()` reported when the lazy file was opened. */
+  version?: string;
+}
+
 export interface FileBindings {
   readFile?: (path: string, context: HostCallContext) => Promise<ArrayBuffer>;
+  /**
+   * Stream the byte range `[start, end)` of a file.
+   *
+   * Together with `stat()`, this makes sandbox `FileSystemFileHandle.getFile()`
+   * return a lazy, disk-backed `File`: its metadata comes from `stat()` and its
+   * bytes are only read on demand, in bounded chunks, by the host that owns the
+   * disk. Returning such a file (or a slice of it) in a `Response` streams it
+   * from this binding without copying the contents into the isolate or through
+   * the daemon.
+   *
+   * Implementations must stay inside the binding's root, return exactly
+   * `end - start` bytes, and reject (preferably with a `NotReadableError`) when
+   * `options.version` is set and no longer matches the file. Streams are pulled
+   * on demand and cancelled when the consumer stops reading; `context.signal`
+   * aborts when the read is no longer needed.
+   */
+  readFileStream?: (
+    path: string,
+    options: FileReadStreamOptions,
+    context: HostCallContext,
+  ) => ReadableStream<Uint8Array> | Promise<ReadableStream<Uint8Array>>;
   writeFile?: (path: string, data: ArrayBuffer, context: HostCallContext) => Promise<void>;
   unlink?: (path: string, context: HostCallContext) => Promise<void>;
   readdir?: (path: string, context: HostCallContext) => Promise<string[]>;
@@ -86,7 +135,7 @@ export interface FileBindings {
   stat?: (
     path: string,
     context: HostCallContext,
-  ) => Promise<{ isFile: boolean; isDirectory: boolean; size: number }>;
+  ) => Promise<FileStat>;
   rename?: (from: string, to: string, context: HostCallContext) => Promise<void>;
 }
 

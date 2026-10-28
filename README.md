@@ -167,7 +167,7 @@ Bindings define how sandboxed code talks to the host:
 
 - `console` forwards runtime and browser console output
 - `fetch` handles outbound HTTP requests
-- `files` exposes a safe, root-scoped filesystem
+- `files` exposes a safe, root-scoped filesystem whose files can be served without buffering them in the isolate
 - `modules` resolves virtual modules, source trees, mounted packages, and fallbacks
 - `tools` exposes async host functions and async iterators
 - `browser` exposes a Playwright-like browser surface
@@ -306,6 +306,126 @@ await host.close();
 ```
 
 `server.handle()` returns either an HTTP response or WebSocket upgrade metadata. Pass `handle(request, { signal })` to forward request cancellation into the sandbox as `request.signal`. For upgraded connections, `server.ws` lets the host send open, message, close, and error events back into the runtime.
+
+### Serve Files Without Buffering
+
+App servers can serve large files, such as videos, with a small fixed isolate memory budget. Application code authorizes each request inside the sandbox and returns a disk-backed `File`; the host process that owns the disk streams the requested bytes. Neither the whole file nor its chunks enter the isolate heap, and with the default daemon the bytes do not pass through the daemon either.
+
+```ts
+import {
+  createFileBindings,
+  createIsolateHost,
+  createModuleResolver,
+} from "@ricsam/isolate";
+
+const host = await createIsolateHost();
+const server = await host.createAppServer({
+  key: "example/media",
+  entry: "/server.ts",
+  memoryLimitMB: 64,
+  bindings: {
+    // Sandbox paths such as /videos/intro.mp4 resolve inside this root.
+    files: createFileBindings({ root: "/srv/media" }),
+    tools: {
+      // Your authorization logic, for example a session and ACL lookup.
+      canWatch: async (cookie: string | null, videoId: string) =>
+        await acl.canWatch(cookie, videoId),
+    },
+    modules: createModuleResolver().virtual(
+      "/server.ts",
+      `
+        serve({
+          async fetch(request) {
+            const id = new URL(request.url).searchParams.get("id") ?? "";
+
+            // 1. Authorize every request in application code.
+            const allowed = /^[a-z0-9-]+$/.test(id) &&
+              (await canWatch(request.headers.get("cookie"), id));
+            if (!allowed) {
+              return new Response("Forbidden", { status: 403 });
+            }
+
+            // 2. Open the file. Only its metadata is loaded.
+            const videos = await getDirectory("/videos");
+            const file = await (await videos.getFileHandle(id + ".mp4")).getFile();
+
+            // 3. Return it. serveFile() handles HEAD, Range, 206 and 416, and
+            //    the host streams the bytes from disk as the client reads them.
+            return serveFile(request, file, {
+              headers: { "cache-control": "private, no-store" },
+            });
+          },
+        });
+      `,
+    ),
+  },
+});
+
+// In your HTTP server:
+export async function handleVideoRequest(request: Request): Promise<Response> {
+  const result = await server.handle(request, { signal: request.signal });
+  if (result.type !== "response") {
+    return new Response("Upgrade not supported", { status: 400 });
+  }
+  return result.response; // streams /srv/media/videos/<id>.mp4
+}
+```
+
+The sandbox only sees paths inside the binding root and an opaque `File`. Host paths and file descriptors are never exposed to it, and a file returned in a `Response` is resolved through a capability that the host minted for this runtime.
+
+Disk-backed files behave like this:
+
+- `getFile()` returns a lazy, disk-backed `File` when the `files` binding provides `stat()` and `readFileStream()`, as `createFileBindings()` does. `name`, `size`, `type` (from the file extension), and `lastModified` come from `stat()`; no bytes are read. Without `readFileStream()`, `getFile()` reads the whole file with `readFile()` and copies it into the isolate.
+- `slice()` narrows the byte range without reading, and `new Blob([...])` keeps disk-backed parts by reference.
+- Returning a disk-backed `File` or slice in a `Response`, directly or through `serveFile()`, streams it from the binding's `readFileStream()` when the response body is read, one bounded chunk at a time with backpressure. Idle `File` objects hold no file descriptors; each response stream opens one when it is first read and closes it on completion, cancellation, client disconnect, error, or runtime disposal. A response that is already being served keeps streaming after the handler returns, even across `server.reload()`.
+- Code that reads the contents gets bounded chunks: `file.stream()`, `response.body`, and transforms such as `pipeThrough()` copy at most 64 KiB per chunk into the isolate. A runtime can have at most 64 open `stream()` readers over disk-backed blobs at once; opening more rejects with a `RangeError`.
+- `text()`, `arrayBuffer()`, and `bytes()` copy the whole contents into the isolate. For disk-backed blobs they reject with a `RangeError` above a quarter of the runtime's `memoryLimitMB` (32 MiB with the default 128 MB). Stream larger files instead.
+- Response bodies follow fetch semantics. Returning a `Response` whose body was consumed (for example by `await response.text()`) or is locked by a reader fails the request with a `TypeError`. `response.clone()` and `response.blob()` share the file without reading it. If sandbox code read part of `response.body` and released the lock, only the unread remainder is sent. Only an untouched body is streamed straight from the host that owns the disk; once sandbox code accesses `response.body`, the chunks are relayed through the runtime (without entering the isolate unless the code reads them).
+- A disk-backed file pins the snapshot `version` that `stat()` reported when it was opened. For `createFileBindings()` that is the device, inode, size, and modification and change times. If the file is replaced, truncated, extended, edited, or deleted afterwards, reads fail with a `NotReadableError` instead of returning different contents. Depending on when the change is detected, `server.handle()` rejects or the response body stream errors.
+- Request bodies built from disk-backed files, such as `fetch(url, { body: file })` or `FormData` entries, are copied into memory under the same size limit. Streaming large uploads is out of scope for this mechanism.
+- File bindings that sandbox code passes to nested runtimes are always read eagerly.
+
+`serveFile(request, file, init?)` is a sandbox global that builds a response for any `Blob` or `File`:
+
+- `GET` without a `Range` header returns 200 with `Content-Length`. `HEAD` returns the same headers without a body and never reads the file.
+- A single `Range: bytes=start-end`, open-ended `bytes=start-`, or suffix `bytes=-length` returns 206 with exact `Content-Range` and `Content-Length`, and only that range is read. Unsatisfiable ranges return 416 with `Content-Range: bytes */size`. Invalid, multi-range, and non-`bytes` headers are ignored and the full file is returned. `If-Range` only keeps the range when it equals the strong `ETag` passed in `init.headers`.
+- `Content-Type` defaults to the file type and `Accept-Ranges` to `bytes`. `serveFile()` never adds caching or privacy headers such as `Cache-Control`, `ETag`, `Last-Modified`, or `Content-Disposition`, and it does not look at the file name to choose them; pass the ones you want in `init.headers`.
+- Ranges only apply to `GET`; any method other than `HEAD` receives the full file. Route methods and authorize the request before calling it.
+
+To stream from another storage backend, implement `stat()` and `readFileStream()` in your own `files` binding:
+
+```ts
+import type { FileBindings } from "@ricsam/isolate";
+
+const files: FileBindings = {
+  async stat(path) {
+    const info = await storage.head(path);
+    return {
+      isFile: info.kind === "file",
+      isDirectory: info.kind === "directory",
+      size: info.size,
+      lastModified: info.modifiedAt.getTime(),
+      version: info.etag,
+    };
+  },
+  async readFileStream(path, { start, end, version }, context) {
+    // A ReadableStream<Uint8Array> with exactly end - start bytes.
+    return await storage.readRange(path, {
+      start,
+      end,
+      ifMatch: version,
+      signal: context.signal,
+    });
+  },
+  async readdir(path) {
+    return await storage.list(path);
+  },
+};
+```
+
+`readFileStream()` must enforce the same root and permission rules as the binding's other operations, return exactly `end - start` bytes, and reject, preferably with an error named `NotReadableError`, when `version` is set and no longer matches the file. Streams are pulled on demand and cancelled when the consumer stops reading.
+
+A runtime can only reach files through its own bindings. `createFileBindings()` rejects `..` traversal and symlinks that resolve outside the root, opens files before verifying their real path so that swapping a path component for a symlink cannot redirect a read, refuses special files such as FIFOs, and never includes host paths in errors. Blob and file references that sandbox code forges or carries over from another runtime are rejected, file capabilities that the daemon forwards to the host are sealed with a key private to the runtime that opened the file, and response headers cannot stand in for a file body. Authorization stays with your application: check every request before opening or returning a file.
 
 ### Add Browser Support To Script And Server Runtimes
 
@@ -657,7 +777,7 @@ setTimeout(() => {
 
 ### Package Entry Points
 
-- `@ricsam/isolate` exports `createIsolateHost()`, `createModuleResolver()`, `createFileBindings()`, `getTypeProfile()`, `typecheck()`, `formatTypecheckErrors()`, and public types such as `HostBindings`, `NestedHostPolicy`, and runtime handles
+- `@ricsam/isolate` exports `createIsolateHost()`, `createModuleResolver()`, `createFileBindings()`, `getTypeProfile()`, `typecheck()`, `formatTypecheckErrors()`, and public types such as `HostBindings`, `FileBindings`, `NestedHostPolicy`, and runtime handles
 - `@ricsam/isolate/playwright` exports `createPlaywrightSessionHandler()` and related Playwright handler types
 - inside sandbox code, `@ricsam/isolate` is also available as a synthetic module that exports sandbox-only `createIsolateHost()`, `createModuleResolver()`, and nested-safe type aliases for runtime handles and bindings
 
@@ -719,6 +839,10 @@ Use `remote({ allowedHosts })` to trust additional registries or mirrors. Plain 
 ### `createFileBindings()`
 
 `createFileBindings({ root, allowWrite })` creates a filesystem bridge that stays inside the configured root directory. Attempts to escape that root are rejected, and write operations are disabled unless `allowWrite` is `true`.
+
+Escapes include `..` traversal and symlinks that resolve outside the root. Reads open the file first and then verify its real path, so a symlink swapped into the path cannot redirect an open; writes do not follow a final symlink; special files such as FIFOs are refused; and error messages name only sandbox paths, never host paths.
+
+Besides whole-file `readFile()`, the bindings implement `stat()` with `lastModified` and a snapshot `version`, and `readFileStream(path, { start, end, version })` for byte ranges. Sandbox `getFile()` calls therefore return lazy, disk-backed files that are read on demand and fail with a `NotReadableError` if the file changes after it was opened. See [Serve Files Without Buffering](#serve-files-without-buffering) for the semantics and for implementing these two methods on other storage backends.
 
 ### Typechecking
 

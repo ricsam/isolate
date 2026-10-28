@@ -14,6 +14,8 @@ export type {
   CreateRuntimeOptions,
   CreateTestRuntimeOptions,
   FileBindings,
+  FileReadStreamOptions,
+  FileStat,
   HostBindings,
   HostBrowserBindings,
   HostBrowserFactoryBindings,

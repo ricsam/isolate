@@ -1,4 +1,5 @@
 import ivm from "@ricsam/isolated-vm";
+import { createAsyncReference } from "../core/index.ts";
 import crypto from "node:crypto";
 
 export interface CryptoHandle {
@@ -250,7 +251,7 @@ export async function setupCrypto(
   const deserializeHostAlgorithm = (algorithmJson: string): unknown =>
     deserializeAlgorithm(JSON.parse(algorithmJson), keyMap, keyReferenceToken);
 
-  const importKeyRef = new ivm.Reference(
+  const importKeyRef = createAsyncReference(
     async (
       format: HostKeyFormat,
       keyDataJson: string,
@@ -279,7 +280,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_importKey_ref", importKeyRef);
 
-  const generateKeyRef = new ivm.Reference(
+  const generateKeyRef = createAsyncReference(
     async (
       algorithmJson: string,
       extractable: boolean,
@@ -301,7 +302,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_generateKey_ref", generateKeyRef);
 
-  const exportKeyRef = new ivm.Reference(
+  const exportKeyRef = createAsyncReference(
     async (format: HostKeyFormat, keyId: number) => {
       try {
         const cryptoKey = getKeyOrThrow(keyMap, keyId);
@@ -317,7 +318,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_exportKey_ref", exportKeyRef);
 
-  const encryptRef = new ivm.Reference(
+  const encryptRef = createAsyncReference(
     async (algorithmJson: string, keyId: number, dataJson: string) => {
       try {
         const algorithm = deserializeHostAlgorithm(algorithmJson);
@@ -336,7 +337,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_encrypt_ref", encryptRef);
 
-  const decryptRef = new ivm.Reference(
+  const decryptRef = createAsyncReference(
     async (algorithmJson: string, keyId: number, dataJson: string) => {
       try {
         const algorithm = deserializeHostAlgorithm(algorithmJson);
@@ -355,7 +356,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_decrypt_ref", decryptRef);
 
-  const wrapKeyRef = new ivm.Reference(
+  const wrapKeyRef = createAsyncReference(
     async (
       format: HostKeyFormat,
       keyId: number,
@@ -380,7 +381,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_wrapKey_ref", wrapKeyRef);
 
-  const unwrapKeyRef = new ivm.Reference(
+  const unwrapKeyRef = createAsyncReference(
     async (
       format: HostKeyFormat,
       wrappedKeyJson: string,
@@ -413,7 +414,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_unwrapKey_ref", unwrapKeyRef);
 
-  const signRef = new ivm.Reference(
+  const signRef = createAsyncReference(
     async (algorithmJson: string, keyId: number, dataJson: string) => {
       try {
         const algorithm = deserializeHostAlgorithm(algorithmJson);
@@ -432,7 +433,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_sign_ref", signRef);
 
-  const verifyRef = new ivm.Reference(
+  const verifyRef = createAsyncReference(
     async (
       algorithmJson: string,
       keyId: number,
@@ -457,7 +458,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_verify_ref", verifyRef);
 
-  const digestRef = new ivm.Reference(
+  const digestRef = createAsyncReference(
     async (algorithmJson: string, dataJson: string) => {
       try {
         const algorithm = deserializeHostAlgorithm(algorithmJson);
@@ -471,7 +472,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_digest_ref", digestRef);
 
-  const deriveBitsRef = new ivm.Reference(
+  const deriveBitsRef = createAsyncReference(
     async (algorithmJson: string, keyId: number, length: number) => {
       try {
         const algorithm = deserializeHostAlgorithm(algorithmJson);
@@ -489,7 +490,7 @@ export async function setupCrypto(
   );
   global.setSync("__crypto_subtle_deriveBits_ref", deriveBitsRef);
 
-  const deriveKeyRef = new ivm.Reference(
+  const deriveKeyRef = createAsyncReference(
     async (
       algorithmJson: string,
       baseKeyId: number,

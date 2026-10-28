@@ -1,5 +1,16 @@
 import ivm from "@ricsam/isolated-vm";
-import { setupCore, clearAllInstanceState } from "../core/index.ts";
+import {
+  setupCore,
+  clearAllInstanceState,
+  createAsyncReference,
+  createBlobBodyStream,
+  createBlobInstance,
+  getBlobBody,
+  getBlobLimits,
+  readBlobBody,
+  type BlobBody,
+} from "../core/index.ts";
+import { toExactArrayBuffer } from "../core/blob-body.ts";
 import {
   getStreamRegistryForContext,
   startNativeStreamReader,
@@ -8,6 +19,23 @@ import {
 import type { StreamStateRegistry } from "./stream-state.ts";
 
 export { clearAllInstanceState };
+
+/**
+ * Blob bodies of Responses produced by `dispatchRequest()`.
+ *
+ * When a fetch handler returns a Blob/File body untouched, the host keeps a
+ * reference to its (possibly disk-backed) segments instead of reading them.
+ * Callers that own the bytes' source can use this to serve them directly.
+ */
+const dispatchedBlobBodies = new WeakMap<Response, BlobBody>();
+
+/**
+ * Get the Blob body of a Response returned by `dispatchRequest()`, if the
+ * sandbox returned an untouched Blob or File body.
+ */
+export function getDispatchedBlobBody(response: Response): BlobBody | undefined {
+  return dispatchedBlobBodies.get(response);
+}
 
 export interface FetchRequestInit {
   method: string;
@@ -104,8 +132,6 @@ export interface FetchHandle {
 // ============================================================================
 
 const instanceStateMap = new WeakMap<ivm.Context, Map<number, unknown>>();
-/** Map of streamId -> passthruBody for lazy callback streaming */
-const passthruBodies = new WeakMap<ivm.Context, Map<number, ReadableStream<Uint8Array>>>();
 const trackedGlobalHandles = new WeakMap<ivm.Context, Set<ivm.Callback | ivm.Reference>>();
 let nextInstanceId = 1;
 
@@ -116,17 +142,6 @@ function getInstanceStateMapForContext(
   if (!map) {
     map = new Map();
     instanceStateMap.set(context, map);
-  }
-  return map;
-}
-
-function getPassthruBodiesForContext(
-  context: ivm.Context
-): Map<number, ReadableStream<Uint8Array>> {
-  let map = passthruBodies.get(context);
-  if (!map) {
-    map = new Map();
-    passthruBodies.set(context, map);
   }
   return map;
 }
@@ -169,12 +184,63 @@ function releaseTrackedGlobalHandles(context: ivm.Context): void {
   handles.clear();
 }
 
-function clearPassthruBodiesForContext(context: ivm.Context): void {
-  const map = passthruBodies.get(context);
-  if (!map) return;
-  map.clear();
-  passthruBodies.delete(context);
+/**
+ * Create a registry stream that reads a blob body on first demand.
+ */
+function createLazyBlobRegistryStream(
+  streamRegistry: StreamStateRegistry,
+  blobBody: BlobBody,
+): number {
+  const streamId = streamRegistry.create();
+  streamRegistry.setStarter(streamId, () => {
+    const cleanup = startNativeStreamReader(
+      createBlobBodyStream(blobBody.segments),
+      streamId,
+      streamRegistry,
+    );
+    streamRegistry.setCleanup(streamId, cleanup);
+  });
+  return streamId;
 }
+
+const TRANSFERABLE_ERROR_NAMES = new Set([
+  "TypeError",
+  "RangeError",
+  "AbortError",
+  "NotReadableError",
+  "NotFoundError",
+  "NotAllowedError",
+]);
+
+/**
+ * Encode a host error for transfer into the isolate as `[Name]message`.
+ */
+function encodeResponseError(error: unknown): Error {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  if (/^\[[A-Za-z]+\]/.test(normalized.message)) {
+    return normalized;
+  }
+  const name = TRANSFERABLE_ERROR_NAMES.has(normalized.name) ? normalized.name : "Error";
+  return new Error(`[${name}]${normalized.message}`);
+}
+
+/** Isolate-side decoder for errors encoded with encodeResponseError(). */
+const DECODE_TRANSFER_ERROR_JS = `
+function __decodeTransferError(err) {
+  if (!(err instanceof Error)) return err;
+  const match = err.message.match(/^\\[([A-Za-z]+)\\]([\\s\\S]*)$/);
+  if (!match) return err;
+  const name = match[1];
+  const message = match[2];
+  if (['TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'URIError', 'EvalError'].includes(name)) {
+    return new globalThis[name](message);
+  }
+  if (name !== 'Error' && typeof DOMException === 'function') {
+    return new DOMException(message, name);
+  }
+  return new Error(message);
+}
+`;
 
 // ============================================================================
 // State Types
@@ -192,8 +258,11 @@ interface ResponseState {
   streamId: number | null;
   /** Whether this is a null-body response (204, 304, HEAD) */
   nullBody?: boolean;
-  /** Direct pass-through body for callback streams (bypasses registry for better streaming) */
-  passthruBody?: ReadableStream<Uint8Array>;
+  /**
+   * Host-side Blob/File body. Kept by reference (never read) until the body is
+   * accessed, consumed, or the response is dispatched.
+   */
+  blobBody?: BlobBody;
 }
 
 interface RequestState {
@@ -593,11 +662,20 @@ function setupStreamCallbacks(
     })
   );
 
-  // Push chunk (sync) - receives number[] from isolate
+  // Push chunk (sync) - receives a copied Uint8Array (or legacy number[]) from isolate
   setTrackedGlobal(context, 
     "__Stream_push",
-    new ivm.Callback((streamId: number, chunkArray: number[]) => {
-      const chunk = new Uint8Array(chunkArray);
+    new ivm.Callback((streamId: number, chunkData: unknown) => {
+      let chunk: Uint8Array;
+      if (chunkData instanceof Uint8Array) {
+        chunk = chunkData;
+      } else if (chunkData instanceof ArrayBuffer) {
+        chunk = new Uint8Array(chunkData);
+      } else if (ArrayBuffer.isView(chunkData)) {
+        chunk = new Uint8Array(chunkData.buffer, chunkData.byteOffset, chunkData.byteLength);
+      } else {
+        chunk = new Uint8Array(Array.isArray(chunkData) ? chunkData as number[] : []);
+      }
       return streamRegistry.push(streamId, chunk);
     })
   );
@@ -634,13 +712,17 @@ function setupStreamCallbacks(
     })
   );
 
-  // Pull chunk (async)
-  const pullRef = new ivm.Reference(async (streamId: number) => {
-    const result = await streamRegistry.pull(streamId);
-    if (result.done) {
-      return JSON.stringify({ done: true });
+  // Pull chunk (async) - chunks are copied into the isolate as ArrayBuffers
+  const pullRef = createAsyncReference(async (streamId: number) => {
+    try {
+      const result = await streamRegistry.pull(streamId);
+      if (result.done) {
+        return { done: true };
+      }
+      return { done: false, value: toExactArrayBuffer(result.value) };
+    } catch (error) {
+      throw encodeResponseError(error);
     }
-    return JSON.stringify({ done: false, value: Array.from(result.value) });
   });
   setTrackedGlobal(context, "__Stream_pull_ref", pullRef);
 }
@@ -652,6 +734,7 @@ function setupStreamCallbacks(
 const hostBackedStreamCode = `
 (function() {
   const _streamIds = new WeakMap();
+  ${DECODE_TRANSFER_ERROR_JS}
 
   // Polyfill values() on ReadableStream if not available (older V8 versions)
   if (typeof ReadableStream.prototype.values !== 'function') {
@@ -690,8 +773,13 @@ const hostBackedStreamCode = `
         async pull(controller) {
           if (closed) return;
 
-          const resultJson = await __Stream_pull_ref.apply(undefined, [streamId], { result: { promise: true, copy: true } });
-          const result = JSON.parse(resultJson);
+          let result;
+          try {
+            result = await __Stream_pull_ref.apply(undefined, [streamId], { result: { promise: true, copy: true } });
+          } catch (err) {
+            closed = true;
+            throw __decodeTransferError(err);
+          }
 
           if (result.done) {
             closed = true;
@@ -795,6 +883,99 @@ function setupResponse(
         return instanceId;
       }
     )
+  );
+
+  // Blob/File body constructor - keeps the host-side blob by reference, so
+  // disk-backed files are never read into the isolate.
+  setTrackedGlobal(context,
+    "__Response_constructBlob",
+    new ivm.Callback(
+      (
+        blobInstanceId: number,
+        status: number,
+        statusText: string,
+        headers: [string, string][]
+      ) => {
+        const blobBody = getBlobBody(context, blobInstanceId);
+        if (!blobBody) {
+          throw new Error("[TypeError]Invalid Blob body");
+        }
+        const instanceId = nextInstanceId++;
+        const state: ResponseState = {
+          status,
+          statusText,
+          headers,
+          body: null,
+          bodyUsed: false,
+          type: "default",
+          url: "",
+          redirected: false,
+          streamId: null,
+          blobBody,
+        };
+        stateMap.set(instanceId, state);
+        return instanceId;
+      }
+    )
+  );
+
+  setTrackedGlobal(context,
+    "__Response_hasBlobBody",
+    new ivm.Callback((instanceId: number) => {
+      const state = stateMap.get(instanceId) as ResponseState | undefined;
+      return state?.blobBody !== undefined;
+    })
+  );
+
+  // Convert a blob body into a lazily started host stream (for response.body).
+  // Nothing is opened until the stream is first pulled.
+  setTrackedGlobal(context,
+    "__Response_streamBlobBody",
+    new ivm.Callback((instanceId: number) => {
+      const state = stateMap.get(instanceId) as ResponseState | undefined;
+      if (!state?.blobBody) {
+        return state?.streamId ?? null;
+      }
+      const blobBody = state.blobBody;
+      state.blobBody = undefined;
+      state.streamId = createLazyBlobRegistryStream(streamRegistry, blobBody);
+      return state.streamId;
+    })
+  );
+
+  // Explicit, size-limited materialization of a blob body (text/arrayBuffer).
+  setTrackedGlobal(context,
+    "__Response_readBlobBody_ref",
+    createAsyncReference(async (instanceId: number, asText: boolean) => {
+      const state = stateMap.get(instanceId) as ResponseState | undefined;
+      const blobBody = state?.blobBody;
+      if (!state || !blobBody) {
+        return asText ? "" : new ArrayBuffer(0);
+      }
+      state.blobBody = undefined;
+      try {
+        const bytes = await readBlobBody(blobBody.segments, {
+          maxBytes: getBlobLimits(context).maxMaterializeBytes,
+        });
+        return asText ? new TextDecoder().decode(bytes) : toExactArrayBuffer(bytes);
+      } catch (error) {
+        throw encodeResponseError(error);
+      }
+    })
+  );
+
+  // response.blob() on a blob body returns a Blob sharing the same segments.
+  setTrackedGlobal(context,
+    "__Response_blobBodyToBlob",
+    new ivm.Callback((instanceId: number, type: string) => {
+      const state = stateMap.get(instanceId) as ResponseState | undefined;
+      const blobBody = state?.blobBody;
+      if (!state || !blobBody) {
+        return null;
+      }
+      state.blobBody = undefined;
+      return createBlobInstance(context, { segments: blobBody.segments, type });
+    })
   );
 
   setTrackedGlobal(context, 
@@ -1010,14 +1191,25 @@ function setupResponse(
 (function() {
   const _responseInstanceIds = new WeakMap();
 
-  function __decodeError(err) {
-    if (!(err instanceof Error)) return err;
-    const match = err.message.match(/^\\[(TypeError|RangeError|SyntaxError|ReferenceError|URIError|EvalError|Error)\\](.*)$/);
-    if (match) {
-      const ErrorType = globalThis[match[1]] || Error;
-      return new ErrorType(match[2]);
+  ${DECODE_TRANSFER_ERROR_JS}
+  const __decodeError = __decodeTransferError;
+
+  function __toStreamChunk(value) {
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (typeof value === 'string') return new TextEncoder().encode(value);
+    return new Uint8Array(0);
+  }
+
+  async function __readBlobBody(instanceId, asText) {
+    try {
+      return await __Response_readBlobBody_ref.apply(undefined, [instanceId, asText], {
+        result: { promise: true, copy: true },
+      });
+    } catch (err) {
+      throw __decodeError(err);
     }
-    return err;
   }
 
   function __prepareBody(body) {
@@ -1036,7 +1228,7 @@ function setupResponse(
       return Array.from(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
     }
     if (body instanceof Blob) {
-      // Mark as needing async Blob handling - will be read in constructor
+      // Blob/File bodies stay on the host and are referenced, never read here
       return { __isBlob: true, blob: body };
     }
     // Handle HostBackedReadableStream specially - preserve streamId
@@ -1055,7 +1247,6 @@ function setupResponse(
     #instanceId;
     #headers;
     #streamId = null;
-    #blobInitPromise = null; // For async Blob body initialization
     #cachedBody = null; // Memoized body stream for spec compliance
 
     constructor(body, init = {}) {
@@ -1069,34 +1260,29 @@ function setupResponse(
 
       const preparedBody = __prepareBody(body);
 
-      // Handle Blob body - create streaming response and push blob data
+      // Handle Blob/File body - keep a host-side reference to its contents.
+      // Disk-backed files are streamed by the host that owns them.
       if (preparedBody && preparedBody.__isBlob) {
-        this.#streamId = __Stream_create();
         const status = init.status ?? 200;
         const statusText = init.statusText ?? '';
         const headers = new Headers(init.headers);
+        const blobType = preparedBody.blob.type;
+        if (blobType && !headers.has('content-type')) {
+          headers.set('content-type', blobType);
+        }
         const headersArray = Array.from(headers.entries());
 
-        this.#instanceId = __Response_constructStreaming(
-          this.#streamId,
-          status,
-          statusText,
-          headersArray
-        );
+        try {
+          this.#instanceId = __Response_constructBlob(
+            preparedBody.blob._getInstanceId(),
+            status,
+            statusText,
+            headersArray
+          );
+        } catch (err) {
+          throw __decodeError(err);
+        }
         this.#headers = headers;
-
-        // Start async blob initialization and stream pumping
-        const streamId = this.#streamId;
-        const blob = preparedBody.blob;
-        this.#blobInitPromise = (async () => {
-          try {
-            const buffer = await blob.arrayBuffer();
-            __Stream_push(streamId, Array.from(new Uint8Array(buffer)));
-            __Stream_close(streamId);
-          } catch (error) {
-            __Stream_error(streamId, String(error));
-          }
-        })();
         return;
       }
 
@@ -1169,7 +1355,7 @@ function setupResponse(
             break;
           }
           if (value) {
-            __Stream_push(streamId, Array.from(value));
+            __Stream_push(streamId, __toStreamChunk(value));
           }
         }
       } catch (error) {
@@ -1179,6 +1365,10 @@ function setupResponse(
 
     _getInstanceId() {
       return this.#instanceId;
+    }
+
+    _isBodyLocked() {
+      return this.#cachedBody !== null && this.#cachedBody.locked === true;
     }
 
     static _fromInstanceId(instanceId) {
@@ -1229,6 +1419,13 @@ function setupResponse(
         return this.#cachedBody;
       }
 
+      // Blob/File bodies become a host stream that is read lazily on demand
+      if (__Response_hasBlobBody(this.#instanceId)) {
+        this.#streamId = __Response_streamBlobBody(this.#instanceId);
+        this.#cachedBody = HostBackedReadableStream._fromStreamId(this.#streamId);
+        return this.#cachedBody;
+      }
+
       const streamId = __Response_getStreamId(this.#instanceId);
       if (streamId !== null) {
         this.#cachedBody = HostBackedReadableStream._fromStreamId(streamId);
@@ -1241,7 +1438,7 @@ function setupResponse(
       const buffer = __Response_arrayBuffer(instanceId);
 
       if (buffer.byteLength > 0) {
-        __Stream_push(newStreamId, Array.from(new Uint8Array(buffer)));
+        __Stream_push(newStreamId, new Uint8Array(buffer));
       }
       __Stream_close(newStreamId);
 
@@ -1257,6 +1454,9 @@ function setupResponse(
       }
       if (__Response_get_nullBody(this.#instanceId)) {
         return "";
+      }
+      if (__Response_hasBlobBody(this.#instanceId)) {
+        return await __readBlobBody(this.#instanceId, true);
       }
       if (this.#streamId !== null) {
         const reader = this.body.getReader();
@@ -1290,14 +1490,12 @@ function setupResponse(
         throw __decodeError(err);
       }
 
-      // For streaming responses (including Blob bodies), consume the stream
-      if (this.#streamId !== null) {
-        // Wait for blob init to complete if needed
-        if (this.#blobInitPromise) {
-          await this.#blobInitPromise;
-          this.#blobInitPromise = null;
-        }
+      if (__Response_hasBlobBody(this.#instanceId)) {
+        return await __readBlobBody(this.#instanceId, false);
+      }
 
+      // For streaming responses, consume the stream
+      if (this.#streamId !== null) {
         const reader = this.body.getReader();
         const chunks = [];
         while (true) {
@@ -1320,8 +1518,21 @@ function setupResponse(
     }
 
     async blob() {
-      const buffer = await this.arrayBuffer();
       const contentType = this.headers.get('content-type') || '';
+      if (__Response_hasBlobBody(this.#instanceId)) {
+        try {
+          __Response_markBodyUsed(this.#instanceId);
+        } catch (err) {
+          throw __decodeError(err);
+        }
+        // Share the host-side contents instead of reading them
+        const blobInstanceId = __Response_blobBodyToBlob(this.#instanceId, contentType);
+        if (blobInstanceId !== null) {
+          return Blob._createFromInstanceId(blobInstanceId);
+        }
+        return new Blob([], { type: contentType });
+      }
+      const buffer = await this.arrayBuffer();
       return new Blob([buffer], { type: contentType });
     }
 
@@ -1834,7 +2045,7 @@ function setupRequest(
 
       // Create stream from non-empty buffered body
       const newStreamId = __Stream_create();
-      __Stream_push(newStreamId, Array.from(new Uint8Array(buffer)));
+      __Stream_push(newStreamId, new Uint8Array(buffer));
       __Stream_close(newStreamId);
 
       this.#cachedBody = HostBackedReadableStream._fromStreamId(newStreamId);
@@ -1973,7 +2184,7 @@ function setupFetchFunction(
   );
 
 
-  const fetchRef = new ivm.Reference(
+  const fetchRef = createAsyncReference(
     async (
       url: string,
       method: string,
@@ -2115,10 +2326,36 @@ function setupFetchFunction(
   let __nextFetchId = 1;
 
   globalThis.fetch = async function(input, init = {}) {
-    // Handle Blob and ReadableStream bodies before creating Request
-    if (init.body instanceof Blob && !(init.body instanceof File)) {
+    // Handle Blob and ReadableStream bodies before creating Request.
+    // Request bodies are buffered, so disk-backed files are materialized here
+    // (subject to the blob materialization limit).
+    if (init.body instanceof Blob) {
       const buf = await init.body.arrayBuffer();
       init = Object.assign({}, init, { body: new Uint8Array(buf) });
+    } else if (init.body instanceof FormData) {
+      const entries = Array.from(init.body.entries());
+      const hasLazyEntries = entries.some(([, value]) =>
+        value instanceof Blob && __Blob_isLazy(value._getInstanceId())
+      );
+      if (hasLazyEntries) {
+        const materialized = new FormData();
+        for (const [name, value] of entries) {
+          if (value instanceof Blob && __Blob_isLazy(value._getInstanceId())) {
+            const bytes = await value.arrayBuffer();
+            if (value instanceof File) {
+              materialized.append(name, new File([bytes], value.name, {
+                type: value.type,
+                lastModified: value.lastModified,
+              }));
+            } else {
+              materialized.append(name, new Blob([bytes], { type: value.type }));
+            }
+          } else {
+            materialized.append(name, value);
+          }
+        }
+        init = Object.assign({}, init, { body: materialized });
+      }
     } else if (init.body instanceof ReadableStream) {
       const reader = init.body.getReader();
       const chunks = [];
@@ -2790,6 +3027,98 @@ function setupServe(context: ivm.Context): void {
   }
 
   globalThis.serve = serve;
+
+  // Parse a single byte range (RFC 9110). Returns { start, end } with an
+  // inclusive end, 'unsatisfiable', or null when the header must be ignored
+  // (invalid syntax, other units, or multiple ranges).
+  function parseByteRange(rangeHeader, size) {
+    if (typeof rangeHeader !== 'string') return null;
+    const match = /^\\s*bytes\\s*=\\s*(\\d*)\\s*-\\s*(\\d*)\\s*$/i.exec(rangeHeader);
+    if (!match) return null;
+    const startText = match[1];
+    const endText = match[2];
+    if (startText === '' && endText === '') return null;
+
+    if (startText === '') {
+      const suffixLength = Number(endText);
+      if (suffixLength === 0 || size === 0) return 'unsatisfiable';
+      return { start: Math.max(0, size - suffixLength), end: size - 1 };
+    }
+
+    const start = Number(startText);
+    if (!Number.isSafeInteger(start)) return 'unsatisfiable';
+    const requestedEnd = endText === '' ? Infinity : Number(endText);
+    if (requestedEnd < start) return null;
+    if (start >= size) return 'unsatisfiable';
+    return { start, end: Math.min(requestedEnd, size - 1) };
+  }
+
+  /**
+   * Build a Response that serves a Blob or File for a request, with HEAD and
+   * single byte-range support (200, 206, 416). Disk-backed files are streamed
+   * by the host that owns them; the isolate never reads their contents.
+   */
+  function serveFile(request, file, init) {
+    if (!(file instanceof Blob)) {
+      throw new TypeError('serveFile(request, file) requires a Blob or File');
+    }
+    const method = request && typeof request.method === 'string'
+      ? request.method.toUpperCase()
+      : 'GET';
+    const requestHeaders = request && request.headers instanceof Headers
+      ? request.headers
+      : new Headers(request && request.headers);
+    const headers = new Headers(init && init.headers);
+    const size = file.size;
+    const type = file.type;
+
+    if (!headers.has('content-type')) {
+      headers.set('content-type', type || 'application/octet-stream');
+    }
+    if (!headers.has('accept-ranges')) {
+      headers.set('accept-ranges', 'bytes');
+    }
+
+    // Range handling is only defined for GET. If-Range only matches the strong
+    // ETag the caller supplied for this representation; any other value
+    // (dates, weak or different tags) means "send the full representation".
+    const ifRange = requestHeaders.get('if-range');
+    const etag = headers.get('etag');
+    const ifRangeMatches = ifRange === null || (
+      etag !== null && !etag.startsWith('W/') && ifRange.trim() === etag.trim()
+    );
+    const range = method === 'GET' && ifRangeMatches
+      ? parseByteRange(requestHeaders.get('range'), size)
+      : null;
+
+    if (range === 'unsatisfiable') {
+      headers.set('content-range', 'bytes */' + size);
+      headers.set('content-length', '0');
+      return new Response(null, {
+        status: 416,
+        statusText: 'Range Not Satisfiable',
+        headers,
+      });
+    }
+
+    if (range) {
+      headers.set('content-range', 'bytes ' + range.start + '-' + range.end + '/' + size);
+      headers.set('content-length', String(range.end - range.start + 1));
+      return new Response(file.slice(range.start, range.end + 1, type), {
+        status: 206,
+        statusText: 'Partial Content',
+        headers,
+      });
+    }
+
+    headers.set('content-length', String(size));
+    return new Response(method === 'HEAD' ? null : file, {
+      status: 200,
+      headers,
+    });
+  }
+
+  globalThis.serveFile = serveFile;
 })();
   `);
 }
@@ -2932,7 +3261,6 @@ export async function setupFetch(
     dispose() {
       // Clear state for this context
       stateMap.clear();
-      clearPassthruBodiesForContext(context);
       clearStreamRegistryForContext(context);
       // Clear upgrade registry
       context.evalSync(`globalThis.__upgradeRegistry__.clear()`);
@@ -3044,6 +3372,12 @@ export async function setupFetch(
             if (typeof response._getInstanceId !== 'function') {
               throw new TypeError("fetch handler must return a Response object (got " + (typeof response) + ")");
             }
+            if (response.bodyUsed) {
+              throw new TypeError("fetch handler returned a Response whose body has already been used");
+            }
+            if (typeof response._isBodyLocked === 'function' && response._isBodyLocked()) {
+              throw new TypeError("fetch handler returned a Response whose body stream is locked");
+            }
             return response._getInstanceId();
           })()
         `, { promise: true });
@@ -3054,35 +3388,44 @@ export async function setupFetch(
           throw new Error("Response state not found");
         }
 
-        // Check if there's a pass-through body for this stream (callback stream)
-        if (responseState.streamId !== null) {
-          const passthruMap = getPassthruBodiesForContext(context);
-          const passthruBody = passthruMap.get(responseState.streamId);
+        // Untouched Blob/File body: stream it from its host-side segments.
+        // Disk-backed files are read lazily, in bounded chunks, only when the
+        // returned body is consumed; the isolate never sees the bytes.
+        if (responseState.blobBody) {
+          const blobBody = responseState.blobBody;
+          // A dispatched body is consumed: returning the same Response again fails.
+          responseState.blobBody = undefined;
+          responseState.bodyUsed = true;
+          const responseHeaders = new Headers(responseState.headers);
+          const status =
+            responseState.status === 101 ? 200 : responseState.status;
+          const hasNullBodyStatus =
+            responseState.status === 101 ||
+            responseState.status === 103 ||
+            responseState.status === 204 ||
+            responseState.status === 205 ||
+            responseState.status === 304;
+          const omitBody = hasNullBodyStatus || request.method.toUpperCase() === "HEAD";
+          if (!hasNullBodyStatus && !responseHeaders.has("content-length")) {
+            responseHeaders.set("content-length", String(blobBody.size));
+          }
 
-          if (passthruBody) {
-            // Use pass-through body directly for true streaming
-            passthruMap.delete(responseState.streamId); // Clean up
-
-            const responseHeaders = new Headers(responseState.headers);
-            const status =
-              responseState.status === 101 ? 200 : responseState.status;
-            const hasNullBodyStatus =
-              responseState.status === 101 ||
-              responseState.status === 103 ||
-              responseState.status === 204 ||
-              responseState.status === 205 ||
-              responseState.status === 304;
-            const response = new Response(hasNullBodyStatus ? null : passthruBody, {
+          const response = new Response(
+            omitBody ? null : createBlobBodyStream(blobBody.segments),
+            {
               status,
               statusText: responseState.statusText,
               headers: responseHeaders,
-            });
-
-            // @ts-expect-error - adding custom property
-            response._originalStatus = responseState.status;
-
-            return response;
+            },
+          );
+          if (!omitBody) {
+            dispatchedBlobBodies.set(response, blobBody);
           }
+
+          // @ts-expect-error - adding custom property
+          response._originalStatus = responseState.status;
+
+          return response;
         }
 
         // Check if response has streaming body (registry stream)
@@ -3094,6 +3437,9 @@ export async function setupFetch(
           const pumpedStream = new ReadableStream<Uint8Array>({
             async pull(controller) {
               if (streamDone) return;
+
+              // Lazily backed streams (for example blob bodies) start on first demand
+              streamRegistry.start(responseStreamId);
 
               // Wait for data to be available
               while (!streamDone) {

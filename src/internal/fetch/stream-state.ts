@@ -65,6 +65,16 @@ export interface StreamStateRegistry {
 
   /** Register a cleanup function for a stream */
   setCleanup(streamId: number, cleanup: () => Promise<void>): void;
+
+  /**
+   * Register a starter that begins producing data on first demand (the first
+   * pull or an explicit `start()`), so lazily backed streams open nothing
+   * until they are read.
+   */
+  setStarter(streamId: number, starter: () => void): void;
+
+  /** Run the stream's starter if it has not run yet. */
+  start(streamId: number): void;
 }
 
 // ============================================================================
@@ -84,6 +94,7 @@ export const MAX_QUEUE_CHUNKS = 16;
 export function createStreamStateRegistry(): StreamStateRegistry {
   const streams = new Map<number, StreamState>();
   const cleanups = new Map<number, () => Promise<void>>();
+  const starters = new Map<number, () => void>();
   let nextStreamId = 1;
 
   return {
@@ -130,6 +141,7 @@ export function createStreamStateRegistry(): StreamStateRegistry {
     async pull(
       streamId: number
     ): Promise<{ value: Uint8Array; done: false } | { done: true }> {
+      this.start(streamId);
       const state = streams.get(streamId);
       if (!state) {
         return { done: true };
@@ -215,6 +227,7 @@ export function createStreamStateRegistry(): StreamStateRegistry {
       }
       streams.delete(streamId);
       cleanups.delete(streamId);
+      starters.delete(streamId);
     },
 
     clear(): void {
@@ -229,6 +242,7 @@ export function createStreamStateRegistry(): StreamStateRegistry {
     },
 
     cancel(streamId: number): void {
+      starters.delete(streamId);
       this.close(streamId);
       const cleanup = cleanups.get(streamId);
       if (cleanup) {
@@ -239,6 +253,20 @@ export function createStreamStateRegistry(): StreamStateRegistry {
 
     setCleanup(streamId: number, cleanup: () => Promise<void>): void {
       cleanups.set(streamId, cleanup);
+    },
+
+    setStarter(streamId: number, starter: () => void): void {
+      if (streams.has(streamId)) {
+        starters.set(streamId, starter);
+      }
+    },
+
+    start(streamId: number): void {
+      const starter = starters.get(streamId);
+      if (starter) {
+        starters.delete(streamId);
+        starter();
+      }
     },
   };
 }

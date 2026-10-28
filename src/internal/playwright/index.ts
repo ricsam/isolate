@@ -1,4 +1,5 @@
 import ivm from "@ricsam/isolated-vm";
+import { createAsyncReference } from "../core/index.ts";
 import { invokeBestEffortEventHandler } from "../event-callback.ts";
 import type {
   PlaywrightOperation,
@@ -529,7 +530,7 @@ export async function setupPlaywright(
   // Single handler reference that receives operation objects
   global.setSync(
     "__Playwright_handler_ref",
-    new ivm.Reference(async (opJson: string): Promise<string> => {
+    createAsyncReference(async (opJson: string): Promise<string> => {
       const op = JSON.parse(opJson) as PlaywrightOperation;
       const result = await effectiveHandler(op);
       return JSON.stringify(result);

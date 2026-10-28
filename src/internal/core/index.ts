@@ -2,9 +2,38 @@ import ivm from "@ricsam/isolated-vm";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import {
+  closeAllBlobReaders,
+  closeBlobReader,
+  concatByteSegments,
+  getBlobLimits,
+  getSegmentsSize,
+  hasSourceSegments,
+  normalizeSegments,
+  openBlobReader,
+  readBlobBody,
+  readBlobReader,
+  sliceSegments,
+  toExactArrayBuffer,
+  type BlobBody,
+  type BlobSegment,
+} from "./blob-body.ts";
 
 // Types for isolated-vm context
 export type { Isolate, Context, Reference } from "@ricsam/isolated-vm";
+export {
+  configureBlobLimits,
+  createBlobBodyStream,
+  getBlobLimits,
+  getOpenBlobReaderCount,
+  readBlobBody,
+  DEFAULT_MAX_BLOB_MATERIALIZE_BYTES,
+  DEFAULT_MAX_OPEN_BLOB_READERS,
+  type BlobBody,
+  type BlobByteSource,
+  type BlobLimits,
+  type BlobSegment,
+} from "./blob-body.ts";
 
 const runtimeRequire = createRequire(path.join(process.cwd(), "package.json"));
 
@@ -496,6 +525,27 @@ export function defineFunction(
 }
 
 /**
+ * Create a Reference to an async host function that isolate code calls with
+ * `ref.apply(..., { result: { promise: true } })`.
+ *
+ * isolated-vm only attaches its handlers to the returned promise after the
+ * call returns, so a function that rejects before its first `await` (for
+ * example on a forged instance id) would otherwise surface as an unhandled
+ * rejection in the host process and crash it. The promise is marked as handled
+ * up front; isolated-vm still observes the rejection and forwards it to the
+ * isolate.
+ */
+export function createAsyncReference<TArgs extends any[], TResult>(
+  fn: (...args: TArgs) => TResult | Promise<TResult>,
+): ivm.Reference<(...args: TArgs) => Promise<TResult>> {
+  return new ivm.Reference((...args: TArgs): Promise<TResult> => {
+    const promise = Promise.resolve().then(() => fn(...args));
+    promise.catch(() => {});
+    return promise;
+  });
+}
+
+/**
  * Define an async function that can be called from the isolate.
  * Uses ivm.Reference.apply with promise transfer so isolate code can truly await
  * host work without blocking the isolate thread.
@@ -511,7 +561,7 @@ export function defineAsyncFunction(
   const refName = `__async_ref_${name}`;
 
   // Create a Reference to the async function (not a Callback)
-  const asyncRef = new ivm.Reference(async (...args: unknown[]) => {
+  const asyncRef = createAsyncReference(async (...args: unknown[]) => {
     return await fn(...args);
   });
 
@@ -594,7 +644,7 @@ export function defineClass<TState extends object = object>(
   for (const [methodName, methodDef] of Object.entries(methods)) {
     if (methodDef.async) {
       // Async methods use Reference.apply with promise transfer.
-      methodReferences[`__${name}_${methodName}_ref`] = new ivm.Reference(
+      methodReferences[`__${name}_${methodName}_ref`] = createAsyncReference(
         async (instanceId: number, ...args: unknown[]) => {
           const state = stateMap.get(instanceId) as TState | undefined;
           if (!state) {
@@ -670,7 +720,7 @@ export function defineClass<TState extends object = object>(
   for (const [methodName, methodDef] of Object.entries(staticMethods)) {
     if (methodDef.async) {
       // Async static methods use Reference.apply with promise transfer.
-      staticMethodReferences[`__${name}_static_${methodName}_ref`] = new ivm.Reference(
+      staticMethodReferences[`__${name}_static_${methodName}_ref`] = createAsyncReference(
         async (...args: unknown[]) => {
           try {
             return await methodDef.fn(...args);
@@ -975,6 +1025,7 @@ export async function setupCore(
   return {
     dispose() {
       cleanupUnmarshaledHandles(context);
+      closeAllBlobReaders(context);
     },
   };
 }
@@ -1781,8 +1832,14 @@ async function injectURL(context: ivm.Context): Promise<void> {
 // Blob / File Implementation
 // ============================================================================
 
+/**
+ * Host-side Blob state. Contents are stored as segments (in-memory bytes or
+ * lazily read source ranges) so that disk-backed files never have to be copied
+ * into the isolate to be sliced, composed, or returned in a Response.
+ */
 interface BlobState {
-  parts: Uint8Array[];
+  readonly __blob: true;
+  segments: BlobSegment[];
   type: string;
   size: number;
 }
@@ -1792,28 +1849,188 @@ interface FileState extends BlobState {
   lastModified: number;
 }
 
+function isBlobState(value: unknown): value is BlobState {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { __blob?: unknown }).__blob === true
+  );
+}
+
+function isFileState(value: unknown): value is FileState {
+  return isBlobState(value) && typeof (value as FileState).name === "string";
+}
+
+const BLOB_ERROR_NAMES = new Set([
+  "TypeError",
+  "RangeError",
+  "AbortError",
+  "NotReadableError",
+  "NotFoundError",
+  "NotAllowedError",
+  "TypeMismatchError",
+]);
+
+/**
+ * Encode an error for transfer into the isolate. The isolate-side
+ * `__decodeBlobError` restores TypeError/RangeError and DOMException names.
+ */
+function encodeBlobError(error: unknown): Error {
+  const normalized = toError(error);
+  if (/^\[[A-Za-z]+\]/.test(normalized.message)) {
+    return normalized;
+  }
+  const name = BLOB_ERROR_NAMES.has(normalized.name) ? normalized.name : "Error";
+  return new Error(`[${name}]${normalized.message}`);
+}
+
+/**
+ * Snapshot the body of a Blob or File instance in a context.
+ */
+export function getBlobBody(
+  context: ivm.Context,
+  instanceId: number,
+): BlobBody | undefined {
+  const state = getInstanceStateMapForContext(context).get(instanceId);
+  if (!isBlobState(state)) {
+    return undefined;
+  }
+  return {
+    segments: state.segments.slice(),
+    size: state.size,
+    type: state.type,
+  };
+}
+
+/**
+ * Create a Blob (or File, when `file` is given) instance in a context from
+ * host-side segments, without copying anything into the isolate. Returns the
+ * instance id to wrap with `Blob._createFromInstanceId()` or
+ * `File._createFromInstanceId()` inside the isolate.
+ */
+export function createBlobInstance(
+  context: ivm.Context,
+  init: {
+    segments: readonly BlobSegment[];
+    type?: string;
+    file?: { name: string; lastModified: number };
+  },
+): number {
+  const stateMap = getInstanceStateMapForContext(context);
+  const segments = normalizeSegments(init.segments);
+  const base: BlobState = {
+    __blob: true,
+    segments,
+    type: normalizeBlobType(init.type),
+    size: getSegmentsSize(segments),
+  };
+  const instanceId = nextInstanceId++;
+  if (init.file) {
+    const state: FileState = {
+      ...base,
+      name: String(init.file.name),
+      lastModified: init.file.lastModified,
+    };
+    stateMap.set(instanceId, state);
+  } else {
+    stateMap.set(instanceId, base);
+  }
+  return instanceId;
+}
+
+function normalizeBlobType(type: unknown): string {
+  if (typeof type !== "string" || type.length === 0) {
+    return "";
+  }
+  // Per the File API, types with non-printable-ASCII characters become "".
+  if (!/^[\x20-\x7E]*$/.test(type)) {
+    return "";
+  }
+  return type.toLowerCase();
+}
+
+function partToBytes(part: unknown): Uint8Array {
+  if (typeof part === "string") {
+    return new TextEncoder().encode(part);
+  }
+  if (part instanceof Uint8Array) {
+    return part;
+  }
+  if (part instanceof ArrayBuffer) {
+    return new Uint8Array(part);
+  }
+  if (ArrayBuffer.isView(part)) {
+    return new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
+  }
+  return new TextEncoder().encode(String(part));
+}
+
+function relativeBlobIndex(value: unknown, size: number, fallback: number): number {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  let index = Math.trunc(Number(value));
+  if (Number.isNaN(index)) {
+    index = 0;
+  }
+  if (index < 0) {
+    return Math.max(size + index, 0);
+  }
+  return Math.min(index, size);
+}
+
 async function injectBlob(
   context: ivm.Context,
   stateMap: Map<number, unknown>
 ): Promise<void> {
-  // Helper function to convert parts to bytes
-  const partsToBytes = (parts: unknown[]): Uint8Array[] => {
-    return parts.map((part) => {
-      if (typeof part === "string") {
-        return new TextEncoder().encode(part);
+  /**
+   * Convert isolate parts into segments. Blob parts arrive as
+   * `{ __blobRef: instanceId }` and contribute their segments by reference, so
+   * composing blobs never reads lazily backed contents.
+   */
+  const partsToSegments = (parts: unknown): BlobSegment[] => {
+    const segments: BlobSegment[] = [];
+    if (!Array.isArray(parts)) {
+      return segments;
+    }
+    for (const part of parts) {
+      if (
+        part !== null &&
+        typeof part === "object" &&
+        !ArrayBuffer.isView(part) &&
+        !(part instanceof ArrayBuffer) &&
+        typeof (part as { __blobRef?: unknown }).__blobRef === "number"
+      ) {
+        const referenced = stateMap.get((part as { __blobRef: number }).__blobRef);
+        if (!isBlobState(referenced)) {
+          throw new Error("[TypeError]Invalid Blob part");
+        }
+        segments.push(...referenced.segments);
+        continue;
       }
-      if (part instanceof Uint8Array) {
-        return part;
-      }
-      if (part instanceof ArrayBuffer) {
-        return new Uint8Array(part);
-      }
-      if (ArrayBuffer.isView(part)) {
-        return new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
-      }
-      // For blob parts, we'd need to get their bytes - handled in isolate
-      return new TextEncoder().encode(String(part));
-    });
+      segments.push({ kind: "bytes", bytes: partToBytes(part) });
+    }
+    return normalizeSegments(segments);
+  };
+
+  const getState = (instanceId: number): BlobState => {
+    const state = stateMap.get(instanceId);
+    if (!isBlobState(state)) {
+      throw new Error("[TypeError]Invalid Blob");
+    }
+    return state;
+  };
+
+  const readAllBytesSync = (instanceId: number): Uint8Array => {
+    const state = stateMap.get(instanceId);
+    if (!isBlobState(state)) {
+      return new Uint8Array(0);
+    }
+    try {
+      return concatByteSegments(state.segments);
+    } catch (error) {
+      throw encodeBlobError(error);
+    }
   };
 
   // Register helper callbacks
@@ -1822,14 +2039,14 @@ async function injectBlob(
   // Blob constructor
   global.setSync(
     "__Blob_construct",
-    new ivm.Callback((parts: unknown[], options?: { type?: string }) => {
+    new ivm.Callback((parts: unknown, options?: { type?: string }) => {
+      const segments = partsToSegments(parts);
       const instanceId = nextInstanceId++;
-      const bytes = partsToBytes(parts || []);
-      const size = bytes.reduce((acc, b) => acc + b.length, 0);
       const state: BlobState = {
-        parts: bytes,
-        type: options?.type?.toLowerCase() || "",
-        size,
+        __blob: true,
+        segments,
+        type: normalizeBlobType(options?.type),
+        size: getSegmentsSize(segments),
       };
       stateMap.set(instanceId, state);
       return instanceId;
@@ -1839,61 +2056,97 @@ async function injectBlob(
   global.setSync(
     "__Blob_get_size",
     new ivm.Callback((instanceId: number) => {
-      const state = stateMap.get(instanceId) as BlobState;
-      return state?.size ?? 0;
+      const state = stateMap.get(instanceId);
+      return isBlobState(state) ? state.size : 0;
     })
   );
 
   global.setSync(
     "__Blob_get_type",
     new ivm.Callback((instanceId: number) => {
-      const state = stateMap.get(instanceId) as BlobState;
-      return state?.type ?? "";
+      const state = stateMap.get(instanceId);
+      return isBlobState(state) ? state.type : "";
+    })
+  );
+
+  global.setSync(
+    "__Blob_isLazy",
+    new ivm.Callback((instanceId: number) => {
+      const state = stateMap.get(instanceId);
+      return isBlobState(state) && hasSourceSegments(state.segments);
     })
   );
 
   global.setSync(
     "__Blob_text",
     new ivm.Callback((instanceId: number) => {
-      const state = stateMap.get(instanceId) as BlobState;
-      if (!state) return "";
-      const combined = new Uint8Array(state.size);
-      let offset = 0;
-      for (const part of state.parts) {
-        combined.set(part, offset);
-        offset += part.length;
-      }
-      return new TextDecoder().decode(combined);
+      return new TextDecoder().decode(readAllBytesSync(instanceId));
     })
   );
 
   global.setSync(
     "__Blob_arrayBuffer",
     new ivm.Callback((instanceId: number) => {
-      const state = stateMap.get(instanceId) as BlobState;
-      if (!state) return new ivm.ExternalCopy(new ArrayBuffer(0)).copyInto();
-      const combined = new Uint8Array(state.size);
-      let offset = 0;
-      for (const part of state.parts) {
-        combined.set(part, offset);
-        offset += part.length;
-      }
-      return new ivm.ExternalCopy(combined.buffer).copyInto();
+      const bytes = readAllBytesSync(instanceId);
+      return new ivm.ExternalCopy(toExactArrayBuffer(bytes)).copyInto();
     })
   );
 
   global.setSync(
     "__Blob_bytes",
     new ivm.Callback((instanceId: number) => {
-      const state = stateMap.get(instanceId) as BlobState;
-      if (!state) return new ivm.ExternalCopy(new Uint8Array(0)).copyInto();
-      const combined = new Uint8Array(state.size);
-      let offset = 0;
-      for (const part of state.parts) {
-        combined.set(part, offset);
-        offset += part.length;
+      const bytes = readAllBytesSync(instanceId);
+      return new ivm.ExternalCopy(bytes).copyInto();
+    })
+  );
+
+  // Explicit, size-limited materialization of lazily read blobs.
+  global.setSync(
+    "__Blob_read_ref",
+    createAsyncReference(async (instanceId: number, asText: boolean) => {
+      try {
+        const state = getState(instanceId);
+        const bytes = await readBlobBody(state.segments, {
+          maxBytes: getBlobLimits(context).maxMaterializeBytes,
+        });
+        return asText ? new TextDecoder().decode(bytes) : toExactArrayBuffer(bytes);
+      } catch (error) {
+        throw encodeBlobError(error);
       }
-      return new ivm.ExternalCopy(combined).copyInto();
+    })
+  );
+
+  // Pull-based, bounded-chunk reading for blob.stream().
+  global.setSync(
+    "__Blob_openReader",
+    new ivm.Callback((instanceId: number) => {
+      try {
+        return openBlobReader(context, getState(instanceId).segments);
+      } catch (error) {
+        throw encodeBlobError(error);
+      }
+    })
+  );
+
+  global.setSync(
+    "__Blob_readChunk_ref",
+    createAsyncReference(async (readerId: number) => {
+      try {
+        const chunk = await readBlobReader(context, readerId);
+        if (chunk === null) {
+          return { done: true };
+        }
+        return { done: false, value: toExactArrayBuffer(chunk) };
+      } catch (error) {
+        throw encodeBlobError(error);
+      }
+    })
+  );
+
+  global.setSync(
+    "__Blob_closeReader",
+    new ivm.Callback((readerId: number) => {
+      closeBlobReader(context, readerId);
     })
   );
 
@@ -1906,35 +2159,24 @@ async function injectBlob(
         end?: number,
         contentType?: string
       ) => {
-        const state = stateMap.get(instanceId) as BlobState;
-        if (!state) {
-          const newId = nextInstanceId++;
-          stateMap.set(newId, { parts: [], type: "", size: 0 });
+        const state = stateMap.get(instanceId);
+        const newId = nextInstanceId++;
+        if (!isBlobState(state)) {
+          stateMap.set(newId, { __blob: true, segments: [], type: "", size: 0 } satisfies BlobState);
           return newId;
         }
 
-        // Combine all parts
-        const combined = new Uint8Array(state.size);
-        let offset = 0;
-        for (const part of state.parts) {
-          combined.set(part, offset);
-          offset += part.length;
-        }
-
-        // Handle negative indices
-        let s = start ?? 0;
-        let e = end ?? state.size;
-        if (s < 0) s = Math.max(0, state.size + s);
-        if (e < 0) e = Math.max(0, state.size + e);
-        s = Math.min(s, state.size);
-        e = Math.min(e, state.size);
-
-        const sliced = combined.slice(s, e);
-        const newId = nextInstanceId++;
+        const relativeStart = relativeBlobIndex(start, state.size, 0);
+        const relativeEnd = relativeBlobIndex(end, state.size, state.size);
+        const span = Math.max(relativeEnd - relativeStart, 0);
+        const segments = sliceSegments(state.segments, relativeStart, relativeStart + span);
         const newState: BlobState = {
-          parts: [sliced],
-          type: contentType ?? state.type,
-          size: sliced.length,
+          __blob: true,
+          segments,
+          type: contentType === undefined || contentType === null
+            ? state.type
+            : normalizeBlobType(String(contentType)),
+          size: span,
         };
         stateMap.set(newId, newState);
         return newId;
@@ -1947,19 +2189,20 @@ async function injectBlob(
     "__File_construct",
     new ivm.Callback(
       (
-        parts: unknown[],
+        parts: unknown,
         name: string,
         options?: { type?: string; lastModified?: number }
       ) => {
+        const segments = partsToSegments(parts);
         const instanceId = nextInstanceId++;
-        const bytes = partsToBytes(parts || []);
-        const size = bytes.reduce((acc, b) => acc + b.length, 0);
+        const lastModified = Number(options?.lastModified);
         const state: FileState = {
-          parts: bytes,
-          type: options?.type?.toLowerCase() || "",
-          size,
+          __blob: true,
+          segments,
+          type: normalizeBlobType(options?.type),
+          size: getSegmentsSize(segments),
           name: String(name),
-          lastModified: options?.lastModified ?? Date.now(),
+          lastModified: Number.isFinite(lastModified) ? lastModified : Date.now(),
         };
         stateMap.set(instanceId, state);
         return instanceId;
@@ -1970,16 +2213,16 @@ async function injectBlob(
   global.setSync(
     "__File_get_name",
     new ivm.Callback((instanceId: number) => {
-      const state = stateMap.get(instanceId) as FileState;
-      return state?.name ?? "";
+      const state = stateMap.get(instanceId);
+      return isFileState(state) ? state.name : "";
     })
   );
 
   global.setSync(
     "__File_get_lastModified",
     new ivm.Callback((instanceId: number) => {
-      const state = stateMap.get(instanceId) as FileState;
-      return state?.lastModified ?? 0;
+      const state = stateMap.get(instanceId);
+      return isFileState(state) ? state.lastModified : 0;
     })
   );
 
@@ -1989,23 +2232,94 @@ async function injectBlob(
 (function() {
   const _blobInstanceIds = new WeakMap();
 
+  function __decodeBlobError(err) {
+    if (!(err instanceof Error)) return err;
+    const match = err.message.match(/^\\[([A-Za-z]+)\\]([\\s\\S]*)$/);
+    if (!match) return err;
+    const [, name, message] = match;
+    if (name === 'TypeError' || name === 'RangeError') {
+      return new globalThis[name](message);
+    }
+    if (name !== 'Error' && typeof DOMException === 'function') {
+      return new DOMException(message, name);
+    }
+    return new Error(message);
+  }
+
+  // Blob parts are passed to the host by reference so composing blobs never
+  // reads their (possibly disk-backed) contents.
+  function __toBlobParts(parts) {
+    const result = [];
+    if (parts === null || parts === undefined) return result;
+    for (const part of parts) {
+      if (part instanceof Blob) {
+        result.push({ __blobRef: part._getInstanceId() });
+      } else if (typeof part === 'string' || part instanceof ArrayBuffer || ArrayBuffer.isView(part)) {
+        result.push(part);
+      } else {
+        result.push(String(part));
+      }
+    }
+    return result;
+  }
+
+  async function __readBlob(instanceId, asText) {
+    try {
+      return await __Blob_read_ref.apply(undefined, [instanceId, asText], {
+        result: { promise: true, copy: true },
+      });
+    } catch (err) {
+      throw __decodeBlobError(err);
+    }
+  }
+
+  function __createBlobStream(instanceId) {
+    let readerId = null;
+    let finished = false;
+    const close = () => {
+      if (readerId !== null) {
+        const id = readerId;
+        readerId = null;
+        __Blob_closeReader(id);
+      }
+    };
+    return new ReadableStream({
+      async pull(controller) {
+        if (finished) return;
+        try {
+          if (readerId === null) {
+            readerId = __Blob_openReader(instanceId);
+          }
+          const result = await __Blob_readChunk_ref.apply(undefined, [readerId], {
+            result: { promise: true, copy: true },
+          });
+          if (result.done) {
+            finished = true;
+            readerId = null;
+            controller.close();
+            return;
+          }
+          controller.enqueue(new Uint8Array(result.value));
+        } catch (err) {
+          finished = true;
+          close();
+          controller.error(__decodeBlobError(err));
+        }
+      },
+      cancel() {
+        finished = true;
+        close();
+      }
+    });
+  }
+
   class Blob {
     constructor(parts = [], options = {}) {
       if (parts === null && options === null) {
         // Internal: creating from existing instance ID (set via _setInstanceId)
         return;
       }
-      // Pre-process parts: extract bytes from Blob/File instances
-      const processedParts = [];
-      for (const part of (parts || [])) {
-        if (part instanceof Blob) {
-          // Get bytes synchronously via host callback
-          processedParts.push(__Blob_bytes(part._getInstanceId()));
-        } else {
-          processedParts.push(part);
-        }
-      }
-      const instanceId = __Blob_construct(processedParts, options);
+      const instanceId = __Blob_construct(__toBlobParts(parts), options ?? {});
       _blobInstanceIds.set(this, instanceId);
     }
 
@@ -2028,15 +2342,23 @@ async function injectBlob(
     }
 
     async text() {
-      return await __Blob_text(this._getInstanceId());
+      const instanceId = this._getInstanceId();
+      if (__Blob_isLazy(instanceId)) {
+        return await __readBlob(instanceId, true);
+      }
+      return __Blob_text(instanceId);
     }
 
     async arrayBuffer() {
-      return await __Blob_arrayBuffer(this._getInstanceId());
+      const instanceId = this._getInstanceId();
+      if (__Blob_isLazy(instanceId)) {
+        return await __readBlob(instanceId, false);
+      }
+      return __Blob_arrayBuffer(instanceId);
     }
 
     async bytes() {
-      return await __Blob_bytes(this._getInstanceId());
+      return new Uint8Array(await this.arrayBuffer());
     }
 
     slice(start, end, contentType) {
@@ -2045,14 +2367,7 @@ async function injectBlob(
     }
 
     stream() {
-      const blob = this;
-      return new ReadableStream({
-        async start(controller) {
-          const buffer = await blob.arrayBuffer();
-          controller.enqueue(new Uint8Array(buffer));
-          controller.close();
-        }
-      });
+      return __createBlobStream(this._getInstanceId());
     }
   }
 
@@ -2060,17 +2375,14 @@ async function injectBlob(
     constructor(parts, name, options = {}) {
       // Create file through host callback
       super(null, null);
-      // Pre-process parts: extract bytes from Blob/File instances
-      const processedParts = [];
-      for (const part of (parts || [])) {
-        if (part instanceof Blob) {
-          processedParts.push(__Blob_bytes(part._getInstanceId()));
-        } else {
-          processedParts.push(part);
-        }
-      }
-      const instanceId = __File_construct(processedParts, name, options);
+      const instanceId = __File_construct(__toBlobParts(parts), name, options ?? {});
       _blobInstanceIds.set(this, instanceId);
+    }
+
+    static _createFromInstanceId(instanceId) {
+      const file = Object.create(File.prototype);
+      _blobInstanceIds.set(file, instanceId);
+      return file;
     }
 
     get name() {
