@@ -1,7 +1,14 @@
 import * as nodeFs from "node:fs";
 import * as nodePath from "node:path";
 import { lookup as mimeLookup } from "mime-types";
-import type { FileSystemHandler } from "./index.ts";
+import {
+  createConfinedRoot,
+  fileVersion,
+  openConfinedFile,
+  openConfinedFileRangeStream,
+  readConfinedFile,
+} from "./confined-file.ts";
+import type { FileSystemHandler, OpenedFile } from "./index.ts";
 
 export interface NodeFileSystemHandlerOptions {
   /** Custom fs module (e.g., memfs for testing). Defaults to Node.js fs */
@@ -10,6 +17,10 @@ export interface NodeFileSystemHandlerOptions {
 
 /**
  * Create a FileSystemHandler backed by the Node.js filesystem
+ *
+ * With the default Node.js filesystem, reads are confined to `rootPath` (no
+ * traversal or symlink escapes) and `openFile()` returns lazy, version-pinned
+ * file snapshots, so `getFile()` never loads file contents eagerly.
  *
  * @param rootPath - Absolute path to the root directory for the sandbox
  * @param options - Optional configuration
@@ -22,7 +33,7 @@ export interface NodeFileSystemHandlerOptions {
  *
  * // Use with createRuntime
  * const runtime = await createRuntime({
- *   fs: { handler }
+ *   fs: { getDirectory: async () => handler }
  * });
  */
 export function createNodeFileSystemHandler(
@@ -31,9 +42,11 @@ export function createNodeFileSystemHandler(
 ): FileSystemHandler {
   const fs = options?.fs ?? nodeFs;
   const fsPromises = fs.promises;
+  const usesNodeFs = !options?.fs;
 
   // Resolve the root path to ensure it's absolute
   const resolvedRoot = nodePath.resolve(rootPath);
+  const confinedRoot = createConfinedRoot(resolvedRoot);
 
   /**
    * Map a virtual path to a real filesystem path
@@ -92,7 +105,55 @@ export function createNodeFileSystemHandler(
     return result || "application/octet-stream";
   }
 
+  /**
+   * Convert confined-file errors to the bracketed error names used by the
+   * isolate-side File System API.
+   */
+  function toHandlerError(err: unknown): Error {
+    if (err instanceof Error && err.message.startsWith("[")) {
+      return err;
+    }
+    if (err instanceof Error && err.name && err.name !== "Error") {
+      return new Error(`[${err.name}]${err.message}`);
+    }
+    return mapError(err, "readFile");
+  }
+
+  const openFile = usesNodeFs
+    ? async (path: string): Promise<OpenedFile> => {
+        let file: Awaited<ReturnType<typeof openConfinedFile>>;
+        try {
+          file = await openConfinedFile(confinedRoot, path);
+        } catch (err) {
+          throw toHandlerError(err);
+        }
+        try {
+          const size = Number(file.stats.size);
+          const version = fileVersion(file.stats);
+          return {
+            size,
+            lastModified: Number(file.stats.mtimeMs),
+            type: getMimeType(path),
+            source: {
+              size,
+              stream: (start, end, signal) =>
+                openConfinedFileRangeStream(confinedRoot, path, {
+                  start,
+                  end,
+                  version,
+                  signal,
+                }),
+            },
+          };
+        } finally {
+          // Idle lazy files hold no descriptors; streams reopen and verify the version.
+          await file.handle.close().catch(() => {});
+        }
+      }
+    : undefined;
+
   return {
+    openFile,
     async getFileHandle(
       path: string,
       options?: { create?: boolean }
@@ -204,6 +265,20 @@ export function createNodeFileSystemHandler(
       lastModified: number;
       type: string;
     }> {
+      if (usesNodeFs) {
+        try {
+          const { data, stats } = await readConfinedFile(confinedRoot, path);
+          return {
+            data,
+            size: Number(stats.size),
+            lastModified: Number(stats.mtimeMs),
+            type: getMimeType(path),
+          };
+        } catch (err) {
+          throw toHandlerError(err);
+        }
+      }
+
       const realPath = toRealPath(path);
 
       try {

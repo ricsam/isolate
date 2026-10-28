@@ -1,11 +1,28 @@
 import ivm from "@ricsam/isolated-vm";
-import { setupCore, clearAllInstanceState } from "../core/index.ts";
+import {
+  setupCore,
+  clearAllInstanceState,
+  createAsyncReference,
+  createBlobInstance,
+  type BlobByteSource,
+} from "../core/index.ts";
 
 export { clearAllInstanceState };
 
 // ============================================================================
 // FileSystemHandler Interface
 // ============================================================================
+
+/**
+ * A lazily readable file snapshot returned by `FileSystemHandler.openFile()`.
+ * Only metadata is loaded; bytes are streamed from `source` on demand.
+ */
+export interface OpenedFile {
+  size: number;
+  lastModified: number;
+  type: string;
+  source: BlobByteSource;
+}
 
 export interface FileSystemHandler {
   /** Get or create a file handle at the given path */
@@ -36,6 +53,13 @@ export interface FileSystemHandler {
     path: string
   ): Promise<{ data: Uint8Array; size: number; lastModified: number; type: string }>;
 
+  /**
+   * Open a file lazily without reading its contents. When implemented,
+   * `FileSystemFileHandle.getFile()` returns a disk-backed `File` whose bytes
+   * are only read on demand. Resolving `null` falls back to `readFile()`.
+   */
+  openFile?(path: string): Promise<OpenedFile | null>;
+
   /** Write data to a file */
   writeFile(
     path: string,
@@ -64,6 +88,15 @@ export interface FsHandle {
 // ============================================================================
 // Instance State Management
 // ============================================================================
+
+/** Error names that become DOMExceptions inside the isolate. */
+const DOM_ERROR_NAMES = new Set([
+  "NotFoundError",
+  "NotAllowedError",
+  "NotReadableError",
+  "TypeMismatchError",
+  "InvalidModificationError",
+]);
 
 const instanceStateMap = new WeakMap<ivm.Context, Map<number, unknown>>();
 let nextInstanceId = 1;
@@ -134,7 +167,7 @@ function setupFileSystemDirectoryHandle(
   );
 
   // getFileHandle - async reference
-  const getFileHandleRef = new ivm.Reference(
+  const getFileHandleRef = createAsyncReference(
     async (instanceId: number, name: string, optionsJson: string) => {
       const state = stateMap.get(instanceId) as DirectoryHandleState | undefined;
       if (!state) {
@@ -169,7 +202,7 @@ function setupFileSystemDirectoryHandle(
   global.setSync("__FileSystemDirectoryHandle_getFileHandle_ref", getFileHandleRef);
 
   // getDirectoryHandle - async reference
-  const getDirectoryHandleRef = new ivm.Reference(
+  const getDirectoryHandleRef = createAsyncReference(
     async (instanceId: number, name: string, optionsJson: string) => {
       const state = stateMap.get(instanceId) as DirectoryHandleState | undefined;
       if (!state) {
@@ -204,7 +237,7 @@ function setupFileSystemDirectoryHandle(
   global.setSync("__FileSystemDirectoryHandle_getDirectoryHandle_ref", getDirectoryHandleRef);
 
   // removeEntry - async reference
-  const removeEntryRef = new ivm.Reference(
+  const removeEntryRef = createAsyncReference(
     async (instanceId: number, name: string, optionsJson: string) => {
       const state = stateMap.get(instanceId) as DirectoryHandleState | undefined;
       if (!state) {
@@ -227,7 +260,7 @@ function setupFileSystemDirectoryHandle(
   global.setSync("__FileSystemDirectoryHandle_removeEntry_ref", removeEntryRef);
 
   // readDirectory - async reference (for entries/keys/values)
-  const readDirectoryRef = new ivm.Reference(async (instanceId: number) => {
+  const readDirectoryRef = createAsyncReference(async (instanceId: number) => {
     const state = stateMap.get(instanceId) as DirectoryHandleState | undefined;
     if (!state) {
       throw new Error("[NotFoundError]Directory handle not found");
@@ -288,7 +321,7 @@ function setupFileSystemDirectoryHandle(
   );
 
   // resolve - async reference
-  const resolveRef = new ivm.Reference(
+  const resolveRef = createAsyncReference(
     async (instanceId: number, descendantId: number) => {
       const state = stateMap.get(instanceId) as DirectoryHandleState | undefined;
       const descendantState = stateMap.get(descendantId) as
@@ -322,9 +355,9 @@ function setupFileSystemDirectoryHandle(
 
   function __decodeError(err) {
     if (!(err instanceof Error)) return err;
-    const match = err.message.match(/^\\[(TypeError|RangeError|NotFoundError|TypeMismatchError|InvalidModificationError|Error)\\](.*)$/);
+    const match = err.message.match(/^\\[(TypeError|RangeError|NotFoundError|NotAllowedError|NotReadableError|TypeMismatchError|InvalidModificationError|Error)\\](.*)$/);
     if (match) {
-      if (['NotFoundError', 'TypeMismatchError', 'InvalidModificationError'].includes(match[1])) {
+      if (['NotFoundError', 'NotAllowedError', 'NotReadableError', 'TypeMismatchError', 'InvalidModificationError'].includes(match[1])) {
         return new DOMException(match[2], match[1]);
       }
       const ErrorType = globalThis[match[1]] || Error;
@@ -496,23 +529,40 @@ function setupFileSystemFileHandle(
   );
 
   // getFile - async reference
-  const getFileRef = new ivm.Reference(async (instanceId: number) => {
+  // Returns the instance id of a host-side File. Lazy handlers produce a
+  // disk-backed File whose contents are never copied into the isolate; eager
+  // handlers store the bytes host-side.
+  const getFileRef = createAsyncReference(async (instanceId: number) => {
     const state = stateMap.get(instanceId) as FileHandleState | undefined;
     if (!state) {
       throw new Error("[NotFoundError]File handle not found");
     }
 
     try {
+      const opened = state.handler.openFile
+        ? await state.handler.openFile(state.path)
+        : null;
+      if (opened) {
+        return createBlobInstance(context, {
+          segments: [
+            { kind: "source", source: opened.source, start: 0, end: opened.size },
+          ],
+          type: opened.type,
+          file: { name: state.name, lastModified: opened.lastModified },
+        });
+      }
+
       const fileData = await state.handler.readFile(state.path);
-      return new ivm.ExternalCopy({
-        name: state.name,
-        data: fileData.data,
-        size: fileData.size,
-        lastModified: fileData.lastModified,
+      return createBlobInstance(context, {
+        segments: [{ kind: "bytes", bytes: fileData.data }],
         type: fileData.type,
-      }).copyInto();
+        file: { name: state.name, lastModified: fileData.lastModified },
+      });
     } catch (err) {
       if (err instanceof Error) {
+        if (!/^\[[A-Za-z]+\]/.test(err.message) && DOM_ERROR_NAMES.has(err.name)) {
+          throw new Error(`[${err.name}]${err.message}`);
+        }
         throw new Error(err.message);
       }
       throw err;
@@ -521,7 +571,7 @@ function setupFileSystemFileHandle(
   global.setSync("__FileSystemFileHandle_getFile_ref", getFileRef);
 
   // createWritable - async reference
-  const createWritableRef = new ivm.Reference(
+  const createWritableRef = createAsyncReference(
     async (instanceId: number, _optionsJson: string) => {
       const state = stateMap.get(instanceId) as FileHandleState | undefined;
       if (!state) {
@@ -563,9 +613,9 @@ function setupFileSystemFileHandle(
 
   function __decodeError(err) {
     if (!(err instanceof Error)) return err;
-    const match = err.message.match(/^\\[(TypeError|RangeError|NotFoundError|TypeMismatchError|InvalidModificationError|Error)\\](.*)$/);
+    const match = err.message.match(/^\\[(TypeError|RangeError|NotFoundError|NotAllowedError|NotReadableError|TypeMismatchError|InvalidModificationError|Error)\\](.*)$/);
     if (match) {
-      if (['NotFoundError', 'TypeMismatchError', 'InvalidModificationError'].includes(match[1])) {
+      if (['NotFoundError', 'NotAllowedError', 'NotReadableError', 'TypeMismatchError', 'InvalidModificationError'].includes(match[1])) {
         return new DOMException(match[2], match[1]);
       }
       const ErrorType = globalThis[match[1]] || Error;
@@ -603,18 +653,12 @@ function setupFileSystemFileHandle(
 
     async getFile() {
       try {
-        const metadata = await __FileSystemFileHandle_getFile_ref.apply(
+        const fileInstanceId = await __FileSystemFileHandle_getFile_ref.apply(
           undefined,
           [this._getInstanceId()],
           { result: { promise: true, copy: true } }
         );
-        const content = metadata.data instanceof Uint8Array
-          ? metadata.data
-          : new Uint8Array(metadata.data);
-        return new File([content], metadata.name, {
-          type: metadata.type,
-          lastModified: metadata.lastModified
-        });
+        return File._createFromInstanceId(fileInstanceId);
       } catch (err) {
         throw __decodeError(err);
       }
@@ -662,7 +706,7 @@ function setupFileSystemWritableFileStream(
   const global = context.global;
 
   // write - async reference
-  const writeRef = new ivm.Reference(
+  const writeRef = createAsyncReference(
     async (instanceId: number, bytesJson: string, position: number | null) => {
       const state = stateMap.get(instanceId) as WritableStreamState | undefined;
       if (!state) {
@@ -710,7 +754,7 @@ function setupFileSystemWritableFileStream(
   );
 
   // truncate - async reference
-  const truncateRef = new ivm.Reference(async (instanceId: number, size: number) => {
+  const truncateRef = createAsyncReference(async (instanceId: number, size: number) => {
     const state = stateMap.get(instanceId) as WritableStreamState | undefined;
     if (!state) {
       throw new Error("[InvalidStateError]Stream not found");
@@ -735,7 +779,7 @@ function setupFileSystemWritableFileStream(
   global.setSync("__FileSystemWritableFileStream_truncate_ref", truncateRef);
 
   // close - async reference
-  const closeRef = new ivm.Reference(async (instanceId: number) => {
+  const closeRef = createAsyncReference(async (instanceId: number) => {
     const state = stateMap.get(instanceId) as WritableStreamState | undefined;
     if (!state) {
       throw new Error("[InvalidStateError]Stream not found");
@@ -749,7 +793,7 @@ function setupFileSystemWritableFileStream(
   global.setSync("__FileSystemWritableFileStream_close_ref", closeRef);
 
   // abort - async reference
-  const abortRef = new ivm.Reference(async (instanceId: number, _reason: string | null) => {
+  const abortRef = createAsyncReference(async (instanceId: number, _reason: string | null) => {
     const state = stateMap.get(instanceId) as WritableStreamState | undefined;
     if (!state) {
       throw new Error("[InvalidStateError]Stream not found");
@@ -981,7 +1025,7 @@ function setupGetDirectoryGlobal(
   const global = context.global;
 
   // getDirectory - async reference that creates directory handle at specified path
-  const getDirectoryRef = new ivm.Reference(async (path: string) => {
+  const getDirectoryRef = createAsyncReference(async (path: string) => {
     // Get handler for this path from the options factory
     const handler = await options.getDirectory(path);
 

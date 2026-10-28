@@ -117,6 +117,10 @@ export interface CallbackContext {
     unlink?: number;
     mkdir?: number;
     rmdir?: number;
+    /** Opens a lazy, client-owned file and returns a capability token */
+    openFile?: number;
+    /** Reads a bounded byte range of a client-owned file by capability token */
+    readFileChunk?: number;
   };
   /** Custom function callback IDs by name */
   custom: Map<string, number>;

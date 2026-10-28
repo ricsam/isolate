@@ -95,9 +95,11 @@ function createAbortSignalComposer() {
   const controllers = new Set<AbortController>();
 
   const compose = (...signals: Array<AbortSignal | undefined>): AbortSignal => {
-    const activeSignals = signals.filter(
-      (signal): signal is AbortSignal => signal !== undefined,
-    );
+    const activeSignals = [
+      ...new Set(
+        signals.filter((signal): signal is AbortSignal => signal !== undefined),
+      ),
+    ];
 
     if (activeSignals.length === 0) {
       return AbortSignal.abort(createAbortError());
@@ -252,6 +254,53 @@ function normalizeFetchResponse(value: unknown): Response {
   throw new TypeError("Fetch bindings must return a Response.");
 }
 
+/**
+ * Wrap a binding stream so diagnostics can observe when it settles
+ * (fully read, errored, or cancelled).
+ */
+function trackStreamLifetime(
+  stream: ReadableStream<Uint8Array>,
+  onSettled: () => void,
+): ReadableStream<Uint8Array> {
+  if (!stream || typeof (stream as { getReader?: unknown }).getReader !== "function") {
+    onSettled();
+    throw new TypeError("files.readFileStream must return a ReadableStream.");
+  }
+
+  const reader = stream.getReader();
+  let settled = false;
+  const settle = () => {
+    if (!settled) {
+      settled = true;
+      onSettled();
+    }
+  };
+
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            settle();
+            controller.close();
+            return;
+          }
+          controller.enqueue(value);
+        } catch (error) {
+          settle();
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        settle();
+        await reader.cancel(reason).catch(() => {});
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
+
 export function createRuntimeBindingsAdapter(
   bindings: HostBindings,
   getRuntimeId: () => string,
@@ -333,6 +382,43 @@ export function createRuntimeBindingsAdapter(
                     diagnostics.pendingFiles -= 1;
                     diagnostics.activeResources -= 1;
                   }
+                }
+              : undefined,
+            readFileStream: bindings.files.readFileStream
+              ? async (
+                  filePath: string,
+                  streamOptions: {
+                    start: number;
+                    end: number;
+                    version?: string;
+                    signal?: AbortSignal;
+                  },
+                ) => {
+                  diagnostics.pendingFiles += 1;
+                  diagnostics.activeResources += 1;
+                  let stream: ReadableStream<Uint8Array>;
+                  try {
+                    const context = contextFactory.createHostCallContext(
+                      `files:readStream:${crypto.randomUUID()}`,
+                      streamOptions.signal,
+                    );
+                    stream = await bindings.files!.readFileStream!(
+                      filePath,
+                      {
+                        start: streamOptions.start,
+                        end: streamOptions.end,
+                        version: streamOptions.version,
+                      },
+                      context,
+                    );
+                  } finally {
+                    diagnostics.pendingFiles -= 1;
+                    diagnostics.activeResources -= 1;
+                  }
+                  diagnostics.streamCount += 1;
+                  return trackStreamLifetime(stream, () => {
+                    diagnostics.streamCount -= 1;
+                  });
                 }
               : undefined,
             writeFile: bindings.files.writeFile

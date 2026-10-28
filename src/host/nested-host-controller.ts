@@ -212,6 +212,21 @@ function toRequest(serialized: SerializedRequestLike): Request {
   });
 }
 
+/**
+ * Isolate-authored file bindings cannot hand host-side streams back to the
+ * runtime, so nested runtimes keep eager reads instead of lazy, disk-backed
+ * files.
+ */
+function normalizeNestedFileBindings(
+  files: HostBindings["files"],
+): HostBindings["files"] {
+  if (!files) {
+    return undefined;
+  }
+  const { readFileStream: _readFileStream, ...eagerBindings } = files;
+  return eagerBindings;
+}
+
 function normalizeBindings(
   bindings: HostBindings | undefined,
   defaultBrowserSource: BrowserSource | undefined,
@@ -223,7 +238,7 @@ function normalizeBindings(
     fetch: bindings?.fetch ?? (
       policy.fetch === "inherit" ? inheritedBindings.fetch : undefined
     ),
-    files: bindings?.files,
+    files: normalizeNestedFileBindings(bindings?.files),
     modules: bindings?.modules,
     tools: bindings?.tools,
   };

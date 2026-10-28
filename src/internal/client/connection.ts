@@ -7,6 +7,14 @@ import path from "node:path";
 import { getRequestContext, withRequestContext } from "../../bridge/request-context.ts";
 import { invokeBestEffortEventHandler } from "../event-callback.ts";
 import {
+  MAX_FILE_CHUNK_BYTES,
+  assertCapabilityRange,
+  createCapabilityBodyStream,
+  createFileCapabilityAuthority,
+  readStreamExactly,
+  type FileCapabilityAuthority,
+} from "./file-capabilities.ts";
+import {
   createFrameParser,
   buildFrame,
   MessageType,
@@ -29,6 +37,7 @@ import {
   type CreateRuntimeResult,
   type SerializedRequest,
   type SerializedResponse,
+  type OpenedFileDescriptor,
   type RunTestsRequest,
   type RunTestsResult,
   type HasTestsRequest,
@@ -208,6 +217,8 @@ interface StreamUploadSession {
 interface NamespacedRuntimeDescriptor {
   isolateId: string;
   runtimeOptions: RuntimeOptions;
+  /** File capability authority of this runtime's bindings (kept across reconnects). */
+  fileAuthority?: FileCapabilityAuthority;
   syncIsolateId(nextIsolateId: string): void;
 }
 
@@ -258,6 +269,16 @@ export function __unstableGetNamespacedRuntimeDescriptorForTests(
   namespaceId: string,
 ): Pick<NamespacedRuntimeDescriptor, "isolateId" | "syncIsolateId"> | undefined {
   return daemonConnectionStates.get(connection)?.namespacedRuntimes.get(namespaceId);
+}
+
+/** Bytes exchanged with the daemon over this connection's socket (tests only). */
+export function __unstableGetConnectionTrafficForTests(
+  connection: DaemonConnection,
+): { bytesRead: number; bytesWritten: number } | undefined {
+  const socket = daemonConnectionStates.get(connection)?.socket;
+  return socket
+    ? { bytesRead: socket.bytesRead, bytesWritten: socket.bytesWritten }
+    : undefined;
 }
 
 /**
@@ -394,7 +415,7 @@ export async function connect(options: ConnectOptions = {}): Promise<DaemonConne
           callbacks.fetch = registerFetchCallback(st, runtimeOptions.fetch);
         }
         if (runtimeOptions.fs) {
-          callbacks.fs = registerFsCallbacks(st, runtimeOptions.fs);
+          callbacks.fs = registerFsCallbacks(st, runtimeOptions.fs, descriptor.fileAuthority);
         }
         if (runtimeOptions.moduleLoader) {
           callbacks.moduleLoader = registerModuleLoaderCallback(st, runtimeOptions.moduleLoader);
@@ -1087,8 +1108,15 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
     callbacks.fetch = registerFetchCallback(state, options.fetch);
   }
 
+  // Bindings that can stream byte ranges get lazy, disk-backed files. Their
+  // capability tokens are sealed by a key private to this runtime.
+  const fileAuthority =
+    options.fs?.readFileStream && options.fs?.stat
+      ? createFileCapabilityAuthority()
+      : undefined;
+
   if (options.fs) {
-    callbacks.fs = registerFsCallbacks(state, options.fs);
+    callbacks.fs = registerFsCallbacks(state, options.fs, fileAuthority);
   }
 
   if (options.moduleLoader) {
@@ -1250,6 +1278,7 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
     namespacedDescriptor = {
       isolateId: currentIsolateId,
       runtimeOptions: runtimeOptionsForReconnect as RuntimeOptions,
+      fileAuthority,
       syncIsolateId: syncCurrentIsolateId,
     };
     state.namespacedRuntimes.set(namespaceId, namespacedDescriptor);
@@ -1267,12 +1296,54 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
     isolateWebSocketCallbacks.set(getCurrentIsolateId(), options.webSocket);
   }
 
+  /**
+   * Build the Response for a body that the daemon handed back as a file
+   * capability. The token must have been minted by this runtime's bindings;
+   * the bytes are streamed directly from those bindings.
+   */
+  const createFileBodyResponse = async (
+    serialized: SerializedResponse,
+    requestContext: { requestId?: string; metadata?: Record<string, string> },
+  ): Promise<Response> => {
+    const fileBody = serialized.fileBody!;
+    const readFileStream = options.fs?.readFileStream;
+    if (!fileAuthority || !readFileStream) {
+      throw new Error("Received a file response body, but this runtime has no streaming file bindings");
+    }
+
+    const capability = fileAuthority.verify(fileBody.token);
+    const range = assertCapabilityRange(capability, fileBody.start, fileBody.end);
+
+    // Fail before the response is handed out if the file changed since it
+    // was opened (the stream re-checks when it starts reading).
+    const current = await options.fs!.stat!(capability.path);
+    if (
+      !current.isFile ||
+      current.size !== capability.size ||
+      (capability.version !== undefined && current.version !== capability.version)
+    ) {
+      const error = new Error(`File changed since it was opened: ${capability.path}`);
+      error.name = "NotReadableError";
+      throw error;
+    }
+
+    const body = NULL_BODY_STATUSES.has(serialized.status)
+      ? null
+      : createCapabilityBodyStream(readFileStream, capability, range, requestContext);
+    return new Response(body, {
+      status: serialized.status,
+      statusText: serialized.statusText,
+      headers: serialized.headers,
+    });
+  };
+
   // Create fetch handle
   const fetchHandle: RemoteFetchHandle = {
     async dispatchRequest(req: Request, opts?: DispatchOptions) {
       const signal = opts?.signal;
       const requestSignal = req.signal;
       const requestSignalInitiallyAborted = requestSignal?.aborted ?? false;
+      const requestContext = getRequestContext();
 
       const reqId = state.nextRequestId++;
       const serialized = await serializeRequestWithStreaming(state, req);
@@ -1293,14 +1364,19 @@ async function createRuntime<T extends Record<string, any[]> = Record<string, un
           : undefined,
       };
 
-      // Helper to handle response which may be streaming or buffered
-      const handleResponse = (res: { response: SerializedResponse | Response; __streaming?: boolean }): Response => {
+      // Helper to handle response which may be streaming, buffered, or a
+      // client-owned file range that the daemon handed back by capability.
+      const handleResponse = async (res: { response: SerializedResponse | Response; __streaming?: boolean }): Promise<Response> => {
         // Streaming case: already a Response
         if (res.__streaming && res.response instanceof Response) {
           return res.response;
         }
+        const serialized = res.response as SerializedResponse;
+        if (serialized.fileBody) {
+          return await createFileBodyResponse(serialized, requestContext);
+        }
         // Buffered case: deserialize SerializedResponse
-        return deserializeResponse(res.response as SerializedResponse);
+        return deserializeResponse(serialized);
       };
 
       // Set up abort signal handling
@@ -1947,12 +2023,75 @@ async function streamCallbackResponseBody(
 
 /**
  * Register file system callbacks.
+ *
+ * When `fileAuthority` is given (bindings provide `stat()` and
+ * `readFileStream()`), also registers the lazy-file callbacks: `openFile`
+ * mints a capability token for a file snapshot and `readFileChunk` reads a
+ * bounded byte range of a file identified by such a token.
  */
 function registerFsCallbacks(
   state: ConnectionState,
-  callbacks: FileSystemCallbacks
+  callbacks: FileSystemCallbacks,
+  fileAuthority?: FileCapabilityAuthority,
 ): Record<string, CallbackRegistration> {
   const registrations: Record<string, CallbackRegistration> = {};
+
+  if (fileAuthority && callbacks.stat && callbacks.readFileStream) {
+    const stat = callbacks.stat;
+    const readFileStream = callbacks.readFileStream;
+
+    // openFile: (path: string) => Promise<OpenedFileDescriptor>
+    const openFileId = state.nextCallbackId++;
+    state.callbacks.set(openFileId, async (path: unknown): Promise<OpenedFileDescriptor> => {
+      const filePath = String(path);
+      const result = await stat(filePath);
+      if (!result.isFile) {
+        const error = new Error(`Not a file: ${filePath}`);
+        error.name = "TypeMismatchError";
+        throw error;
+      }
+      if (!Number.isSafeInteger(result.size) || result.size < 0) {
+        throw new TypeError(`files.stat returned an invalid size for ${filePath}`);
+      }
+      const lastModified =
+        typeof result.lastModified === "number" && Number.isFinite(result.lastModified)
+          ? result.lastModified
+          : Date.now();
+      return {
+        token: fileAuthority.mint({
+          path: filePath,
+          size: result.size,
+          version: result.version,
+          lastModified,
+        }),
+        size: result.size,
+        lastModified,
+      };
+    });
+    registrations.openFile = { callbackId: openFileId, name: "openFile", type: "async" };
+
+    // readFileChunk: (token: string, start: number, end: number) => Promise<Uint8Array>
+    const readFileChunkId = state.nextCallbackId++;
+    state.callbacks.set(readFileChunkId, async (token: unknown, start: unknown, end: unknown) => {
+      const capability = fileAuthority.verify(token);
+      const range = assertCapabilityRange(capability, start, end, MAX_FILE_CHUNK_BYTES);
+      if (range.end === range.start) {
+        return new Uint8Array(0);
+      }
+      const stream = await readFileStream(capability.path, {
+        start: range.start,
+        end: range.end,
+        version: capability.version,
+        signal: getRequestContext().signal,
+      });
+      return await readStreamExactly(stream, range.end - range.start, capability.path);
+    });
+    registrations.readFileChunk = {
+      callbackId: readFileChunkId,
+      name: "readFileChunk",
+      type: "async",
+    };
+  }
 
   // readFile: (path: string) => Promise<ArrayBuffer>
   if (callbacks.readFile) {

@@ -80,6 +80,7 @@ import {
   type MarshalContext,
 } from "../protocol/index.ts";
 import { createCallbackFileSystemHandler } from "./callback-fs-handler.ts";
+import { getDispatchedBlobBody } from "../fetch/index.ts";
 import {
   createRuntime,
   type RuntimeHandle,
@@ -863,6 +864,8 @@ function reuseNamespacedRuntime(
       unlink: callbacks?.fs?.unlink?.callbackId,
       mkdir: callbacks?.fs?.mkdir?.callbackId,
       rmdir: callbacks?.fs?.rmdir?.callbackId,
+      openFile: callbacks?.fs?.openFile?.callbackId,
+      readFileChunk: callbacks?.fs?.readFileChunk?.callbackId,
     };
 
     // Update custom function callback IDs
@@ -1169,6 +1172,8 @@ async function handleCreateRuntime(
         unlink: fsCallbacks?.unlink?.callbackId,
         mkdir: fsCallbacks?.mkdir?.callbackId,
         rmdir: fsCallbacks?.rmdir?.callbackId,
+        openFile: fsCallbacks?.openFile?.callbackId,
+        readFileChunk: fsCallbacks?.readFileChunk?.callbackId,
       },
       custom: new Map(
         customCallbacks
@@ -2046,6 +2051,27 @@ async function handleDispatchRequest(
         signal: dispatchAbortController.signal,
       });
 
+      // An untouched client-owned file body is handed back as its capability:
+      // the client verifies it and streams the bytes from its own disk.
+      const fileBody = getPassthroughFileBody(response);
+      if (fileBody) {
+        void response.body?.cancel().catch(() => {});
+        const headers: [string, string][] = [];
+        response.headers.forEach((value, key) => {
+          headers.push([key, value]);
+        });
+        sendOk(connection.socket, message.requestId, {
+          response: {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+            body: null,
+            fileBody,
+          },
+        });
+        return;
+      }
+
       // Always stream responses with a body to preserve chunk boundaries
       // Only inline responses without a body (e.g., 204 No Content)
       if (response.body) {
@@ -2087,6 +2113,28 @@ async function handleDispatchRequest(
       connection.earlyAbortedDispatches.delete(message.requestId);
     }
   });
+}
+
+/**
+ * If a dispatched response body is exactly one range of a client-owned file,
+ * return the descriptor that lets the client serve it directly.
+ */
+function getPassthroughFileBody(
+  response: Response,
+): { token: string; start: number; end: number } | undefined {
+  const blobBody = getDispatchedBlobBody(response);
+  if (!blobBody || blobBody.segments.length !== 1) {
+    return undefined;
+  }
+  const segment = blobBody.segments[0]!;
+  if (segment.kind !== "source" || !segment.source.passthrough) {
+    return undefined;
+  }
+  return {
+    token: segment.source.passthrough.token,
+    start: segment.start,
+    end: segment.end,
+  };
 }
 
 /**

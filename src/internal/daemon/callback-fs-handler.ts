@@ -3,27 +3,123 @@
  *
  * Adapts simple client callbacks (readFile, writeFile, etc.) to the
  * FileSystemHandler interface used by ../fs/index.ts.
+ *
+ * When the client registers the lazy-file callbacks (`openFile` and
+ * `readFileChunk`), files are opened as client-owned capabilities: the daemon
+ * holds only an opaque token, reads bounded chunks on demand, and hands the
+ * token back to the client when a file is returned as a response body.
  */
 
-import type { FileSystemHandler } from "../fs/index.ts";
+import { lookup as mimeLookup } from "mime-types";
+import type { BlobByteSource } from "../core/index.ts";
+import type { FileSystemHandler, OpenedFile } from "../fs/index.ts";
+import type { OpenedFileDescriptor } from "../protocol/index.ts";
 import type { ConnectionState, CallbackContext } from "./types.ts";
 
-/** Common MIME type mappings by file extension. */
-const MIME_TYPES: Record<string, string> = {
-  txt: "text/plain",
-  html: "text/html",
-  htm: "text/html",
-  css: "text/css",
-  js: "text/javascript",
-  json: "application/json",
-  xml: "application/xml",
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  svg: "image/svg+xml",
-  pdf: "application/pdf",
-};
+/** Chunk size for on-demand reads of client-owned files. */
+const REMOTE_FILE_CHUNK_SIZE = 256 * 1024;
+
+function getMimeType(path: string): string {
+  return mimeLookup(path) || "application/octet-stream";
+}
+
+function createNamedError(name: string, message: string): Error {
+  const error = new Error(message);
+  error.name = name;
+  return error;
+}
+
+const DOM_ERROR_NAMES = new Set([
+  "NotFoundError",
+  "NotAllowedError",
+  "NotReadableError",
+  "TypeMismatchError",
+  "InvalidModificationError",
+]);
+
+/** Preserve DOM-style error names from client callbacks as `[Name]message`. */
+function toHandlerError(error: unknown): Error {
+  if (error instanceof Error) {
+    if (!/^\[[A-Za-z]+\]/.test(error.message) && DOM_ERROR_NAMES.has(error.name)) {
+      return new Error(`[${error.name}]${error.message}`);
+    }
+    return error;
+  }
+  return new Error(String(error));
+}
+
+function toUint8Array(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (Array.isArray(value)) {
+    return new Uint8Array(value as number[]);
+  }
+  return new Uint8Array(0);
+}
+
+function isOpenedFileDescriptor(value: unknown): value is OpenedFileDescriptor {
+  const descriptor = value as OpenedFileDescriptor | null;
+  return (
+    descriptor !== null &&
+    typeof descriptor === "object" &&
+    typeof descriptor.token === "string" &&
+    Number.isSafeInteger(descriptor.size) &&
+    descriptor.size >= 0 &&
+    typeof descriptor.lastModified === "number"
+  );
+}
+
+/**
+ * Stream `[start, end)` of a client-owned file with bounded, pull-driven
+ * chunk reads.
+ */
+function createRemoteFileStream(
+  readChunk: (start: number, end: number, signal: AbortSignal) => Promise<Uint8Array>,
+  start: number,
+  end: number,
+  signal: AbortSignal,
+): ReadableStream<Uint8Array> {
+  let position = start;
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        if (position >= end) {
+          controller.close();
+          return;
+        }
+        if (signal.aborted) {
+          controller.error(signal.reason ?? createNamedError("AbortError", "The operation was aborted"));
+          return;
+        }
+        const chunkEnd = Math.min(end, position + REMOTE_FILE_CHUNK_SIZE);
+        try {
+          const chunk = await readChunk(position, chunkEnd, signal);
+          if (chunk.byteLength !== chunkEnd - position) {
+            throw createNamedError(
+              "NotReadableError",
+              "The file could not be read: its contents no longer match the opened snapshot",
+            );
+          }
+          position = chunkEnd;
+          controller.enqueue(chunk);
+          if (position >= end) {
+            controller.close();
+          }
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
 
 interface InvokeClientCallback {
   (
@@ -99,6 +195,59 @@ export function createCallbackFileSystemHandler(
   };
 
   return {
+    async openFile(path: string): Promise<OpenedFile | null> {
+      const openFileId = getCallbackId("openFile");
+      if (openFileId === undefined || getCallbackId("readFileChunk") === undefined) {
+        return null;
+      }
+
+      const fullPath = resolvePath(path);
+      const conn = await getConnection();
+      let descriptor: unknown;
+      try {
+        descriptor = await invokeFsCallback(conn, openFileId, [fullPath]);
+      } catch (err) {
+        throw toHandlerError(err);
+      }
+      if (!isOpenedFileDescriptor(descriptor)) {
+        throw new Error("[TypeError]Invalid openFile result from the host");
+      }
+
+      const token = descriptor.token;
+      const readChunk = async (
+        start: number,
+        end: number,
+        signal: AbortSignal,
+      ): Promise<Uint8Array> => {
+        const readFileChunkId = getCallbackId("readFileChunk");
+        if (readFileChunkId === undefined) {
+          throw createNamedError("NotReadableError", "The file is no longer available");
+        }
+        const currentConnection = await getConnection();
+        const hostSignal = getSignal?.();
+        const result = await invokeClientCallback(
+          currentConnection,
+          readFileChunkId,
+          [token, start, end],
+          { signal: hostSignal ? AbortSignal.any([signal, hostSignal]) : signal },
+        );
+        return toUint8Array(result);
+      };
+
+      const source: BlobByteSource = {
+        size: descriptor.size,
+        passthrough: { token },
+        stream: (start, end, signal) => createRemoteFileStream(readChunk, start, end, signal),
+      };
+
+      return {
+        size: descriptor.size,
+        lastModified: descriptor.lastModified,
+        type: getMimeType(path),
+        source,
+      };
+    },
+
     async getFileHandle(path: string, opts?: { create?: boolean }): Promise<void> {
       const fullPath = resolvePath(path);
       const conn = await getConnection();
@@ -308,8 +457,7 @@ export function createCallbackFileSystemHandler(
       }
 
       // Determine MIME type from extension
-      const ext = path.split(".").pop()?.toLowerCase() || "";
-      const type = MIME_TYPES[ext] || "application/octet-stream";
+      const type = getMimeType(path);
 
       return { data: bytes, size, lastModified, type };
     },
@@ -427,8 +575,7 @@ export function createCallbackFileSystemHandler(
       }
 
       // Determine MIME type from extension
-      const ext = path.split(".").pop()?.toLowerCase() || "";
-      const type = MIME_TYPES[ext] || "application/octet-stream";
+      const type = getMimeType(path);
 
       return {
         size: stat.size,

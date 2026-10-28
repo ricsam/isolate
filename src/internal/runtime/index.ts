@@ -1,7 +1,7 @@
 import ivm from "@ricsam/isolated-vm";
 import path from "node:path";
 import { invokeBestEffortEventHandler } from "../event-callback.ts";
-import { setupCore } from "../core/index.ts";
+import { setupCore, configureBlobLimits, createAsyncReference } from "../core/index.ts";
 import { setupAsyncContext } from "../async-context/index.ts";
 import { normalizeEntryFilename } from "../protocol/index.ts";
 import {
@@ -12,6 +12,9 @@ import {
   type SourceMap,
   type TransformResult,
 } from "../transform/index.ts";
+
+/** isolated-vm's default isolate memory limit (MB) when none is configured. */
+const DEFAULT_ISOLATE_MEMORY_LIMIT_MB = 128;
 
 // Re-export for convenience
 export { normalizeEntryFilename } from "../protocol/index.ts";
@@ -1051,7 +1054,7 @@ async function setupCustomFunctions(
   // Reference that invokes the callback and returns the result.
   // The first argument can be a string function name (for custom functions) or a
   // numeric callback ID (for returned callbacks/promises/iterators from marshal).
-  const invokeCallbackRef = new ivm.Reference(
+  const invokeCallbackRef = createAsyncReference(
     async (nameOrId: string | number, argsJson: string): Promise<string> => {
       // Check if this is a local callback ID (numeric, used by returned callbacks/promises/iterators)
       if (typeof nameOrId === "number" && marshalOptions) {
@@ -1827,6 +1830,14 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
 
   // Core must be first as it provides Blob, File, streams, URL, etc.
   state.handles.core = await setupCore(context);
+
+  // Explicit materialization of disk-backed files (text()/arrayBuffer()) may
+  // copy at most a quarter of the isolate heap; larger files must be streamed.
+  configureBlobLimits(context, {
+    maxMaterializeBytes: Math.floor(
+      ((opts.memoryLimitMB ?? DEFAULT_ISOLATE_MEMORY_LIMIT_MB) * 1024 * 1024) / 4,
+    ),
+  });
 
   // Console
   state.handles.console = await setupConsole(context, opts.console);

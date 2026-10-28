@@ -486,6 +486,53 @@ declare global {
    */
   function serve<T = unknown>(options: ServeOptions<T>): void;
 
+  /**
+   * Options for serveFile().
+   */
+  interface ServeFileInit {
+    /**
+     * Extra response headers. \`Content-Type\` defaults to the file's type and
+     * \`Accept-Ranges\` to \`bytes\`; \`Content-Length\` and \`Content-Range\`
+     * are always computed from the served range. A strong \`ETag\` set here
+     * is used to evaluate \`If-Range\`.
+     */
+    headers?: HeadersInit;
+  }
+
+  /**
+   * Build a Response that serves a Blob or File for a request.
+   *
+   * Handles HEAD and a single \`Range: bytes=...\` header (start-end,
+   * open-ended, and suffix ranges): 200 for full content, 206 with
+   * \`Content-Range\` for satisfiable ranges, and 416 (with a
+   * \`Content-Range\` header that names the full size) for unsatisfiable
+   * ones. Invalid or multi-range headers are ignored (full 200 response), as
+   * is any \`Range\` on a request whose \`If-Range\` does not equal the strong
+   * \`ETag\` passed in \`init.headers\`. Ranges apply to GET only: HEAD gets
+   * the full-file headers without a body, and any other method is answered
+   * with the full file, so route methods before calling this helper.
+   *
+   * Disk-backed files from \`getFile()\` are streamed by the host that owns
+   * the disk; their contents are never copied into the isolate. Authorize the
+   * request before calling this helper - it does not add caching or privacy
+   * headers.
+   *
+   * @example
+   * serve({
+   *   async fetch(request) {
+   *     if (!(await canView(request))) {
+   *       return new Response("Forbidden", { status: 403 });
+   *     }
+   *     const media = await getDirectory("/media");
+   *     const file = await (await media.getFileHandle("intro.mp4")).getFile();
+   *     return serveFile(request, file, {
+   *       headers: { "Cache-Control": "private, no-store" },
+   *     });
+   *   },
+   * });
+   */
+  function serveFile(request: Request, file: Blob, init?: ServeFileInit): Response;
+
   // ============================================
   // Client WebSocket API (outbound connections)
   // ============================================
@@ -801,6 +848,14 @@ declare global {
 
     /**
      * Get the file contents as a File object.
+     *
+     * When the host's file bindings support streaming byte ranges, the File
+     * is lazy and disk-backed: only metadata is loaded, \`slice()\` never
+     * reads, \`stream()\` reads bounded chunks on demand, and returning the
+     * File (or a slice) in a Response streams it from the host without
+     * copying it into the isolate. \`text()\`/\`arrayBuffer()\` copy the
+     * contents into the isolate and are limited in size. Reads reject with a
+     * \`NotReadableError\` if the underlying file changed after it was opened.
      *
      * @returns A promise resolving to a File object
      *

@@ -153,6 +153,13 @@ export interface FsCallbackRegistrations {
   rmdir?: CallbackRegistration;
   stat?: CallbackRegistration;
   rename?: CallbackRegistration;
+  /**
+   * Opens a lazy, client-owned file: returns metadata plus a sealed file
+   * capability token minted by the client for this runtime.
+   */
+  openFile?: CallbackRegistration;
+  /** Reads a bounded byte range of a file identified by a capability token. */
+  readFileChunk?: CallbackRegistration;
 }
 
 export interface CustomFunctionRegistrations {
@@ -505,6 +512,28 @@ export interface SerializedResponse {
   body?: Uint8Array | null;
   /** Stream reference for large/streaming bodies */
   bodyStreamId?: number;
+  /**
+   * Body that is a byte range of a client-owned file. The daemon never reads
+   * these bytes: the client verifies the capability token it minted and
+   * streams the range from its own file bindings.
+   */
+  fileBody?: SerializedFileBody;
+}
+
+export interface SerializedFileBody {
+  /** Sealed capability token minted by the client's file bindings. */
+  token: string;
+  /** First byte offset (inclusive). */
+  start: number;
+  /** Byte offset to stop at (exclusive). */
+  end: number;
+}
+
+/** Result of the client `openFile` callback. */
+export interface OpenedFileDescriptor {
+  token: string;
+  size: number;
+  lastModified: number;
 }
 
 export interface ResponseStreamStart extends BaseMessage {
@@ -1028,6 +1057,14 @@ export type WebSocketCallback = (url: string, protocols: string[]) => WebSocket 
  */
 export interface FileSystemCallbacks {
   readFile?: (path: string) => Promise<ArrayBuffer>;
+  /**
+   * Stream the byte range `[start, end)` of a file. Combined with `stat()`,
+   * this enables lazy, disk-backed `File` objects in the isolate.
+   */
+  readFileStream?: (
+    path: string,
+    options: { start: number; end: number; version?: string; signal?: AbortSignal },
+  ) => ReadableStream<Uint8Array> | Promise<ReadableStream<Uint8Array>>;
   writeFile?: (path: string, data: ArrayBuffer) => Promise<void>;
   unlink?: (path: string) => Promise<void>;
   readdir?: (path: string) => Promise<string[]>;
@@ -1035,7 +1072,13 @@ export interface FileSystemCallbacks {
   rmdir?: (path: string) => Promise<void>;
   stat?: (
     path: string
-  ) => Promise<{ isFile: boolean; isDirectory: boolean; size: number }>;
+  ) => Promise<{
+    isFile: boolean;
+    isDirectory: boolean;
+    size: number;
+    lastModified?: number;
+    version?: string;
+  }>;
   rename?: (from: string, to: string) => Promise<void>;
 }
 
