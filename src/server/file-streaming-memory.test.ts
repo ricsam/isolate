@@ -147,7 +147,7 @@ async function waitForSocket(socketPath: string, timeoutMs: number): Promise<voi
   await delay(100);
 }
 
-describe("disk-backed file responses use bounded memory in every process", { skip: !measurable }, () => {
+describe("disk-backed file responses use bounded memory in every process", { skip: !measurable, timeout: 180_000 }, () => {
   let tempRoot: string;
   let socketPath: string;
   let daemon: ChildProcess;
@@ -198,13 +198,16 @@ describe("disk-backed file responses use bounded memory in every process", { ski
   });
 
   after(async () => {
-    await server?.dispose({ hard: true, reason: "test cleanup" }).catch(() => {});
-    await connection?.close().catch(() => {});
-    if (daemon && daemon.exitCode === null) {
+    // Every step is bounded so a failed test cannot keep the run alive.
+    const settle = (promise: Promise<unknown> | undefined) =>
+      Promise.race([Promise.resolve(promise).catch(() => {}), delay(10_000)]);
+    await settle(server?.dispose({ hard: true, reason: "test cleanup" }));
+    await settle(connection?.close());
+    if (daemon && daemon.exitCode === null && daemon.signalCode === null) {
       const exited = new Promise((resolve) => daemon.once("exit", resolve));
       daemon.kill("SIGTERM");
       await Promise.race([exited, delay(5_000)]);
-      if (daemon.exitCode === null) daemon.kill("SIGKILL");
+      if (daemon.exitCode === null && daemon.signalCode === null) daemon.kill("SIGKILL");
     }
     fs.rmSync(socketPath, { force: true });
     fs.rmSync(tempRoot, { recursive: true, force: true });
