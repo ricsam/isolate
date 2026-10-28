@@ -2,6 +2,7 @@ import ivm from "@ricsam/isolated-vm";
 import path from "node:path";
 import { invokeBestEffortEventHandler } from "../event-callback.ts";
 import { setupCore, configureBlobLimits, createAsyncReference } from "../core/index.ts";
+import { setContextLivenessProbe } from "../fetch/stream-state.ts";
 import { setupAsyncContext } from "../async-context/index.ts";
 import { normalizeEntryFilename } from "../protocol/index.ts";
 import {
@@ -1803,6 +1804,10 @@ export async function createRuntime<T extends Record<string, any[]> = Record<str
   const context = await isolate.createContext({
     asyncContext: true,
   } as any);
+
+  // Host consumers of streams this isolate produces (for example response
+  // bodies) fail instead of waiting forever if the isolate goes away.
+  setContextLivenessProbe(context, () => !isolate.isDisposed);
 
   // Initialize state
   const state: RuntimeState = {

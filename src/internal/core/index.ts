@@ -2950,24 +2950,47 @@ async function injectStreams(
     pipeThrough(transform, options = {}) {
       const readable = transform.readable;
       const writable = transform.writable;
-      this.pipeTo(writable, options);
+      // Failures surface on the returned readable side.
+      this.pipeTo(writable, options).catch(() => {});
       return readable;
     }
 
     async pipeTo(destination, options = {}) {
       const reader = this.getReader();
       const writer = destination.getWriter();
+      const preventClose = Boolean(options && options.preventClose);
+      const preventAbort = Boolean(options && options.preventAbort);
+      const preventCancel = Boolean(options && options.preventCancel);
 
       try {
         while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          await writer.write(value);
+          let result;
+          try {
+            result = await reader.read();
+          } catch (error) {
+            // The source failed: abort the destination.
+            if (!preventAbort) {
+              await writer.abort(error).catch(() => {});
+            }
+            throw error;
+          }
+          if (result.done) break;
+          try {
+            // Resolves once the destination accepted the chunk, which for a
+            // TransformStream means its readable side was read (backpressure).
+            await writer.write(result.value);
+          } catch (error) {
+            // The destination failed or its consumer went away: cancel the
+            // source so it releases its resources.
+            if (!preventCancel) {
+              await reader.cancel(error).catch(() => {});
+            }
+            throw error;
+          }
         }
-        await writer.close();
-      } catch (e) {
-        await writer.abort(e);
-        throw e;
+        if (!preventClose) {
+          await writer.close();
+        }
       } finally {
         reader.releaseLock();
         writer.releaseLock();
@@ -3077,6 +3100,10 @@ async function injectStreams(
       this.#reader = reader;
     }
 
+    _hasPendingRead() {
+      return Boolean(this.#reader && this.#reader._pendingRead);
+    }
+
     _pull() {
       const controller = this.#controller;
       // If not started yet, queue the pull request to run when started
@@ -3084,7 +3111,12 @@ async function injectStreams(
         controller.pullAgain = true;
         return;
       }
-      if (controller.pulling) return;
+      if (controller.pulling) {
+        // A read arrived while a pull is in progress: pull again afterwards
+        // if that read is still waiting for data.
+        controller.pullAgain = true;
+        return;
+      }
       controller.pulling = true;
 
       Promise.resolve(this.#underlyingSource?.pull?.(controller))
@@ -3092,7 +3124,9 @@ async function injectStreams(
           controller.pulling = false;
           if (controller.pullAgain) {
             controller.pullAgain = false;
-            this._pull();
+            if (this.#state === 'readable' && this._hasPendingRead() && controller.queue.isEmpty()) {
+              this._pull();
+            }
           }
         })
         .catch((e) => {
@@ -3210,6 +3244,7 @@ async function injectStreams(
     #controller = null;
     #underlyingSink = null;
     #writeQueue = [];
+    #writeChain = Promise.resolve();
     #closePromise = null;
 
     constructor(underlyingSink = {}, strategy = {}) {
@@ -3256,7 +3291,14 @@ async function injectStreams(
     _close() {
       if (this.#closePromise) return this.#closePromise;
 
-      this.#closePromise = Promise.resolve(this.#underlyingSink?.close?.())
+      // Close after every queued write has been processed by the sink.
+      this.#closePromise = this.#writeChain
+        .then(() => {
+          if (this.#state === 'errored') {
+            throw this.#storedError;
+          }
+          return this.#underlyingSink?.close?.();
+        })
         .then(() => {
           this.#state = 'closed';
         });
@@ -3318,15 +3360,30 @@ async function injectStreams(
         }
       };
 
-      Promise.resolve(this.#underlyingSink?.write?.(chunk, this.#controller))
-        .then((result) => {
+      // The sink processes one chunk at a time, in order.
+      this.#writeChain = this.#writeChain.then(async () => {
+        if (this.#writeQueue.indexOf(pending) === -1) {
+          // Already rejected by an abort.
+          return;
+        }
+        if (this.#state !== 'writable') {
+          cleanup();
+          reject(this.#storedError || new TypeError('Stream is not writable'));
+          return;
+        }
+        try {
+          const result = await this.#underlyingSink?.write?.(chunk, this.#controller);
           cleanup();
           resolve(result);
-        })
-        .catch((e) => {
+        } catch (e) {
           cleanup();
+          if (this.#state === 'writable') {
+            this.#state = 'errored';
+            this.#storedError = e;
+          }
           reject(e);
-        });
+        }
+      }).catch(() => {});
 
       return pendingPromise;
     }
@@ -3353,6 +3410,9 @@ async function injectStreams(
         this.#closedResolve = resolve;
         this.#closedReject = reject;
       });
+      // Like the WHATWG spec, a rejected closed promise (for example after
+      // releaseLock()) is marked as handled.
+      this.#closed.catch(() => {});
     }
 
     get closed() {
@@ -3423,37 +3483,89 @@ async function injectStreams(
 
     constructor(transformer = {}, writableStrategy = {}, readableStrategy = {}) {
       let readableController;
+      // Backpressure (WHATWG streams): the writable side transforms the next
+      // chunk only when the readable side is read, so piping a stream
+      // through a transform never reads ahead of the consumer.
+      const readableHighWaterMark = Math.max(Number(readableStrategy && readableStrategy.highWaterMark) || 0, 0);
+      let backpressure = true;
+      let waiters = [];
+      let unblockError = null;
 
-      this.#readable = new ReadableStream({
+      const releaseBackpressure = () => {
+        backpressure = false;
+        const pending = waiters;
+        waiters = [];
+        for (const waiter of pending) waiter.resolve();
+      };
+
+      const unblockWrites = (reason) => {
+        unblockError = reason === undefined ? new TypeError('The TransformStream was cancelled') : reason;
+        const pending = waiters;
+        waiters = [];
+        for (const waiter of pending) waiter.reject(unblockError);
+      };
+
+      const waitForReader = () => {
+        if (unblockError !== null) return Promise.reject(unblockError);
+        if (!backpressure) return Promise.resolve();
+        return new Promise((resolve, reject) => {
+          waiters.push({ resolve, reject });
+        });
+      };
+
+      const readable = new ReadableStream({
         start(controller) {
           readableController = controller;
+        },
+        pull() {
+          // A reader is waiting for data: transform the next chunk.
+          releaseBackpressure();
+        },
+        cancel(reason) {
+          // The consumer stopped reading: fail pending and future writes so
+          // that a pipe into this stream cancels its source.
+          unblockWrites(reason);
+          return transformer.cancel?.(reason);
         }
       }, readableStrategy);
+
+      const updateBackpressure = () => {
+        backpressure = !readable._hasPendingRead()
+          && readableController.queue.length >= readableHighWaterMark;
+      };
 
       const transformerController = {
         enqueue: (chunk) => {
           readableController.enqueue(chunk);
         },
         error: (e) => {
+          unblockWrites(e);
           readableController.error(e);
         },
         terminate: () => {
+          unblockWrites(new TypeError('The TransformStream was terminated'));
           readableController.close();
         },
-        desiredSize: readableController?.desiredSize ?? 1
+        get desiredSize() {
+          return readableHighWaterMark - readableController.queue.length;
+        }
       };
 
+      this.#readable = readable;
       this.#writable = new WritableStream({
         start() {
           return transformer.start?.(transformerController);
         },
         write(chunk) {
-          // If no transform function is provided, act as identity transform
-          if (transformer.transform) {
-            return transformer.transform(chunk, transformerController);
-          } else {
-            transformerController.enqueue(chunk);
-          }
+          return waitForReader().then(async () => {
+            // If no transform function is provided, act as identity transform
+            if (transformer.transform) {
+              await transformer.transform(chunk, transformerController);
+            } else {
+              transformerController.enqueue(chunk);
+            }
+            updateBackpressure();
+          });
         },
         close() {
           const result = transformer.flush?.(transformerController);
@@ -3462,6 +3574,7 @@ async function injectStreams(
           });
         },
         abort(reason) {
+          unblockWrites(reason);
           readableController.error(reason);
           return Promise.resolve();
         }

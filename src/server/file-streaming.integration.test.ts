@@ -266,7 +266,7 @@ const SERVER_CODE = `
   });
 `;
 
-describe("lazy disk-backed files (daemon-backed runtime, host-owned disk)", () => {
+describe("lazy disk-backed files (daemon-backed runtime, host-owned disk)", { timeout: 240_000 }, () => {
   let host: IsolateHost;
   let socketPath: string;
   let cleanup: (() => Promise<void>) | undefined;
@@ -552,6 +552,28 @@ describe("lazy disk-backed files (daemon-backed runtime, host-owned disk)", () =
       chunks.push(Buffer.from(value));
     }
     assert.equal(Buffer.compare(Buffer.concat(chunks), video), 0);
+  });
+
+  test("a body produced by JS fails instead of ending early when the runtime is reloaded", async () => {
+    const size = fs.statSync(path.join(rootA, "media", "big.bin")).size;
+    const reloadable = await createServer(createInstrumentedFiles(rootA).files);
+    const response = await get(reloadable, "/transform?name=big.bin");
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    assert.equal(first.done, false);
+    let received = first.value!.byteLength;
+
+    // The transform runs in the runtime, so it cannot outlive it.
+    await reloadable.reload("reload while a JS-produced body is streaming");
+
+    await assert.rejects(async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+      }
+    });
+    assert.ok(received < size, `received ${received} of ${size} bytes`);
   });
 
   test("files consumed or transformed in JS are streamed in bounded chunks", async () => {

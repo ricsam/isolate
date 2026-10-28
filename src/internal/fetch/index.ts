@@ -13,12 +13,24 @@ import {
 import { toExactArrayBuffer } from "../core/blob-body.ts";
 import {
   getStreamRegistryForContext,
+  isContextAlive,
   startNativeStreamReader,
   clearStreamRegistryForContext,
 } from "./stream-state.ts";
 import type { StreamStateRegistry } from "./stream-state.ts";
 
 export { clearAllInstanceState };
+
+/**
+ * Error for a response body whose producer (the runtime's isolate) went away
+ * before the body was complete. The body fails rather than ending early, so
+ * consumers never mistake a truncated body for a complete one.
+ */
+function createIncompleteBodyError(): Error {
+  return new Error(
+    "The runtime that produced this response body was disposed before the body was complete",
+  );
+}
 
 /**
  * Blob bodies of Responses produced by `dispatchRequest()`.
@@ -3446,7 +3458,9 @@ export async function setupFetch(
                 // Check if data is available
                 const state = streamRegistry.get(responseStreamId);
                 if (!state) {
-                  controller.close();
+                  // The runtime released the stream (for example on dispose)
+                  // before the body was complete: fail instead of ending early.
+                  controller.error(createIncompleteBodyError());
                   streamDone = true;
                   return;
                 }
@@ -3454,6 +3468,16 @@ export async function setupFetch(
                 // If queue has data or stream is done, break and pull
                 if (state.queue.length > 0 || state.closed || state.errored) {
                   break;
+                }
+
+                // The isolate producing the body went away (for example it
+                // exceeded its memory limit): no more data will arrive.
+                if (!isContextAlive(context)) {
+                  controller.error(createIncompleteBodyError());
+                  streamDone = true;
+                  streamRegistry.cancel(responseStreamId);
+                  streamRegistry.delete(responseStreamId);
+                  return;
                 }
 
                 // Small delay to avoid busy-waiting

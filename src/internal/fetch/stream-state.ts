@@ -297,6 +297,35 @@ export function clearStreamRegistryForContext(context: ivm.Context): void {
 }
 
 // ============================================================================
+// Producer liveness
+// ============================================================================
+
+const contextLivenessProbes = new WeakMap<ivm.Context, () => boolean>();
+
+/**
+ * Register how to tell whether the isolate behind a context is still alive.
+ * Host consumers of streams that isolate code produces use it to fail instead
+ * of waiting forever when the isolate goes away mid-stream (for example when
+ * it exceeds its memory limit or is disposed).
+ */
+export function setContextLivenessProbe(context: ivm.Context, probe: () => boolean): void {
+  contextLivenessProbes.set(context, probe);
+}
+
+/** Whether the isolate behind a context is still alive (true when unknown). */
+export function isContextAlive(context: ivm.Context): boolean {
+  const probe = contextLivenessProbes.get(context);
+  if (!probe) {
+    return true;
+  }
+  try {
+    return probe();
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================================
 // Native Stream Reader
 // ============================================================================
 

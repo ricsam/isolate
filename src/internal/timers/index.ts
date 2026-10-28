@@ -31,15 +31,33 @@ function releaseIfSupported(handle: unknown): void {
 export async function setupTimers(
   context: ivm.Context
 ): Promise<TimersHandle> {
-  let nextTimerId = 1;
   const pendingTimers = new Map<number, NodeJS.Timeout>();
   let disposed = false;
 
   const global = context.global;
 
-  // Register timeout on host, return ID
-  const registerTimeoutCallback = new ivm.Callback((delay: number) => {
-    const id = nextTimerId++;
+  // Timer ids are allocated by the isolate, which stores the callback before
+  // registering the timer here. isolated-vm unlocks the isolate while it waits
+  // for a host callback, so the host timer may fire before the isolate code
+  // that called setTimeout() continues; the callback must already be there.
+  const toTimerId = (id: unknown): number => {
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) {
+      throw new TypeError("Invalid timer id");
+    }
+    return id;
+  };
+
+  const replacePendingTimer = (id: number, handle: NodeJS.Timeout) => {
+    const previous = pendingTimers.get(id);
+    if (previous) {
+      clearTimeout(previous);
+    }
+    pendingTimers.set(id, handle);
+  };
+
+  // Register a timeout for a timer id allocated by the isolate
+  const registerTimeoutCallback = new ivm.Callback((timerId: number, delay: number) => {
+    const id = toTimerId(timerId);
     const normalizedDelay = Math.max(0, delay || 0);
 
     const handle = setTimeout(() => {
@@ -53,17 +71,16 @@ export async function setupTimers(
       }
     }, normalizedDelay);
 
-    pendingTimers.set(id, handle);
-    return id;
+    replacePendingTimer(id, handle);
   });
   global.setSync(
     "__timers_registerTimeout",
     registerTimeoutCallback
   );
 
-  // Register interval on host, return ID
-  const registerIntervalCallback = new ivm.Callback((delay: number) => {
-    const id = nextTimerId++;
+  // Register an interval for a timer id allocated by the isolate
+  const registerIntervalCallback = new ivm.Callback((timerId: number, delay: number) => {
+    const id = toTimerId(timerId);
     const normalizedDelay = Math.max(0, delay || 0);
 
     const handle = setInterval(() => {
@@ -75,8 +92,7 @@ export async function setupTimers(
       }
     }, normalizedDelay);
 
-    pendingTimers.set(id, handle);
-    return id;
+    replacePendingTimer(id, handle);
   });
   global.setSync(
     "__timers_registerInterval",
@@ -100,6 +116,7 @@ export async function setupTimers(
   const timersCode = `
 (function() {
   const __timers_callbacks = new Map();
+  let __timers_nextId = 1;
   const __wrapAsyncContextCallback = (callback, type) => (
     typeof callback === 'function' && globalThis.__isolateAsyncContextInternals?.wrapCallback
       ? globalThis.__isolateAsyncContextInternals.wrapCallback(callback, { type })
@@ -111,30 +128,35 @@ export async function setupTimers(
       : false
   );
 
-  globalThis.setTimeout = function(callback, delay, ...args) {
+  // The callback is stored before the host timer exists, so the host can
+  // never fire a timer whose callback is not registered yet.
+  function __timers_schedule(register, callback, delay, args, repeat) {
     if (typeof callback !== 'function') {
       throw new TypeError('Callback must be a function');
     }
-    const id = __timers_registerTimeout(delay || 0);
-    __timers_callbacks.set(id, {
+    const id = __timers_nextId++;
+    const entry = {
       args,
       callback: __wrapAsyncContextCallback(callback, 'Timeout'),
-      repeat: false,
-    });
+      repeat,
+    };
+    __timers_callbacks.set(id, entry);
+    try {
+      register(id, delay || 0);
+    } catch (error) {
+      __releaseAsyncContextCallback(entry.callback);
+      __timers_callbacks.delete(id);
+      throw error;
+    }
     return id;
+  }
+
+  globalThis.setTimeout = function(callback, delay, ...args) {
+    return __timers_schedule(__timers_registerTimeout, callback, delay, args, false);
   };
 
   globalThis.setInterval = function(callback, delay, ...args) {
-    if (typeof callback !== 'function') {
-      throw new TypeError('Callback must be a function');
-    }
-    const id = __timers_registerInterval(delay || 0);
-    __timers_callbacks.set(id, {
-      args,
-      callback: __wrapAsyncContextCallback(callback, 'Timeout'),
-      repeat: true,
-    });
-    return id;
+    return __timers_schedule(__timers_registerInterval, callback, delay, args, true);
   };
 
   globalThis.clearTimeout = function(id) {
